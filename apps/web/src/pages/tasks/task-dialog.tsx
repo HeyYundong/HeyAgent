@@ -6,6 +6,7 @@ import { Controller, useFieldArray, useForm, useWatch, type Control, type UseFor
 import { PlayIcon, PlusIcon, XIcon } from "lucide-react"
 import {
   alwaysOnToolIds,
+  BROWSER_TOOL_ID,
   can,
   checkpointKindLabel,
   modelFamily,
@@ -24,13 +25,15 @@ import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Combobox, ComboboxChip, ComboboxChips, ComboboxChipsInput, ComboboxContent, ComboboxEmpty, ComboboxItem, ComboboxList, ComboboxValue, useComboboxAnchor } from "@/components/ui/combobox"
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldLegend, FieldSeparator, FieldSet } from "@/components/ui/field"
+import { Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldLegend, FieldSeparator, FieldSet } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from "@/components/ui/input-group"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Spinner } from "@/components/ui/spinner"
+import { Textarea } from "@/components/ui/textarea"
 
-import { useMemoriesQuery, useModels, useRulesQuery, useSkillsQuery, useStaffQuery, useToolName, useToolsQuery } from "@/lib/data"
+import { useBrowsersQuery, useMemoriesQuery, useModels, useRulesQuery, useSkillsQuery, useStaffQuery, useToolName, useToolsQuery } from "@/lib/data"
+import { domainsText, invalidDomainsMessage, parseDomains } from "@/lib/domains"
 import { useAction } from "@/lib/mutations"
 import { navigate } from "@/lib/router"
 import { useMe } from "@/lib/session"
@@ -158,6 +161,47 @@ function StepEditor({ index, control, register, error, checkpointError, onRemove
   )
 }
 
+/** 选了「浏览器」工具才出现：允许用哪些 Chrome 配置、网址白名单、是否允许执行脚本 */
+function BrowserFields({ control, domainText, domainError, onDomainText }: { control: Control<TaskInput>; domainText: string; domainError?: string; onDomainText: (text: string) => void }) {
+  const profiles = useBrowsersQuery().data ?? []
+  const options = profiles.map((profile) => ({ value: profile.id, label: profile.name, hint: profile.description }))
+  return (
+    <FieldSet className="sm:col-span-2">
+      <FieldLegend variant="label">浏览器</FieldLegend>
+      <FieldDescription>选了「浏览器」工具才有这几项。agent 用服务器上的 Chrome 操作网页；遇到验证码、登录页会停下来交给负责人。</FieldDescription>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Controller
+          control={control}
+          name="browserProfileIds"
+          render={({ field }) => (
+            <MultiPick id="task-browserProfileIds" label="Chrome 配置" options={options} value={field.value ?? []} onChange={field.onChange}
+              description={profiles.length ? "不选 = 全部都能用，agent 按每个配置的说明自己选。只允许一个时自动用它。" : "还没有 Chrome 配置：先去「浏览器」页新建。"} />
+          )}
+        />
+        <Field data-invalid={!!domainError}>
+          <FieldLabel htmlFor="task-allowedDomains">网址白名单（可以不填）</FieldLabel>
+          <Textarea id="task-allowedDomains" rows={2} className="font-mono" placeholder={"example.com\nwikipedia.org"} value={domainText} aria-invalid={!!domainError} onChange={(event) => onDomainText(event.target.value)} />
+          <FieldDescription>每行一个域名，子域名也算。不填就不限制；填了，名单外的网页打不开，agent 会收到原因。</FieldDescription>
+          <FieldError>{domainError}</FieldError>
+        </Field>
+        <Controller
+          control={control}
+          name="allowBrowserEvaluate"
+          render={({ field }) => (
+            <Field orientation="horizontal" className="sm:col-span-2">
+              <Checkbox id="task-allowEvaluate" checked={!!field.value} onCheckedChange={(on) => field.onChange(Boolean(on))} />
+              <FieldContent>
+                <FieldLabel htmlFor="task-allowEvaluate">允许在网页里执行脚本</FieldLabel>
+                <FieldDescription>打开后 agent 可以在页面里运行 JavaScript（读数据更快，但也能改页面、发请求）。不确定就别开。</FieldDescription>
+              </FieldContent>
+            </Field>
+          )}
+        />
+      </div>
+    </FieldSet>
+  )
+}
+
 const DEFAULT_CRON = "0 9 * * *"
 
 export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpenChange: (open: boolean) => void; task?: TaskDef }) {
@@ -181,12 +225,21 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
           skillIds: task.skillIds,
           toolIds: task.toolIds.filter((id) => !alwaysOn.includes(id)),
           ruleIds: task.ruleIds,
+          browserProfileIds: task.browserProfileIds,
+          allowedDomains: task.allowedDomains,
+          allowBrowserEvaluate: task.allowBrowserEvaluate,
         }
-      : { title: "", goal: "", steps: [{ text: "", wait: false }], modelId: defaults.run, ownerId: user.id, schedule: null, enabled: true, memoryIds: [], skillIds: [], toolIds: [], ruleIds: [] },
+      : {
+          title: "", goal: "", steps: [{ text: "", wait: false }], modelId: defaults.run, ownerId: user.id, schedule: null, enabled: true,
+          memoryIds: [], skillIds: [], toolIds: [], ruleIds: [], browserProfileIds: [], allowedDomains: [], allowBrowserEvaluate: false,
+        },
   })
+  // 网址白名单在表单里是一段文字（每行一个），提交时拆成数组
+  const [domainText, setDomainText] = React.useState(() => domainsText(task?.allowedDomains ?? []))
   const { errors } = form.formState
   const steps = useFieldArray({ control: form.control, name: "steps" })
-  const [modelId, schedule, memoryIds, skillIds] = useWatch({ control: form.control, name: ["modelId", "schedule", "memoryIds", "skillIds"] })
+  const [modelId, schedule, memoryIds, skillIds, toolIds] = useWatch({ control: form.control, name: ["modelId", "schedule", "memoryIds", "skillIds", "toolIds"] })
+  const usesBrowser = (toolIds ?? []).includes(BROWSER_TOOL_ID)
   const options = usePickOptions({ memoryIds: memoryIds ?? [], skillIds: skillIds ?? [] })
   const create = useAction(trpc.tasks.create.mutationOptions(), { success: (data) => `任务 ${data.id} 建好了` })
   const update = useAction(trpc.tasks.update.mutationOptions(), { success: "任务已保存" })
@@ -214,8 +267,15 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
       return
     }
     if (modelClash) return
+    const parsedDomains = parseDomains(domainText)
+    if (parsedDomains.invalid.length) {
+      form.setError("allowedDomains", { message: invalidDomainsMessage(parsedDomains.invalid) })
+      return
+    }
     const input = {
       ...values,
+      // 浏览器的三项只在选了「浏览器」工具时起作用；没选时也原样保留，免得关掉再打开要重填
+      allowedDomains: parsedDomains.domains,
       steps: values.steps.map((step) => ({ ...step, checkpoint: step.checkpoint?.trim() || undefined })),
       schedule: values.schedule ? { cron: values.schedule.cron.trim(), text: cronText(values.schedule.cron) ?? values.schedule.cron.trim() } : null,
     }
@@ -305,6 +365,12 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
                       )}
                     />
                   ))}
+                  {usesBrowser && (
+                    <BrowserFields control={form.control} domainText={domainText} domainError={errors.allowedDomains?.message} onDomainText={(text) => {
+                      setDomainText(text)
+                      form.clearErrors("allowedDomains")
+                    }} />
+                  )}
                   <Field data-invalid={!!modelClash} className="sm:col-span-2">
                     <FieldLabel htmlFor="task-model">模型</FieldLabel>
                     <Controller

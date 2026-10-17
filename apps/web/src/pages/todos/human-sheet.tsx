@@ -21,11 +21,13 @@ import { useRulesQuery, useStaffName } from "@/lib/data"
 import { useAction } from "@/lib/mutations"
 import { trpc } from "@/lib/trpc"
 
+import { HumanBrowserSection } from "./human-browser"
 import { Block, DetailSheet, Said, TextLink, dots } from "./sheets"
 
 // canAct：主管，或者分给自己的事；否则只读（没有操作按钮，顶部写分给了谁）
 // 记忆审核、技能修改直接调配置接口（M1 P2）；审批、验收、登录、花费到了上限要不要继续，调 engine.resolveHumanItem（M1 P3）：
-// how = approve（批准）/ reject（拒绝）/ done（已处理，用于登录这类「去做了」的事），加备注；处理完关联的 session 继续
+// how = approve（批准）/ reject（拒绝）/ done（已处理，用于登录这类「去做了」的事），加备注；处理完关联的 session 继续。
+// M2：遇到验证码 / 登录页的「登录」类事带 detail.browser：多一段「远程画面」（截图 + 去浏览器里处理），主按钮是「已处理好了」
 type Props = { item: HumanItem; runs: SessionRun[]; open: boolean; userId: string; canAct: boolean; onClose: () => void }
 
 export function HumanSheet({ item, runs, open, userId, canAct, onClose }: Props) {
@@ -62,9 +64,11 @@ export function HumanSheet({ item, runs, open, userId, canAct, onClose }: Props)
     else resolve.mutate({ itemId: item.id, how: "reject", note: reason || note.trim() || undefined })
   }
   const busy = resolve.isPending || approveMemory.isPending || rejectMemory.isPending || acceptSkill.isPending || rejectSkill.isPending
-  const primary = detail.link ? <Button nativeButton={false} render={<a href={href(detail.link.page, { id: detail.link.id })} />}>{detail.primary}</Button>
+  const doneButton = <Button disabled={busy} onClick={() => done()}>{busy ? <Spinner data-icon="inline-start" /> : <CheckIcon data-icon="inline-start" />}{detail.primary}</Button>
+  // 带浏览器信息的：在这里（或远程画面里）直接点「已处理好了」；没有的（旧数据）主按钮仍是去浏览器页的链接
+  const primary = detail.browser ? doneButton : detail.link ? <Button nativeButton={false} render={<a href={href(detail.link.page, { id: detail.link.id })} />}>{detail.primary}</Button>
     : detail.pay ? <PayButton label={detail.primary} confirm={detail.pay} onConfirm={() => done()} />
-      : <Button disabled={busy} onClick={() => done()}>{busy ? <Spinner data-icon="inline-start" /> : <CheckIcon data-icon="inline-start" />}{detail.primary}</Button>
+      : doneButton
   const secondary = detail.secondaryDone ? <Button variant="outline" disabled={busy} onClick={() => done("done")}>{detail.secondary}</Button>
     : <RejectButton label={engineItem ? detail.secondary : "拒绝"} hint={detail.rejectHint ?? (engineItem ? "agent 会看到你的原因，照着调整。" : "")} defaultReason={note.trim()} disabled={busy} onReject={reject} />
 
@@ -91,6 +95,7 @@ export function HumanSheet({ item, runs, open, userId, canAct, onClose }: Props)
           {diff && <Block title="操作手册的改动">{diff.map((line, index) => <CodeBlockLine key={index} variant={line.variant}>{line.text}</CodeBlockLine>)}</Block>}
         </DetailSection>
       ))}
+      {detail.browser && <HumanBrowserSection item={item} info={detail.browser} canAct={canAct} onResolved={onClose} />}
       {item.kind === "verify" && run?.verification && <DetailSection title="三方 AI 和执行 agent 的对话">
         {run.verification.notes.map((note, index) => <Said key={index} {...note} />)}
       </DetailSection>}

@@ -1,10 +1,10 @@
 // 给某个 Chrome 加一个要登录的平台账号（只有主管）：平台（选已有的或输入新名字）、账号、并发上限、登录探测网址、要不要连 IndexedDB 一起存。
 // 表单：React Hook Form + shared 的 browserAccountInputSchema。表单里 platformId 先放平台「名字」，
 // 提交时换成真正的 id：平台表里有就用它的 id，没有就先调 platforms.create 新建平台。
-// 新账号的状态是「要登录」：M2 起在远程画面里登录一次，登录态进保险箱后 agent 才能用。
+// 新平台可以顺手填域名（platforms.create 的 domains）。新账号的状态是「要登录」：在远程画面里登录一次，登录态进保险箱后 agent 才能用。
 import * as React from "react"
 import { zodResolver } from "@hookform/resolvers/zod"
-import { Controller, useForm } from "react-hook-form"
+import { Controller, useForm, useWatch } from "react-hook-form"
 import { browserAccountInputSchema, type BrowserAccountInput } from "@heyagent/shared"
 
 import { CreatableCombobox } from "@/components/shell/creatable-combobox"
@@ -14,9 +14,11 @@ import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, Di
 import { Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { Spinner } from "@/components/ui/spinner"
+import { Textarea } from "@/components/ui/textarea"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 
 import { usePlatformsQuery } from "@/lib/data"
+import { invalidDomainsMessage, parseDomains } from "@/lib/domains"
 import { useAction } from "@/lib/mutations"
 import { trpc } from "@/lib/trpc"
 
@@ -28,6 +30,9 @@ export function AccountDialog({ profile, onClose }: AccountDialogProps) {
   const platforms = usePlatformsQuery().data ?? []
   // 刚输入的新平台名，还没建到平台表里，先放在下拉选项里
   const [typedNames, setTypedNames] = React.useState<string[]>([])
+  // 新平台的域名（只在平台表里还没有这个平台时显示、提交）
+  const [domainText, setDomainText] = React.useState("")
+  const [domainError, setDomainError] = React.useState<string>()
   const form = useForm<BrowserAccountInput>({
     resolver: zodResolver(browserAccountInputSchema),
     defaultValues: { profileId: profile.id, platformId: "", account: "", maxConcurrent: 1, probeUrl: "", saveIndexedDb: false },
@@ -35,16 +40,24 @@ export function AccountDialog({ profile, onClose }: AccountDialogProps) {
   const { errors } = form.formState
   const createPlatform = useAction(trpc.platforms.create.mutationOptions())
   const createAccount = useAction(trpc.browsers.createAccount.mutationOptions(), {
-    success: "账号加好了，状态是「要登录」。M2 起在远程画面里登录一次，agent 就能带着登录态用它",
+    success: "账号加好了，状态是「要登录」。点「去登录」在远程画面里登录一次，agent 就能带着登录态用它",
   })
   const pending = createPlatform.isPending || createAccount.isPending
+  const typedPlatform = (useWatch({ control: form.control, name: "platformId" }) ?? "").trim()
+  const isNewPlatform = Boolean(typedPlatform) && !platforms.some((platform) => platform.name === typedPlatform)
 
   const submit = form.handleSubmit(async (values) => {
     const name = values.platformId.trim()
     let platformId = platforms.find((platform) => platform.name === name)?.id
     if (!platformId) {
+      const { domains, invalid } = parseDomains(domainText)
+      if (invalid.length) {
+        setDomainError(invalidDomainsMessage(invalid))
+        return
+      }
+      setDomainError(undefined)
       // 平台表里没有：先建平台。建好了但账号没建成也没关系，下次直接能选到这个平台
-      const created = await createPlatform.submit({ name })
+      const created = await createPlatform.submit({ name, domains })
       if (!created) return
       platformId = created.id
     }
@@ -57,7 +70,7 @@ export function AccountDialog({ profile, onClose }: AccountDialogProps) {
         <form onSubmit={submit} className="flex flex-col gap-4">
           <DialogHeader>
             <DialogTitle>给「{profile.name}」加账号</DialogTitle>
-            <DialogDescription>同一个平台可以加多个账号，并发上限按账号算。加好后要有人在远程画面里登录一次（M2 接通）。</DialogDescription>
+            <DialogDescription>同一个平台可以加多个账号，并发上限按账号算。加好后要有人在远程画面里登录一次。</DialogDescription>
           </DialogHeader>
           <FieldGroup>
             <Field data-invalid={!!errors.platformId}>
@@ -75,6 +88,14 @@ export function AccountDialog({ profile, onClose }: AccountDialogProps) {
               <FieldDescription>没有的平台直接输入名字，保存时一起建好。</FieldDescription>
               <FieldError errors={[errors.platformId]} />
             </Field>
+            {isNewPlatform && (
+              <Field data-invalid={!!domainError}>
+                <FieldLabel htmlFor="acc-domains">新平台的域名（可选）</FieldLabel>
+                <Textarea id="acc-domains" rows={2} className="font-mono" placeholder="example.com" value={domainText} aria-invalid={!!domainError} onChange={(event) => setDomainText(event.target.value)} />
+                <FieldDescription>每行一个，子域名也算。agent 打开这些域名下的网址时，占用这个平台账号的并发名额。以后可以在账号的「⋯ → 改平台域名」里改。</FieldDescription>
+                <FieldError>{domainError}</FieldError>
+              </Field>
+            )}
             <Field data-invalid={!!errors.account}>
               <FieldLabel htmlFor="acc-account">账号</FieldLabel>
               <Input id="acc-account" placeholder="例如：店铺后台（美国站）" autoComplete="off" aria-invalid={!!errors.account} {...form.register("account")} />

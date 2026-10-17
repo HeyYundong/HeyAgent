@@ -40,7 +40,8 @@ export function DetailSheet({ open, onClose, title, badges, meta, footer, childr
           <SheetTitle>{title}</SheetTitle><SheetDescription>{meta}</SheetDescription>
         </SheetHeader>
         <Separator />
-        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4">{children}</div>
+        {/* 内容多了在这里滚动，卡片不被压扁（*:shrink-0） */}
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4 *:shrink-0">{children}</div>
         {footer && <><Separator /><SheetFooter className="mt-0 flex-row flex-wrap items-center">{footer}</SheetFooter></>}
       </SheetContent>
     </Sheet>
