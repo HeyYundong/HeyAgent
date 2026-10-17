@@ -151,12 +151,14 @@ function DefaultsSection({ providers, defaults, readOnly, nameOf, saving, onSave
 }) {
   const [draft, setDraft] = React.useState(defaults)
   const models = providers.flatMap((p) => p.models)
+  // 图库只能用能处理图片的 embedding 模型
+  const embeddingModels = providers.flatMap((p) => p.embeddingModels ?? []).filter((m) => m.vision)
   const clash = sameFamily(draft.run, draft.verify)
-  const dirty = ROLES.some((role) => draft[role.id] !== defaults[role.id])
+  const dirty = ROLES.some((role) => draft[role.id] !== defaults[role.id]) || (draft.embed ?? "") !== (defaults.embed ?? "")
   return (
     <DetailSection title="默认用哪个模型" description="三方验收不能和执行用同一家的模型：同一家容易犯同样的错，验收看不出来，就不算第三方了。"
       action={!readOnly && (
-        <Button size="sm" disabled={!dirty || clash || saving} onClick={() => onSave(draft)}>
+        <Button size="sm" disabled={!dirty || clash || saving} onClick={() => onSave({ ...draft, embed: draft.embed ?? "" })}>
           {saving ? <Spinner data-icon="inline-start" /> : <SaveIcon data-icon="inline-start" />}
           保存
         </Button>
@@ -178,6 +180,16 @@ function DefaultsSection({ providers, defaults, readOnly, nameOf, saving, onSave
             </Field>
           )
         })}
+        <Field>
+          <FieldLabel htmlFor="default-embed">图库的 embedding 模型</FieldLabel>
+          <ModelCombobox id="default-embed" className="w-full sm:w-96" models={embeddingModels} value={draft.embed ?? ""} disabled={readOnly} clearable placeholder="不用（图库不能以图搜图）"
+            onValueChange={(next) => setDraft({ ...draft, embed: next || undefined })} />
+          <FieldDescription>
+            把图片和描述变成向量，图库的以图搜图、比对、按描述找图都用它。只列能处理图片的 embedding 模型。
+            换了以后后台用新模型把所有图重算一遍，算完之前检索还用旧模型。
+            {embeddingModels.length === 0 && " 现在一个都没有：到 OpenRouter 服务里点「刷新模型列表」。"}
+          </FieldDescription>
+        </Field>
       </FieldGroup>
     </DetailSection>
   )
@@ -207,6 +219,8 @@ function ProviderDetail({ provider, tasks, defaults, isAdmin, actions }: {
   const text = query.trim().toLowerCase()
   const matched = text ? provider.models.filter((m) => m.name.toLowerCase().includes(text) || m.id.toLowerCase().includes(text)) : provider.models
   const shown = matched.slice(0, TABLE_LIMIT)
+  const embeddings = [...(provider.embeddingModels ?? [])].sort((a, b) => Number(b.vision ?? false) - Number(a.vision ?? false))
+  const embedDefault = embeddings.find((m) => m.id === defaults.embed)
 
   return (
     <DetailPanel
@@ -275,6 +289,29 @@ function ProviderDetail({ provider, tasks, defaults, isAdmin, actions }: {
           </div>
         )}
       </DetailSection>
+      {embeddings.length > 0 && (
+        <DetailSection title="embedding 模型" description="把图片、文字变成向量的模型，图库检索用（在「默认设置」里选）。能处理图片的才能以图搜图，排在前面。价格是每百万 token（美元）。">
+          <Table>
+            <TableHeader>
+              <TableRow><TableHead>模型</TableHead><TableHead>能处理图片</TableHead><TableHead>价格</TableHead></TableRow>
+            </TableHeader>
+            <TableBody>
+              {embeddings.map((m) => (
+                <TableRow key={m.id}>
+                  <TableCell>
+                    <div className="flex flex-wrap items-center gap-1">
+                      {m.name}
+                      {defaults.embed === m.id && <Badge variant="secondary">图库默认</Badge>}
+                    </div>
+                  </TableCell>
+                  <TableCell>{m.vision ? "能" : "不能"}</TableCell>
+                  <TableCell>{m.priceIn === 0 ? "免费" : `$${m.priceIn}`}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </DetailSection>
+      )}
       <DetailSection title="被哪些任务用了">
         <div className="flex flex-col gap-2">
           {used.length === 0 && <p className="text-muted-foreground">还没有任务直接选用这里的模型。</p>}
@@ -284,9 +321,14 @@ function ProviderDetail({ provider, tasks, defaults, isAdmin, actions }: {
               <span className="text-xs text-muted-foreground"> · {provider.models.find((m) => m.id === task.modelId)?.name}</span>
             </p>
           ))}
-          {defaultRoles.length > 0 && (
+          {(defaultRoles.length > 0 || embedDefault) && (
             <p className="text-xs text-muted-foreground">
-              默认设置里：{defaultRoles.map((role) => `${role.label}用 ${provider.models.find((m) => m.id === defaults[role.id])?.name}`).join("，")}。
+              默认设置里：
+              {[
+                ...defaultRoles.map((role) => `${role.label}用 ${provider.models.find((m) => m.id === defaults[role.id])?.name}`),
+                ...(embedDefault ? [`图库用 ${embedDefault.name}`] : []),
+              ].join("，")}
+              。
             </p>
           )}
         </div>

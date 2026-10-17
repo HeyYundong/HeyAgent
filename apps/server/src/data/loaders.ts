@@ -489,10 +489,15 @@ export async function loadModels(db: Db): Promise<{ providers: ModelProvider[]; 
     db.select().from(t.models).orderBy(asc(t.models.position)),
     db.select().from(t.modelDefaults),
   ])
-  const defaultOf = (role: "run" | "plan" | "verify") => defaults.find((row) => row.role === role)?.modelId ?? ""
+  const defaultOf = (role: "run" | "plan" | "verify" | "embed") => defaults.find((row) => row.role === role)?.modelId ?? ""
+  const modelsOf = (providerId: string, kind: "chat" | "embedding") =>
+    models
+      .filter((model) => model.providerId === providerId && model.kind === kind)
+      .map((model) => ({ id: model.id, name: model.name, note: model.note, contextK: model.contextK, priceIn: model.priceIn, priceOut: model.priceOut, vision: model.vision }))
   return {
-    providers: providers.map(({ provider, masked }) =>
-      compact({
+    providers: providers.map(({ provider, masked }) => {
+      const embeddingModels = modelsOf(provider.id, "embedding")
+      return compact({
         id: provider.id,
         kind: provider.kind,
         name: provider.name,
@@ -501,11 +506,10 @@ export async function loadModels(db: Db): Promise<{ providers: ModelProvider[]; 
         status: provider.status,
         checkedAt: isoOpt(provider.checkedAt),
         latencyMs: opt(provider.latencyMs),
-        models: models
-          .filter((model) => model.providerId === provider.id)
-          .map((model) => ({ id: model.id, name: model.name, note: model.note, contextK: model.contextK, priceIn: model.priceIn, priceOut: model.priceOut, vision: model.vision })),
+        models: modelsOf(provider.id, "chat"),
+        embeddingModels: embeddingModels.length ? embeddingModels : undefined,
       })
-    ),
-    defaults: { run: defaultOf("run"), plan: defaultOf("plan"), verify: defaultOf("verify") },
+    }),
+    defaults: compact({ run: defaultOf("run"), plan: defaultOf("plan"), verify: defaultOf("verify"), embed: opt(defaultOf("embed") || null) }),
   }
 }

@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { count } from "drizzle-orm"
+import { count, eq } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 
 import { bootstrap, retryOpenRouterInBackground } from "../src/bootstrap/index.js"
@@ -25,11 +25,18 @@ const catalog = {
     supported_parameters: ["tools"],
   })),
 }
+const embeddingCatalog = {
+  data: [
+    { id: "google/gemini-embedding-2", name: "Google: Gemini Embedding 2", context_length: 8192, pricing: { prompt: "0.0000002" }, architecture: { input_modalities: ["text", "image"] } },
+    { id: "openai/text-embedding-3-small", name: "OpenAI: Text Embedding 3 Small", context_length: 8192, pricing: { prompt: "0.00000002" }, architecture: { input_modalities: ["text"] } },
+  ],
+}
 const calls: string[] = []
 const fakeFetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
   const url = String(input instanceof Request ? input.url : input)
   calls.push(`${url} ${new Headers(init?.headers).has("authorization") ? "with-key" : "no-key"}`)
   if (url === "https://openrouter.ai/api/v1/models") return Response.json(catalog)
+  if (url === "https://openrouter.ai/api/v1/embeddings/models") return Response.json(embeddingCatalog)
   return new Response("unexpected", { status: 500 })
 })
 
@@ -61,8 +68,8 @@ describe("空白环境初始化", () => {
   it("没有任何演示数据：任务、记忆、技能、规则、工具（内置的除外）、MCP、浏览器、平台、待办、session 都是空的", async () => {
     // 内置工具由 bootstrap 同步进 tools 表（M1 P3）：worker 还没起时工具页也能看到
     const tools = await db.select({ id: t.tools.id, source: t.tools.source }).from(t.tools)
-    // 另加 M2 的「浏览器」（选了它就开放整组浏览器工具）
-    expect(tools.map((tool) => tool.id).sort()).toEqual([...BUILTIN_TOOLS.map((tool) => tool.id), "browser"].sort())
+    // 另加 M2 的「浏览器」、图库的「图库」（选了它们就开放整组工具）
+    expect(tools.map((tool) => tool.id).sort()).toEqual([...BUILTIN_TOOLS.map((tool) => tool.id), "browser", "gallery"].sort())
     expect(tools.every((tool) => tool.source === "builtin")).toBe(true)
     const tables = { tasks: t.tasks, memories: t.memories, skills: t.skills, rules: t.rules, mcpServers: t.mcpServers, browserProfiles: t.browserProfiles, platforms: t.platforms, humanTodos: t.humanTodos, humanItems: t.humanItems, sessions: t.sessions }
     for (const [name, table] of Object.entries(tables)) {
@@ -71,16 +78,26 @@ describe("空白环境初始化", () => {
     }
   })
 
-  it("按 .env 的 key 接入 OpenRouter：key 加密存，模型列表只用公开接口，三个默认模型设好", async () => {
+  it("按 .env 的 key 接入 OpenRouter：key 加密存，模型列表只用公开接口，默认模型（含图库的 embedding 模型）设好", async () => {
     const providers = await db.select().from(t.modelProviders)
     expect(providers).toEqual([expect.objectContaining({ id: "openrouter", kind: "openrouter", status: "ok", baseUrl: "https://openrouter.ai/api/v1" })])
     const [secret] = await db.select().from(t.secrets)
     expect(JSON.stringify(secret)).not.toContain(FAKE_KEY)
     expect(decryptText(keyring, secret!.enc, { table: "secrets", id: secret!.id, version: secret!.version })).toBe(FAKE_KEY)
     const defaults = Object.fromEntries((await db.select().from(t.modelDefaults)).map((row) => [row.role, row.modelId]))
-    expect(defaults).toEqual({ run: "openrouter/anthropic/claude-sonnet-5.5", plan: "openrouter/anthropic/claude-opus-5.5", verify: "openrouter/google/gemini-3.8-flash" })
-    // 只调了公开的模型列表，没有带 key 调任何接口
-    expect(calls).toEqual(["https://openrouter.ai/api/v1/models no-key"])
+    expect(defaults).toEqual({
+      run: "openrouter/anthropic/claude-sonnet-5.5",
+      plan: "openrouter/anthropic/claude-opus-5.5",
+      verify: "openrouter/google/gemini-3.8-flash",
+      embed: "openrouter/google/gemini-embedding-2",
+    })
+    const embeddings = await db.select({ id: t.models.id, vision: t.models.vision }).from(t.models).where(eq(t.models.kind, "embedding"))
+    expect(embeddings.sort((a, b) => a.id.localeCompare(b.id))).toEqual([
+      { id: "openrouter/google/gemini-embedding-2", vision: true },
+      { id: "openrouter/openai/text-embedding-3-small", vision: false },
+    ])
+    // 只调了公开的模型列表（聊天模型、embedding 模型各一次），没有带 key 调任何接口
+    expect(calls).toEqual(["https://openrouter.ai/api/v1/models no-key", "https://openrouter.ai/api/v1/embeddings/models no-key"])
   })
 
   it("可以重复执行：第二次什么都不变", async () => {
@@ -88,8 +105,25 @@ describe("空白环境初始化", () => {
     expect(result).toEqual({ setupNeeded: true, openrouter: "exists" })
     expect(await db.select().from(t.users)).toHaveLength(0)
     expect(await db.select().from(t.modelProviders)).toHaveLength(1)
-    expect(calls).toHaveLength(1)
-    expect(await db.select().from(t.tools)).toHaveLength(BUILTIN_TOOLS.length + 1)
+    expect(calls).toHaveLength(2)
+    expect(await db.select().from(t.tools)).toHaveLength(BUILTIN_TOOLS.length + 2)
+  })
+
+  it("升级前建的环境（没有 embedding 模型、没设图库的模型）：刷新一次列表，设上默认 embedding 模型；主管清空以后不再改回来", async () => {
+    await db.delete(t.modelDefaults).where(eq(t.modelDefaults.role, "embed"))
+    await db.delete(t.models).where(eq(t.models.kind, "embedding"))
+    calls.length = 0
+    await run()
+    expect(calls).toEqual(["https://openrouter.ai/api/v1/models no-key", "https://openrouter.ai/api/v1/embeddings/models no-key"])
+    const [embed] = await db.select().from(t.modelDefaults).where(eq(t.modelDefaults.role, "embed"))
+    expect(embed?.modelId).toBe("openrouter/google/gemini-embedding-2")
+    expect(logs.some((message) => message.includes("图库的 embedding 模型设成了"))).toBe(true)
+    // 主管把它清空了：已经有 embedding 模型，重启不再动
+    await db.delete(t.modelDefaults).where(eq(t.modelDefaults.role, "embed"))
+    calls.length = 0
+    await run()
+    expect(calls).toEqual([])
+    expect(await db.select().from(t.modelDefaults).where(eq(t.modelDefaults.role, "embed"))).toHaveLength(0)
   })
 
   it("连不上外网也不挡住启动：OpenRouter 下次再试", async () => {

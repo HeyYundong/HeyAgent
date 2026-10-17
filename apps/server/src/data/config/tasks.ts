@@ -22,12 +22,14 @@ async function defaultModel(db: DbOrTx, role: "run" | "verify") {
 async function checkTask(db: DbOrTx, input: TaskInput, previousRuleIds: string[] = []) {
   const modelId = input.modelId || (await defaultModel(db, "run"))
   if (!modelId) throw badRequest("还没有可用的模型：先去「模型」页接入模型服务并设置默认模型")
-  const [model] = await db.select({ id: t.models.id, name: t.models.name }).from(t.models).where(eq(t.models.id, modelId))
+  const [model] = await db.select({ id: t.models.id, name: t.models.name, kind: t.models.kind }).from(t.models).where(eq(t.models.id, modelId))
   if (!model) throw badRequest(`模型 ${modelId} 不存在（可能刷新模型列表后下架了），请换一个`)
+  if (model.kind !== "chat") throw badRequest(`${modelId} 是 embedding 模型，不能用来执行任务，请换一个`)
   const verifyModelId = input.verifyModelId || null
   if (verifyModelId) {
-    const [found] = await db.select({ id: t.models.id }).from(t.models).where(eq(t.models.id, verifyModelId))
+    const [found] = await db.select({ id: t.models.id, kind: t.models.kind }).from(t.models).where(eq(t.models.id, verifyModelId))
     if (!found) throw badRequest(`验收模型 ${verifyModelId} 不存在，请换一个`)
+    if (found.kind !== "chat") throw badRequest(`${verifyModelId} 是 embedding 模型，不能用来验收，请换一个`)
     if (sameFamily(modelId, verifyModelId))
       throw badRequest(`执行模型和这个任务选的验收模型是同一家（${modelFamily(modelId)}），验收就不算第三方了。换一个执行模型或验收模型。`)
   } else {

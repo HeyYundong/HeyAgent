@@ -25,7 +25,7 @@ SERVICE=heyagent.service
 POD=heyagent
 IMAGES=(api web worker)
 BROWSER_BASE_IMAGE=localhost/heyagent-browser-base:m0
-HELPER_IMAGE=docker.io/library/postgres:18
+HELPER_IMAGE=docker.io/pgvector/pgvector:0.8.7-pg18-trixie
 VOLUMES=(heyagent-pod-pgdata heyagent-pod-files)
 MIN_PODMAN=4.4.0
 

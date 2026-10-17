@@ -7,6 +7,7 @@ import {
   CpuIcon,
   GlobeIcon,
   HistoryIcon,
+  ImagesIcon,
   KanbanIcon,
   KeyRoundIcon,
   LayoutGridIcon,
@@ -61,6 +62,7 @@ export const NAV_WORK: NavItem[] = [
   { id: "tasks", title: "任务", icon: LayoutGridIcon },
   { id: "todos", title: "待办", icon: KanbanIcon },
   { id: "sessions", title: "Session", icon: HistoryIcon },
+  { id: "gallery", title: "图库", icon: ImagesIcon },
 ]
 
 export const NAV_CONFIG: NavItem[] = [

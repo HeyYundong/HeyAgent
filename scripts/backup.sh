@@ -24,7 +24,7 @@ BACKUP_DIR=${HEYAGENT_BACKUP_DIR:-$HOME/heyagent-backups}
 KEEP_DAYS=${HEYAGENT_BACKUP_KEEP_DAYS:-14}
 FILES_VOLUME=${HEYAGENT_FILES_VOLUME:-$POD-pod-files}
 # 打包文件卷用的临时容器：postgres 镜像一定在（pod 本身就用它），里面有 tar 和 gzip
-HELPER_IMAGE=docker.io/library/postgres:18
+HELPER_IMAGE=docker.io/pgvector/pgvector:0.8.7-pg18-trixie
 
 log() { echo "[backup] $*"; }
 die() { echo "[backup] ✗ $*" >&2; exit 1; }

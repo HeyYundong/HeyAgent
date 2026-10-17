@@ -11,8 +11,9 @@ import type { DbLike } from "../engine/records.js"
 import { runtime } from "../engine/runtime.js"
 import { LocalDiskStorage, sha256Hex, type FileStorage } from "./storage.js"
 
+/** gallery / gallery_thumb：图库的原图和缩略图（归 gallery_images 管，删图时一起删） */
 export type FileKind =
-  "upload" | "attachment" | "artifact" | "tool_output" | "screenshot"
+  "upload" | "attachment" | "artifact" | "tool_output" | "screenshot" | "gallery" | "gallery_thumb"
 export type FileRow = typeof t.files.$inferSelect
 
 let storageInstance: { root: string; storage: FileStorage } | undefined

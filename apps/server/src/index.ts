@@ -10,6 +10,7 @@ import { attachBrowserViewRelay } from "./browser/view-relay.js"
 import { createDb } from "./db/client.js"
 import { initEngineClient } from "./engine/queue.js"
 import { env } from "./env.js"
+import { startGalleryEmbeddings } from "./gallery/background.js"
 import { loadKeyring } from "./lib/crypto.js"
 import { ChangeHub } from "./live/hub.js"
 
@@ -25,6 +26,8 @@ const hub = new ChangeHub(env.databaseUrl)
 await hub.start()
 // 引擎：API 进程只发任务（立即运行、继续、定时同步），不跑任务
 await initEngineClient(db)
+// 图库：后台补算向量（换了 embedding 模型、传图时模型调用失败）
+const stopGalleryEmbeddings = startGalleryEmbeddings(db)
 
 const app = createApp({ db, auth, hub, keyring })
 const server = serve({ fetch: app.fetch, port: env.port, hostname: env.host }, (info) => {
@@ -41,6 +44,7 @@ attachBrowserViewRelay(server as Server, {
 async function shutdown(signal: string) {
   console.log(`收到 ${signal}，正在关闭`)
   stopOpenRouterRetry()
+  stopGalleryEmbeddings()
   server.close()
   await hub.stop()
   await pool.end()

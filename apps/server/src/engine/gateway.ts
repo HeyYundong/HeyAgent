@@ -4,6 +4,7 @@
 import { jsonSchema, tool, type ToolSet } from "ai"
 import {
   BROWSER_TOOL_ID,
+  GALLERY_TOOL_ID,
   builtinToolInputs,
   type Risk,
   type SessionSnapshot,
@@ -14,6 +15,7 @@ import { z } from "zod"
 import { BrowserTools } from "../browser/tools.js"
 import type { Db } from "../db/client.js"
 import { saveFile } from "../files/service.js"
+import { galleryToolEntries } from "../gallery/tools.js"
 import {
   runAfterToolHooks,
   runBeforeToolHooks,
@@ -124,6 +126,12 @@ export class ToolGateway {
     for (const def of this.ctx.snapshot.tools) {
       if (def.id === BROWSER_TOOL_ID && def.source === "builtin") {
         await this.buildBrowser(taken)
+        continue
+      }
+      // 「图库」展开成一组：检索、比对、看一张、传图、改文本和标签（gallery/tools.ts）
+      if (def.id === GALLERY_TOOL_ID && def.source === "builtin") {
+        for (const entry of galleryToolEntries(this.ctx))
+          this.entries.push({ ...entry, name: safeName(entry.id, taken) })
         continue
       }
       const name = safeName(def.id, taken)

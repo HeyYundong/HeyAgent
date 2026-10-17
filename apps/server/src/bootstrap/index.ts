@@ -3,11 +3,12 @@
 // 2. 写入全局设置的默认值；
 // 3. 环境变量里有 OpenRouter 的 key（OPENROUTER_API_KEY_FILE 指向的文件，或 OPENROUTER_API_KEY）、还没配过 OpenRouter 时：建 OpenRouter 服务（key 加密存）、刷新模型列表、设好三个默认模型。
 // 4. 把内置工具同步进 tools 表（worker 启动时也会同步一次）：worker 还没起时，空白环境的工具页也能看到它们。
+// 5. 图库的 embedding 模型还没设过、库里也还没有 embedding 模型（升级前建的环境）：刷新一次 OpenRouter 的模型列表（公开接口，不花钱），设成 BOOTSTRAP_EMBED_MODEL。
 // 不灌任何演示数据（任务、记忆、技能、规则、平台都由用户自己加）。
-import { count, eq } from "drizzle-orm"
+import { and, count, eq } from "drizzle-orm"
 import { OPENROUTER_DEFAULT_URL, sameFamily } from "@heyagent/shared"
 
-import { addProvider, writeDefaults } from "../data/config/models.js"
+import { addProvider, refreshProvider, writeDefaults } from "../data/config/models.js"
 import { ensureDefaultSettings } from "../data/config/settings.js"
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
@@ -17,6 +18,12 @@ import { setupNeeded } from "./setup.js"
 
 /** 初始化时选的默认模型（OpenRouter 上的名字）：执行、规划、验收（验收和执行不同家） */
 export const BOOTSTRAP_MODELS = { run: "anthropic/claude-sonnet-5.5", plan: "anthropic/claude-opus-5.5", verify: "google/gemini-3.8-flash" } as const
+
+/**
+ * 图库默认的 embedding 模型（用户 2026-10-17 同意用推荐的，以后在模型页能换）：图文同一个向量空间（能用一句描述找图），中文好；
+ * 一张图约 $0.00013（258 token，2026-10-17 实测）
+ */
+export const BOOTSTRAP_EMBED_MODEL = "google/gemini-embedding-2"
 
 export interface BootstrapOptions {
   keyring: Keyring
@@ -43,7 +50,8 @@ async function setupOpenRouter(db: Db, options: BootstrapOptions): Promise<Boots
       const ids = { run: `${id}/${BOOTSTRAP_MODELS.run}`, plan: `${id}/${BOOTSTRAP_MODELS.plan}`, verify: `${id}/${BOOTSTRAP_MODELS.verify}` }
       const found = (await db.select({ id: t.models.id }).from(t.models).where(eq(t.models.providerId, id))).map((row) => row.id)
       if ([ids.run, ids.plan, ids.verify].every((each) => found.includes(each)) && !sameFamily(ids.run, ids.verify)) {
-        await writeDefaults(db, null, ids)
+        const embed = `${id}/${BOOTSTRAP_EMBED_MODEL}`
+        await writeDefaults(db, null, { ...ids, ...(found.includes(embed) ? { embed } : {}) })
       } else {
         options.log?.("OpenRouter 的模型列表里找不到预设的默认模型，请到「模型」页手动设置默认模型")
       }
@@ -93,7 +101,29 @@ export async function bootstrap(db: Db, options: BootstrapOptions): Promise<Boot
   await ensureDefaultSettings(db)
   await syncBuiltinTools(db)
   const openrouter = await setupOpenRouter(db, options)
+  await ensureEmbedDefault(db, options).catch((error) => options.log?.(`没设好图库的 embedding 模型：${error instanceof Error ? error.message : String(error)}`))
   const needed = await setupNeeded(db)
   if (needed) options.log?.("还没有任何账号：打开控制台，按提示设置管理员的邮箱和密码")
   return { setupNeeded: needed, openrouter }
+}
+
+/**
+ * 升级前建的环境：模型列表里还没有 embedding 模型、也没设过图库的 embedding 模型时，刷新一次 OpenRouter 的列表再设上。
+ * 只在「一个 embedding 模型都没有」时做：之后主管把它清空或换掉，重启也不会被改回来
+ */
+async function ensureEmbedDefault(db: Db, options: BootstrapOptions) {
+  const [embed] = await db.select({ n: count() }).from(t.modelDefaults).where(eq(t.modelDefaults.role, "embed"))
+  if ((embed?.n ?? 0) > 0) return
+  const [embeddings] = await db.select({ n: count() }).from(t.models).where(eq(t.models.kind, "embedding"))
+  if ((embeddings?.n ?? 0) > 0) return
+  const [provider] = await db.select({ id: t.modelProviders.id }).from(t.modelProviders).where(and(eq(t.modelProviders.kind, "openrouter"), eq(t.modelProviders.status, "ok")))
+  if (!provider) return
+  const check = await refreshProvider(db, options.keyring, null, provider.id)
+  if (!check.ok) return options.log?.(`刷新 OpenRouter 模型列表失败，图库的 embedding 模型请到「模型」页手动设：${check.message}`)
+  const modelId = `${provider.id}/${BOOTSTRAP_EMBED_MODEL}`
+  const [model] = await db.select({ vision: t.models.vision }).from(t.models).where(and(eq(t.models.id, modelId), eq(t.models.kind, "embedding")))
+  if (!model?.vision) return options.log?.(`OpenRouter 上找不到 ${BOOTSTRAP_EMBED_MODEL}，图库的 embedding 模型请到「模型」页手动设`)
+  await db.insert(t.modelDefaults).values({ role: "embed", modelId }).onConflictDoNothing()
+  await db.insert(t.auditEvents).values({ actorId: null, action: "model_defaults.update", targetTable: "model_defaults", targetId: "defaults", detail: { embed: modelId, by: "bootstrap" } })
+  options.log?.(`图库的 embedding 模型设成了 ${BOOTSTRAP_EMBED_MODEL}（可以在「模型」页换）`)
 }

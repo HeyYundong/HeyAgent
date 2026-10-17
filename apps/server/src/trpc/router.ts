@@ -95,6 +95,7 @@ import * as load from "../data/loaders.js"
 import { protectedProcedure, router, type Context, type SessionUser } from "./init.js"
 import { browserRouter } from "./browser-router.js"
 import { engineRouter } from "./engine-router.js"
+import { apiKeysRouter, galleryRouter } from "./gallery-router.js"
 
 const idInput = z.object({ id: z.string().min(1) })
 
@@ -315,6 +316,12 @@ export const appRouter = router({
 
   /** 浏览器（M2）：打开 Chrome（关闭时保存登录状态）、远程画面相关 */
   browser: browserRouter,
+
+  /** 图库：图片墙、找相似、按描述找、改文本和标签、删（传图和上传一张图来搜走 HTTP 接口 /api/gallery/*） */
+  gallery: galleryRouter,
+
+  /** API 密钥（只有主管）：外部系统调图库的 HTTP 接口和 MCP 用 */
+  apiKeys: apiKeysRouter,
 
   live: router({
     /**

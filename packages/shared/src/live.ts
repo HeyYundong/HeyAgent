@@ -42,6 +42,9 @@ export const liveQueriesByTable: Record<string, string[]> = {
   notifications: ["engine.notifications.list"],
   files: ["engine.sessionFiles", "engine.taskAttachments"],
   settings: ["settings.get"],
+  // 图库：图的增删改（向量表不推，重算进度靠页面轮询 gallery.stats）
+  gallery_images: ["gallery.list", "gallery.get", "gallery.stats", "gallery.tags"],
+  api_keys: ["apiKeys.list"],
 }
 
 /** 某张表变了要重新拉的查询；不认识的表（或 "*"）返回 null，表示全部重新拉 */

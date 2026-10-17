@@ -28,7 +28,7 @@ fi
 POD=${HEYAGENT_POD:-heyagent}
 PORT=${HEYAGENT_PORT:-8080}
 FILES_VOLUME=${HEYAGENT_FILES_VOLUME:-$POD-pod-files}
-HELPER_IMAGE=docker.io/library/postgres:18
+HELPER_IMAGE=docker.io/pgvector/pgvector:0.8.7-pg18-trixie
 
 log() { echo "[restore] $*"; }
 die() { echo "[restore] ✗ $*" >&2; exit 1; }
@@ -109,7 +109,7 @@ podman exec "$POD-postgres" rm -f "$tmp_dump"
 
 # ---------- 7. 文件卷 ----------
 log "恢复文件卷 $FILES_VOLUME（$(du -h "$BACKUP/files.tar.gz" | cut -f1)）"
-# 解包用 api 的镜像（Debian 12）：postgres:18 是 Debian 13，它的 tar 改权限时用 fchmodat2，
+# 解包用 api 的镜像（Debian 12）：数据库镜像（pgvector:…-pg18-trixie）是 Debian 13，它的 tar 改权限时用 fchmodat2，
 # 旧的 crun（开发机 Podman 3.4 配的 0.17）的 seccomp 对这个调用回 EPERM，解包会失败
 api_image=$(podman container inspect -f '{{.ImageName}}' "$POD-api")
 podman run --rm --user 0 --network none --entrypoint sh -v "$FILES_VOLUME":/files -v "$BACKUP":/backup:ro "$api_image" \

@@ -18,10 +18,12 @@ import {
   timestamp,
   unique,
   uniqueIndex,
+  vector,
   type AnyPgColumn,
 } from "drizzle-orm/pg-core"
 import {
   accountStatusSchema,
+  GALLERY_EMBED_DIMENSIONS,
   checkpointKindSchema,
   humanItemKindSchema,
   memoryEvidenceSchema,
@@ -126,6 +128,8 @@ export const skillNoSeq = pgSequence("skill_no_seq", { startWith: 1 })
 export const ruleNoSeq = pgSequence("rule_no_seq", { startWith: 1 })
 export const humanItemNoSeq = pgSequence("human_item_no_seq", { startWith: 1 })
 export const todoNoSeq = pgSequence("todo_no_seq", { startWith: 1 })
+export const galleryNoSeq = pgSequence("gallery_no_seq", { startWith: 1 })
+export const apiKeyNoSeq = pgSequence("api_key_no_seq", { startWith: 1 })
 
 // ---------- 账号（better-auth 的 4 张表，字段名照 better-auth 1.7.10 + admin 插件的要求） ----------
 
@@ -268,6 +272,8 @@ export const models = pgTable(
     priceIn: numeric("price_in", { precision: 12, scale: 4, mode: "number" }).notNull().default(0),
     priceOut: numeric("price_out", { precision: 12, scale: 4, mode: "number" }).notNull().default(0),
     vision: boolean("vision").notNull().default(false),
+    /** chat = 能调工具的聊天模型；embedding = 向量模型（图库用，vision 表示能处理图片） */
+    kind: text("kind").$type<"chat" | "embedding">().notNull().default("chat"),
     position: position(),
   },
   (t) => [index("models_provider_id_idx").on(t.providerId)]
@@ -1009,4 +1015,78 @@ export const notifications = pgTable(
     createdAt: createdAt(),
   },
   (t) => [index("notifications_user_created_idx").on(t.userId, t.createdAt.desc())]
+)
+
+// ---------- API 密钥、图库 ----------
+
+/** 外部系统调接口用的密钥（只有主管能建）：库里只存 sha256，原文只在新建时给一次。用它做的事算在创建人头上 */
+export const apiKeys = pgTable("api_keys", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  /** 尾号，给人认 */
+  hint: text("hint").notNull(),
+  sha256: text("sha256").notNull().unique(),
+  createdById: text("created_by_id")
+    .notNull()
+    .references(() => users.id),
+  lastUsedAt: ts("last_used_at"),
+  createdAt: createdAt(),
+})
+
+/**
+ * 图库里的图：原图和缩略图都是 files 里的文件（kind = gallery / gallery_thumb），这里记文本（JSON 对象）和标签。
+ * 同一份文件（sha256 一样）只存一条。向量在 gallery_embeddings，按模型分开存，换模型后后台重算。
+ */
+export const galleryImages = pgTable(
+  "gallery_images",
+  {
+    id: text("id").primaryKey(),
+    fileId: text("file_id")
+      .notNull()
+      .references(() => files.id),
+    thumbFileId: text("thumb_file_id")
+      .notNull()
+      .references(() => files.id),
+    sha256: text("sha256").notNull(),
+    name: text("name").notNull(),
+    mime: text("mime").notNull(),
+    size: bigint("size", { mode: "number" }).notNull(),
+    width: integer("width").notNull(),
+    height: integer("height").notNull(),
+    text: jsonb("text").$type<Record<string, unknown>>().notNull().default({}),
+    tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
+    /** web / api / mcp / agent */
+    via: text("via").$type<"web" | "api" | "mcp" | "agent">().notNull(),
+    createdById: text("created_by_id").references(() => users.id, { onDelete: "set null" }),
+    apiKeyId: text("api_key_id").references(() => apiKeys.id, { onDelete: "set null" }),
+    sessionId: text("session_id").references(() => sessions.id, { onDelete: "set null" }),
+    /** 最近一次算向量失败：原因和时间（后台重算时隔一会儿再试） */
+    embedError: text("embed_error"),
+    embedTriedAt: ts("embed_tried_at"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("gallery_images_sha256_idx").on(t.sha256),
+    index("gallery_images_created_idx").on(t.createdAt.desc(), t.id.desc()),
+    index("gallery_images_tags_idx").using("gin", t.tags),
+    index("gallery_images_text_idx").using("gin", t.text.op("jsonb_path_ops")),
+  ]
+)
+
+/** 图的向量：每个模型一行（换模型时新旧并存，重算完之前搜索还能用旧的） */
+export const galleryEmbeddings = pgTable(
+  "gallery_embeddings",
+  {
+    imageId: text("image_id")
+      .notNull()
+      .references(() => galleryImages.id, { onDelete: "cascade" }),
+    modelId: text("model_id").notNull(),
+    embedding: vector("embedding", { dimensions: GALLERY_EMBED_DIMENSIONS }).notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.imageId, t.modelId] }),
+    index("gallery_embeddings_hnsw_idx").using("hnsw", t.embedding.op("vector_cosine_ops")),
+  ]
 )

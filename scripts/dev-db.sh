@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# 开发数据库：rootless Podman 起 PostgreSQL 18，只绑 127.0.0.1:5432，数据放在命名卷 heyagent-pgdata。
+# 开发数据库：rootless Podman 起 PostgreSQL 18（带 pgvector 扩展，图库的向量检索要用），只绑 127.0.0.1:5432，数据放在命名卷 heyagent-pgdata。
+# 镜像换过时（例如 2026-10-17 从 postgres:18 换成 pgvector 的镜像），up 会删掉旧容器、用新镜像重建，数据卷保留。
 # 用法：scripts/dev-db.sh up | down | reset [-y] | psql [库名] | status
 # 建两个库：heyagent（开发）和 heyagent_test（测试）。账号密码只用于本机开发，和 .env.example 一致。
 set -euo pipefail
 
 NAME=heyagent-pg
 VOLUME=heyagent-pgdata
-IMAGE=docker.io/library/postgres:18
+IMAGE=docker.io/pgvector/pgvector:0.8.7-pg18-trixie
 PG_USER=${POSTGRES_USER:-heyagent}
 PG_PASSWORD=${POSTGRES_PASSWORD:-heyagent}
 PORT=${HEYAGENT_PG_PORT:-5432}
@@ -34,6 +35,11 @@ ensure_db() {
 }
 
 up() {
+  if exists && [ "$(podman inspect -f '{{.ImageName}}' "$NAME")" != "$IMAGE" ]; then
+    echo "容器 $NAME 用的是旧镜像，换成 $IMAGE 重建（数据卷 $VOLUME 保留）"
+    podman stop "$NAME" >/dev/null
+    podman rm "$NAME" >/dev/null
+  fi
   if exists; then
     running || podman start "$NAME" >/dev/null
   else

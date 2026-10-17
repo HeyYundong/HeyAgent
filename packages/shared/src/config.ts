@@ -401,7 +401,8 @@ export const providerInputSchema = z.object({
 })
 export type ProviderInput = z.input<typeof providerInputSchema>
 export const providerUpdateSchema = providerInputSchema.omit({ kind: true }).extend({ id: z.string().min(1) })
-export const modelDefaultsInputSchema = z.object({ run: z.string().min(1), plan: z.string().min(1), verify: z.string().min(1) })
+/** embed 不传 = 不改；传空字符串 = 不用 embedding 模型（图库就不能以图搜图） */
+export const modelDefaultsInputSchema = z.object({ run: z.string().min(1), plan: z.string().min(1), verify: z.string().min(1), embed: z.string().optional() })
 
 /** 测试连接、刷新模型列表的结果 */
 export const providerCheckSchema = z.object({

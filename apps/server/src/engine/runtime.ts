@@ -5,6 +5,7 @@ import { resolve } from "node:path"
 import type { LanguageModel } from "ai"
 
 import { env, repoRoot } from "../env.js"
+import type { EmbedInput } from "../gallery/embed.js"
 import { loadKeyring, type Keyring } from "../lib/crypto.js"
 
 export interface ModelFactoryInput {
@@ -18,6 +19,8 @@ export interface EngineRuntime {
   modelFactory?: (
     input: ModelFactoryInput
   ) => LanguageModel | Promise<LanguageModel>
+  /** 测试用：图库的 embedding 直接给出向量（1024 维）。不设就调默认 embedding 模型 */
+  embedFactory?: (input: { modelId: string; inputs: EmbedInput[] }) => number[][] | Promise<number[][]>
   /** 文件存放目录 */
   filesDir: string
   /** 模型或网络出错时重试几次、第一次等多久（毫秒，之后翻倍） */

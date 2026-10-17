@@ -1432,6 +1432,7 @@ describe("其他接口", () => {
       "checkpoint.mark",
       "file.read",
       "file.save",
+      "gallery",
       "memory.propose",
       "notify.staff",
       "plan.set",

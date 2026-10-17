@@ -116,7 +116,8 @@ export const providerKindLabel: Record<ModelProviderKind, string> = { ollama: "O
 export const providerStatusLabel: Record<ProviderStatus, string> = { ok: "正常", error: "连不上", unconfigured: "未配置" }
 
 /** 各角色的默认模型（原型 models/data.ts 的 ROLES） */
-export const modelRoles: { id: ModelRole; label: string; hint: string }[] = [
+/** 只有用聊天模型的三个角色；图库的 embedding 模型（embed）单独选，见模型页「默认设置」 */
+export const modelRoles: { id: Exclude<ModelRole, "embed">; label: string; hint: string }[] = [
   { id: "run", label: "执行任务", hint: "每一步干活、调工具都用它，任务没写步骤时也由它自己探索步骤，花费主要在这里。" },
   { id: "plan", label: "规划", hint: "保存规则时把那句话翻译成程序能执行的结构；长对话压缩上下文时写摘要。" },
   { id: "verify", label: "三方验收", hint: "检查执行 agent 是不是真的做完了检查点。" },

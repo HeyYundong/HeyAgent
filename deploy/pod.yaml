@@ -26,7 +26,7 @@ spec:
   shareProcessNamespace: true
   containers:
     - name: postgres
-      image: docker.io/library/postgres:18
+      image: docker.io/pgvector/pgvector:0.8.7-pg18-trixie
       imagePullPolicy: IfNotPresent
       # 只在 pod 里面用，不对外开端口；只听本机回环
       args: ["-c", "listen_addresses=127.0.0.1"]

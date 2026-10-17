@@ -1,11 +1,12 @@
-// 模型的写操作：模型服务（OpenRouter / Ollama / 直连 Claude、OpenAI、DeepSeek；key 进 secrets）、刷新模型列表、测试连接、三个角色的默认模型。
-// 不调模型：OpenRouter 的模型列表用公开的 GET /models（不需要 key、不花钱）；测试连接另外用 GET /key 核对 key 有效（也不花钱）。
+// 模型的写操作：模型服务（OpenRouter / Ollama / 直连 Claude、OpenAI、DeepSeek；key 进 secrets）、刷新模型列表、测试连接、各角色的默认模型（含图库的 embedding 模型）。
+// 不调模型：OpenRouter 的模型列表用公开的 GET /models 和 GET /embeddings/models（不需要 key、不花钱）；测试连接另外用 GET /key 核对 key 有效（也不花钱）。
 // 直连厂商时列模型要带 key（同时就核对了 key）；厂商的列表不给价格，按模型名到 OpenRouter 的公开目录查。
 import { desc, eq, inArray, notInArray, sql } from "drizzle-orm"
-import { defaultsAfterRemove, modelFamily, OPENROUTER_DEFAULT_URL, providerKindLabel, providerNeedsKey, sameFamily, type ModelDefaults, type ModelProviderKind, type ProviderCheck } from "@heyagent/shared"
+import { defaultsAfterRemove, modelFamily, OPENROUTER_DEFAULT_URL, providerKindLabel, providerNeedsKey, sameFamily, type ModelDefaults, type ModelProviderKind, type ModelRole, type ProviderCheck } from "@heyagent/shared"
 
 import type { Db } from "../../db/client.js"
 import * as t from "../../db/schema.js"
+import { kickGalleryEmbeddings } from "../../gallery/background.js"
 import { decryptText, type Keyring } from "../../lib/crypto.js"
 import { assertCan, audit, badRequest, conflict, deleteSecret, notFound, putSecret, type DbOrTx, type WriteCtx } from "./common.js"
 import { usedByText } from "./tasks.js"
@@ -22,6 +23,8 @@ export interface CatalogModel {
   priceIn: number
   priceOut: number
   vision: boolean
+  /** chat = 能调工具的聊天模型；embedding = 向量模型（vision 表示能处理图片） */
+  kind: "chat" | "embedding"
 }
 
 async function getJson(url: string, headers: Record<string, string> = {}) {
@@ -66,6 +69,25 @@ export function parseOpenRouterModels(body: unknown): CatalogModel[] {
       priceIn: perMillion(model.pricing?.prompt),
       priceOut: perMillion(model.pricing?.completion),
       vision: model.architecture?.input_modalities?.includes("image") ?? false,
+      kind: "chat" as const,
+    }))
+}
+
+/** OpenRouter 的 embedding 模型目录（公开接口 GET /embeddings/models）。全部留下，能不能处理图片记在 vision 上 */
+export function parseOpenRouterEmbeddingModels(body: unknown): CatalogModel[] {
+  const list = (body as { data?: OpenRouterModel[] } | undefined)?.data
+  if (!Array.isArray(list)) throw new Error("OpenRouter 返回的 embedding 模型列表格式不对")
+  return list
+    .filter((model) => typeof model.id === "string" && Number(model.pricing?.prompt ?? 0) >= 0)
+    .map((model) => ({
+      name: model.id,
+      displayName: (model.name ?? model.id).replace(/^[^:]{1,40}:\s*/, ""),
+      note: (model.description ?? "").split(/(?<=[.。])\s/)[0]!.slice(0, 120),
+      contextK: Math.max(1, Math.round((model.context_length ?? 0) / 1000)),
+      priceIn: perMillion(model.pricing?.prompt),
+      priceOut: 0,
+      vision: model.architecture?.input_modalities?.includes("image") ?? false,
+      kind: "embedding" as const,
     }))
 }
 
@@ -81,6 +103,7 @@ function parseOllamaModels(body: unknown): CatalogModel[] {
     priceIn: 0,
     priceOut: 0,
     vision: model.details?.families?.includes("clip") ?? false,
+    kind: "chat" as const,
   }))
 }
 
@@ -186,6 +209,7 @@ export function nativeCatalog(kind: NativeKind, listed: NativeModel[], reference
       priceIn: Math.max(0, perMillion(ref?.pricing?.prompt)),
       priceOut: Math.max(0, perMillion(ref?.pricing?.completion)),
       vision: model.vision ?? ref?.architecture?.input_modalities?.includes("image") ?? false,
+      kind: "chat",
     })
   }
   return out
@@ -197,6 +221,16 @@ async function loadReference(): Promise<OpenRouterModel[] | undefined> {
     const res = await getJson(`${OPENROUTER_DEFAULT_URL}/models`)
     const list = (res.body as { data?: OpenRouterModel[] } | undefined)?.data
     return Array.isArray(list) ? list.filter((model) => typeof model.id === "string") : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** embedding 模型目录读不到（例如自建的中转地址没有这个接口）时返回 undefined：已有的 embedding 模型留着，不当成「全下架了」 */
+async function openRouterEmbeddingModels(base: string): Promise<CatalogModel[] | undefined> {
+  try {
+    const list = await getJson(`${base}/embeddings/models`)
+    return list.ok ? parseOpenRouterEmbeddingModels(list.body) : undefined
   } catch {
     return undefined
   }
@@ -218,8 +252,16 @@ async function probeNative(kind: NativeKind, base: string, apiKey: string | unde
   return { check: { ok: true, latencyMs: listed.latencyMs, models: models.length, message: `连上了，读到 ${models.length} 个能调工具的模型`, note }, models }
 }
 
-/** 连一次服务：拿到模型目录；OpenRouter 有 key 时再核对一次 key（GET /key，不花钱）；直连厂商列模型本身就要 key */
-export async function probeProvider(kind: ModelProviderKind, baseUrl: string, apiKey?: string, verifyKey = true): Promise<{ check: ProviderCheck; models: CatalogModel[] }> {
+/**
+ * 连一次服务：拿到模型目录；OpenRouter 有 key 时再核对一次 key（GET /key，不花钱）；直连厂商列模型本身就要 key。
+ * embeddingsKnown = 这次读到了 embedding 模型目录（OpenRouter 才有；Ollama 的 embedding 不支持图片，不读）
+ */
+export async function probeProvider(
+  kind: ModelProviderKind,
+  baseUrl: string,
+  apiKey?: string,
+  verifyKey = true
+): Promise<{ check: ProviderCheck; models: CatalogModel[]; embeddingsKnown?: boolean }> {
   const base = trimUrl(baseUrl)
   try {
     if (isNative(kind)) return await probeNative(kind, base, apiKey)
@@ -232,7 +274,13 @@ export async function probeProvider(kind: ModelProviderKind, baseUrl: string, ap
         if (key.status === 401 || key.status === 403) return { check: { ok: false, latencyMs: list.latencyMs, message: "API Key 不对（OpenRouter 返回 401），请检查后重新填" }, models: [] }
         if (!key.ok) return { check: { ok: false, latencyMs: list.latencyMs, message: `核对 API Key 失败：HTTP ${key.status}` }, models: [] }
       }
-      return { check: { ok: true, latencyMs: list.latencyMs, models: models.length, message: `连上了，读到 ${models.length} 个能调工具的模型` }, models }
+      const embeddings = await openRouterEmbeddingModels(base)
+      const embeddingText = embeddings ? `、${embeddings.length} 个 embedding 模型` : "（embedding 模型列表没读到，先保留原来的）"
+      return {
+        check: { ok: true, latencyMs: list.latencyMs, models: models.length, message: `连上了，读到 ${models.length} 个能调工具的模型${embeddingText}` },
+        models: [...models, ...(embeddings ?? [])],
+        embeddingsKnown: Boolean(embeddings),
+      }
     }
     const tags = await getJson(`${base}/api/tags`)
     if (!tags.ok) return { check: { ok: false, message: `连不上 Ollama：GET /api/tags 返回 HTTP ${tags.status}` }, models: [] }
@@ -250,22 +298,34 @@ async function providerKey(db: DbOrTx, keyring: Keyring, secretId: string | null
   return row ? decryptText(keyring, row.enc, { table: "secrets", id: row.id, version: row.version }) : undefined
 }
 
-/** 把模型目录写进 models 表：新的加上，旧的更新，没了的删掉（默认设置还在用的先留着，免得默认设置断掉） */
-async function writeModels(tx: DbOrTx, providerId: string, models: CatalogModel[]) {
-  const rows = models.map((model, position) => ({
-    id: `${providerId}/${model.name}`,
-    providerId,
-    name: model.displayName,
-    note: model.note,
-    contextK: model.contextK,
-    priceIn: model.priceIn,
-    priceOut: model.priceOut,
-    vision: model.vision,
-    position,
-  }))
+/**
+ * 把模型目录写进 models 表：新的加上，旧的更新，没了的删掉（默认设置还在用的先留着，免得默认设置断掉）。
+ * embeddingsKnown 为 false 时这次没读到 embedding 模型目录，已有的 embedding 模型不动
+ */
+async function writeModels(tx: DbOrTx, providerId: string, models: CatalogModel[], embeddingsKnown = true) {
+  const seen = new Set<string>()
+  const rows = models
+    .map((model, position) => ({
+      id: `${providerId}/${model.name}`,
+      providerId,
+      name: model.displayName,
+      note: model.note,
+      contextK: model.contextK,
+      priceIn: model.priceIn,
+      priceOut: model.priceOut,
+      vision: model.vision,
+      kind: model.kind,
+      position,
+    }))
+    // 聊天模型和 embedding 模型同名时留聊天模型（聊天模型排在前面）
+    .filter((row) => !seen.has(row.id) && Boolean(seen.add(row.id)))
   const keep = new Set(rows.map((row) => row.id))
   const defaults = (await tx.select({ modelId: t.modelDefaults.modelId }).from(t.modelDefaults)).map((row) => row.modelId)
-  const stale = (await tx.select({ id: t.models.id }).from(t.models).where(eq(t.models.providerId, providerId))).map((row) => row.id).filter((id) => !keep.has(id) && !defaults.includes(id))
+  const existing = await tx.select({ id: t.models.id, kind: t.models.kind }).from(t.models).where(eq(t.models.providerId, providerId))
+  const stale = existing
+    .filter((row) => embeddingsKnown || row.kind !== "embedding")
+    .map((row) => row.id)
+    .filter((id) => !keep.has(id) && !defaults.includes(id))
   if (stale.length) await tx.delete(t.models).where(inArray(t.models.id, stale))
   for (let i = 0; i < rows.length; i += 200) {
     const chunk = rows.slice(i, i + 200)
@@ -274,7 +334,16 @@ async function writeModels(tx: DbOrTx, providerId: string, models: CatalogModel[
       .values(chunk)
       .onConflictDoUpdate({
         target: t.models.id,
-        set: { name: sqlExcluded("name"), note: sqlExcluded("note"), contextK: sqlExcluded("context_k"), priceIn: sqlExcluded("price_in"), priceOut: sqlExcluded("price_out"), vision: sqlExcluded("vision"), position: sqlExcluded("position") },
+        set: {
+          name: sqlExcluded("name"),
+          note: sqlExcluded("note"),
+          contextK: sqlExcluded("context_k"),
+          priceIn: sqlExcluded("price_in"),
+          priceOut: sqlExcluded("price_out"),
+          vision: sqlExcluded("vision"),
+          kind: sqlExcluded("kind"),
+          position: sqlExcluded("position"),
+        },
       })
   }
 }
@@ -299,7 +368,7 @@ export async function addProvider(
   options: { verifyKey?: boolean } = {}
 ) {
   if (providerNeedsKey(input.kind) && !input.apiKey) throw badRequest(`填 ${providerKindLabel[input.kind]} 的 API Key`)
-  const { check, models } = await probeProvider(input.kind, input.baseUrl, input.apiKey, options.verifyKey ?? true)
+  const { check, models, embeddingsKnown } = await probeProvider(input.kind, input.baseUrl, input.apiKey, options.verifyKey ?? true)
   if (!check.ok) throw badRequest(check.message)
   const id = await db.transaction(async (tx) => {
     const id = await nextProviderId(tx, input.kind)
@@ -318,7 +387,7 @@ export async function addProvider(
       const secretId = await putSecret(tx, keyring, { scope: "model_provider", refId: id, name: "api_key" }, input.apiKey, actorId, 9)
       await tx.update(t.modelProviders).set({ apiKeySecretId: secretId }).where(eq(t.modelProviders.id, id))
     }
-    await writeModels(tx, id, models)
+    await writeModels(tx, id, models, embeddingsKnown)
     await audit(tx, actorId, "model_provider.create", "model_providers", id, { kind: input.kind, baseUrl: trimUrl(input.baseUrl), models: models.length, apiKeySet: Boolean(input.apiKey) })
     return id
   })
@@ -342,7 +411,7 @@ export async function updateProvider(ctx: WriteCtx, input: { id: string; name?: 
   const before = await loadProvider(ctx.db, input.id)
   const apiKey = input.apiKey || (await providerKey(ctx.db, ctx.keyring(), before.apiKeySecretId))
   if (providerNeedsKey(before.kind) && !apiKey) throw badRequest(`填 ${providerKindLabel[before.kind]} 的 API Key`)
-  const { check, models } = await probeProvider(before.kind, input.baseUrl, apiKey)
+  const { check, models, embeddingsKnown } = await probeProvider(before.kind, input.baseUrl, apiKey)
   if (!check.ok) throw badRequest(check.message)
   await ctx.db.transaction(async (tx) => {
     let apiKeySecretId = before.apiKeySecretId
@@ -351,7 +420,7 @@ export async function updateProvider(ctx: WriteCtx, input: { id: string; name?: 
       .update(t.modelProviders)
       .set({ name: input.name || before.name, baseUrl: trimUrl(input.baseUrl), apiKeySecretId, status: "ok", checkedAt: new Date(), latencyMs: check.latencyMs ?? null })
       .where(eq(t.modelProviders.id, input.id))
-    await writeModels(tx, input.id, models)
+    await writeModels(tx, input.id, models, embeddingsKnown)
     await audit(tx, ctx.actor.id, "model_provider.update", "model_providers", input.id, { baseUrl: trimUrl(input.baseUrl), apiKeyChanged: Boolean(input.apiKey), models: models.length })
   })
   return { id: input.id, check }
@@ -377,10 +446,10 @@ export async function refreshProvider(db: Db, keyring: Keyring, actorId: string 
   if (!before.baseUrl) return { ok: false, message: "还没填地址：先编辑这个服务" }
   // OpenRouter 刷新列表只用公开接口，不带 key；直连厂商列模型要 key
   const apiKey = before.kind === "openrouter" ? undefined : await providerKey(db, keyring, before.apiKeySecretId)
-  const { check, models } = await probeProvider(before.kind, before.baseUrl, apiKey)
+  const { check, models, embeddingsKnown } = await probeProvider(before.kind, before.baseUrl, apiKey)
   await db.transaction(async (tx) => {
     await tx.update(t.modelProviders).set({ status: check.ok ? "ok" : "error", checkedAt: new Date(), latencyMs: check.latencyMs ?? null }).where(eq(t.modelProviders.id, id))
-    if (check.ok) await writeModels(tx, id, models)
+    if (check.ok) await writeModels(tx, id, models, embeddingsKnown)
     await audit(tx, actorId, "model_provider.refresh", "model_providers", id, { ok: check.ok, models: models.length })
   })
   return check
@@ -391,60 +460,87 @@ export async function refreshProviderAsActor(ctx: WriteCtx, input: { id: string 
   return refreshProvider(ctx.db, ctx.keyring(), ctx.actor.id, input.id)
 }
 
-/** 删除模型服务：有任务在用它的模型就不能删；默认设置里用到的换成别家的 */
+/**
+ * 删除模型服务：有任务在用它的模型就不能删；默认设置里用到的换成别家的。
+ * 图库的 embedding 模型换成别的服务里能处理图片的 embedding 模型，没有就空着（图库暂时不能以图搜图）
+ */
 export async function deleteProvider(ctx: WriteCtx, input: { id: string }) {
   assertCan(ctx.actor, "config.manage", {}, "只有主管能删模型服务")
-  return ctx.db.transaction(async (tx) => {
+  const result = await ctx.db.transaction(async (tx) => {
     const before = await loadProvider(tx, input.id)
-    const modelCols = { id: t.models.id, name: t.models.name, note: t.models.note, contextK: t.models.contextK, priceIn: t.models.priceIn, priceOut: t.models.priceOut }
+    const modelCols = { id: t.models.id, name: t.models.name, note: t.models.note, contextK: t.models.contextK, priceIn: t.models.priceIn, priceOut: t.models.priceOut, kind: t.models.kind, vision: t.models.vision }
     const own = await tx.select(modelCols).from(t.models).where(eq(t.models.providerId, input.id))
     const ownIds = own.map((row) => row.id)
     const used = ownIds.length ? await tx.select({ id: t.tasks.id, title: t.tasks.title }).from(t.tasks).where(inArray(t.tasks.modelId, ownIds)) : []
     if (used.length) throw conflict(`有 ${used.length} 个任务在用「${before.name}」的模型：${usedByText(used)}。先给这些任务换模型，再删除。`)
     const current = await readDefaults(tx)
     const rest = await tx.select(modelCols).from(t.models).where(ownIds.length ? notInArray(t.models.id, ownIds) : undefined)
-    const next = defaultsAfterRemove(current, { models: own }, [{ models: rest }])
+    const chat = (rows: typeof own) => rows.filter((row) => row.kind === "chat")
+    const next: ModelDefaults = defaultsAfterRemove(current, { models: chat(own) }, [{ models: chat(rest) }])
+    const embed = current.embed && ownIds.includes(current.embed) ? rest.find((row) => row.kind === "embedding" && row.vision)?.id : current.embed
+    if (embed) next.embed = embed
     await tx.delete(t.modelDefaults)
-    for (const role of ["run", "plan", "verify"] as const) {
-      if (next[role] && !ownIds.includes(next[role])) await tx.insert(t.modelDefaults).values({ role, modelId: next[role], updatedById: ctx.actor.id })
+    for (const role of ["run", "plan", "verify", "embed"] as const) {
+      const modelId = next[role]
+      if (modelId && !ownIds.includes(modelId)) await tx.insert(t.modelDefaults).values({ role, modelId, updatedById: ctx.actor.id })
     }
     await tx.delete(t.modelProviders).where(eq(t.modelProviders.id, input.id))
     await deleteSecret(tx, { scope: "model_provider", refId: input.id, name: "api_key" })
     await audit(tx, ctx.actor.id, "model_provider.delete", "model_providers", input.id, { name: before.name, defaults: next })
-    return { id: input.id, defaults: next }
+    return { id: input.id, defaults: next, embedChanged: next.embed !== current.embed }
   })
+  if (result.embedChanged) kickGalleryEmbeddings()
+  return { id: result.id, defaults: result.defaults }
 }
 
 async function readDefaults(db: DbOrTx): Promise<ModelDefaults> {
   const rows = await db.select().from(t.modelDefaults)
-  const of = (role: "run" | "plan" | "verify") => rows.find((row) => row.role === role)?.modelId ?? ""
-  return { run: of("run"), plan: of("plan"), verify: of("verify") }
+  const of = (role: ModelRole) => rows.find((row) => row.role === role)?.modelId ?? ""
+  const embed = of("embed")
+  return { run: of("run"), plan: of("plan"), verify: of("verify"), ...(embed ? { embed } : {}) }
 }
 
-/** 三个角色的默认模型。验收不许和执行同一家（不算第三方） */
+/**
+ * 默认模型。执行 / 规划 / 验收要是聊天模型，验收不许和执行同一家（不算第三方）。
+ * embed（图库的 embedding 模型）：不传不改，空字符串表示不用；要是能处理图片的 embedding 模型
+ */
 export async function writeDefaults(db: DbOrTx, actorId: string | null, input: ModelDefaults) {
   if (sameFamily(input.run, input.verify)) {
     throw badRequest(`执行和三方验收是同一家（${modelFamily(input.run)}），验收就不算第三方了。请给验收换一家。`)
   }
   const ids = [...new Set([input.run, input.plan, input.verify])]
-  const found = (await db.select({ id: t.models.id }).from(t.models).where(inArray(t.models.id, ids))).map((row) => row.id)
-  const missing = ids.filter((id) => !found.includes(id))
+  const found = await db.select({ id: t.models.id, kind: t.models.kind }).from(t.models).where(inArray(t.models.id, ids))
+  const missing = ids.filter((id) => !found.some((row) => row.id === id))
   if (missing.length) throw badRequest(`模型不存在：${missing.join("、")}`)
-  for (const role of ["run", "plan", "verify"] as const) {
+  const notChat = found.filter((row) => row.kind !== "chat").map((row) => row.id)
+  if (notChat.length) throw badRequest(`${notChat.join("、")} 是 embedding 模型，不能用来执行、规划或验收`)
+  if (input.embed) {
+    const [embed] = await db.select({ kind: t.models.kind, vision: t.models.vision }).from(t.models).where(eq(t.models.id, input.embed))
+    if (!embed) throw badRequest(`模型不存在：${input.embed}`)
+    if (embed.kind !== "embedding" || !embed.vision) throw badRequest(`${input.embed} 不是能处理图片的 embedding 模型，图库用不了`)
+  }
+  const roles = input.embed === undefined ? (["run", "plan", "verify"] as const) : input.embed ? (["run", "plan", "verify", "embed"] as const) : (["run", "plan", "verify"] as const)
+  for (const role of roles) {
+    const modelId = input[role]!
     await db
       .insert(t.modelDefaults)
-      .values({ role, modelId: input[role], updatedById: actorId })
-      .onConflictDoUpdate({ target: t.modelDefaults.role, set: { modelId: input[role], updatedById: actorId, updatedAt: new Date() } })
+      .values({ role, modelId, updatedById: actorId })
+      .onConflictDoUpdate({ target: t.modelDefaults.role, set: { modelId, updatedById: actorId, updatedAt: new Date() } })
   }
+  if (input.embed === "") await db.delete(t.modelDefaults).where(eq(t.modelDefaults.role, "embed"))
 }
 
 export async function setModelDefaults(ctx: WriteCtx, input: ModelDefaults) {
   assertCan(ctx.actor, "config.manage", {}, "只有主管能改默认模型")
-  return ctx.db.transaction(async (tx) => {
+  const { after, embedChanged } = await ctx.db.transaction(async (tx) => {
     const before = await readDefaults(tx)
     await writeDefaults(tx, ctx.actor.id, input)
-    await audit(tx, ctx.actor.id, "model_defaults.update", "model_defaults", "defaults", { before, after: input })
-    return input
+    const after = await readDefaults(tx)
+    await audit(tx, ctx.actor.id, "model_defaults.update", "model_defaults", "defaults", { before, after })
+    return { after, embedChanged: before.embed !== after.embed }
   })
+  // 换了图库的 embedding 模型：后台用新模型把所有图重算一遍（重算完之前搜索还用旧模型的向量）
+  if (embedChanged) kickGalleryEmbeddings()
+  return after
 }
 

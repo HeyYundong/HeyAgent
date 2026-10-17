@@ -31,8 +31,12 @@ export interface ActionResources {
   "config.manage": Record<string, never>
   /** 用户管理：建账号、改角色、停用、重置密码（只有主管） */
   "user.manage": Record<string, never>
-  /** 全局设置：花费上限、步数、兜底天数、外部事件令牌、通知渠道（只有主管） */
+  /** 全局设置：花费上限、步数、兜底天数、外部事件令牌、通知渠道、API 密钥（只有主管） */
   "settings.manage": Record<string, never>
+  /** 往图库里传图（所有人） */
+  "gallery.upload": Record<string, never>
+  /** 改图库里一张图的文本和标签、删掉它：上传的人（API 密钥传的算密钥的创建人） */
+  "gallery.manage": { createdById: string }
 }
 
 export type Action = keyof ActionResources
@@ -42,6 +46,7 @@ export function can<A extends Action>(user: Actor, action: A, resource: ActionRe
   switch (action) {
     case "view":
     case "browser.login":
+    case "gallery.upload":
       return true
     case "task.create":
     case "config.manage":
@@ -62,6 +67,8 @@ export function can<A extends Action>(user: Actor, action: A, resource: ActionRe
     }
     case "todo.manage":
       return (resource as ActionResources["todo.manage"]).createdById === user.id
+    case "gallery.manage":
+      return (resource as ActionResources["gallery.manage"]).createdById === user.id
     default:
       // 新加的操作忘了写规则时，员工默认不能做
       return false

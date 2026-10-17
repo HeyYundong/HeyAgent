@@ -47,3 +47,9 @@ export const todoId = (n: number) => `td-${String(n).padStart(2, "0")}`
 /** 模型服务：<类型>-<序号>，例如 ollama-2；模型：<服务 id>/<模型名> */
 export const modelProviderId = (kind: string, n: number) => `${kind}-${n}`
 export const modelId = (providerIdValue: string, model: string) => `${providerIdValue}/${model}`
+
+/** 图库里的图：img-12。序列 gallery_no_seq */
+export const galleryImageId = (n: number) => `img-${n}`
+
+/** API 密钥：ak-3。序列 api_key_no_seq */
+export const apiKeyId = (n: number) => `ak-${n}`

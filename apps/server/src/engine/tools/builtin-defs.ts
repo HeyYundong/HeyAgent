@@ -3,6 +3,7 @@
 import {
   ALWAYS_ON_BUILTIN_TOOLS,
   BROWSER_TOOL_ID,
+  GALLERY_TOOL_ID,
   builtinToolInputs,
   type BuiltinToolId,
   type Risk,
@@ -131,6 +132,30 @@ export function browserSnapshotTool(): SnapshotTool {
   }
 }
 
+/**
+ * 「图库」：任务选了它，工具网关就开放整组图库工具（gallery.search / compare / get / add / update，见 gallery/tools.ts）。
+ * 和「浏览器」一样本身不能直接调用。agent 不能删图。
+ */
+export const GALLERY_TOOL_DEF = {
+  id: GALLERY_TOOL_ID,
+  name: "图库",
+  summary: "在图库里以图搜图、按描述找图、比对两张图是不是同款，把图连同文本（JSON）和标签存进图库",
+  description:
+    "开放整组图库工具：检索（以图搜图、按一句描述找、按标签和 JSON 字段筛）、比对两张图的相似度、按 id 看一张（可以看缩略图）、传图（这次运行的截图、附件或网址）、改文本和标签。不能删图。",
+  risk: "write" as Risk,
+}
+
+export function gallerySnapshotTool(): SnapshotTool {
+  return {
+    id: GALLERY_TOOL_DEF.id,
+    name: GALLERY_TOOL_DEF.name,
+    summary: GALLERY_TOOL_DEF.summary,
+    description: GALLERY_TOOL_DEF.description,
+    source: "builtin",
+    risk: GALLERY_TOOL_DEF.risk,
+  }
+}
+
 export const builtinDef = (id: string) =>
   BUILTIN_TOOLS.find((tool) => tool.id === id)
 export const isBuiltinTool = (id: string): id is BuiltinToolId =>
@@ -160,7 +185,7 @@ export function builtinSnapshotTool(id: BuiltinToolId): SnapshotTool {
 
 /** 启动时把内置工具同步进 tools 表：有就更新，没有就插入；代码里已经没有的内置工具删掉 */
 export async function syncBuiltinTools(db: DbLike) {
-  const all: { id: string; name: string; summary: string; description: string; risk: Risk }[] = [...BUILTIN_TOOLS, BROWSER_TOOL_DEF]
+  const all: { id: string; name: string; summary: string; description: string; risk: Risk }[] = [...BUILTIN_TOOLS, BROWSER_TOOL_DEF, GALLERY_TOOL_DEF]
   for (const [position, def] of all.entries()) {
     const values = {
       id: def.id,

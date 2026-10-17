@@ -99,6 +99,13 @@
       "when": 1792269415053,
       "tag": "0013_task_memory",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1792271729825,
+      "tag": "0014_gallery",
+      "breakpoints": true
     }
   ]
 }

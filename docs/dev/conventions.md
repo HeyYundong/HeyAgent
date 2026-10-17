@@ -36,7 +36,7 @@ design/         定稿原型，只读参考。不改、不提交（已在 .gitig
 - **Node**：开发机是 Node 22.23，容器里用 Node 24 LTS。`engines.node` 写 `>=22.12`（pg-boss 12 的要求）。
 - **TypeScript**：~6.0，strict，ESM。跨包引用走 workspace 包名（`@heyagent/shared`），运行时不依赖路径别名。前端沿用原型的 `@/` 别名。
 - **版本锁定**：方案第 3 节列出的运行时依赖写精确版本（不带 `^`），lockfile 提交。只装当前里程碑用得到的包。
-  - hono 4.13.13、@hono/node-server 2.1.5、@trpc/server 和 @trpc/client 11.19.0、drizzle-orm 0.45.4、drizzle-kit 0.31.11、better-auth 1.7.10、zod 4.6.7、pg-boss 12.38.0、ai 7.0.142（7.0.143 发布不满 1 天）、@openrouter/ai-sdk-provider 3.1.0、@ai-sdk/anthropic 4.0.81、@ai-sdk/openai 4.0.95、@ai-sdk/deepseek 3.0.66（三个都和 ai 7.0.142 用同一版 @ai-sdk/provider、provider-utils）、@ai-sdk/mcp 2.0.77、cron-parser 5.10.2、react-hook-form 7.90.0、@hookform/resolvers 5.9.1、react-markdown 10.1.0、remark-gfm 4.0.1、@playwright/mcp 0.0.83、playwright-core 1.64.1。
+  - hono 4.13.13、@hono/node-server 2.1.5、@trpc/server 和 @trpc/client 11.19.0、drizzle-orm 0.45.4、drizzle-kit 0.31.11、better-auth 1.7.10、zod 4.6.7、pg-boss 12.38.0、ai 7.0.142（7.0.143 发布不满 1 天）、@openrouter/ai-sdk-provider 3.1.0、@ai-sdk/anthropic 4.0.81、@ai-sdk/openai 4.0.95、@ai-sdk/deepseek 3.0.66（三个都和 ai 7.0.142 用同一版 @ai-sdk/provider、provider-utils）、@ai-sdk/mcp 2.0.77、cron-parser 5.10.2、react-hook-form 7.90.0、@hookform/resolvers 5.9.1、react-markdown 10.1.0、remark-gfm 4.0.1、@playwright/mcp 0.0.83、playwright-core 1.64.1、sharp 0.35.5、@modelcontextprotocol/server 2.3.1（图库，2026-10-17）。
 - **测试**：vitest。和数据库有关的测试连真实的 PostgreSQL 18（开发数据库里的 `heyagent_test` 库），不用 mock 数据库。
 - **代码风格**：照原型的写法。标识符用英文；注释和界面文案用中文，注释写「为什么」，不写废话。prettier 配置沿用原型。
 
@@ -46,7 +46,7 @@ design/         定稿原型，只读参考。不改、不提交（已在 .gitig
 - 开发机是 Ubuntu 22.04 自带的 **rootless Podman 3.4.4**：
   - 没有 `podman compose`，没有 Quadlet；
   - 起整套用 `podman play kube <yaml>`（Podman 4 起叫 `podman kube play`，脚本要兼容两种写法）；
-  - 镜像名写全：`docker.io/library/postgres:18`。
+  - 镜像名写全：数据库是 `docker.io/pgvector/pgvector:0.8.7-pg18-trixie`（Postgres 18 + pgvector，2026-10-17 起，图库的向量检索要用；和原来的 `postgres:18` 同版本、数据卷通用）。
 - 服务器上会是 Podman 4.4 以上，用 Quadlet 交给 systemd 管理（部署阶段再做）。
 - 调研报告里 Docker 的参数要换成 Podman 的对应写法：`--shm-size`、`--init`、`--security-opt seccomp=...` 在 Podman 里都有。
 - 开发机**没有免密 sudo**：不要装系统包。需要的工具放进容器，或者用户目录下的二进制。

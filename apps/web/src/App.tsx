@@ -23,6 +23,7 @@ const PAGES: Record<PageId, React.LazyExoticComponent<() => React.ReactNode>> = 
   tasks: lazy(() => import("@/pages/tasks")),
   todos: lazy(() => import("@/pages/todos")),
   sessions: lazy(() => import("@/pages/sessions")),
+  gallery: lazy(() => import("@/pages/gallery")),
   memory: lazy(() => import("@/pages/memory")),
   skills: lazy(() => import("@/pages/skills")),
   rules: lazy(() => import("@/pages/rules")),

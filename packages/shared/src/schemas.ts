@@ -75,15 +75,22 @@ export const modelProviderSchema = z.object({
   /** 上次检查连接的时间；未配置时没有 */
   checkedAt: isoTime.optional(),
   latencyMs: z.number().optional(),
+  /** 能调工具的聊天模型（任务、执行 / 规划 / 验收用） */
   models: z.array(modelInfoSchema),
+  /**
+   * embedding 模型（把图片、文字变成向量，图库检索用）。和 models 分开，免得出现在任务的模型下拉里。
+   * vision = 能处理图片；priceIn 是每百万 token 的价格，priceOut 为 0。目前只有 OpenRouter 有（Ollama 的 embedding 不支持图片）
+   */
+  embeddingModels: z.array(modelInfoSchema).optional(),
 })
 export type ModelProvider = z.infer<typeof modelProviderSchema>
 
-export const modelRoleSchema = z.enum(["run", "plan", "verify"])
+/** embed = 图库的 embedding 模型（以图搜图、比对、按描述找图） */
+export const modelRoleSchema = z.enum(["run", "plan", "verify", "embed"])
 export type ModelRole = z.infer<typeof modelRoleSchema>
 
-/** 默认用哪个模型：执行任务 / 规划拆解 / 三方验收 */
-export const modelDefaultsSchema = z.object({ run: z.string(), plan: z.string(), verify: z.string() })
+/** 默认用哪个模型：执行任务 / 规划拆解 / 三方验收 / 图库的 embedding（没配时没有） */
+export const modelDefaultsSchema = z.object({ run: z.string(), plan: z.string(), verify: z.string(), embed: z.string().optional() })
 export type ModelDefaults = z.infer<typeof modelDefaultsSchema>
 
 // ---------- 浏览器（Chrome） ----------

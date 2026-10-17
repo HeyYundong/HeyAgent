@@ -18,6 +18,7 @@
 10. 浏览器（M2-A）
 11. 规则、检查点、三方验收、压缩、探索出的步骤（M3-A）
 12. 任务记忆和运行总结
+13. 图库、API 密钥、embedding 模型（2026-10-17）
 
 ---
 
@@ -29,7 +30,7 @@
 |---|---|
 | API | `http://<host>:3100`（`PORT` 可改）。前端始终同源访问 `/api`：开发时 Vite（5180）代理到 3100，整套 pod 里由 Caddy（8080）转发，不需要 CORS |
 | 登录态 | better-auth 的会话 cookie（`better-auth.session_token`，HttpOnly，7 天；HTTPS 下名字以登录响应的 `Set-Cookie` 为准） |
-| 例外 | `GET /api/health` 不要登录；`POST /api/events` 不用 cookie，用事件令牌（第 7 节） |
+| 例外 | `GET /api/health` 不要登录；`POST /api/events` 不用 cookie，用事件令牌（第 7 节）；`/api/gallery/*` 还可以用 API 密钥（`Authorization: Bearer hk_…`，第 13 节） |
 | 其余所有接口 | 必须登录。没登录：tRPC 返回 HTTP 401 / `UNAUTHORIZED`，文件接口返回 401 `{"error":"请先登录"}` |
 
 「谁能调」一列里：**员工**指普通账号，**主管**指 `role = admin` 的账号（`Me.isAdmin = true`）。
@@ -586,6 +587,7 @@ curl -s -X POST http://localhost:3100/api/events \
 | 工具 | `tool.create` `tool.update` `tool.delete` `tool.restore` `secret.create` `secret.update` `secret.delete` `mcp_server.create` `mcp_server.update` `mcp_server.delete` |
 | 浏览器 | `browser_profile.create` `browser_profile.update` `browser_profile.delete` `platform.create` `platform.delete` `browser_account.create` `browser_account.update` `browser_account.delete` |
 | 模型 | `model_provider.create` `model_provider.update` `model_provider.test` `model_provider.refresh` `model_provider.delete` `model_defaults.update` |
+| 图库（第 13 节） | `gallery.create` `gallery.update` `gallery.delete`（`detail.via` 是 web / api / mcp / agent；agent 传的 `actor_id` 为空，`detail.sessionId` 是哪次运行）`api_key.create` `api_key.delete` |
 | 设置 | `settings.update` `settings.event_token.regenerate` `settings.event_token.clear` `settings.channel.create` `settings.channel.update` `settings.channel.delete` `settings.browser.update`（M2） `settings.agent.update`（M3） |
 | 运行 | `session.digest`（第 12 节）`session.start`（`runNow`）`session.cancel` `session.resume.resume_now` `session.resume.human` `session.resume.event`（控制台触发，webhook 没有操作人所以不记）`human_item.resolve` `event.fire` |
 
@@ -844,3 +846,134 @@ session 开始时把规则（含 `compiledTrigger`）冻结进快照，引擎只
 - 锁住这次运行那一行（`for update`），先检查全部 `items`：序号要存在、不能重复、候选必须还是 `pending`，再检查条数上限，然后逐条处理：`accept = true` 的按 `text` 插入 `task_memory_entries`（`source_session_id` = 这次运行，`created_by_id` = 审核人），候选标 `accepted` 并写上 `entryId`；`false` 的标 `rejected`。
 - 没提到的候选保持 `pending`；全部处理完才写 `reviewedAt` / `reviewedById`。
 - 审计 `task_memory.review`（`target_table = tasks`，detail 有 `sessionId`、`accepted: [{ entryId, edited }]`、`rejected` 条数）。
+
+---
+
+## 13. 图库、API 密钥、embedding 模型（2026-10-17）
+
+设计、阈值标定、花费见 `docs/dev/gallery.md`。这一节只写怎么调。
+
+### 13.1 一张图长什么样
+
+字段（用户定的）：**图片**、**文本**（必须是 JSON 对象）、**标签**（必须是字符串数组）。返回形状 `GalleryImage`（`packages/shared/src/gallery.ts`）：
+
+| 字段 | 说明 |
+|---|---|
+| `id` | `img-<序号>` |
+| `url` / `thumbUrl` | 原图 / 缩略图（长边 512 的 webp）。HTTP 接口和 MCP 返回完整地址（按 `X-Forwarded-Proto/Host` 或 `Host` 拼），tRPC 返回 `/api/...` 相对地址。下载也要登录或带密钥 |
+| `text` | JSON 对象，最多 64 KB。存在 Postgres 的 jsonb 里，**键的顺序不保留** |
+| `tags` | 字符串数组，最多 50 个、每个最多 64 字；存的时候去掉前后空格、去重 |
+| `name` `mime` `size` `width` `height` `sha256` | 上传时的文件名、类型（jpg / png / webp / gif）、字节数、按 EXIF 转正以后的宽高、文件的 sha256 |
+| `via` | `web`（页面或带 cookie 调）、`api`（密钥调 HTTP 接口）、`mcp`、`agent` |
+| `createdById` / `sessionId` | 谁传的（密钥传的算密钥的创建人；agent 传的没有）/ agent 传的是哪次运行 |
+| `embedded` | 当前默认的 embedding 模型有没有算过它的向量（没算过的以图搜图搜不到） |
+| `score` | 只在以图搜图 / 按描述找时有：余弦相似度 -1～1 |
+
+**一模一样的文件（sha256 相同）只存一条**：再传返回已有的那条（`duplicate: true`，HTTP 200 而不是 201），**不改**它的文本和标签。
+
+**图片的指定方式**（`GalleryImageRef`，检索、比对、MCP、agent 通用）：`{ imageId }`（图库里已有的，直接用存好的向量）、`{ fileId }`（HeyAgent 的文件 `f-…`）、`{ url }`（http/https，服务器去下载，20 秒超时）、`{ base64, mime? }`（可以带 `data:image/...;base64,` 前缀）。上传不能用 `imageId`。单张最多 `HEYAGENT_UPLOAD_MAX_MB`（默认 20）MB、1 亿像素。
+
+### 13.2 鉴权
+
+- 二选一：`Authorization: Bearer <API 密钥>`，或登录的 cookie。**带了 Bearer 就只认密钥**，不对就 401（不会退回去认 cookie）。
+- API 密钥：`hk_` + 32 个字符。只有主管能在「设置 → API 密钥」建、删（tRPC `apiKeys.list / create / delete`），原文只在新建时返回一次，库里只存 sha256。
+- 用密钥做的事算在**创建人**头上，权限也按创建人**现在**的角色算；创建人被停用，密钥跟着失效；删掉密钥立刻失效（它传过的图留着）。`lastUsedAt` 最多每分钟更新一次。
+- 权限：所有人能看、搜、传（`gallery.upload`）；改、删只有上传的人和主管（`gallery.manage`）；agent 能改不能删。
+
+### 13.3 HTTP 接口
+
+错误一律是 `{"error": "给人看的中文"}`：400 输入不对、401 没登录 / 密钥不对、403 没权限、404 没有这张图、413 太大、502 embedding 模型调用失败、503 还没设 embedding 模型（以图搜图、按描述找、比对要用；传图、按标签和字段找不受影响）。
+
+| 方法和路径 | 输入 | 返回 |
+|---|---|---|
+| `POST /api/gallery/images` | multipart：`image`（文件）、`text`（JSON 对象的字符串）、`tags`（JSON 数组的字符串，例如 `["红色","杯子"]`）；或 JSON `{ image: GalleryImageRef, text?, tags? }` | 201 `{ image, duplicate: false }`；重复的 200 `{ image, duplicate: true }` |
+| `POST /api/gallery/search` | JSON `GallerySearchInput`（下表），或 multipart（`image` 文件 + 其余字段；`tags` `anyTags` `text` `where` 是 JSON 字符串，`minScore` `limit` 是数字） | `{ items: GalleryImage[], nextCursor?, model? }` |
+| `POST /api/gallery/compare` | JSON `{ a: GalleryImageRef, b: GalleryImageRef, threshold? }`，或 multipart（`a`、`b` 两个文件 + `threshold`） | `{ score, same, threshold, model }` |
+| `GET /api/gallery/images?limit=&cursor=` | — | 按上传时间倒序翻页 |
+| `GET /api/gallery/images/:id` | — | `GalleryImage` |
+| `PATCH /api/gallery/images/:id` | JSON `{ text?, tags?, addTags?, removeTags? }`：`text`、`tags` 整体替换，`addTags`、`removeTags` 在现有标签上加减 | `GalleryImage` |
+| `DELETE /api/gallery/images/:id` | — | `{ id }`（文件、向量一起删） |
+| `GET /api/gallery/images/:id/file`、`/thumb` | — | 原图 / 缩略图内容（`cache-control: private, max-age=86400, immutable`） |
+| `GET /api/gallery/tags` | — | `{ tags: [{ tag, count }] }`，用得多的在前，最多 300 个 |
+| `GET /api/gallery/stats` | — | `{ total, embedModel?: { id, name }, pending, lastError? }` |
+
+**检索的输入**（`GallerySearchInput`，都可以不填，填了的同时满足）：
+
+| 字段 | 意思 |
+|---|---|
+| `image` | 以图搜图：按相似度排，结果带 `score`。用 `{ imageId }` 时不返回它自己 |
+| `query` | 用一句描述找图（以文搜图，中文英文都行）。和 `image` 只能给一个 |
+| `tags` / `anyTags` | 这些标签都要有 / 有一个就行 |
+| `text` | JSON 包含匹配：`text` 里包含这一段（值要完全相等，嵌套对象可以只写一部分；数组按「包含这些元素」） |
+| `where` | 字段条件数组，最多 20 条：`{ path, op, value? }`。`path` 是 `"a.b.c"` 或 `["a", "b.c", 0]`（键里有点、取数组下标时用数组）。`op`：`eq` `ne`（值是任意 JSON；`ne` 也匹配没有这个字段的）、`gt` `gte` `lt` `lte`（数字按大小；字符串按字节序，日期写成 `2026-10-17` 就能比；类型对不上的不算）、`contains`（字符串里有这段，不分大小写；或数组里有这个值）、`exists`（有这个字段） |
+| `keyword` | 在 `text` 的所有**值**里找（字符串、数字、布尔，不分大小写，不找键名） |
+| `minScore` | 只要相似度不低于这个值的（只在 `image` / `query` 时有用） |
+| `limit` | 默认 50，最多 200 |
+| `cursor` | 翻页：上一页的 `nextCursor`（只在按时间排时有） |
+
+例子：
+
+```bash
+KEY=hk_...   # 「设置 → API 密钥」里建
+# 传图
+curl -X POST http://<host>:8080/api/gallery/images -H "Authorization: Bearer $KEY" \
+  -F image=@photo.jpg -F 'text={"名称":"保温杯","价格":25,"规格":{"颜色":"红"}}' -F 'tags=["红色","杯子"]'
+# 以图搜图 + 标签 + 字段条件
+curl -X POST http://<host>:8080/api/gallery/search -H "Authorization: Bearer $KEY" \
+  -F image=@query.jpg -F 'tags=["杯子"]' -F 'where=[{"path":"价格","op":"lt","value":30}]' -F limit=10
+# 按描述找
+curl -X POST http://<host>:8080/api/gallery/search -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"query":"红色的保温杯","limit":5}'
+# 比对
+curl -X POST http://<host>:8080/api/gallery/compare -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"a":{"imageId":"img-12"},"b":{"url":"https://example.com/x.jpg"}}'
+```
+
+### 13.4 MCP
+
+`POST /api/gallery/mcp`，Streamable HTTP、无状态（GET / DELETE 回 405），鉴权同上。用 `@modelcontextprotocol/server` 2.3.1 的 `createMcpHandler`（每个请求现建一个服务）。实测过：2025-06-18 版的原始 JSON-RPC 请求、`@ai-sdk/mcp` 的 HTTP 客户端（HeyAgent 自己接 MCP 工具也用它）；2026-07-28 版的新协议由 SDK 处理，没单独测。工具和 HTTP 接口一一对应，输入是同一套 schema：
+
+| 工具 | 对应 |
+|---|---|
+| `gallery_upload` | 传图（`image` 是 `GalleryImageRef`） |
+| `gallery_search` | 检索 |
+| `gallery_compare` | 比对 |
+| `gallery_get` | 看一张；`withImage: true` 时多返回一段缩略图（image content） |
+| `gallery_update` | 改文本、标签 |
+| `gallery_delete` | 删 |
+| `gallery_tags` | 常用标签 + 统计 |
+
+结果放在 `structuredContent`（同时有一段 JSON 文本）；出错回 `isError: true` 和一句中文。接 Claude Code：
+
+```bash
+claude mcp add --transport http heyagent-gallery http://<host>:8080/api/gallery/mcp --header "Authorization: Bearer hk_..."
+```
+
+### 13.5 tRPC（控制台页面用）
+
+| procedure | 说明 |
+|---|---|
+| `gallery.list`（query） | `GalleryListInput`：检索的字段，`image` 换成 `similarTo: imageId`（找相似）。上传一张本地图来搜走 `POST /api/gallery/search` |
+| `gallery.get` / `gallery.stats` / `gallery.tags`（query） | 同 HTTP |
+| `gallery.update` / `gallery.delete`（mutation） | 同 HTTP，错误码：`FORBIDDEN`、`NOT_FOUND`、`BAD_REQUEST`、`PRECONDITION_FAILED`（没设 embedding 模型）、`BAD_GATEWAY`（模型调用失败） |
+| `apiKeys.list` / `apiKeys.create` / `apiKeys.delete` | 只有主管。`create` 返回 `{ id, name, key }`，`key` 只有这一次 |
+
+实时推送：`gallery_images` 变了推 `gallery.list` `gallery.get` `gallery.stats` `gallery.tags`；`api_keys` 推 `apiKeys.list`。向量表不推（页面在还有没算完的图时每 5 秒拉一次 `gallery.stats`）。
+
+### 13.6 模型（embedding）
+
+| 变化 | 说明 |
+|---|---|
+| `models.overview` | 每个服务多了 `embeddingModels`（和 `models` 分开，不会出现在任务的模型下拉里；`vision` = 能处理图片，`priceIn` 是每百万 token，`priceOut` 为 0）；`defaults` 多了可选的 `embed` |
+| 刷新模型列表 | OpenRouter 另外读公开的 `GET /embeddings/models`；读不到时保留原来的 embedding 模型。Ollama 不读（它的 embedding 不支持图片） |
+| `models.setDefaults` | 多了可选的 `embed`：不传不改，空字符串 = 不用；要是能处理图片的 embedding 模型。执行 / 规划 / 验收和任务的模型不能选 embedding 模型 |
+| 换了 `embed` | API 进程后台用新模型把所有图重算一遍（一批 8 张）；算完之前检索、比对还用向量最全的旧模型，算完删掉旧向量 |
+| 初始化 | 空白环境设成 `google/gemini-embedding-2`；升级前建的环境（库里一个 embedding 模型都没有）启动时刷新一次列表再设上 |
+
+### 13.7 agent 的「图库」工具
+
+任务的工具里选「图库」（内置，id `gallery`），工具网关展开成 `gallery.search` `gallery.compare` `gallery.get`（`showImage` 时把缩略图发给模型看）`gallery.add` `gallery.update`，**没有删除**。图片只能用 `imageId`、这次运行的文件（`fileId`：附件、截图、产物）或 `url`。agent 传的图 `via = agent`、`createdById` 为空、`sessionId` 是这次运行；文件不挂到运行上（不会出现在那次运行的附件和产物里）。
+
+### 13.8 数据库（迁移 0014）
+
+`CREATE EXTENSION vector`（数据库镜像换成 `docker.io/pgvector/pgvector:0.8.7-pg18-trixie`）；新表 `api_keys`、`gallery_images`（tags 的 GIN、text 的 jsonb_path_ops GIN、sha256 唯一）、`gallery_embeddings`（`vector(1024)`、HNSW 余弦索引，主键 `(image_id, model_id)`）；`models.kind`（`chat` / `embedding`）；枚举 `model_role` 加 `embed`；序列 `gallery_no_seq` `api_key_no_seq`。`files.kind` 多了 `gallery` `gallery_thumb`。
