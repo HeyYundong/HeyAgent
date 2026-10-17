@@ -24,6 +24,7 @@ import { trpc } from "@/lib/trpc"
 
 import { CheckpointGrid, Elapsed, RunStatusBadge, StepList, WaitingAlert, checkpointSummary, money } from "./parts"
 import { CancelRunDialog, isActive, ResumeButton, SessionFiles } from "./run-actions"
+import { RunBrowserButton } from "./run-browser"
 
 const EVENT_ICON: Record<RunEventKind, LucideIcon> = { plan: ListTreeIcon, think: BrainIcon, tool: WrenchIcon, checkpoint: FlagIcon, rule: ShieldIcon, wait: PauseIcon, resume: PlayIcon, human: UserIcon, verify: ScanSearchIcon, done: CircleCheckIcon, error: TriangleAlertIcon }
 
@@ -49,6 +50,7 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionRun }) {
       badges={<><RunStatusBadge status={run.status} />{run.status === "running" && <span className="text-xs text-muted-foreground"><Elapsed since={run.startedAt} /></span>}</>}
       meta={`模型 ${modelName(run.modelId)} · 输入 ${num(run.tokensIn)} / 输出 ${num(run.tokensOut)} token · 花费 ${money(run.costUsd)} · 开始 ${fmtDateTime(run.startedAt)} · ${run.endedAt ? `结束 ${fmtDateTime(run.endedAt)}` : "还没结束"}`}
       actions={<>
+        <RunBrowserButton run={run} />
         {run.status === "waiting" && can(user, "session.resume", { taskOwnerId: task.ownerId }) && <ResumeButton run={run} size="sm" />}
         {isActive(run) && can(user, "task.manage", { ownerId: task.ownerId }) && (
           <Button variant="outline" size="sm" onClick={() => setCancelling(true)}><CircleStopIcon data-icon="inline-start" />取消运行</Button>
@@ -96,6 +98,10 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionRun }) {
                   skillIds: task.skillIds,
                   toolIds: task.toolIds,
                   ruleIds: task.ruleIds,
+                  // update 是整体替换：浏览器的三项也要原样带上，不然会被清空
+                  browserProfileIds: task.browserProfileIds,
+                  allowedDomains: task.allowedDomains,
+                  allowBrowserEvaluate: task.allowBrowserEvaluate,
                 })
               }
             >

@@ -1,5 +1,5 @@
 import * as React from "react"
-import { AppWindowIcon, CircleCheckIcon, EllipsisIcon, GaugeIcon, LogInIcon, PencilIcon, PlusIcon, Trash2Icon, TriangleAlertIcon, UserPlusIcon } from "lucide-react"
+import { AppWindowIcon, CircleCheckIcon, EllipsisIcon, GaugeIcon, GlobeIcon, MonitorIcon, PencilIcon, PlusIcon, Trash2Icon, TriangleAlertIcon, UserPlusIcon } from "lucide-react"
 
 import { DetailPanel, DetailSection, EmptyState, MasterDetail, PageFrame, PickGroup, PickItem, SimpleHeader } from "@/components/shell/simple-page"
 import {
@@ -9,8 +9,8 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "@/components/ui/item"
-import { toast } from "@/components/ui/toast"
-import { accountStatusLabel, can, findById, fmtDateTime, type BrowserSite } from "@heyagent/shared"
+import { RemoteViewDialog } from "@/components/remote-view/remote-view-dialog"
+import { accountStatusLabel, can, findById, fmtDateTime, fmtShort, type BrowserSite, type LiveBrowser, type Platform } from "@heyagent/shared"
 
 import { useBrowsersQuery, usePlatformsQuery, useSessionsQuery, useStaffName, useStaffQuery, useTasksQuery } from "@/lib/data"
 import { useAction } from "@/lib/mutations"
@@ -20,37 +20,48 @@ import { useMe } from "@/lib/session"
 
 import { AccountDialog } from "./account-dialog"
 import { BrowserDialog } from "./browser-dialog"
-import { BrowserViewDialog, type Login } from "./browser-view-dialog"
-import { limitText, problemCount, proxyRows, proxyText, recentRunsUsing, siteKey, usePlatformName, vaultRows, type Chrome } from "./data"
+import {
+  LIVE_STATE, problemCount, profileRows, proxyText, recentRunsUsing, siteKey, usageText, useAccountStatusQuery, useLiveBrowsersQuery, usePlatformName, type Chrome,
+} from "./data"
+import { LoginBrowserDialog, OpenLoginButton, useOpenLogin } from "./login-browser"
+import { PlatformDialog } from "./platform-dialog"
 import { SiteLimitDialog } from "./site-limit-dialog"
 
 const LINK = "underline underline-offset-4 hover:text-foreground"
 
-// 写操作（M1 接通）：新建 / 编辑 / 删除 Chrome，加账号、改并发上限、删账号（都只有主管）。
-// 远程画面里的「保存登录状态」要真的起 Chrome，M2 才接通，现在点了只提示。
-function saveLoginLater() {
-  toast.add({ title: "保存登录状态 M2 接通", description: "现在的远程画面是模拟的，登录态还存不进保险箱。", type: "info" })
-}
+// 写操作：新建 / 编辑 / 删除 Chrome，加账号、改并发上限、改平台域名、删账号（都只有主管）。
+// M2 起：「打开 Chrome 登录」真的在服务器上起 Chrome（远程画面），保存登录状态进保险箱；开着的 Chrome、账号使用情况随实时推送刷新。
 
 export default function BrowsersPage() {
   const { user } = useMe()
   const isAdmin = can(user, "config.manage", {})
   const { params } = useRoute()
   const browsersQuery = useBrowsersQuery()
-  // 平台名、登录人、最近选用它的运行
-  const queries = [browsersQuery, usePlatformsQuery(), useStaffQuery(), useSessionsQuery(), useTasksQuery()]
+  const liveQuery = useLiveBrowsersQuery()
+  const platformsQuery = usePlatformsQuery()
+  // 平台名、登录人、最近选用它的运行、开着的 Chrome、账号使用情况
+  const queries = [browsersQuery, platformsQuery, useStaffQuery(), useSessionsQuery(), useTasksQuery(), liveQuery, useAccountStatusQuery()]
   const list = browsersQuery.data ?? []
+  const live = liveQuery.data ?? []
   const [dialog, setDialog] = React.useState<"new" | "edit" | null>(null)
-  const [view, setView] = React.useState<{ site?: Login } | null>(null)
   const [limitSite, setLimitSite] = React.useState<BrowserSite | null>(null)
   const [deleteSite, setDeleteSite] = React.useState<BrowserSite | null>(null)
+  const [editPlatform, setEditPlatform] = React.useState<Platform | null>(null)
+  const [watching, setWatching] = React.useState<LiveBrowser | null>(null)
   const [addAccount, setAddAccount] = React.useState(false)
   const [confirmDelete, setConfirmDelete] = React.useState(false)
   const selected = findById(list, params.get("id"))
   const platformName = usePlatformName()
+  const login = useOpenLogin()
+  const staffName = useStaffName()
   // 有 session 正占着它的账号时后端会拒绝（CONFLICT），toast 里显示原因
   const removeProfile = useAction(trpc.browsers.delete.mutationOptions({ onSuccess: () => setParams({ id: null }) }), { success: "Chrome 已删除" })
   const removeAccount = useAction(trpc.browsers.deleteAccount.mutationOptions(), { success: "账号已删除" })
+  const liveOf = (profileId: string) => live.filter((each) => each.profileId === profileId)
+  const accountName = (accountId: string) => {
+    const site = list.flatMap((profile) => profile.sites).find((each) => each.accountId === accountId)
+    return site ? `${platformName(site.platformId)} · ${site.account}` : accountId
+  }
 
   function remove() {
     setConfirmDelete(false)
@@ -60,6 +71,12 @@ export default function BrowsersPage() {
   function removeSite() {
     if (deleteSite) removeAccount.mutate({ id: deleteSite.accountId })
     setDeleteSite(null)
+  }
+
+  /** 开着的 Chrome 点「看画面」：自己（或主管）开的登录 Chrome 带保存 / 关闭按钮，其余只看（能不能操作由服务端定） */
+  function watch(browser: LiveBrowser) {
+    if (browser.kind === "login" && (isAdmin || browser.openedById === user.id)) login.show(browser.browserId, { profileId: browser.profileId, accountId: browser.accountId })
+    else setWatching(browser)
   }
 
   const newButton = <Button onClick={() => setDialog("new")}><PlusIcon data-icon="inline-start" />新建 Chrome</Button>
@@ -75,6 +92,9 @@ export default function BrowsersPage() {
       </DropdownMenuContent>
     </DropdownMenu>
   )
+
+  const selectedLive = selected ? liveOf(selected.id) : []
+  const openedProfile = login.opened && findById(list, login.opened.target.profileId)
 
   return (
     <>
@@ -102,53 +122,67 @@ export default function BrowsersPage() {
           hasSelection={!!selected}
           list={
             <PickGroup>
-              {list.map((profile) => (
-                <PickItem key={profile.id} to={href("browsers", { id: profile.id })} selected={profile.id === selected?.id} title={profile.name}
-                  description={`${proxyText(profile.proxy)} · ${profile.exitIp}`}
-                  badge={problemCount(profile) > 0 && <Badge variant="destructive">{problemCount(profile)} 个要登录</Badge>}
-                />
-              ))}
+              {list.map((profile) => {
+                const opened = liveOf(profile.id).length
+                return (
+                  <PickItem key={profile.id} to={href("browsers", { id: profile.id })} selected={profile.id === selected?.id} title={profile.name}
+                    description={`${proxyText(profile.proxy)} · ${profile.exitIp}${opened ? ` · 开着 ${opened} 个` : ""}`}
+                    badge={problemCount(profile) > 0 && <Badge variant="destructive">{problemCount(profile)} 个要登录</Badge>}
+                  />
+                )
+              })}
             </PickGroup>
           }
           detail={
             selected && (
               <DetailPanel
                 title={selected.name}
-                badges={<Badge variant={selected.running ? "secondary" : "outline"}>{selected.running ? `开着 ${selected.running} 个 session` : "空闲"}</Badge>}
+                badges={<Badge variant={selectedLive.length ? "secondary" : "outline"}>{selectedLive.length ? `开着 ${selectedLive.length} 个 Chrome` : "没有开着的"}</Badge>}
                 meta={`出口 ${selected.exitIp} · 保险箱 v${selected.vaultVersion} · 更新于 ${fmtDateTime(selected.updatedAt)}`}
                 actions={
                   <>
-                    <Button onClick={() => setView({})}><AppWindowIcon data-icon="inline-start" />打开浏览器</Button>
+                    <OpenLoginButton pending={login.pending && !login.pendingTarget?.accountId} onClick={() => void login.start({ profileId: selected.id })} />
                     {isAdmin && menu}
                   </>
                 }
               >
                 <AgentNote profile={selected} />
-                <DetailSection title="代理">
-                  {selected.proxy.kind === "socks5" ? <Facts rows={proxyRows(selected)} /> : <p>不用代理，直接出网。出口 IP：{selected.exitIp}。</p>}
-                </DetailSection>
+                {selectedLive.length > 0 && (
+                  <DetailSection title="开着的 Chrome" description="运行中的 Chrome 和人开的登录 Chrome。谁都能看画面；能操作的是任务负责人、被分配处理的人、主管，登录 Chrome 是打开它的人。">
+                    <ItemGroup className="gap-2">
+                      {selectedLive.map((browser) => (
+                        <LiveRow key={browser.browserId} browser={browser} openedBy={staffName(browser.openedById)} onWatch={() => watch(browser)} />
+                      ))}
+                    </ItemGroup>
+                  </DetailSection>
+                )}
                 <DetailSection title="登录过的网站"
                   description="人在远程画面里登录一次，保存后所有 agent 都能用。并发上限按账号设：同一账号多处同时登录容易被平台风控，不同账号互不影响。"
                   action={isAdmin && <Button size="sm" variant="outline" onClick={() => setAddAccount(true)}><UserPlusIcon data-icon="inline-start" />加账号</Button>}>
                   {selected.sites.length === 0 ? (
                     <p className="text-muted-foreground">
-                      {isAdmin ? "还没有账号。点「加账号」选平台、填账号，再在远程画面里登录一次。" : "还没有账号，由主管来加。"}
+                      {isAdmin ? "还没有账号。点「加账号」选平台、填账号，再点「打开 Chrome 登录」在远程画面里登录一次。" : "还没有账号，由主管来加。"}
                     </p>
                   ) : (
                     <ItemGroup className="gap-2">
                       {selected.sites.map((site) => (
-                        <SiteRow key={siteKey(site)} site={site} onLogin={() => setView({ site })}
-                          admin={isAdmin ? { onLimit: () => setLimitSite(site), onDelete: () => setDeleteSite(site) } : undefined} />
+                        <SiteRow key={siteKey(site)} site={site}
+                          login={{ pending: login.pending && login.pendingTarget?.accountId === site.accountId, onClick: () => void login.start({ profileId: selected.id, accountId: site.accountId }) }}
+                          admin={isAdmin ? {
+                            onLimit: () => setLimitSite(site),
+                            onPlatform: () => setEditPlatform(findById(platformsQuery.data ?? [], site.platformId) ?? null),
+                            onDelete: () => setDeleteSite(site),
+                          } : undefined} />
                       ))}
                     </ItemGroup>
                   )}
                 </DetailSection>
-                <DetailSection title="登录态保险箱" description="所有 agent 共用这份 cookie 和 session，用完把变化合并回来。">
+                <DetailSection title="代理和登录态" description="所有 agent 共用这份 cookie 和 session，用完把变化合并回来。">
                   <div className="flex flex-col gap-3">
-                    <Facts rows={vaultRows(selected)} />
+                    <Facts rows={profileRows(selected)} />
                     <p className="text-xs text-muted-foreground">
-                      每个任务临时起一个干净的 Chrome，先装进这份登录态；用完只把变了的 cookie 合并回来，再关掉浏览器。
-                      某个账号同时在用的 session 满了，要用它的任务排队。cookie 不会给 agent 看。
+                      每次运行第一次用浏览器时临时起一个 Chrome，先装进这份登录态；用完只把变了的 cookie 合并回来，再关掉。
+                      代理挂了就报错，不会退回直连。某个账号同时在用的 session 满了，要用它的任务排队。cookie 不会给 agent 看。
                     </p>
                   </div>
                 </DetailSection>
@@ -160,10 +194,31 @@ export default function BrowsersPage() {
       {dialog && (
         <BrowserDialog profile={dialog === "edit" ? selected : undefined} onClose={() => setDialog(null)} />
       )}
-      {view && selected && (
-        <BrowserViewDialog profile={selected} site={view.site} onSave={saveLoginLater} onClose={() => setView(null)} />
+      {login.opened && (
+        <LoginBrowserDialog
+          key={login.opened.browserId}
+          browserId={login.opened.browserId}
+          title={`${openedProfile ? openedProfile.name : login.opened.target.profileId} · 打开 Chrome 登录`}
+          description={
+            login.opened.target.accountId
+              ? `在画面里登录「${accountName(login.opened.target.accountId)}」，验证码、短信码也在这里完成，好了点「保存登录状态」。`
+              : "已经装上这个配置保险箱里的登录态。在画面里登录要用的网站，好了点「保存登录状态」。"
+          }
+          accountName={accountName}
+          onClose={login.clear}
+        />
+      )}
+      {watching && (
+        <RemoteViewDialog
+          open
+          browserId={watching.browserId}
+          title={watching.kind === "session" ? `运行 ${watching.sessionId ?? ""} 的 Chrome` : `${watching.profileName} · 登录用的 Chrome`}
+          description={`${watching.profileName} · ${LIVE_STATE[watching.state]}${watching.holdUntil ? `，保留到 ${fmtShort(watching.holdUntil)}` : ""}`}
+          onOpenChange={(open) => !open && setWatching(null)}
+        />
       )}
       {limitSite && selected && <SiteLimitDialog site={limitSite} onClose={() => setLimitSite(null)} />}
+      {editPlatform && <PlatformDialog platform={editPlatform} onClose={() => setEditPlatform(null)} />}
       {addAccount && selected && <AccountDialog profile={selected} onClose={() => setAddAccount(false)} />}
       <AlertDialog open={!!deleteSite} onOpenChange={(open) => !open && setDeleteSite(null)}>
         <AlertDialogContent>
@@ -218,31 +273,76 @@ function AgentNote({ profile }: { profile: Chrome }) {
   )
 }
 
-/** admin 只有主管有：「⋯」里改这个账号的并发上限、删除账号 */
-function SiteRow({ site, onLogin, admin }: { site: BrowserSite; onLogin: () => void; admin?: { onLimit: () => void; onDelete: () => void } }) {
+/** 开着的一个 Chrome：哪次运行（或谁开的登录 Chrome）、在哪个页面、状态、几个人在看 */
+function LiveRow({ browser, openedBy, onWatch }: { browser: LiveBrowser; openedBy: string; onWatch: () => void }) {
+  const ready = browser.state === "running" || browser.state === "held"
+  return (
+    <Item size="sm" variant="outline">
+      <ItemContent className="min-w-0">
+        <ItemTitle className="flex-wrap">
+          {browser.kind === "session" && browser.sessionId
+            ? <a href={href("sessions", { id: browser.sessionId })} className={LINK}>运行 {browser.sessionId}</a>
+            : <span>登录用 · {openedBy} 打开</span>}
+          <Badge variant={browser.state === "held" ? "default" : "secondary"}>{LIVE_STATE[browser.state]}</Badge>
+        </ItemTitle>
+        <ItemDescription className="truncate">{browser.title || browser.url || "空白页"}</ItemDescription>
+        <ItemDescription>
+          开始 {fmtShort(browser.startedAt)}
+          {browser.holdUntil && ` · 保留到 ${fmtShort(browser.holdUntil)}`}
+          {` · ${browser.viewers.length ? `${browser.viewers.length} 人在看` : "没人在看"}`}
+        </ItemDescription>
+      </ItemContent>
+      <ItemActions className="basis-full sm:basis-auto">
+        <Button size="sm" variant="outline" disabled={!ready} onClick={onWatch}><MonitorIcon data-icon="inline-start" />看画面</Button>
+      </ItemActions>
+    </Item>
+  )
+}
+
+/** admin 只有主管有：「⋯」里改这个账号的并发上限、改平台域名、删除账号 */
+function SiteRow({ site, login, admin }: {
+  site: BrowserSite
+  login: { pending: boolean; onClick: () => void }
+  admin?: { onLimit: () => void; onPlatform: () => void; onDelete: () => void }
+}) {
   const staffName = useStaffName()
   const platformName = usePlatformName()
+  const platform = findById(usePlatformsQuery().data ?? [], site.platformId)
+  const usage = useAccountStatusQuery().data?.find((each) => each.accountId === site.accountId)
   const ok = site.status === "ok"
   return (
     <Item size="sm" variant="outline">
       <ItemContent className="min-w-0">
         <ItemTitle>{platformName(site.platformId)} · {site.account}</ItemTitle>
         <ItemDescription>上次登录 {fmtDateTime(site.lastLoginAt)} · {staffName(site.loggedInById)}</ItemDescription>
-        <ItemDescription>{limitText(site)}</ItemDescription>
+        <ItemDescription>
+          {usageText(usage ?? { used: site.running, max: site.maxConcurrent, waiting: 0 })}
+          {usage && usage.sessionIds.length > 0 && (
+            <>
+              {" · 在用："}
+              {usage.sessionIds.map((id, index) => (
+                <React.Fragment key={id}>{index > 0 && "、"}<a href={href("sessions", { id })} className={LINK}>{id}</a></React.Fragment>
+              ))}
+            </>
+          )}
+        </ItemDescription>
+        <ItemDescription className="truncate">{platform?.domains.length ? `域名：${platform.domains.join("、")}` : "平台没填域名（打开网址时不占这个账号的名额）"}</ItemDescription>
       </ItemContent>
       <ItemActions className="basis-full sm:basis-auto">
         <Badge variant={ok ? "outline" : "destructive"}>
           {ok ? <CircleCheckIcon data-icon="inline-start" /> : <TriangleAlertIcon data-icon="inline-start" />}
           {accountStatusLabel[site.status]}
         </Badge>
-        {!ok && <Button size="sm" variant="outline" onClick={onLogin}><LogInIcon data-icon="inline-start" />去登录</Button>}
+        {!ok && <OpenLoginButton size="sm" variant="outline" label="去登录" pending={login.pending} onClick={login.onClick} />}
         {admin && (
           <DropdownMenu>
             <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" aria-label="这个账号的更多操作" />}>
               <EllipsisIcon />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              {ok && <DropdownMenuItem onClick={login.onClick}><MonitorIcon />重新登录</DropdownMenuItem>}
               <DropdownMenuItem onClick={admin.onLimit}><GaugeIcon />改并发上限</DropdownMenuItem>
+              <DropdownMenuItem onClick={admin.onPlatform}><GlobeIcon />改平台域名</DropdownMenuItem>
               <DropdownMenuItem variant="destructive" onClick={admin.onDelete}><Trash2Icon />删除账号</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

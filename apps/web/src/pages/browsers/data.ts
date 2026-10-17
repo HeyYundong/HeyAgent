@@ -1,16 +1,18 @@
-// 浏览器页留在前端的东西：远程画面默认打开的网址、并发上限选项、详情里几张卡的行（docs/dev/m0-api.md 2.6）。
-// Chrome 本身来自 browsers.list，平台名来自 platforms.list；siteKey、limitText 等纯函数在 shared。
-import { findById, fmtDateTime, type BrowserProfile, type Platform } from "@heyagent/shared"
+// 浏览器页留在前端的东西：并发上限选项、详情里几张卡的行、开着的 Chrome 的状态文字。
+// Chrome 配置来自 browsers.list，平台来自 platforms.list，账号使用情况来自 browser.accountStatus，开着的 Chrome 来自 browser.live。
+import { findById, fmtDateTime, type AccountUsage, type BrowserProfile, type LiveBrowser, type SessionRun, type TaskDef } from "@heyagent/shared"
+import { useQuery } from "@tanstack/react-query"
 
 import { usePlatformsQuery } from "@/lib/data"
+import { trpc } from "@/lib/trpc"
 
-export { limitText, problemCount, proxyText, recentRunsUsing, siteKey } from "@heyagent/shared"
+export { problemCount, proxyText, siteKey } from "@heyagent/shared"
 
 /** 页面里的 Chrome = 接口返回的 BrowserProfile */
 export type Chrome = BrowserProfile
 
-/** 远程画面默认打开的网址。「去登录」时打开这个账号配置的登录探测网址（BrowserSite.probeUrl），没配就打开这个 */
-export const HOME_URL = "https://www.google.com"
+export const useLiveBrowsersQuery = () => useQuery(trpc.browser.live.queryOptions())
+export const useAccountStatusQuery = () => useQuery(trpc.browser.accountStatus.queryOptions())
 
 /** 按 id 显示平台名（不在平台表里的，直接显示 id） */
 export function usePlatformName() {
@@ -18,32 +20,48 @@ export function usePlatformName() {
   return (id: string) => findById(platforms, id)?.name ?? id
 }
 
-/** 员工在远程画面里登录新网站时填的网站名 → platformId（不在平台表里的，直接用名字当 id） */
-export function platformIdOf(platforms: Platform[], name: string) {
-  return platforms.find((platform) => platform.name === name)?.id ?? name
-}
-
 /** 「这个账号同时最多几个 session」的选项 */
 export const MAX_ITEMS = ["1", "2", "3", "4", "5"]
 
-/** 详情「代理」卡的几行；不用代理时返回空 */
-export function proxyRows(profile: Chrome): [string, string][] {
+/** 「登录过的网站」每行的并发说明（用实时的账号使用情况） */
+export function usageText(usage: Pick<AccountUsage, "used" | "max" | "waiting">) {
+  const parts = [`同时最多 ${usage.max} 个 · 现在 ${usage.used} 个在用`]
+  if (usage.waiting > 0) parts.push(`${usage.waiting} 个在排队`)
+  else if (usage.used >= usage.max) parts.push("满了，后面的排队")
+  return parts.join(" · ")
+}
+
+/** 开着的 Chrome 的状态 */
+export const LIVE_STATE: Record<LiveBrowser["state"], string> = {
+  queued: "排队等空位",
+  starting: "正在启动",
+  running: "开着",
+  held: "保留着，等人处理",
+  closing: "正在关闭",
+}
+
+/** 详情「代理和登录态」卡的几行 */
+export function profileRows(profile: Chrome): [string, string][] {
   const { proxy } = profile
-  if (proxy.kind !== "socks5") return []
+  const proxyRows: [string, string][] =
+    proxy.kind === "socks5"
+      ? [["代理", `SOCKS5 · ${proxy.host}:${proxy.port}`], ["代理用户名", proxy.username ?? "不需要"]]
+      : [["代理", "不用代理，直接出网"]]
   return [
-    ["类型", "SOCKS5"],
-    ["主机:端口", `${proxy.host}:${proxy.port}`],
-    ["用户名", proxy.username ?? "不需要"],
+    ...proxyRows,
     ["出口 IP", profile.exitIp],
+    ["保险箱", `v${profile.vaultVersion} · ${profile.cookieCount} 个 cookie`],
+    ["更新时间", fmtDateTime(profile.updatedAt)],
+    ...(profile.timezone || profile.locale ? [["时区 / 语言", [profile.timezone, profile.locale].filter(Boolean).join(" · ")] as [string, string]] : []),
   ]
 }
 
-/** 详情「登录态保险箱」卡的几行 */
-export function vaultRows(profile: Chrome): [string, string][] {
-  return [
-    ["cookie", `${profile.cookieCount} 个`],
-    ["版本", `v${profile.vaultVersion}`],
-    ["更新时间", fmtDateTime(profile.updatedAt)],
-    ["现在开着", profile.running ? `${profile.running} 个 session` : "没有（空闲）"],
-  ]
+/** 最近选用了这个 Chrome 配置的运行：过程里 browser.use 的输入带着它的 id（旧数据是 "browser": "br-xx"） */
+export function recentRunsUsing(profileId: string, runs: readonly SessionRun[], tasks: readonly TaskDef[]) {
+  const id = profileId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  const pattern = new RegExp(`"(profileId|browser)"\\s*:\\s*"${id}"`)
+  return runs
+    .filter((run) => run.events.some((event) => event.input && pattern.test(event.input)))
+    .slice(0, 3)
+    .map((run) => ({ run, task: findById(tasks, run.taskId) }))
 }

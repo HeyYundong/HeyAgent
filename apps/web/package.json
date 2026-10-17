@@ -12,7 +12,8 @@
     "typecheck": "tsc -b",
     "preview": "vite preview",
     "smoke": "node scripts/smoke.mjs",
-    "e2e:engine": "node scripts/e2e-engine.mjs"
+    "e2e:engine": "node scripts/e2e-engine.mjs",
+    "e2e:browser": "node scripts/e2e-browser.mjs"
   },
   "dependencies": {
     "@base-ui/react": "1.9.0",

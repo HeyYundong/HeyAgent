@@ -10,9 +10,9 @@ import { Button } from "@/components/ui/button"
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "@/components/ui/item"
 import { Spinner } from "@/components/ui/spinner"
 import { Switch } from "@/components/ui/switch"
-import { alwaysOnToolIds, findById, fmtDateTime, fmtShort, toolIdsOfTask, type SessionRun, type TaskDef } from "@heyagent/shared"
+import { alwaysOnToolIds, BROWSER_TOOL_ID, findById, fmtDateTime, fmtShort, toolIdsOfTask, type SessionRun, type TaskDef } from "@heyagent/shared"
 
-import { useHumanItems, useMemoriesQuery, useModels, useRulesQuery, useRunNow, useSkillsQuery, useToolName, useToolsQuery } from "@/lib/data"
+import { useBrowsersQuery, useHumanItems, useMemoriesQuery, useModels, useRulesQuery, useRunNow, useSkillsQuery, useToolName, useToolsQuery } from "@/lib/data"
 import { useAction } from "@/lib/mutations"
 import { href, setParams, type PageId } from "@/lib/router"
 import { trpc } from "@/lib/trpc"
@@ -205,7 +205,29 @@ function UsedConfig({ task }: { task: TaskDef }) {
       <LinkBadges label="技能" page="skills" items={named(skills, task.skillIds)} />
       <LinkBadges label="工具" page="tools" items={toolIdsOfTask(task, alwaysOn).map((id) => ({ id, name: alwaysOn.includes(id) ? `${toolName(id)} · 自带` : toolName(id) }))} />
       <LinkBadges label="规则" page="rules" items={named(rules, task.ruleIds)} />
+      {task.toolIds.includes(BROWSER_TOOL_ID) && <BrowserConfig task={task} />}
     </div>
   </DetailSection>
   )
 }
+
+/** 选了「浏览器」工具时：允许的 Chrome 配置、网址白名单、是否允许执行脚本 */
+function BrowserConfig({ task }: { task: TaskDef }) {
+  const profiles = useBrowsersQuery().data ?? []
+  return (
+    <>
+      {task.browserProfileIds.length > 0
+        ? <LinkBadges label="Chrome" page="browsers" items={named(profiles, task.browserProfileIds)} />
+        : <ConfigLine label="Chrome">全部 Chrome 配置都能用，agent 自己选</ConfigLine>}
+      <ConfigLine label="白名单">{task.allowedDomains.length ? task.allowedDomains.join("、") : "不限制"}</ConfigLine>
+      <ConfigLine label="脚本">{task.allowBrowserEvaluate ? "允许在网页里执行脚本" : "不允许在网页里执行脚本"}</ConfigLine>
+    </>
+  )
+}
+
+const ConfigLine = ({ label, children }: { label: string; children: React.ReactNode }) => (
+  <div className="flex flex-col gap-1.5 sm:flex-row sm:items-start sm:gap-4">
+    <span className="w-12 shrink-0 text-muted-foreground">{label}</span>
+    <span className="min-w-0 break-all">{children}</span>
+  </div>
+)
