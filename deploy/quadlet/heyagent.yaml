@@ -1,0 +1,176 @@
+# HeyAgent 正式服务器上的整套 pod（Podman 4.4 以上，由 Quadlet 的 heyagent.kube 管理）。
+# 和开发机的 deploy/pod.yaml 是同一套四个容器（postgres + api + worker + web，入口 8080），区别只在：
+#   1. 密码和密钥全部来自 Podman secret（scripts/server-install.sh 创建），不放 configmap、不写进容器的环境变量配置；
+#   2. 镜像用 :current 标签（scripts/deploy.sh 升级时把上一版留成 :previous，可以退回）；
+#   3. 配置（对外地址、允许的来源）来自 heyagent-config.yaml（server-install.sh 生成，Quadlet 的 ConfigMap= 引用，里面没有密码）。
+# 改 deploy/pod.yaml 里的容器（启动命令、环境变量、挂载、安全参数）时，这里要一起改。
+#
+# Podman secret 怎么进容器：
+#   kube play 的 secret 卷引用同名的 Podman secret，secret 的内容是一份 Kubernetes Secret（server-install.sh 按这个格式写）。
+#   Podman 把它展开成同名的卷（例如卷 heyagent-kek 里的文件 kek），每次 kube play 都按 secret 重写一遍，所以换了 secret 重启服务就生效。
+#   文件权限 0444（defaultMode 292 = 八进制 0444）：卷里的文件属主是容器里的 root，api（node）、worker（browser）都是 uid 1000，要「其他人可读」才读得到。
+#   只在这个 pod 里可见；宿主机上只有运行服务的那个用户能读（在它自己的 Podman 存储目录里）。
+# 数据库密码和登录签名密钥要的是环境变量，不是文件：由 api / worker 的启动命令从文件里读出来再 export，
+#   所以不会出现在 podman inspect 和命令行参数里。podman exec 进来的命令没有这两个变量（kek-rotate.ts 会按同样的规则自己拼 DATABASE_URL）。
+apiVersion: v1
+kind: Pod
+metadata:
+  name: heyagent
+  labels:
+    app: heyagent
+spec:
+  restartPolicy: Always
+  # 共享 PID 命名空间：pod 的 infra 进程当 PID 1，回收 Chrome 留下的僵尸进程（同 deploy/pod.yaml）
+  shareProcessNamespace: true
+  containers:
+    - name: postgres
+      image: docker.io/library/postgres:18
+      imagePullPolicy: IfNotPresent
+      args: ["-c", "listen_addresses=127.0.0.1"]
+      env:
+        - name: POSTGRES_USER
+          value: heyagent
+        - name: POSTGRES_DB
+          value: heyagent
+        # 官方镜像支持 *_FILE：第一次初始化数据库时从文件读密码
+        - name: POSTGRES_PASSWORD_FILE
+          value: /run/heyagent/db/postgres-password
+        # 只在第一次初始化数据库时生效：TCP 连接（api、worker 走 127.0.0.1）要密码；容器里的本地 socket 免密
+        # （备份、恢复用 podman exec 在 postgres 容器里跑 pg_dump / pg_restore）。不写的话镜像默认 127.0.0.1 也免密，密码形同虚设
+        - name: POSTGRES_INITDB_ARGS
+          value: "--auth-host=scram-sha-256 --auth-local=trust"
+        - name: TZ
+          value: Asia/Shanghai
+      volumeMounts:
+        - name: pgdata
+          mountPath: /var/lib/postgresql
+        - name: db-secret
+          mountPath: /run/heyagent/db
+          readOnly: true
+
+    - name: api
+      image: localhost/heyagent-api:current
+      imagePullPolicy: IfNotPresent
+      # DATABASE_URL 的拼法和 apps/server/src/scripts/kek-rotate.ts 的 databaseUrl() 一致（两处要一起改）
+      command:
+        - sh
+        - -c
+        - >-
+          export DATABASE_URL="postgres://heyagent:$(cat "$HEYAGENT_DB_PASSWORD_FILE")@127.0.0.1:5432/heyagent";
+          export BETTER_AUTH_SECRET="$(cat /run/heyagent/auth/better-auth-secret)";
+          until node -e "require('net').connect(5432, '127.0.0.1').on('connect', () => process.exit(0)).on('error', () => process.exit(1))";
+          do echo '等 PostgreSQL 就绪…'; sleep 1; done;
+          exec ./entrypoint.sh
+      env:
+        - name: HOST
+          value: 127.0.0.1
+        - name: PORT
+          value: "3100"
+        - name: HEYAGENT_DB_PASSWORD_FILE
+          value: /run/heyagent/db/postgres-password
+        - name: HEYAGENT_KEK_FILE
+          value: /run/heyagent/kek/kek
+        # 只在第一次启动、还没配过 OpenRouter 时用；之后换 key 在控制台「模型」页改（见 docs/ops.md）
+        - name: OPENROUTER_API_KEY_FILE
+          value: /run/heyagent/openrouter/openrouter-key
+        - name: HEYAGENT_FILES_DIR
+          value: /data/files
+        - name: HEYAGENT_ADMIN_PASSWORD_FILE
+          value: /data/state/admin-password
+        - name: HEYAGENT_SEED_DEMO
+          value: "0"
+      envFrom:
+        - configMapRef:
+            name: heyagent-config
+      volumeMounts:
+        - name: db-secret
+          mountPath: /run/heyagent/db
+          readOnly: true
+        - name: auth-secret
+          mountPath: /run/heyagent/auth
+          readOnly: true
+        - name: kek
+          mountPath: /run/heyagent/kek
+          readOnly: true
+        - name: openrouter
+          mountPath: /run/heyagent/openrouter
+          readOnly: true
+        - name: files
+          mountPath: /data/files
+        - name: state
+          mountPath: /data/state
+
+    - name: worker
+      image: localhost/heyagent-worker:current
+      imagePullPolicy: IfNotPresent
+      command:
+        - sh
+        - -c
+        - >-
+          export DATABASE_URL="postgres://heyagent:$(cat "$HEYAGENT_DB_PASSWORD_FILE")@127.0.0.1:5432/heyagent";
+          until node -e "fetch('http://127.0.0.1:3100/api/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))";
+          do echo '等 api 就绪…'; sleep 2; done;
+          exec node dist/worker.js
+      env:
+        - name: HEYAGENT_DB_PASSWORD_FILE
+          value: /run/heyagent/db/postgres-password
+        - name: HEYAGENT_KEK_FILE
+          value: /run/heyagent/kek/kek
+        - name: HEYAGENT_FILES_DIR
+          value: /data/files
+      envFrom:
+        - configMapRef:
+            name: heyagent-config
+      # Chrome 沙箱参数，同 deploy/pod.yaml
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+          add: ["SYS_CHROOT"]
+      volumeMounts:
+        - name: db-secret
+          mountPath: /run/heyagent/db
+          readOnly: true
+        - name: kek
+          mountPath: /run/heyagent/kek
+          readOnly: true
+        - name: files
+          mountPath: /data/files
+
+    - name: web
+      image: localhost/heyagent-web:current
+      imagePullPolicy: IfNotPresent
+      ports:
+        # 对外端口：server-install.sh 安装时按 heyagent.env 的 HEYAGENT_PORT 改写这一行（默认 8080）
+        - containerPort: 8080
+          hostPort: 8080
+          protocol: TCP
+
+  volumes:
+    # 数据卷：和开发机 scripts/pod.sh 同名，backup.sh / restore.sh 两边通用
+    - name: pgdata
+      persistentVolumeClaim:
+        claimName: heyagent-pod-pgdata
+    - name: files
+      persistentVolumeClaim:
+        claimName: heyagent-pod-files
+    - name: state
+      persistentVolumeClaim:
+        claimName: heyagent-pod-state
+    # Podman secret（内容是 Kubernetes Secret，键名就是文件名）
+    - name: db-secret
+      secret:
+        secretName: heyagent-db
+        defaultMode: 292
+    - name: auth-secret
+      secret:
+        secretName: heyagent-auth
+        defaultMode: 292
+    - name: kek
+      secret:
+        secretName: heyagent-kek
+        defaultMode: 292
+    - name: openrouter
+      secret:
+        secretName: heyagent-openrouter
+        defaultMode: 292

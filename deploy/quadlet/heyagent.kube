@@ -1,0 +1,27 @@
+# HeyAgent 整套服务（Quadlet，Podman 4.4 以上）。systemd 用户服务名：heyagent.service
+# 由 scripts/server-install.sh 装到 ~/.config/containers/systemd/，连同同一目录下的：
+#   heyagent.yaml          pod 描述（来自 deploy/quadlet/heyagent.yaml，端口按 heyagent.env 改写）
+#   heyagent-config.yaml   ConfigMap：对外地址、允许的来源、时区（没有密码）
+# 改了这些文件要 systemctl --user daemon-reload，再 systemctl --user restart heyagent。
+# 写法参照 podman-systemd.unit(5)，只用 4.4 就有的键。
+#
+# 启动 = podman kube play（容器都按 heyagent.yaml 重新建，数据卷保留）；停止 = podman kube down。
+# 开机自启靠 [Install] 和 loginctl enable-linger（server-install.sh 检查）；quadlet 生成的服务不用 systemctl enable。
+
+[Unit]
+Description=HeyAgent（agent 平台：postgres + api + worker + web）
+
+[Kube]
+Yaml=heyagent.yaml
+ConfigMap=heyagent-config.yaml
+
+[Service]
+# 单个容器退出由 pod 的 restartPolicy: Always 拉起；整个 pod 起不来或被杀掉时由 systemd 重启
+Restart=always
+RestartSec=10
+# 第一次启动要初始化数据库；kube play 本身也要等镜像就绪
+TimeoutStartSec=600
+TimeoutStopSec=120
+
+[Install]
+WantedBy=default.target

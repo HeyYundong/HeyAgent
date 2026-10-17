@@ -1,0 +1,17 @@
+# HeyAgent 每天的备份（systemd 用户服务，由 heyagent-backup.timer 触发）。
+# scripts/server-install.sh 装到 ~/.config/systemd/user/，并把下面的 %h/heyagent 换成仓库实际所在的目录。
+# 手动跑一次：systemctl --user start heyagent-backup.service；看结果：journalctl --user -u heyagent-backup
+# 备份目录、保留天数写在 ~/.config/heyagent/heyagent.env（HEYAGENT_BACKUP_DIR、HEYAGENT_BACKUP_KEEP_DAYS），见 docs/ops.md。
+
+[Unit]
+Description=HeyAgent 备份（数据库 + 文件卷，不含主密钥）
+# 服务没在跑时 pg_dump 连不上，这里不去拉起它：备份失败会记在日志里
+After=heyagent.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-%h/.config/heyagent/heyagent.env
+ExecStart=%h/heyagent/scripts/backup.sh
+# 备份时别抢 CPU 和磁盘
+Nice=10
+IOSchedulingClass=idle

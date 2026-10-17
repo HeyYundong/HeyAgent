@@ -15,6 +15,7 @@
     "format": "prettier --write \"**/*.{ts,tsx,js,json,md}\"",
     "db:generate": "pnpm --filter @heyagent/server db:generate",
     "db:migrate": "pnpm --filter @heyagent/server db:migrate",
+    "kek:rotate": "pnpm --filter @heyagent/server kek:rotate",
     "db:seed": "pnpm --filter @heyagent/server db:seed",
     "dev:notify": "pnpm --filter @heyagent/server dev:notify"
   },

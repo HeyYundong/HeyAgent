@@ -1,0 +1,14 @@
+# HeyAgent 每天凌晨 3 点（上海时间）备份一次。scripts/server-install.sh 装好并启用：
+#   systemctl --user enable --now heyagent-backup.timer
+# 看下一次什么时候跑：systemctl --user list-timers heyagent-backup.timer
+
+[Unit]
+Description=HeyAgent 每天凌晨 3 点备份
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 Asia/Shanghai
+# 关机错过了，开机后补一次
+Persistent=true
+
+[Install]
+WantedBy=timers.target
