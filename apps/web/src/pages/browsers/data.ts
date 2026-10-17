@@ -1,12 +1,12 @@
 // 浏览器页留在前端的东西：并发上限选项、详情里几张卡的行、开着的 Chrome 的状态文字。
 // Chrome 配置来自 browsers.list，平台来自 platforms.list，账号使用情况来自 browser.accountStatus，开着的 Chrome 来自 browser.live。
-import { findById, fmtDateTime, type AccountUsage, type BrowserProfile, type LiveBrowser, type SessionRun, type TaskDef } from "@heyagent/shared"
+import { findById, fmtDateTime, type AccountUsage, type BrowserProfile, type LiveBrowser } from "@heyagent/shared"
 import { useQuery } from "@tanstack/react-query"
 
 import { usePlatformsQuery } from "@/lib/data"
 import { trpc } from "@/lib/trpc"
 
-export { problemCount, proxyText, siteKey } from "@heyagent/shared"
+export { problemCount, proxyText, recentRunsUsing, siteKey } from "@heyagent/shared"
 
 /** 页面里的 Chrome = 接口返回的 BrowserProfile */
 export type Chrome = BrowserProfile
@@ -54,14 +54,4 @@ export function profileRows(profile: Chrome): [string, string][] {
     ["更新时间", fmtDateTime(profile.updatedAt)],
     ...(profile.timezone || profile.locale ? [["时区 / 语言", [profile.timezone, profile.locale].filter(Boolean).join(" · ")] as [string, string]] : []),
   ]
-}
-
-/** 最近选用了这个 Chrome 配置的运行：过程里 browser.use 的输入带着它的 id（旧数据是 "browser": "br-xx"） */
-export function recentRunsUsing(profileId: string, runs: readonly SessionRun[], tasks: readonly TaskDef[]) {
-  const id = profileId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-  const pattern = new RegExp(`"(profileId|browser)"\\s*:\\s*"${id}"`)
-  return runs
-    .filter((run) => run.events.some((event) => event.input && pattern.test(event.input)))
-    .slice(0, 3)
-    .map((run) => ({ run, task: findById(tasks, run.taskId) }))
 }

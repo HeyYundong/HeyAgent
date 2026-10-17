@@ -1,4 +1,4 @@
-// 设置页（主管专用）：一列内容，四张卡片——运行上限、浏览器、外部事件令牌、通知渠道。
+// 设置页（主管专用）：一列内容，五张卡片——运行上限、agent（验收轮数、上下文压缩）、浏览器、外部事件令牌、通知渠道。
 import { useQuery } from "@tanstack/react-query"
 import { SettingsIcon, ShieldOffIcon } from "lucide-react"
 import { can } from "@heyagent/shared"
@@ -8,12 +8,13 @@ import { EmptyState, PageFrame, SimpleHeader } from "@/components/shell/simple-p
 import { trpc } from "@/lib/trpc"
 import { useMe } from "@/lib/session"
 
+import { AgentSection } from "./agent-section"
 import { BrowserSection } from "./browser-section"
 import { ChannelsSection } from "./channels-section"
 import { LimitsSection } from "./limits-section"
 import { TokenSection } from "./token-section"
 
-const DESCRIPTION = "全局生效的几项设置：agent 跑多久要停下来问人、浏览器开多少、外部系统怎么发事件进来、通知推到哪里。"
+const DESCRIPTION = "全局生效的几项设置：agent 跑多久要停下来问人、验收问几轮、上下文多长就压缩、浏览器开多少、外部系统怎么发事件进来、通知推到哪里。"
 
 export default function SettingsPage() {
   const { user } = useMe()
@@ -45,6 +46,7 @@ function SettingsManager() {
           <LimitsSection
             limits={{ maxCostUsd: settings.maxCostUsd, maxSteps: settings.maxSteps, eventFallbackDays: settings.eventFallbackDays }}
           />
+          <AgentSection values={settings.agent} />
           <BrowserSection values={settings.browser} />
           <TokenSection token={settings.eventToken} />
           <ChannelsSection channels={settings.channels} />

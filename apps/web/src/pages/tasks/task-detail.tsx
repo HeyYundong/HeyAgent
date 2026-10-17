@@ -17,6 +17,8 @@ import { useAction } from "@/lib/mutations"
 import { href, setParams, type PageId } from "@/lib/router"
 import { trpc } from "@/lib/trpc"
 
+import { compileOf, ruleSelectable } from "@/pages/rules/compile"
+
 import { CheckpointGrid, RunStatusBadge, StepList, WaitingAlert, checkpointSummary, money, tokens, type TasksState } from "./parts"
 import { CancelRunDialog, isActive, ResumeButton, RunWithFilesDialog, TaskAttachments, useStartRun } from "./run-actions"
 import { TaskDialog } from "./task-dialog"
@@ -190,7 +192,7 @@ const clip = (text: string) => (text.length > 18 ? `${text.slice(0, 18)}…` : t
 const named = <T extends { id: string; name: string }>(list: T[], ids: string[]) => ids.flatMap((id) => findById(list, id) ?? [])
 
 function UsedConfig({ task }: { task: TaskDef }) {
-  const { modelName, providers } = useModels()
+  const { modelName, providers, defaults } = useModels()
   const providerId = providers.find((provider) => provider.models.some((model) => model.id === task.modelId))?.id ?? task.modelId.split("/")[0]
   const toolName = useToolName()
   const memories = useMemoriesQuery().data ?? []
@@ -198,13 +200,14 @@ function UsedConfig({ task }: { task: TaskDef }) {
   const rules = useRulesQuery().data ?? []
   const alwaysOn = alwaysOnToolIds(useToolsQuery().data?.tools ?? [])
   return (
-  <DetailSection title="用到的配置" description="建任务时选的，外加每个任务都自带的 3 个工具；agent 只能用这里列出的。点徽章去对应页面。">
+  <DetailSection title="用到的配置" description="建任务时选的，外加每个任务都自带的几个工具；agent 只能用这里列出的。点徽章去对应页面。">
     <div className="flex flex-col gap-3">
       <LinkBadges label="模型" page="models" items={[{ id: providerId, name: modelName(task.modelId) }]} />
+      <ConfigLine label="验收">{task.verifyModelId ? modelName(task.verifyModelId) : `默认验收模型（${modelName(defaults.verify)}）`} · 任务选了「交给三方验收」的规则时才用</ConfigLine>
       <LinkBadges label="记忆" page="memory" items={task.memoryIds.flatMap((id) => findById(memories, id) ?? []).map((m) => ({ id: m.id, name: clip(m.content) }))} />
       <LinkBadges label="技能" page="skills" items={named(skills, task.skillIds)} />
       <LinkBadges label="工具" page="tools" items={toolIdsOfTask(task, alwaysOn).map((id) => ({ id, name: alwaysOn.includes(id) ? `${toolName(id)} · 自带` : toolName(id) }))} />
-      <LinkBadges label="规则" page="rules" items={named(rules, task.ruleIds)} />
+      <LinkBadges label="规则" page="rules" items={named(rules, task.ruleIds).map((rule) => ({ id: rule.id, name: ruleSelectable(rule) ? (compileOf(rule).outdated ? `${rule.name} · 按旧版本` : rule.name) : `${rule.name} · 未生效，不执行` }))} />
       {task.toolIds.includes(BROWSER_TOOL_ID) && <BrowserConfig task={task} />}
     </div>
   </DetailSection>

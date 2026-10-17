@@ -12,11 +12,13 @@ interface ModelComboboxProps {
   disabled?: boolean
   "aria-invalid"?: boolean
   className?: string
+  /** 可以清空（清空 = 用默认）：输入框右边多一个 ×，清空时 onValueChange("") */
+  clearable?: boolean
 }
 
 const sameModel = (a: ModelInfo, b: ModelInfo) => a.id === b.id
 
-export function ModelCombobox({ id, value, onValueChange, models, placeholder = "搜模型名", disabled, "aria-invalid": invalid, className }: ModelComboboxProps) {
+export function ModelCombobox({ id, value, onValueChange, models, placeholder = "搜模型名", disabled, "aria-invalid": invalid, className, clearable = false }: ModelComboboxProps) {
   // 选中的模型不在列表里（刷新后下架了）也要显示出来，让人知道要换
   const selected = models.find((model) => model.id === value) ?? (value ? { id: value, name: value, note: "", contextK: 0, priceIn: 0, priceOut: 0 } : null)
   return (
@@ -31,9 +33,9 @@ export function ModelCombobox({ id, value, onValueChange, models, placeholder = 
         const text = query.trim().toLowerCase()
         return !text || model.name.toLowerCase().includes(text) || model.id.toLowerCase().includes(text)
       }}
-      onValueChange={(model) => model && onValueChange(model.id)}
+      onValueChange={(model) => (model ? onValueChange(model.id) : clearable && onValueChange(""))}
     >
-      <ComboboxInput id={id} className={className ?? "w-full"} placeholder={placeholder} aria-invalid={invalid} />
+      <ComboboxInput id={id} className={className ?? "w-full"} placeholder={placeholder} aria-invalid={invalid} showClear={clearable && !!value} />
       <ComboboxContent>
         <ComboboxEmpty>没有匹配的模型</ComboboxEmpty>
         <ComboboxList>

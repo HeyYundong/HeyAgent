@@ -61,3 +61,20 @@ describe("网址解析", () => {
     expect(parseUrl("no scheme")).toBeUndefined()
   })
 })
+
+describe("最近选用了这个 Chrome 的运行", () => {
+  it("认 browser.use 的 profileId，也认旧格式 browser", async () => {
+    const { recentRunsUsing } = await import("../src/index.js")
+    const run = (id: string, input: string) =>
+      ({ id, taskId: "T-1", events: [{ seq: 1, at: "2026-10-17T00:00:00.000Z", kind: "tool", title: "t", input }] }) as never
+    const runs = [
+      run("R-1", '{"profileId":"br-a.b"}'),
+      run("R-2", '{"browser": "br-a.b"}'),
+      run("R-3", '{"profileId":"br-aXb"}'),
+      run("R-4", '{"profileId":"br-a.b-2"}'),
+    ]
+    const found = recentRunsUsing("br-a.b", runs, [{ id: "T-1" } as never])
+    expect(found.map((item) => item.run.id)).toEqual(["R-1", "R-2"])
+    expect(found[0]!.task?.id).toBe("T-1")
+  })
+})

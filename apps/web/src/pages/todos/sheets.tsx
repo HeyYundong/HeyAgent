@@ -1,6 +1,6 @@
 // 看板卡片的详情 Sheet：外壳 + 运行（session）详情 + 人加的待办详情。「要人办的事」在 human-sheet.tsx。
 import { Fragment, createElement, type ReactNode } from "react"
-import { BrainIcon, CircleCheckIcon, CircleDashedIcon, CircleSlashIcon, EllipsisIcon, FlagIcon, ListTodoIcon, PauseIcon } from "lucide-react"
+import { BrainIcon, CircleCheckIcon, CircleDashedIcon, CircleDotIcon, CircleSlashIcon, EllipsisIcon, FlagIcon, ListTodoIcon, PauseIcon } from "lucide-react"
 import { PlayIcon, ShieldIcon, ShieldQuestionIcon, TriangleAlertIcon, UserIcon, UserPenIcon, WrenchIcon, ZapIcon, type LucideIcon } from "lucide-react"
 
 import { DetailSection } from "@/components/shell/simple-page"
@@ -16,7 +16,8 @@ import { Trace, TraceDescription, TraceIcon, TraceLine, TraceTitle } from "@/com
 import { useAction } from "@/lib/mutations"
 import { href } from "@/lib/router"
 import { trpc } from "@/lib/trpc"
-import { money } from "@/pages/tasks/parts"
+import { focusedCheckpoint, money } from "@/pages/tasks/parts"
+import { VerificationReport } from "@/pages/tasks/verification"
 import { ResumeButton } from "@/pages/tasks/run-actions"
 import { addDaysIso, boardColumns, eventTimeText, findById, fmtDateTime, fmtShort, suspendedRun, triggerText } from "@heyagent/shared"
 import type { BoardColumn, HumanTodo, RunEventKind, SessionRun, TaskDef, Trigger } from "@heyagent/shared"
@@ -61,9 +62,6 @@ export const Block = ({ title, children }: { title: string; children: ReactNode 
 /** 几样东西用 · 隔开（空的跳过） */
 export const dots = (...parts: ReactNode[]) => parts.filter(Boolean).map((part, index) => <Fragment key={index}>{index > 0 && " · "}{part}</Fragment>)
 
-/** 验收对话的一句 */
-export const Said = ({ by, text }: { by: string; text: string }) => <p><span className="text-muted-foreground">{by === "verifier" ? "三方 AI：" : "执行 agent："}</span>{text}</p>
-
 const EVENT_ICON: Record<RunEventKind, LucideIcon> = { plan: ListTodoIcon, think: BrainIcon, tool: WrenchIcon, checkpoint: FlagIcon, rule: ShieldIcon,
   wait: PauseIcon, resume: PlayIcon, human: UserIcon, verify: ShieldQuestionIcon, done: CircleCheckIcon, error: TriangleAlertIcon }
 const CHECK_ICON = { done: CircleCheckIcon, open: CircleDashedIcon, skipped: CircleSlashIcon }
@@ -92,6 +90,7 @@ export function RunSheet({ run, task, column, note, canAct, isAdmin, open, onClo
   const { modelName } = useModels()
   const waiting = note ? undefined : run.waiting
   const doneCount = run.checkpoints.filter((checkpoint) => checkpoint.status === "done").length
+  const focused = focusedCheckpoint(run)
   const last = run.events.slice(-4)
   const k = (n: number) => `${(n / 1000).toFixed(1)}k`
   return (
@@ -120,17 +119,17 @@ export function RunSheet({ run, task, column, note, canAct, isAdmin, open, onClo
         </DetailSection>
       )}
       {run.verification && (
-        <DetailSection title={column === "done" ? "验收结果" : column === "verifying" ? "三方 AI 正在验收" : "验收记录"} description={run.verification.headline}>
-          {run.verification.notes.map((note, index) => <Said key={index} {...note} />)}
+        <DetailSection title={column === "done" ? "验收结果" : column === "verifying" ? "三方 AI 正在验收" : "验收记录"} description={run.verification.round ? `第 ${run.verification.round} 轮` : undefined}>
+          <VerificationReport verification={run.verification} showNotes={false} />
         </DetailSection>
       )}
       <DetailSection title="检查点" description={run.checkpoints.length > 0 && `完成 ${doneCount} / ${run.checkpoints.length}`}>
-        {run.checkpoints.length === 0 && <p className="text-muted-foreground">任务没写步骤，agent 在探索：{run.exploredSteps?.join(" → ")}。检查点会边做边记。</p>}
+        {run.checkpoints.length === 0 && <p className="text-muted-foreground">这次运行没有检查点。{run.exploredSteps?.length ? `agent 的步骤：${run.exploredSteps.join(" → ")}` : ""}</p>}
         <ul className="flex flex-col gap-1.5">
-          {run.checkpoints.map(({ title, status, target, progress, skipReason }) => (
+          {run.checkpoints.map(({ title, status, target, progress, skipReason }, index) => (
             <li key={title} className="flex items-start gap-2">
-              {createElement(CHECK_ICON[status], { className: "mt-0.5 size-3.5 shrink-0 text-muted-foreground" })}
-              <span className="min-w-0 flex-1">{title}{skipReason && <span className="block text-xs text-muted-foreground">跳过：{skipReason}</span>}</span>
+              {createElement(index === focused && status === "open" ? CircleDotIcon : CHECK_ICON[status], { className: "mt-0.5 size-3.5 shrink-0 text-muted-foreground" })}
+              <span className="min-w-0 flex-1">{title}{index === focused && status === "open" && <Badge variant="secondary" className="ml-2">正在做</Badge>}{skipReason && <span className="block text-xs text-muted-foreground">跳过：{skipReason}</span>}</span>
               {target !== undefined && <span className="text-muted-foreground tabular-nums">{progress ?? 0}/{target}</span>}
             </li>
           ))}

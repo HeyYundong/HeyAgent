@@ -1,6 +1,6 @@
 // 任务页几处共用的小块：运行状态徽章、「现在在干什么 / 在等什么」、检查点卡片网格。Session 页也直接用这里的导出。
 import * as React from "react"
-import { CircleCheckIcon, CircleDashedIcon, CircleMinusIcon, CircleXIcon, HandIcon, HourglassIcon, ScanSearchIcon } from "lucide-react"
+import { CircleCheckIcon, CircleDashedIcon, CircleDotIcon, CircleMinusIcon, CircleXIcon, HandIcon, HourglassIcon, ScanSearchIcon } from "lucide-react"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
@@ -45,8 +45,27 @@ export const money = (usd: number) => `$${usd > 0 && usd < 0.01 ? usd.toFixed(4)
 
 const STATUS = { done: { icon: CircleCheckIcon, label: "完成", variant: "outline" }, open: { icon: CircleDashedIcon, label: "未完成", variant: "ghost" }, skipped: { icon: CircleMinusIcon, label: "已跳过", variant: "destructive" } } as const
 
-function CheckpointCard({ cp, run }: { cp: RunCheckpoint; run: SessionRun }) {
-  const status = STATUS[cp.status]
+/**
+ * agent 用 checkpoint.mark(status = "doing") 最近指定的「正在做」的检查点（序号从 0 开始）。
+ * 同类型的检查点有好几个时，规则自动写的记录记到它上面（M3）。运行结束了就不算
+ */
+export function focusedCheckpoint(run: Pick<SessionRun, "status" | "events">): number | undefined {
+  if (run.status === "done" || run.status === "failed") return undefined
+  for (let index = run.events.length - 1; index >= 0; index--) {
+    const event = run.events[index]!
+    if (event.kind !== "tool" || event.toolId !== "checkpoint.mark" || !event.input) continue
+    try {
+      const input = JSON.parse(event.input) as { checkpoint?: unknown; status?: unknown }
+      if (input.status === "doing" && typeof input.checkpoint === "number") return input.checkpoint - 1
+    } catch {
+      // 输入不是 JSON（被截断等），跳过
+    }
+  }
+  return undefined
+}
+
+function CheckpointCard({ cp, run, doing }: { cp: RunCheckpoint; run: SessionRun; doing: boolean }) {
+  const status = doing && cp.status === "open" ? { icon: CircleDotIcon, label: "正在做", variant: "secondary" as const } : STATUS[cp.status]
   const progress = cp.target ? `${cp.progress ?? 0}/${cp.target}` : undefined
   return (
     <Card size="sm">
@@ -85,14 +104,15 @@ function CheckpointCard({ cp, run }: { cp: RunCheckpoint; run: SessionRun }) {
 /** 检查点：每条一张小卡片，网格排列（记录的时间按这次运行显示：当天的只写时分，跨天的带日期） */
 export function CheckpointGrid({ run }: { run: SessionRun }) {
   const { checkpoints } = run
+  const focused = focusedCheckpoint(run)
   if (checkpoints.length === 0) return <p className="text-muted-foreground">这次运行还没有检查点。没写步骤的任务，agent 会边做边加。</p>
   return (
     <div className="flex flex-col gap-3">
       <div className="grid gap-3 sm:grid-cols-2">
-        {checkpoints.map((cp) => <CheckpointCard key={cp.title} cp={cp} run={run} />)}
+        {checkpoints.map((cp, index) => <CheckpointCard key={cp.title} cp={cp} run={run} doing={index === focused} />)}
       </div>
       {checkpoints.some((cp) => cp.records.some((record) => record.synced)) && (
-        <p className="text-xs text-muted-foreground">标「自动」的记录是规则「同步检查点」在工具调用后自动写的，agent 改不了。</p>
+        <p className="text-xs text-muted-foreground">标「自动」的记录是规则在工具调用后按工具类别自动写的（访问网页、对外发消息、存文件），agent 改不了。</p>
       )}
     </div>
   )

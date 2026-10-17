@@ -22,7 +22,7 @@ export function RulesLesson() {
   return (
     <Lesson
       title="规则：选上的才管用"
-      meta="一条规则 = 名称 + 一句话写的触发条件 + 命中后会调用的工具。规则没有全局开关，建任务时选上哪几条，这次运行就只受这几条管。命中了由代码执行，模型绕不过。"
+      meta="一条规则 = 名称 + 一句话写的触发条件和命中后怎么办。保存后系统把它翻译成程序能执行的规则，显示「系统理解为……」，主管确认后才生效；翻译不进去的不生效。规则没有全局开关，建任务时选上哪几条，这次运行就只受这几条管。命中了由代码执行，模型绕不过。"
       choice={{ label: "选一个情况", value: scenario.id, options, onChange: setScenarioId }}
     >
       <DetailSection

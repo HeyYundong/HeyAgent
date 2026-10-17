@@ -20,10 +20,15 @@ export function problemCount(profile: Pick<BrowserProfile, "sites">) {
   return profile.sites.filter((site) => site.status !== "ok").length
 }
 
-/** 最近选用了这个 Chrome 的运行（从运行记录里工具调用的输入找 "browser": "br-xx"） */
-export function recentRunsUsing(browserId: string, runs: readonly SessionRun[], tasks: readonly TaskDef[]) {
+/**
+ * 最近选用了这个 Chrome 配置的运行：过程里工具调用的输入带着它的 id。
+ * M2 起是 browser.use 的 {"profileId": "br-xx"}；更早的数据是 {"browser": "br-xx"}，两种都认（冒号前后有没有空格都行）
+ */
+export function recentRunsUsing(profileId: string, runs: readonly SessionRun[], tasks: readonly TaskDef[]) {
+  const id = profileId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  const pattern = new RegExp(`"(profileId|browser)"\\s*:\\s*"${id}"`)
   return runs
-    .filter((run) => run.events.some((event) => event.input?.includes(`"browser": "${browserId}"`)))
+    .filter((run) => run.events.some((event) => event.input && pattern.test(event.input)))
     .slice(0, 3)
     .map((run) => ({ run, task: findById(tasks, run.taskId) }))
 }

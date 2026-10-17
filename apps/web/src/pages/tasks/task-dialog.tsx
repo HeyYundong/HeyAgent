@@ -1,5 +1,7 @@
 // 新建 / 编辑任务（按用户草图）：一行任务 → 步骤（每步可勾「等待」「检查点」，可以一步都不写）→ 目标 → 用哪些 → 模型 → 定时运行。
 // 表单：React Hook Form + shared 的 taskInputSchema；执行模型和三方验收模型不许同一家（前端先拦，后端也拦）。
+// M3：规则只能选已经生效的（没生效的列出来但选不了，写明原因）；可以给任务单独选验收模型。
+// tasks.update 是整体替换：verifyModelId、浏览器的三项都要带上，不然会被清空。
 import * as React from "react"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { Controller, useFieldArray, useForm, useWatch, type Control, type UseFormRegister } from "react-hook-form"
@@ -39,16 +41,19 @@ import { navigate } from "@/lib/router"
 import { useMe } from "@/lib/session"
 import { trpc } from "@/lib/trpc"
 
+import { compileOf, ruleHint, ruleSelectable } from "@/pages/rules/compile"
+
 import { cronText } from "./cron"
 import { PLACEHOLDER } from "./data"
 import { TaskAttachments } from "./run-actions"
 
-type Option = { value: string; label: string; hint?: string }
+type Option = { value: string; label: string; hint?: string; disabled?: boolean }
 type PickKey = "memoryIds" | "skillIds" | "toolIds" | "ruleIds"
 const PICK_KEYS: PickKey[] = ["memoryIds", "skillIds", "toolIds", "ruleIds"]
 
-/** 「用哪些」的选项：生效的记忆、已发布的技能、不是自带的工具、全部规则；编辑时已经选上的（哪怕后来归档、停用了）也列出来 */
-function usePickOptions(picked: Partial<Record<PickKey, string[]>>): Record<PickKey, { label: string; options: Option[] }> {
+/** 「用哪些」的选项：生效的记忆、已发布的技能、不是自带的工具、全部规则；编辑时已经选上的（哪怕后来归档、停用了）也列出来。
+ * 规则：没生效的也列出来但选不了（灰掉，写原因）；编辑时原来就选着的照样留着（后端也保留） */
+function usePickOptions(picked: Partial<Record<PickKey, string[]>>, originalRuleIds: string[]): Record<PickKey, { label: string; options: Option[] }> {
   const memories = useMemoriesQuery().data ?? []
   const skills = useSkillsQuery().data ?? []
   const tools = useToolsQuery().data?.tools ?? []
@@ -59,11 +64,19 @@ function usePickOptions(picked: Partial<Record<PickKey, string[]>>): Record<Pick
     memoryIds: { label: "记忆", options: memories.filter((m) => m.status === "active" || keep("memoryIds", m.id)).map((m) => ({ value: m.id, label: clip(m.content), hint: m.appliesTo })) },
     skillIds: { label: "技能", options: skills.filter((s) => s.status === "published" || keep("skillIds", s.id)).map((s) => ({ value: s.id, label: s.name, hint: s.dept })) },
     toolIds: { label: "工具", options: tools.filter((t) => !t.alwaysOn).map((t) => ({ value: t.id, label: t.name, hint: t.summary })) },
-    ruleIds: { label: "规则", options: rules.map((r) => ({ value: r.id, label: r.name, hint: r.trigger })) },
+    ruleIds: {
+      label: "规则",
+      options: rules.map((r) => ({
+        value: r.id,
+        label: ruleSelectable(r) ? r.name : `${r.name}（${compileOf(r).status === "unsupported" ? "未生效" : compileOf(r).status === "pending" ? "待确认" : "未翻译"}）`,
+        hint: ruleHint(r) ?? compileOf(r).understood ?? r.trigger,
+        disabled: !ruleSelectable(r) && !originalRuleIds.includes(r.id),
+      })),
+    },
   }
 }
 
-function MultiPick({ id, label, options, value, onChange, description }: { id: string; label: string; options: Option[]; value: string[]; onChange: (value: string[]) => void; description?: string }) {
+function MultiPick({ id, label, options, value, onChange, description, notes }: { id: string; label: string; options: Option[]; value: string[]; onChange: (value: string[]) => void; description?: string; notes?: string[] }) {
   const anchor = useComboboxAnchor()
   const labelOf = (v: string) => options.find((o) => o.value === v)?.label ?? v
   return (
@@ -85,10 +98,10 @@ function MultiPick({ id, label, options, value, onChange, description }: { id: s
           <ComboboxEmpty>没有匹配的{label}</ComboboxEmpty>
           <ComboboxList>
             {(v: string) => (
-              <ComboboxItem key={v} value={v}>
+              <ComboboxItem key={v} value={v} disabled={options.find((o) => o.value === v)?.disabled}>
                 <span className="flex min-w-0 flex-col">
                   <span>{labelOf(v)}</span>
-                  <span className="truncate text-muted-foreground">{options.find((o) => o.value === v)?.hint}</span>
+                  <span className="line-clamp-2 text-muted-foreground">{options.find((o) => o.value === v)?.hint}</span>
                 </span>
               </ComboboxItem>
             )}
@@ -96,6 +109,7 @@ function MultiPick({ id, label, options, value, onChange, description }: { id: s
         </ComboboxContent>
       </Combobox>
       {description && <FieldDescription>{description}</FieldDescription>}
+      {notes?.map((note) => <FieldDescription key={note}>{note}</FieldDescription>)}
     </Field>
   )
 }
@@ -228,19 +242,27 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
           browserProfileIds: task.browserProfileIds,
           allowedDomains: task.allowedDomains,
           allowBrowserEvaluate: task.allowBrowserEvaluate,
+          verifyModelId: task.verifyModelId ?? "",
         }
       : {
           title: "", goal: "", steps: [{ text: "", wait: false }], modelId: defaults.run, ownerId: user.id, schedule: null, enabled: true,
-          memoryIds: [], skillIds: [], toolIds: [], ruleIds: [], browserProfileIds: [], allowedDomains: [], allowBrowserEvaluate: false,
+          memoryIds: [], skillIds: [], toolIds: [], ruleIds: [], browserProfileIds: [], allowedDomains: [], allowBrowserEvaluate: false, verifyModelId: "",
         },
   })
   // 网址白名单在表单里是一段文字（每行一个），提交时拆成数组
   const [domainText, setDomainText] = React.useState(() => domainsText(task?.allowedDomains ?? []))
   const { errors } = form.formState
   const steps = useFieldArray({ control: form.control, name: "steps" })
-  const [modelId, schedule, memoryIds, skillIds, toolIds] = useWatch({ control: form.control, name: ["modelId", "schedule", "memoryIds", "skillIds", "toolIds"] })
+  const [modelId, schedule, memoryIds, skillIds, toolIds, ruleIds, verifyModelId] = useWatch({ control: form.control, name: ["modelId", "schedule", "memoryIds", "skillIds", "toolIds", "ruleIds", "verifyModelId"] })
   const usesBrowser = (toolIds ?? []).includes(BROWSER_TOOL_ID)
-  const options = usePickOptions({ memoryIds: memoryIds ?? [], skillIds: skillIds ?? [] })
+  const options = usePickOptions({ memoryIds: memoryIds ?? [], skillIds: skillIds ?? [] }, task?.ruleIds ?? [])
+  const rules = useRulesQuery().data ?? []
+  // 选着的规则里没生效 / 改过还没确认的：写清楚运行时会怎样
+  const ruleNotes = (ruleIds ?? []).flatMap((id) => {
+    const rule = rules.find((each) => each.id === id)
+    const hint = rule && ruleHint(rule)
+    return rule && hint ? [`「${rule.name}」${ruleSelectable(rule) ? hint : `${hint}。这次保存会留着它，但运行时不执行`}`] : []
+  })
   const create = useAction(trpc.tasks.create.mutationOptions(), { success: (data) => `任务 ${data.id} 建好了` })
   const update = useAction(trpc.tasks.update.mutationOptions(), { success: "任务已保存" })
   const attach = useAction(trpc.engine.attachToTask.mutationOptions(), { errorTitle: "附件没加上" })
@@ -254,9 +276,10 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
   const cronValue = schedule?.cron ?? ""
   const cronHuman = cronValue ? cronText(cronValue) : null
   const effectiveModel = modelId || defaults.run
+  const effectiveVerify = verifyModelId || defaults.verify
   // 不是提醒，是不允许：验收和执行同一家，就不算第三方
-  const modelClash = effectiveModel && defaults.verify && sameFamily(effectiveModel, defaults.verify)
-    ? `执行和三方验收（${modelName(defaults.verify)}）是同一家（${modelFamily(effectiveModel)}），验收就不算第三方了。换一个执行模型，或去「模型」页换验收模型。`
+  const modelClash = effectiveModel && effectiveVerify && sameFamily(effectiveModel, effectiveVerify)
+    ? `执行和三方验收（${modelName(effectiveVerify)}${verifyModelId ? "" : "，默认的验收模型"}）是同一家（${modelFamily(effectiveModel)}），验收就不算第三方了。换一个执行模型，或者换一家的验收模型。`
     : undefined
 
   const submitWith = (startAfter: boolean) => form.handleSubmit(async (values) => {
@@ -277,6 +300,8 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
       // 浏览器的三项只在选了「浏览器」工具时起作用；没选时也原样保留，免得关掉再打开要重填
       allowedDomains: parsedDomains.domains,
       steps: values.steps.map((step) => ({ ...step, checkpoint: step.checkpoint?.trim() || undefined })),
+      // 空 = 用默认验收模型
+      verifyModelId: values.verifyModelId || undefined,
       schedule: values.schedule ? { cron: values.schedule.cron.trim(), text: cronText(values.schedule.cron) ?? values.schedule.cron.trim() } : null,
     }
     if (task) {
@@ -360,7 +385,9 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
                           options={options[key].options}
                           value={field.value ?? []}
                           onChange={field.onChange}
-                          description={key === "toolIds" && alwaysOn.length ? `每个任务都自带：${alwaysOn.map(toolName).join("、")}` : undefined}
+                          description={key === "toolIds" && alwaysOn.length ? `每个任务都自带：${alwaysOn.map(toolName).join("、")}`
+                            : key === "ruleIds" ? "只能选已经生效的（主管在「规则」页确认过「系统理解为」）；没生效的灰着，写了原因。" : undefined}
+                          notes={key === "ruleIds" ? ruleNotes : undefined}
                         />
                       )}
                     />
@@ -381,6 +408,18 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
                       )}
                     />
                     <FieldDescription>默认是「模型」页设置的执行模型。</FieldDescription>
+                  </Field>
+                  <Field data-invalid={!!modelClash} className="sm:col-span-2">
+                    <FieldLabel htmlFor="task-verifyModel">三方验收模型</FieldLabel>
+                    <Controller
+                      control={form.control}
+                      name="verifyModelId"
+                      render={({ field }) => (
+                        <ModelCombobox id="task-verifyModel" className="w-full sm:w-1/2" models={models} value={field.value ?? ""} onValueChange={field.onChange} clearable aria-invalid={!!modelClash}
+                          placeholder={defaults.verify ? `默认：${modelName(defaults.verify)}` : "搜模型名"} />
+                      )}
+                    />
+                    <FieldDescription>任务选了「交给三方验收」的规则时，agent 说做完了由它逐条核对检查点。不能和执行模型同一家；不选就用「模型」页的默认验收模型。</FieldDescription>
                     {modelClash && <FieldError>{modelClash}</FieldError>}
                   </Field>
                   {canAssign && (
