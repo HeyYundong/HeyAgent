@@ -20,7 +20,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx --conditions=@heyagent/source src/db/migrate-cli.ts",
     "db:seed": "tsx --conditions=@heyagent/source src/seed/cli.ts",
-    "dev:notify": "tsx --conditions=@heyagent/source src/scripts/dev-notify.ts"
+    "dev:notify": "tsx --conditions=@heyagent/source src/scripts/dev-notify.ts",
+    "kek:rotate": "tsx --conditions=@heyagent/source src/scripts/kek-rotate.ts"
   },
   "dependencies": {
     "@ai-sdk/mcp": "2.0.77",
