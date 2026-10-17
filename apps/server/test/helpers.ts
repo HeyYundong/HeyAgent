@@ -50,13 +50,14 @@ export async function setupApp() {
   const auth = createAuth(db, { secret: "test-secret-test-secret-test-secret-0", baseURL: "http://localhost:3100", trustedOrigins: ["http://localhost:5180"] })
   const hub = new ChangeHub(url)
   await hub.start()
-  const app = createApp({ db, auth, hub })
+  const app = createApp({ db, auth, hub, keyring })
   return {
     url,
     db,
     keyring,
     hub,
     app,
+    auth,
     async close() {
       await hub.stop()
       await pool.end()
@@ -83,6 +84,17 @@ export async function login(app: TestApp["app"], email: string, password = PASSW
 export async function query(app: TestApp["app"], path: string, cookie?: string, input?: unknown) {
   const search = input === undefined ? "" : `?input=${encodeURIComponent(JSON.stringify(input))}`
   const res = await app.request(`/api/trpc/${path}${search}`, { headers: cookie ? { cookie } : {} })
+  const body = (await res.json()) as { result?: { data: unknown }; error?: { message: string; data?: { code: string } } }
+  return { status: res.status, data: body.result?.data as any, error: body.error }
+}
+
+/** 调一个 tRPC mutation（POST /api/trpc/<path>，body 是输入的 JSON） */
+export async function mutate(app: TestApp["app"], path: string, cookie: string | undefined, input?: unknown) {
+  const res = await app.request(`/api/trpc/${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...(cookie ? { cookie } : {}) },
+    body: input === undefined ? undefined : JSON.stringify(input),
+  })
   const body = (await res.json()) as { result?: { data: unknown }; error?: { message: string; data?: { code: string } } }
   return { status: res.status, data: body.result?.data as any, error: body.error }
 }

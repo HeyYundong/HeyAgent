@@ -1,8 +1,8 @@
 // 记忆页（v3）：左边按「适用于」的分类分组，右边一条记忆的详情（标题卡 + 分区卡）。
-// 只负责「看」和主管的「新建 / 编辑 / 归档」；agent 提议的记忆在「待办」里审核。
-// M0 只读：新建、编辑、归档的弹窗照原型显示，真正提交时弹「只读阶段」提示。
+// 只负责「看」和主管的「新建 / 编辑 / 归档 / 删除」；agent 提议的记忆在「待办」里审核（审核人也可以在这里直接批）。
+// 被任务选用的记忆不能删（后端拦，页面先说明），归档前提醒哪些任务会读不到。
 import * as React from "react"
-import { BrainIcon, EllipsisIcon, InboxIcon, ListChecksIcon, PencilIcon, PlusIcon } from "lucide-react"
+import { BrainIcon, CheckIcon, EllipsisIcon, InboxIcon, ListChecksIcon, PencilIcon, PlusIcon, XIcon } from "lucide-react"
 
 import { DetailPanel, DetailSection, EmptyState, MasterDetail } from "@/components/shell/simple-page"
 import { PageFrame, PickGroup, PickItem, SimpleHeader } from "@/components/shell/simple-page"
@@ -15,10 +15,12 @@ import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, 
 import { can, evidenceLabel, findById, fmtDate, fmtDateTime, memoryCategory, memoryStatusLabel, tasksUsing } from "@heyagent/shared"
 import type { MemoryRef, TaskDef } from "@heyagent/shared"
 
+import { MarkdownView } from "@/components/markdown"
 import { useMemoriesQuery, useStaffName, useStaffQuery, useTasksQuery } from "@/lib/data"
-import { readOnlyToast } from "@/lib/readonly"
-import { href, useRoute } from "@/lib/router"
+import { useAction } from "@/lib/mutations"
+import { href, setParams, useRoute } from "@/lib/router"
 import { useMe } from "@/lib/session"
+import { trpc } from "@/lib/trpc"
 
 import { MemoryDialog } from "./memory-dialog"
 
@@ -73,7 +75,7 @@ export default function MemoryPage() {
       description="agent 记住的经验和偏好。建任务时选用哪几条，运行开始时 agent 就读到哪几条。"
       learnId="memory"
       action={
-        isAdmin && (
+        isAdmin && visible.length > 0 && (
           <Button onClick={() => setEditing("new")}>
             <PlusIcon data-icon="inline-start" />
             新建记忆
@@ -84,45 +86,64 @@ export default function MemoryPage() {
   )
 
   return (
-    <PageFrame
-      header={header}
-      queries={queries}
-      isEmpty={visible.length === 0}
-      empty={<EmptyState icon={<BrainIcon />} title="还没有记忆" description="agent 在任务里学到的经验，审核通过后会出现在这里。" />}
-    >
-      <MasterDetail
-        hasSelection={!!selected}
-        list={categories.map((category) => {
-          const group = visible.filter((m) => memoryCategory(m.appliesTo) === category)
-          if (group.length === 0) return null
-          return (
-            <PickGroup key={category} label={`${category} · ${group.length}`}>
-              {group.map((m) => (
-                <PickItem
-                  key={m.id}
-                  to={href("memory", { id: m.id })}
-                  selected={m.id === selected?.id}
-                  title={m.content}
-                  description={objectPart(m.appliesTo) || who(m, staffName)}
-                  badge={m.status === "pending" && <Badge>待审核</Badge>}
-                />
-              ))}
-            </PickGroup>
-          )
-        })}
-        detail={
-          selected ? (
-            <MemoryDetail
-              memory={selected}
-              tasks={tasksQuery.data ?? []}
-              isAdmin={isAdmin}
-              canReview={!!selected.reviewerId && can(user, "humanItem.resolve", { assigneeId: selected.reviewerId })}
-              onEdit={() => setEditing(selected)}
-              onArchive={readOnlyToast}
-            />
-          ) : null
+    <>
+      <PageFrame
+        header={header}
+        queries={queries}
+        isEmpty={visible.length === 0}
+        empty={
+          <EmptyState
+            icon={<BrainIcon />}
+            title="还没有记忆"
+            description={
+              isAdmin
+                ? "记忆是 agent 要记住的经验和偏好。点下面新建一条；agent 在任务里学到的经验，审核通过后也会出现在这里。"
+                : "还没有记忆。主管新建的、agent 学到并审核通过的经验会出现在这里。"
+            }
+            action={
+              isAdmin && (
+                <Button onClick={() => setEditing("new")}>
+                  <PlusIcon data-icon="inline-start" />
+                  新建记忆
+                </Button>
+              )
+            }
+          />
         }
-      />
+      >
+        <MasterDetail
+          hasSelection={!!selected}
+          list={categories.map((category) => {
+            const group = visible.filter((m) => memoryCategory(m.appliesTo) === category)
+            if (group.length === 0) return null
+            return (
+              <PickGroup key={category} label={`${category} · ${group.length}`}>
+                {group.map((m) => (
+                  <PickItem
+                    key={m.id}
+                    to={href("memory", { id: m.id })}
+                    selected={m.id === selected?.id}
+                    title={m.content}
+                    description={objectPart(m.appliesTo) || who(m, staffName)}
+                    badge={m.status === "pending" && <Badge>待审核</Badge>}
+                  />
+                ))}
+              </PickGroup>
+            )
+          })}
+          detail={
+            selected ? (
+              <MemoryDetail
+                memory={selected}
+                tasks={tasksQuery.data ?? []}
+                isAdmin={isAdmin}
+                canReview={!!selected.reviewerId && can(user, "humanItem.resolve", { assigneeId: selected.reviewerId })}
+                onEdit={() => setEditing(selected)}
+              />
+            ) : null
+          }
+        />
+      </PageFrame>
       <MemoryDialog
         key={editing === "new" ? "new" : (editing?.id ?? "closed")}
         open={editing !== null}
@@ -130,9 +151,8 @@ export default function MemoryPage() {
         memory={editing === "new" ? undefined : (editing ?? undefined)}
         appliesToOptions={appliesToOptions}
         onCreateAppliesTo={(value) => setCreatedAppliesTo((list) => [...list, value])}
-        onSubmit={readOnlyToast}
       />
-    </PageFrame>
+    </>
   )
 }
 
@@ -144,17 +164,19 @@ function MemoryDetail({
   isAdmin,
   canReview,
   onEdit,
-  onArchive,
 }: {
   memory: MemoryRef
   tasks: TaskDef[]
   isAdmin: boolean
   canReview: boolean
   onEdit: () => void
-  onArchive: () => void
 }) {
-  const [confirming, setConfirming] = React.useState(false)
+  const [confirming, setConfirming] = React.useState<"archive" | "delete" | "blocked" | null>(null)
   const staffName = useStaffName()
+  const archive = useAction(trpc.memories.archive.mutationOptions({ onSuccess: () => setParams({ id: null }) }), { success: "已归档，不再给任务用" })
+  const remove = useAction(trpc.memories.delete.mutationOptions({ onSuccess: () => setParams({ id: null }) }), { success: "记忆已删除" })
+  const approve = useAction(trpc.memories.approve.mutationOptions(), { success: "已通过，这条记忆生效了" })
+  const reject = useAction(trpc.memories.reject.mutationOptions(), { success: "已拒绝，agent 以后读不到它" })
   const note = memory.note
   const pending = memory.status === "pending"
   const usedBy = tasksUsing(tasks, "memoryIds", memory.id)
@@ -170,7 +192,8 @@ function MemoryDetail({
           <EllipsisIcon />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <DropdownMenuItem onClick={() => (usedBy.length > 0 ? setConfirming(true) : onArchive())}>归档</DropdownMenuItem>
+          <DropdownMenuItem onClick={() => (usedBy.length > 0 ? setConfirming("archive") : archive.mutate({ id: memory.id }))}>归档</DropdownMenuItem>
+          <DropdownMenuItem variant="destructive" onClick={() => setConfirming(usedBy.length > 0 ? "blocked" : "delete")}>删除</DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
     </>
@@ -194,13 +217,21 @@ function MemoryDetail({
           </ItemContent>
           {canReview && (
             <ItemActions>
-              <Button size="sm" nativeButton={false} render={<a href={href("todos", { id: memory.reviewItemId ?? memory.id })} />}>
-                去待办处理 →
+              <Button size="sm" disabled={approve.isPending} onClick={() => approve.mutate({ id: memory.id })}>
+                <CheckIcon data-icon="inline-start" />
+                通过
+              </Button>
+              <Button size="sm" variant="outline" disabled={reject.isPending} onClick={() => reject.mutate({ id: memory.id })}>
+                <XIcon data-icon="inline-start" />
+                拒绝
               </Button>
             </ItemActions>
           )}
         </Item>
       )}
+      <DetailSection title="内容" description="agent 运行开始时读到的就是这段话。">
+        <MarkdownView>{memory.content}</MarkdownView>
+      </DetailSection>
       <DetailSection title="适用于" description="决定它在列表里放哪一组；建任务时按这个找。">
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant="outline">{memory.appliesTo}</Badge>
@@ -223,20 +254,51 @@ function MemoryDetail({
           <TaskLinks tasks={usedBy} empty={pending ? "审核通过后才能被任务选用。" : "还没有任务选用这条记忆。"} />
         </DetailSection>
       </div>
-      <AlertDialog open={confirming} onOpenChange={setConfirming}>
+      <AlertDialog open={confirming !== null} onOpenChange={(open) => !open && setConfirming(null)}>
         <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>归档这条记忆？</AlertDialogTitle>
-            <AlertDialogDescription>
-              有 {usedBy.length} 个任务选用了它。归档后这些任务的下一次运行就读不到了，需要的话请先在任务里换一条。
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
-            <AlertDialogAction variant="destructive" onClick={onArchive}>
-              归档
-            </AlertDialogAction>
-          </AlertDialogFooter>
+          {confirming === "archive" && (
+            <>
+              <AlertDialogHeader>
+                <AlertDialogTitle>归档这条记忆？</AlertDialogTitle>
+                <AlertDialogDescription>
+                  有 {usedBy.length} 个任务选用了它。归档后这些任务的下一次运行就读不到了，需要的话请先在任务里换一条。
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>取消</AlertDialogCancel>
+                <AlertDialogAction variant="destructive" onClick={() => archive.mutate({ id: memory.id })}>
+                  归档
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </>
+          )}
+          {confirming === "delete" && (
+            <>
+              <AlertDialogHeader>
+                <AlertDialogTitle>删除这条记忆？</AlertDialogTitle>
+                <AlertDialogDescription>删除后不能恢复。只是暂时不想让任务用，可以改成归档。</AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>取消</AlertDialogCancel>
+                <AlertDialogAction variant="destructive" onClick={() => remove.mutate({ id: memory.id })}>
+                  删除记忆
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </>
+          )}
+          {confirming === "blocked" && (
+            <>
+              <AlertDialogHeader>
+                <AlertDialogTitle>这条记忆正在被使用，不能删除</AlertDialogTitle>
+                <AlertDialogDescription>
+                  有 {usedBy.length} 个任务选用了它：{usedBy.map((task) => `${task.id}「${task.title}」`).join("、")}。先在这些任务里去掉它，或者改成归档。
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>知道了</AlertDialogCancel>
+              </AlertDialogFooter>
+            </>
+          )}
         </AlertDialogContent>
       </AlertDialog>
     </DetailPanel>

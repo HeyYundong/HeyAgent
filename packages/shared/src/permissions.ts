@@ -29,6 +29,10 @@ export interface ActionResources {
   "browser.login": Record<string, never>
   /** 改配置：记忆、技能、规则、工具、Chrome、账号并发上限、模型服务、默认模型 */
   "config.manage": Record<string, never>
+  /** 用户管理：建账号、改角色、停用、重置密码（只有主管） */
+  "user.manage": Record<string, never>
+  /** 全局设置：花费上限、步数、兜底天数、外部事件令牌、通知渠道（只有主管） */
+  "settings.manage": Record<string, never>
 }
 
 export type Action = keyof ActionResources
@@ -41,6 +45,8 @@ export function can<A extends Action>(user: Actor, action: A, resource: ActionRe
       return true
     case "task.create":
     case "config.manage":
+    case "user.manage":
+    case "settings.manage":
       return false
     case "task.manage":
       return (resource as ActionResources["task.manage"]).ownerId === user.id

@@ -1,7 +1,7 @@
 // 任务页（v3.1）：卡片墙一直是主画面；点卡片从右边打开抽屉看任务详情（?id=），抽屉里再看某次运行的 session（?id=&run=）。
 // 执行中的排最前，而且是全墙唯一会动的卡（转圈、当前在做的那句闪光、已运行时间每秒跳）。
 // 主管能新建任务、开关任务；员工能看全部任务，只能开关、运行自己负责的。
-// M0 只读：开关、新建这些写操作照原型显示，真正提交时弹「只读阶段」提示。
+// 新建、编辑、开关、删除接通后端（M1 P2）；「立即运行」「立即继续」由 P3 接引擎。
 import * as React from "react"
 import { ArrowLeftIcon, ListChecksIcon, PlusIcon } from "lucide-react"
 
@@ -18,12 +18,13 @@ import { can, fmtDateTime, fmtShort, runsOfTask, type RunStatus, type SessionRun
 import {
   useBoardQuery, useMemoriesQuery, useModelsQuery, useRulesQuery, useRunNow, useSessionsQuery, useSkillsQuery, useStaffName, useStaffQuery, useTasksQuery, useToolsQuery,
 } from "@/lib/data"
-import { readOnlyToast } from "@/lib/readonly"
+import { useAction } from "@/lib/mutations"
 import { cn } from "@/lib/utils"
 import { href, setParams, useRoute } from "@/lib/router"
 import { useMe } from "@/lib/session"
+import { trpc } from "@/lib/trpc"
 
-import { NewTaskDialog } from "./new-task-dialog"
+import { TaskDialog } from "./task-dialog"
 import { Elapsed, RunStatusBadge, nextRunText, type TasksState } from "./parts"
 import { RunDetail } from "./run-detail"
 import { TaskActions, TaskDetail } from "./task-detail"
@@ -59,35 +60,45 @@ export default function TasksPage() {
   const visible = taskList.toSorted((a, b) => rank(a.id) - rank(b.id))
   // 员工能看全部任务，只能操作自己负责的；主管能操作全部
   const canManage = (each: TaskDef) => can(user, "task.manage", { ownerId: each.ownerId })
+  const setEnabled = useAction(trpc.tasks.setEnabled.mutationOptions(), { success: (_data, vars) => (vars.enabled ? "任务已启动" : "任务已停用，不会再运行") })
 
   const header = (
     <SimpleHeader
       title="任务"
       description={isAdmin ? "每个任务一张卡，执行中的排最前。点卡片从右边看详情。" : "全部任务，执行中的排最前。你只能开关、运行自己负责的。"}
       learnId="task"
-      action={can(user, "task.create", {}) && <Button onClick={() => setCreating(true)}><PlusIcon data-icon="inline-start" />新建任务</Button>}
+      action={can(user, "task.create", {}) && taskList.length > 0 && <Button onClick={() => setCreating(true)}><PlusIcon data-icon="inline-start" />新建任务</Button>}
     />
   )
 
   return (
-    <PageFrame
-      skeleton="grid"
-      header={header}
-      queries={queries}
-      isEmpty={taskList.length === 0}
-      empty={<EmptyState icon={<ListChecksIcon />} title="还没有任务" description="主管点右上角「新建任务」：写一句话任务和目标，步骤可以不写。" />}
-    >
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
-        {visible.map((each) => <TaskCard key={each.id} task={each} latest={latestOf(each.id)} canToggle={canManage(each)} onToggle={readOnlyToast} />)}
-      </div>
-      <Sheet open={Boolean(taskId)} onOpenChange={(next) => !next && setParams({ id: null, run: null })}>
-        <SheetContent className="gap-0 data-[side=right]:w-full data-[side=right]:sm:max-w-3xl">
-          {task ? <TaskSheetBody task={task} runId={shownRun} state={state} canEdit={canManage(task)} />
-            : <SheetHeader><SheetTitle>找不到这个任务</SheetTitle><SheetDescription>{taskId ?? shown.id} 可能已经被删除。</SheetDescription></SheetHeader>}
-        </SheetContent>
-      </Sheet>
-      {can(user, "task.create", {}) && <NewTaskDialog key={creating ? "open" : "closed"} open={creating} onOpenChange={setCreating} />}
-    </PageFrame>
+    <>
+      <PageFrame
+        skeleton="grid"
+        header={header}
+        queries={queries}
+        isEmpty={taskList.length === 0}
+        empty={
+          <EmptyState
+            icon={<ListChecksIcon />}
+            title="还没有任务"
+            description={can(user, "task.create", {}) ? "点下面「新建任务」：写一句话任务和目标，步骤可以不写。建之前最好先在「模型」页接好模型，在「工具」「技能」页配好要用的东西。" : "还没有任务。任务由主管新建，分给你负责的会出现在这里。"}
+            action={can(user, "task.create", {}) && <Button onClick={() => setCreating(true)}><PlusIcon data-icon="inline-start" />新建任务</Button>}
+          />
+        }
+      >
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
+          {visible.map((each) => <TaskCard key={each.id} task={each} latest={latestOf(each.id)} canToggle={canManage(each)} onToggle={(enabled) => setEnabled.mutate({ id: each.id, enabled })} />)}
+        </div>
+        <Sheet open={Boolean(taskId)} onOpenChange={(next) => !next && setParams({ id: null, run: null })}>
+          <SheetContent className="gap-0 data-[side=right]:w-full data-[side=right]:sm:max-w-3xl">
+            {task ? <TaskSheetBody task={task} runId={shownRun} state={state} canEdit={canManage(task)} />
+              : <SheetHeader><SheetTitle>找不到这个任务</SheetTitle><SheetDescription>{taskId ?? shown.id} 可能已经被删除。</SheetDescription></SheetHeader>}
+          </SheetContent>
+        </Sheet>
+      </PageFrame>
+      {can(user, "task.create", {}) && <TaskDialog key={creating ? "open" : "closed"} open={creating} onOpenChange={setCreating} />}
+    </>
   )
 }
 
@@ -133,7 +144,7 @@ function metaLine(task: TaskDef) {
   return [task.schedule?.text ?? "只跑一次", next, steps].filter(Boolean).join(" · ")
 }
 
-function TaskCard({ task, latest, canToggle, onToggle }: { task: TaskDef; latest?: SessionRun; canToggle: boolean; onToggle: () => void }) {
+function TaskCard({ task, latest, canToggle, onToggle }: { task: TaskDef; latest?: SessionRun; canToggle: boolean; onToggle: (enabled: boolean) => void }) {
   const staffName = useStaffName()
   const runNow = useRunNow()
   const now = latest && runNow(latest)
@@ -169,7 +180,7 @@ function TaskCard({ task, latest, canToggle, onToggle }: { task: TaskDef; latest
           {canToggle ? (
             <label className="relative z-10 flex items-center gap-2">
               {task.enabled ? "已启动" : "已停用"}
-              <Switch size="sm" checked={task.enabled} onCheckedChange={onToggle} aria-label={`启动 ${task.id}`} />
+              <Switch size="sm" checked={task.enabled} onCheckedChange={(on) => onToggle(Boolean(on))} aria-label={`启动 ${task.id}`} />
             </label>
           ) : (
             <span className={task.enabled ? undefined : "text-muted-foreground"}>{task.enabled ? "已启动" : "已停用"}</span>

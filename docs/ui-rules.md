@@ -304,6 +304,8 @@ base-lyra 的 registry 中**没有** `chart-*` 图表区块（`chart-area-defaul
 | 组件 / 改动 | 路径 | 原因（registry 缺什么） | 基于的 shadcn 组件 / 官方 Pattern | 新依赖 | 用户确认日期 |
 |---|---|---|---|---|---|
 | 表单：React Hook Form + zod resolver，配合 shadcn `Field` | `apps/web/src` 下各表单 | registry 没有表单状态库（`form` 是空条目），官方 `/docs/forms` 推荐用表单库 | 官方 Forms 指南（React Hook Form）+ `field` | `react-hook-form` 7.90.0、`@hookform/resolvers` 5.9.1 | 2026-10-17 |
-| Markdown 显示（技能 SKILL.md、记忆、agent 输出） | `apps/web/src/components/markdown/` | registry 没有 Markdown 渲染组件 | 官方 Typeset / Typography 样式 | `react-markdown` 10.1.0、`remark-gfm` 4.0.1 | 2026-10-17 |
+| Markdown 显示（技能 SKILL.md、记忆、agent 输出） | `apps/web/src/components/markdown/`（`MarkdownView` + `typeset.css`） | registry 没有 Markdown 渲染组件 | 官方 Typeset（2026-10-17 从 ui.shadcn.com/typeset.css 原样复制，在 `src/index.css` 里 Tailwind 之后引入）。只改两处：`<mark>` 的写死黄色换成主题色；加预设 `.typeset-lyra`（直角、把 `--color-*` 接到本项目 token、等宽字体用 Tailwind 默认栈） | `react-markdown` 10.1.0、`remark-gfm` 4.0.1 | 2026-10-17 |
+| 表单的实际用法（M1 P2 落地） | 各配置页的弹窗（`pages/*/…-dialog.tsx`）、`components/shell/change-password-dialog.tsx` | 同上「表单」一行 | React Hook Form `useForm` + `zodResolver`（schema 在 `@heyagent/shared` 的 `config.ts`，前后端共用）+ `Field` / `FieldError errors={[…]}`；非原生控件用 `Controller` | 无（沿用上一行） | 2026-10-17 |
+| 可搜索的单选模型下拉 `ModelCombobox` | `apps/web/src/components/shell/model-combobox.tsx` | 模型服务刷新后有几百个模型，`select` 不能搜索 | 只组合 registry 的 `combobox`（`Combobox` + `ComboboxInput` + `ComboboxList`），和已有的 `creatable-combobox.tsx` 同一写法，不算新 UI 能力，登记备查 | 无 | 2026-10-17（先做后报） |
 
 2026-10-17 用户另外同意：开发中遇到 registry 确实没有的组件，可以先按第 6 节用现有组件组合实现、登记在上表，事后告诉用户（「先做后报」）。

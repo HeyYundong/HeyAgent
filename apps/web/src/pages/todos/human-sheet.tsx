@@ -17,11 +17,14 @@ import { href } from "@/lib/router"
 import { findById, fmtShort, humanItemKindLabel, type HumanItem, type SessionRun } from "@heyagent/shared"
 
 import { useRulesQuery, useStaffName } from "@/lib/data"
+import { useAction } from "@/lib/mutations"
+import { trpc } from "@/lib/trpc"
 
 import { Block, DetailSheet, Said, TextLink, dots } from "./sheets"
 
 // canAct：主管，或者分给自己的事；否则只读（没有操作按钮，顶部写分给了谁）
-// onDone：真正提交的那一下（批准、拒绝、确认付款……）。M0 只读，页面传进来的是统一的只读提示
+// onDone：真正提交的那一下（批准、拒绝、确认付款……）。记忆审核、技能修改在这里直接调配置接口（M1 P2）；
+// 审批、验收、登录要继续 session，由 P3 接引擎，现在页面传进来的是统一的只读提示
 type Props = { item: HumanItem; runs: SessionRun[]; open: boolean; userId: string; canAct: boolean; onClose: () => void; onDone: () => void }
 
 export function HumanSheet({ item, runs, open, userId, canAct, onClose, onDone }: Props) {
@@ -30,12 +33,27 @@ export function HumanSheet({ item, runs, open, userId, canAct, onClose, onDone }
   const detail = item.detail
   const run = findById(runs, item.runId)
   const rule = findById(rules, item.ruleId)
-  const done = () => onDone()
+  const closeAfter = { onSuccess: () => onClose() }
+  const approveMemory = useAction(trpc.memories.approve.mutationOptions(closeAfter), { success: detail.done?.[0] ?? "已通过" })
+  const rejectMemory = useAction(trpc.memories.reject.mutationOptions(closeAfter), { success: "已拒绝" })
+  const acceptSkill = useAction(trpc.skills.acceptSuggestion.mutationOptions(closeAfter), { success: detail.done?.[0] ?? "已合并" })
+  const rejectSkill = useAction(trpc.skills.rejectSuggestion.mutationOptions(closeAfter), { success: "已拒绝" })
+  // 记忆审核、技能修改：直接调配置接口；其余的事要继续 session，P3 接
+  const done = () => {
+    if (item.kind === "memory" && item.memoryId) approveMemory.mutate({ id: item.memoryId })
+    else if (item.kind === "skill" && item.skillId) acceptSkill.mutate({ id: item.skillId })
+    else onDone()
+  }
+  const reject = (reason: string) => {
+    if (item.kind === "memory" && item.memoryId) rejectMemory.mutate({ id: item.memoryId, reason: reason || undefined })
+    else if (item.kind === "skill" && item.skillId) rejectSkill.mutate({ id: item.skillId, reason: reason || undefined })
+    else onDone()
+  }
   const primary = detail.link ? <Button nativeButton={false} render={<a href={href(detail.link.page, { id: detail.link.id })} />}>{detail.primary}</Button>
     : detail.pay ? <PayButton label={detail.primary} confirm={detail.pay} onConfirm={done} />
       : <Button onClick={done}><CheckIcon data-icon="inline-start" />{detail.primary}</Button>
   const secondary = detail.secondaryDone ? <Button variant="outline" onClick={done}>{detail.secondary}</Button>
-    : <RejectButton hint={detail.rejectHint ?? ""} onReject={done} />
+    : <RejectButton hint={detail.rejectHint ?? ""} onReject={reject} />
 
   return (
     <DetailSheet
@@ -75,7 +93,7 @@ export function HumanSheet({ item, runs, open, userId, canAct, onClose, onDone }
 
 /** 「拒绝」：弹窗填原因（可不填），agent 会照着调整 */
 function RejectButton({ hint, onReject }: { hint: string; onReject: (reason: string) => void }) {
-  // 原因 M1 随拒绝一起提交，现在只是照原型能填
+  // 原因随拒绝一起提交（记忆审核、技能修改已经接通）
   const [reason, setReason] = React.useState("")
   return (
     <Dialog>
