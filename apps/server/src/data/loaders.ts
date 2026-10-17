@@ -399,15 +399,18 @@ export async function listTools(db: Db): Promise<{ tools: Tool[]; mcpServers: Mc
 // ---------- 浏览器 ----------
 
 export async function listBrowsers(db: Db): Promise<BrowserProfile[]> {
-  const [profiles, accounts, vaults, leases, passwords] = await Promise.all([
+  const [profiles, accounts, vaults, leases, passwords, accountPasswords] = await Promise.all([
     db.select().from(t.browserProfiles).orderBy(asc(t.browserProfiles.position), asc(t.browserProfiles.createdAt)),
     db.select().from(t.browserAccounts).orderBy(asc(t.browserAccounts.position), asc(t.browserAccounts.createdAt)),
     // 保险箱只取版本、cookie 个数、更新时间，不读密文
     db.select({ profileId: t.browserVaults.profileId, version: t.browserVaults.version, cookieCount: t.browserVaults.cookieCount, updatedAt: t.browserVaults.updatedAt }).from(t.browserVaults),
     db.select({ accountId: t.accountLeases.accountId, sessionId: t.accountLeases.sessionId }).from(t.accountLeases).where(isNull(t.accountLeases.releasedAt)),
     db.select({ id: t.secrets.id }).from(t.secrets).where(eq(t.secrets.scope, "browser_proxy")),
+    // 账号的登录密码：只看有没有，不读密文
+    db.select({ refId: t.secrets.refId }).from(t.secrets).where(eq(t.secrets.scope, "browser_account")),
   ])
   const passwordIds = new Set(passwords.map((row) => row.id))
+  const accountsWithPassword = new Set(accountPasswords.map((row) => row.refId))
   return profiles.map((profile) => {
     const vault = vaults.find((row) => row.profileId === profile.id)
     const own = accounts.filter((row) => row.profileId === profile.id)
@@ -442,6 +445,7 @@ export async function listBrowsers(db: Db): Promise<BrowserProfile[]> {
           running: leases.filter((lease) => lease.accountId === account.id).length,
           probeUrl: opt(account.probeUrl),
           saveIndexedDb: account.saveIndexedDb || undefined,
+          hasPassword: accountsWithPassword.has(account.id) || undefined,
         })
       ),
       cookieCount: vault?.cookieCount ?? 0,

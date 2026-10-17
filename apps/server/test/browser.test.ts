@@ -14,6 +14,7 @@ import { gostConfig } from "../src/browser/gost.js"
 import type { GostPool } from "../src/browser/gost.js"
 import { BrowserInstance, ProfileFullError } from "../src/browser/instance.js"
 import { accountForHost, acquireLease, profileSessionCount, releaseLeases, sweepLeases, wakeLeaseWaiters, wakeProfileWaiters } from "../src/browser/leases.js"
+import { fillCredentials, loadAccountPassword, passwordHosts } from "../src/browser/auto-login.js"
 import { listBrowserMcpTools } from "../src/browser/mcp.js"
 import { attachBrowserViewRelay } from "../src/browser/view-relay.js"
 import { casWrite, loadVault, mergeStates, writeBackMerged, type StorageState, type StoredCookie } from "../src/browser/vault.js"
@@ -69,6 +70,9 @@ describe("纯函数", () => {
     expect(probeLooksLoggedIn({ url: "https://site.test/me", hasPasswordInput: false }).ok).toBe(true)
     expect(probeLooksLoggedIn({ url: "https://site.test/login?next=/me", hasPasswordInput: false }).ok).toBe(false)
     expect(probeLooksLoggedIn({ url: "https://site.test/me", hasPasswordInput: true }).ok).toBe(false)
+    // 登录网址本身就是登录页、打开后没跳走：看不出来，按已登录算；跳到了别的登录页才算掉登录
+    expect(probeLooksLoggedIn({ url: "https://site.test/login?x=1", hasPasswordInput: true }, "https://site.test/login").ok).toBe(true)
+    expect(probeLooksLoggedIn({ url: "https://site.test/login?next=/me", hasPasswordInput: true }, "https://site.test/me").ok).toBe(false)
     expect(parseVisionAnswer('好的：{"captcha": true, "login": false, "reason": "滑块"}')).toEqual({ captcha: true, login: false, reason: "滑块" })
     expect(parseVisionAnswer("不知道")).toBeUndefined()
   })
@@ -171,6 +175,48 @@ describe("配置：新字段的读写和快照", () => {
     await mutate(ctx.app, "settings.updateBrowser", lin, { maxPerWorker: 4, visionCheck: false, humanHoldMinutes: 30 })
     const [row] = await ctx.db.select().from(t.settings).where(eq(t.settings.key, SETTING_KEYS.browserMaxPerWorker))
     expect(row?.value).toBe(4)
+  })
+})
+
+describe("账号密码", () => {
+  it("只进不出：列表只有 hasPassword、掩码一个字不留；编辑留空不改，勾「去掉」才删；删账号连密码一起删；员工不能改", async () => {
+    const secret = "Very-Secret-Pass-123"
+    const [profile] = await ctx.db.select().from(t.browserProfiles).limit(1)
+    const [platform] = await ctx.db.select().from(t.platforms).limit(1)
+    const created = await mutate(ctx.app, "browsers.createAccount", lin, {
+      profileId: profile!.id, platformId: platform!.id, account: "pw-user@example.com", password: secret, maxConcurrent: 1, probeUrl: "https://example.com/login",
+    })
+    expect(created.error).toBeUndefined()
+    const id = created.data.id as string
+    const list = await query(ctx.app, "browsers.list", wang)
+    expect(JSON.stringify(list.data)).not.toContain(secret)
+    const site = list.data.find((each: { id: string }) => each.id === profile!.id).sites.find((each: { accountId: string }) => each.accountId === id)
+    expect(site).toMatchObject({ account: "pw-user@example.com", hasPassword: true })
+    const rows = () => ctx.db.select().from(t.secrets).where(and(eq(t.secrets.scope, "browser_account"), eq(t.secrets.refId, id)))
+    const [row] = await rows()
+    expect(row!.masked).toBe("••••••••")
+    expect(JSON.stringify(row!.enc)).not.toContain(secret)
+    expect(await loadAccountPassword(ctx.db, ctx.keyring, id)).toBe(secret)
+    // 编辑不填密码 = 不改
+    expect((await mutate(ctx.app, "browsers.updateAccount", lin, { id, maxConcurrent: 2 })).error).toBeUndefined()
+    expect(await loadAccountPassword(ctx.db, ctx.keyring, id)).toBe(secret)
+    expect((await mutate(ctx.app, "browsers.updateAccount", wang, { id, password: "x" })).error?.data?.code).toBe("FORBIDDEN")
+    await mutate(ctx.app, "browsers.updateAccount", lin, { id, clearPassword: true })
+    expect(await loadAccountPassword(ctx.db, ctx.keyring, id)).toBeUndefined()
+    await mutate(ctx.app, "browsers.updateAccount", lin, { id, password: "Another-Pass-456" })
+    expect(await loadAccountPassword(ctx.db, ctx.keyring, id)).toBe("Another-Pass-456")
+    const audits = await ctx.db.select().from(t.auditEvents).where(eq(t.auditEvents.targetId, id))
+    expect(JSON.stringify(audits)).not.toMatch(/Very-Secret|Another-Pass/)
+    expect((await mutate(ctx.app, "browsers.deleteAccount", lin, { id })).error).toBeUndefined()
+    expect(await rows()).toEqual([])
+  })
+
+  it("占位符：只换 {{username}} / {{password}}；密码能填的网站 = 平台域名 + 登录网址", () => {
+    const filled = fillCredentials({ fields: [{ value: "{{username}}" }, { value: "{{ password }}" }], other: "{{name}}" }, { username: "alice", password: "p@ss" })
+    expect(filled).toEqual({ value: { fields: [{ value: "alice" }, { value: "p@ss" }], other: "{{name}}" }, usedPassword: true })
+    expect(fillCredentials({ text: "{{username}}" }, { username: "a", password: "b" }).usedPassword).toBe(false)
+    expect(passwordHosts({ domains: ["shop.test"], probeUrl: "https://sso.shop-login.test/in" }, "https://x.test/")).toEqual(["shop.test", "sso.shop-login.test"])
+    expect(passwordHosts({ domains: [], probeUrl: null }, "https://start.test/login")).toEqual(["start.test"])
   })
 })
 

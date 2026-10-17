@@ -296,9 +296,9 @@ try {
   })
 
   console.log("\n== 1. 打开 Chrome → 远程画面 → 关闭就保存")
-  await step("账号行点「去登录」：远程画面出帧，可以操作", async () => {
+  await step("账号行点「人工登录」：远程画面出帧，可以操作", async () => {
     const { page } = admin
-    await page.getByRole("button", { name: "去登录" }).first().click()
+    await page.getByRole("button", { name: "人工登录" }).first().click()
     const canvas = await waitScreen(page)
     state.loginCanvas = canvas
     await dialog(page).getByText("可以操作").waitFor({ timeout: 10_000 })

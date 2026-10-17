@@ -465,7 +465,7 @@ export class BrowserInstance {
       await new Promise((resolve) => setTimeout(resolve, 1000))
       const facts = await this.pageFacts(page)
       if (!facts) return { accountId: account.accountId, ok: false, detail: "探测网址打开后读不了页面（可能有弹框）" }
-      return { accountId: account.accountId, ...probeLooksLoggedIn(facts) }
+      return { accountId: account.accountId, ...probeLooksLoggedIn(facts, account.probeUrl) }
     } catch (error) {
       return { accountId: account.accountId, ok: false, detail: `探测网址打不开：${(error as Error).message.split("\n")[0]}` }
     } finally {

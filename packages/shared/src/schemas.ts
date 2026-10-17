@@ -107,6 +107,8 @@ export const browserSiteSchema = z.object({
   probeUrl: z.string().optional(),
   /** 新增（方案 2.3.6）：登录态要不要连 IndexedDB 一起存 */
   saveIndexedDb: z.boolean().optional(),
+  /** 存了登录密码（密码本身只存密文，不返回）：能「立刻登录」，运行中遇到登录页 agent 自己登录 */
+  hasPassword: z.boolean().optional(),
 })
 export type BrowserSite = z.infer<typeof browserSiteSchema>
 

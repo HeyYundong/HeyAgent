@@ -42,14 +42,14 @@ export class WorkerCallError extends Error {
 }
 
 /** 调 worker 的内部控制接口（带令牌头） */
-export async function callWorker<T>(keyring: Keyring, controlUrl: string, path: string, body?: unknown): Promise<T> {
+export async function callWorker<T>(keyring: Keyring, controlUrl: string, path: string, body?: unknown, timeoutMs = 120_000): Promise<T> {
   let res: Response
   try {
     res = await fetch(`${controlUrl}${path}`, {
       method: body === undefined ? "GET" : "POST",
       headers: { [INTERNAL_HEADER]: internalToken(keyring), ...(body === undefined ? {} : { "content-type": "application/json" }) },
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(timeoutMs),
     })
   } catch (error) {
     throw new WorkerCallError(503, `连不上带 Chrome 的 worker：${(error as Error).message}`)

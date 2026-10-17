@@ -17,6 +17,8 @@ import { queryClient, trpc } from "@/lib/trpc"
 export interface LoginTarget {
   profileId: string
   accountId?: string
+  /** 「立刻登录」没成功后交给人时：为什么没成功 */
+  note?: string
 }
 
 /** 起一个登录用的 Chrome。返回 open(target) 和起好以后的 browserId */
@@ -85,6 +87,33 @@ export function LoginBrowserDialog({ browserId, title, description, accountName,
       onClosed={() => setGone(true)}
     />
   )
+}
+
+/**
+ * 「立刻登录」：worker 在后台开 Chrome，登录小 agent 用账号存的密码登录（要一会儿，toast 里转圈）。
+ * 成功就已经存进保险箱；没成功时 Chrome 留着，交给 onHuman 打开远程画面让人接着登录。
+ */
+export function useAutoLogin(accountName: (accountId: string) => string, onHuman: (browserId: string, accountId: string, note: string) => void) {
+  const mutation = useMutation(trpc.browser.autoLogin.mutationOptions())
+  return {
+    pendingAccountId: mutation.isPending ? mutation.variables?.accountId : undefined,
+    start: async (accountId: string) => {
+      const name = accountName(accountId)
+      const id = toast.add({ title: `正在登录「${name}」…`, description: "agent 在后台打开登录网址，用存的密码登录", type: "loading", timeout: 0 })
+      try {
+        const result = await mutation.mutateAsync({ accountId })
+        await queryClient.invalidateQueries()
+        if (result.ok) {
+          toast.update(id, { title: `「${name}」登录好了`, description: "登录态已存进保险箱，所有 agent 都能用", type: "success", timeout: 8000 })
+          return
+        }
+        toast.update(id, { title: result.needHuman ? "要人处理，已打开 Chrome" : "自动登录没成功，已打开 Chrome", description: result.detail, type: "warning", timeout: 12_000 })
+        if (result.browserId) onHuman(result.browserId, accountId, result.detail)
+      } catch (error) {
+        toast.update(id, { title: "自动登录没成功", description: errorMessage(error), type: "error", timeout: 12_000 })
+      }
+    },
+  }
 }
 
 /** 「打开 Chrome」按钮：起 Chrome 时转圈 */

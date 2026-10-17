@@ -29,10 +29,12 @@ import { getFileRow, readFileData, saveFile, safeFileName } from "../files/servi
 import { callModel, resolveModel } from "../engine/model.js"
 import { notifyUsers, sessionLink } from "../engine/notify.js"
 import { appendEvent } from "../engine/records.js"
+import { getKeyring } from "../engine/runtime.js"
 import { loadEngineSettings } from "../engine/settings.js"
 import type { SessionRow, ToolOutcome } from "../engine/tools/builtin.js"
 import { executeMcpTool, type McpConnection } from "../engine/tools/mcp.js"
 import { parseVisionAnswer, VISION_PROMPT, type Verdict } from "./detect.js"
+import { autoLogin, loadAccountPassword, loginModelId } from "./auto-login.js"
 import { ProfileFullError, type BlockedNavigation, type BrowserInstance } from "./instance.js"
 import { accountForHost } from "./leases.js"
 import { getBrowserManager } from "./manager.js"
@@ -417,7 +419,12 @@ export class BrowserTools {
     }
 
     const hit = await this.detect(instance)
-    if (hit) return { ...(await this.humanOutcome(instance, hit, lines.join("\n"))), facts }
+    if (hit) {
+      // 登录页：账号存了密码就先让登录小 agent 用它登录，登不上再交给人
+      const login = hit.verdict.kind === "login" ? await this.tryAutoLogin(instance, hit) : undefined
+      if (login?.ok) return { output: [...lines, login.text].join("\n"), isError: result.isError, facts }
+      return { ...(await this.humanOutcome(instance, hit, lines.join("\n"), login?.text)), facts }
+    }
     return { output: lines.join("\n"), isError: result.isError, facts }
   }
 
@@ -429,6 +436,58 @@ export class BrowserTools {
       .insert(t.browserActions)
       .values({ profileId, sessionId: this.ctx.session.id, url, action: browserActionTag(name), failed })
       .catch((error) => console.warn(`[browser] 操作历史没记上：${(error as Error).message}`))
+  }
+
+  /**
+   * 运行中遇到登录页：这个网站对应的账号存了密码，就用登录小 agent 登录（模型只看到占位符）。
+   * 没存密码、没设默认模型时返回 undefined（照旧交给人）；花费算进这次运行，过程里记一条。
+   */
+  private async tryAutoLogin(
+    instance: BrowserInstance,
+    hit: { facts: { url: string }; verdict: { reason: string } }
+  ): Promise<{ ok: boolean; text: string } | undefined> {
+    const host = hostOf(hit.facts.url) ?? ""
+    // 平台没填域名时，按账号的登录网址认
+    const account = accountForHost(instance.accounts, host) ?? instance.accounts.find((each) => each.probeUrl && hostOf(each.probeUrl) === host)
+    if (!account) return undefined
+    const { db, session } = this.ctx
+    const password = await loadAccountPassword(db, getKeyring(), account.accountId).catch(() => undefined)
+    const modelId = password ? await loginModelId(db) : undefined
+    if (!password || !modelId) return undefined
+    const who = `${account.platformName} 账号 ${account.account}`
+    const started = Date.now()
+    const result = await autoLogin({ db, instance, account, credentials: { username: account.account, password }, modelId }).catch((error: unknown) => ({
+      ok: false,
+      needHuman: false,
+      detail: `出错了：${(error as Error).message}`,
+      steps: 0,
+      tokensIn: 0,
+      tokensOut: 0,
+      costUsd: 0,
+    }))
+    await db
+      .update(t.sessions)
+      .set({
+        tokensIn: sql`${t.sessions.tokensIn} + ${result.tokensIn}`,
+        tokensOut: sql`${t.sessions.tokensOut} + ${result.tokensOut}`,
+        costUsd: sql`${t.sessions.costUsd} + ${result.costUsd}`,
+      })
+      .where(eq(t.sessions.id, session.id))
+    await appendEvent(db, session.id, {
+      kind: "plan",
+      title: result.ok ? `遇到登录页，用存的密码自动登录了 ${who}` : `遇到登录页，自动登录 ${who} 没成功`,
+      detail: `${result.detail}（${result.steps} 步）`,
+      tokensIn: result.tokensIn,
+      tokensOut: result.tokensOut,
+      ms: Date.now() - started,
+      output: `花费 ${result.costUsd.toFixed(6)} 美元`,
+    })
+    await this.record("browser_login", !result.ok, instance.currentPage()?.url())
+    if (result.ok) {
+      await instance.setAccountStatus([account.accountId], "ok")
+      return { ok: true, text: `检测到登录页（${hit.verdict.reason}），已用 ${who} 存的密码自动登录。现在的页面：${instance.currentPage()?.url() ?? ""}。接着做之前先看一下页面。` }
+    }
+    return { ok: false, text: `用 ${who} 存的密码自动登录没成功：${result.detail}` }
   }
 
   /** 检测验证码 / 登录页；规则拿不准时（设置打开了视觉判断）交给视觉模型 */
@@ -512,7 +571,9 @@ export class BrowserTools {
   private async humanOutcome(
     instance: BrowserInstance,
     hit: { page: NonNullable<ReturnType<BrowserInstance["currentPage"]>>; facts: { url: string; title: string }; verdict: { kind: "captcha" | "login"; reason: string } },
-    prefix: string
+    prefix: string,
+    /** 自动登录试过但没成功：原因写给人看 */
+    autoLoginNote?: string
   ): Promise<ToolOutcome> {
     const { db, session, snapshot } = this.ctx
     const shot = await instance.screenshot(hit.page)
@@ -528,7 +589,7 @@ export class BrowserTools {
     const summary = `运行 ${session.id} 打开 ${hit.facts.url} 时遇到${what}（${hit.verdict.reason}）。请打开这次运行的浏览器远程画面处理，好了点「已处理好了」，agent 会在同一个 Chrome 里接着做。Chrome 保留 ${settings.humanHoldMinutes} 分钟。`
     const detail: HumanDetail = {
       sections: [
-        { title: "为什么到了你这里", text: `${hit.verdict.reason}。系统只检测、不破解验证码，要人在远程画面里处理。` },
+        { title: "为什么到了你这里", text: `${hit.verdict.reason}。${autoLoginNote ? `${autoLoginNote}。` : ""}系统只检测、不破解验证码，要人在远程画面里处理。` },
         { title: "网址", text: hit.facts.url },
         {
           title: "怎么处理",

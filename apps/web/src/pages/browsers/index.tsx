@@ -1,5 +1,5 @@
 import * as React from "react"
-import { AppWindowIcon, CircleCheckIcon, EllipsisIcon, EyeIcon, GaugeIcon, GlobeIcon, MonitorIcon, PencilIcon, PlusIcon, Trash2Icon, TriangleAlertIcon, UserPlusIcon } from "lucide-react"
+import { AppWindowIcon, CircleCheckIcon, EllipsisIcon, EyeIcon, GlobeIcon, KeyRoundIcon, PencilIcon, PlusIcon, Trash2Icon, TriangleAlertIcon, UserPlusIcon } from "lucide-react"
 
 import { DetailPanel, DetailSection, EmptyState, MasterDetail, PageFrame, PickGroup, PickItem, SimpleHeader } from "@/components/shell/simple-page"
 import {
@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Spinner } from "@/components/ui/spinner"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "@/components/ui/item"
 import { RemoteViewDialog } from "@/components/remote-view/remote-view-dialog"
@@ -27,9 +28,8 @@ import { BrowserDialog } from "./browser-dialog"
 import {
   LIVE_STATE, problemCount, profileRows, proxyText, recentRunsUsing, siteKey, usageText, useAccountStatusQuery, useLiveBrowsersQuery, usePlatformName, type Chrome,
 } from "./data"
-import { LoginBrowserDialog, OpenLoginButton, useOpenLogin } from "./login-browser"
+import { LoginBrowserDialog, OpenLoginButton, useAutoLogin, useOpenLogin } from "./login-browser"
 import { PlatformDialog } from "./platform-dialog"
-import { SiteLimitDialog } from "./site-limit-dialog"
 
 const LINK = "underline underline-offset-4 hover:text-foreground"
 
@@ -48,7 +48,7 @@ export default function BrowsersPage() {
   const list = browsersQuery.data ?? []
   const live = liveQuery.data ?? []
   const [dialog, setDialog] = React.useState<"new" | "edit" | null>(null)
-  const [limitSite, setLimitSite] = React.useState<BrowserSite | null>(null)
+  const [editSite, setEditSite] = React.useState<BrowserSite | null>(null)
   const [deleteSite, setDeleteSite] = React.useState<BrowserSite | null>(null)
   const [editPlatform, setEditPlatform] = React.useState<Platform | null>(null)
   const [watching, setWatching] = React.useState<LiveBrowser | null>(null)
@@ -68,6 +68,11 @@ export default function BrowsersPage() {
     const site = list.flatMap((profile) => profile.sites).find((each) => each.accountId === accountId)
     return site ? `${platformName(site.platformId)} · ${site.account}` : accountId
   }
+  // 「立刻登录」没成功：把留着的 Chrome 交给人，打开远程画面接着登录
+  const autoLogin = useAutoLogin(
+    accountName,
+    (browserId, accountId, note) => selected && login.show(browserId, { profileId: selected.id, accountId, note })
+  )
 
   function remove() {
     setConfirmDelete(false)
@@ -166,15 +171,16 @@ export default function BrowsersPage() {
                   action={isAdmin && <Button size="sm" variant="outline" onClick={() => setAddAccount(true)}><UserPlusIcon data-icon="inline-start" />加账号</Button>}>
                   {selected.sites.length === 0 ? (
                     <p className="text-muted-foreground">
-                      {isAdmin ? "还没有账号。点「加账号」选平台、填账号，再点「打开 Chrome」在远程画面里登录一次。" : "还没有账号，由主管来加。"}
+                      {isAdmin ? "还没有账号。点「加账号」填平台、账号、密码和登录网址。" : "还没有账号，由主管来加。"}
                     </p>
                   ) : (
                     <ItemGroup className="gap-2">
                       {selected.sites.map((site) => (
                         <SiteRow key={siteKey(site)} site={site}
                           login={{ pending: login.pending && login.pendingTarget?.accountId === site.accountId, onClick: () => void login.start({ profileId: selected.id, accountId: site.accountId }) }}
+                          auto={{ pending: autoLogin.pendingAccountId === site.accountId, onClick: () => void autoLogin.start(site.accountId) }}
                           admin={isAdmin ? {
-                            onLimit: () => setLimitSite(site),
+                            onEdit: () => setEditSite(site),
                             onPlatform: () => setEditPlatform(findById(platformsQuery.data ?? [], site.platformId) ?? null),
                             onDelete: () => setDeleteSite(site),
                           } : undefined} />
@@ -201,7 +207,7 @@ export default function BrowsersPage() {
           title={openedProfile ? openedProfile.name : login.opened.target.profileId}
           description={
             login.opened.target.accountId
-              ? `在画面里登录「${accountName(login.opened.target.accountId)}」，关掉就保存。`
+              ? `${login.opened.target.note ? `${login.opened.target.note}。` : ""}在画面里登录「${accountName(login.opened.target.accountId)}」，关掉就保存。`
               : "关掉就保存 cookie 和登录状态。"
           }
           accountName={accountName}
@@ -218,7 +224,7 @@ export default function BrowsersPage() {
           onOpenChange={(open) => !open && setWatching(null)}
         />
       )}
-      {limitSite && selected && <SiteLimitDialog site={limitSite} onClose={() => setLimitSite(null)} />}
+      {editSite && selected && <AccountDialog profile={selected} site={editSite} onClose={() => setEditSite(null)} />}
       {editPlatform && <PlatformDialog platform={editPlatform} onClose={() => setEditPlatform(null)} />}
       {addAccount && selected && <AccountDialog profile={selected} onClose={() => setAddAccount(false)} />}
       <AlertDialog open={!!deleteSite} onOpenChange={(open) => !open && setDeleteSite(null)}>
@@ -353,11 +359,15 @@ function LiveRow({ browser, taskTitle, openedBy, onWatch }: { browser: LiveBrows
   )
 }
 
-/** admin 只有主管有：「⋯」里改这个账号的并发上限、改平台域名、删除账号 */
-function SiteRow({ site, login, admin }: {
+/**
+ * 一个账号：状态只是标记；「立刻登录」= agent 在后台用存的密码登录（没存密码时点不了），「人工登录」= 打开登录网址人自己登录。
+ * admin 只有主管有：「⋯」里编辑账号（账号、密码、登录网址、并发上限）、改平台域名、删除账号
+ */
+function SiteRow({ site, login, auto, admin }: {
   site: BrowserSite
   login: { pending: boolean; onClick: () => void }
-  admin?: { onLimit: () => void; onPlatform: () => void; onDelete: () => void }
+  auto: { pending: boolean; onClick: () => void }
+  admin?: { onEdit: () => void; onPlatform: () => void; onDelete: () => void }
 }) {
   const staffName = useStaffName()
   const platformName = usePlatformName()
@@ -368,7 +378,9 @@ function SiteRow({ site, login, admin }: {
     <Item size="sm" variant="outline">
       <ItemContent className="min-w-0">
         <ItemTitle>{platformName(site.platformId)} · {site.account}</ItemTitle>
-        <ItemDescription>上次登录 {fmtDateTime(site.lastLoginAt)} · {staffName(site.loggedInById)}</ItemDescription>
+        <ItemDescription>
+          上次登录 {fmtDateTime(site.lastLoginAt)} · {staffName(site.loggedInById)} · {site.hasPassword ? "已存密码" : "没存密码，只能人工登录"}
+        </ItemDescription>
         <ItemDescription>
           {usageText(usage ?? { used: site.running, max: site.maxConcurrent, waiting: 0 })}
           {usage && usage.sessionIds.length > 0 && (
@@ -387,15 +399,18 @@ function SiteRow({ site, login, admin }: {
           {ok ? <CircleCheckIcon data-icon="inline-start" /> : <TriangleAlertIcon data-icon="inline-start" />}
           {accountStatusLabel[site.status]}
         </Badge>
-        {!ok && <OpenLoginButton size="sm" variant="outline" label="去登录" pending={login.pending} onClick={login.onClick} />}
+        <Button size="sm" variant="outline" disabled={!site.hasPassword || auto.pending} onClick={auto.onClick}>
+          {auto.pending ? <Spinner data-icon="inline-start" /> : <KeyRoundIcon data-icon="inline-start" />}
+          {auto.pending ? "正在登录…" : "立刻登录"}
+        </Button>
+        <OpenLoginButton size="sm" variant="outline" label="人工登录" pending={login.pending} onClick={login.onClick} />
         {admin && (
           <DropdownMenu>
             <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" aria-label="这个账号的更多操作" />}>
               <EllipsisIcon />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              {ok && <DropdownMenuItem onClick={login.onClick}><MonitorIcon />重新登录</DropdownMenuItem>}
-              <DropdownMenuItem onClick={admin.onLimit}><GaugeIcon />改并发上限</DropdownMenuItem>
+              <DropdownMenuItem onClick={admin.onEdit}><PencilIcon />编辑账号</DropdownMenuItem>
               <DropdownMenuItem onClick={admin.onPlatform}><GlobeIcon />改平台域名</DropdownMenuItem>
               <DropdownMenuItem variant="destructive" onClick={admin.onDelete}><Trash2Icon />删除账号</DropdownMenuItem>
             </DropdownMenuContent>

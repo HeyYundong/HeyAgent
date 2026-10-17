@@ -1,5 +1,6 @@
 // worker 的内部控制接口（m2.md 第 8 条）：只绑 127.0.0.1，API 和 worker 在同一个 pod 里，API 能连到。每个请求都要带令牌头。
 //   POST /browsers/login          { profileId, accountId?, userId } → { browserId }
+//   POST /browsers/autologin      { profileId, accountId, userId } → 自动登录的结果（没成功时带 browserId，Chrome 留着给人）
 //   POST /browsers/:id/close      → SaveLoginResult（登录 Chrome 关就是保存）
 //   GET  /health
 //   WebSocket /browsers/:id/view?userId=…&canControl=0|1   远程画面（API 鉴权、判断能不能操作后转过来）
@@ -8,7 +9,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { WebSocketServer } from "ws"
 
 import { BrowserUnavailableError } from "./chrome.js"
-import { BrowserBusyError, type BrowserManager } from "./manager.js"
+import { AutoLoginUnavailableError, BrowserBusyError, type BrowserManager } from "./manager.js"
 import { INTERNAL_HEADER, internalToken, tokenMatches } from "./token.js"
 
 export interface ControlServer {
@@ -54,6 +55,14 @@ export async function startControlServer(manager: BrowserManager, options: { hos
           const instance = await manager.openForLogin({ profileId, accountId: str(body.accountId), userId })
           return reply(res, 200, { browserId: instance.id })
         }
+        if (req.method === "POST" && url.pathname === "/browsers/autologin") {
+          const body = await readJson(req)
+          const profileId = str(body.profileId)
+          const accountId = str(body.accountId)
+          const userId = str(body.userId)
+          if (!profileId || !accountId || !userId) return reply(res, 400, { error: "要 profileId、accountId 和 userId" })
+          return reply(res, 200, await manager.autoLogin({ profileId, accountId, userId }))
+        }
         const match = /^\/browsers\/([^/]+)\/close$/.exec(url.pathname)
         if (req.method === "POST" && match) {
           const instance = manager.get(match[1]!)
@@ -66,7 +75,7 @@ export async function startControlServer(manager: BrowserManager, options: { hos
         }
         return reply(res, 404, { error: "not found" })
       } catch (error) {
-        const status = error instanceof BrowserBusyError ? 409 : error instanceof BrowserUnavailableError ? 503 : 500
+        const status = error instanceof BrowserBusyError ? 409 : error instanceof BrowserUnavailableError ? 503 : error instanceof AutoLoginUnavailableError ? 400 : 500
         if (status === 500) console.error("[browser] 内部接口出错", error)
         return reply(res, status, { error: (error as Error).message })
       }

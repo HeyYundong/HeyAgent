@@ -5,7 +5,7 @@ import { createServer, type IncomingMessage, type Server } from "node:http"
 import net from "node:net"
 import dns from "node:dns"
 
-import { eq } from "drizzle-orm"
+import { and, eq } from "drizzle-orm"
 
 import type { Db } from "../src/db/client.js"
 import * as t from "../src/db/schema.js"
@@ -20,6 +20,11 @@ export interface TestSite {
   requests: { host: string; path: string }[]
   close(): Promise<void>
 }
+
+/** /login2 认的账号密码（自动登录的测试用；/login 不查密码） */
+export const LOGIN2 = { user: "alice", password: "s3cret-密码-9" }
+const login2Form = (extra = "") =>
+  `<form method="post" action="/login2"><input id="user" name="user" placeholder="账号"><input id="pw" type="password" name="pw" placeholder="密码"><button id="go" type="submit">登录</button></form>${extra}`
 
 const html = (title: string, body: string) =>
   `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>${title}</title></head><body>${body}</body></html>`
@@ -56,6 +61,21 @@ export async function startSite(): Promise<TestSite> {
       case "/login":
         if (req.method === "POST") return redirect("/me", { "set-cookie": `sid=${newSid()}; Path=/; HttpOnly` })
         return send(200, html("登录", `<form method="post" action="/login"><input name="user" value="tester"><input id="pw" type="password" name="pw"><button id="go" type="submit">登录</button></form>`))
+      case "/login2":
+        if (req.method === "POST") {
+          let body = ""
+          req.on("data", (chunk) => (body += chunk))
+          req.on("end", () => {
+            const form = new URLSearchParams(body)
+            if (form.get("user") === LOGIN2.user && form.get("pw") === LOGIN2.password) redirect("/me2", { "set-cookie": `sid=${newSid()}; Path=/; HttpOnly` })
+            else send(200, html("登录", login2Form(`<p id="err">账号或密码不对</p>`)))
+          })
+          return
+        }
+        return send(200, html("登录", login2Form()))
+      case "/me2":
+        if (jar.sid && sids.has(jar.sid)) return send(200, html("我的账号", `<p id="who">OK sid=${jar.sid}</p><p id="code">暗号：金色海豚</p>`))
+        return redirect("/login2?next=/me2")
       case "/me":
         if (jar.sid && sids.has(jar.sid)) return send(200, html("我的账号", `<p id="who">OK sid=${jar.sid}</p><p>pref=${jar.pref ?? "-"}</p>`))
         return redirect("/login?next=/me")
@@ -217,8 +237,23 @@ export async function createProfile(
   return id
 }
 
+/** 给账号存登录密码（和配置页写的一样：secrets，scope = browser_account） */
+export async function setAccountPassword(db: Db, keyring: Keyring, accountId: string, password: string) {
+  const secretId = `sec-acc-${randomBytes(4).toString("hex")}`
+  await db.delete(t.secrets).where(and(eq(t.secrets.scope, "browser_account"), eq(t.secrets.refId, accountId)))
+  await db.insert(t.secrets).values({
+    id: secretId,
+    scope: "browser_account",
+    refId: accountId,
+    name: "password",
+    version: 1,
+    enc: encrypt(keyring, password, { table: "secrets", id: secretId, version: 1 }),
+    masked: "••••••••",
+  })
+}
+
 /** 建平台（带域名）和这个 Chrome 配置在该平台的账号，返回账号 id */
-export async function createAccount(db: Db, input: { profileId: string; domain: string; maxConcurrent?: number; probeUrl?: string }) {
+export async function createAccount(db: Db, input: { profileId: string; domain: string; maxConcurrent?: number; probeUrl?: string; account?: string }) {
   const platformId = `p-${++counter}-${randomBytes(2).toString("hex")}`
   await db.insert(t.platforms).values({ id: platformId, name: `平台 ${platformId}`, domains: [input.domain] })
   const accountId = `acc-${platformId}`
@@ -226,7 +261,7 @@ export async function createAccount(db: Db, input: { profileId: string; domain: 
     id: accountId,
     profileId: input.profileId,
     platformId,
-    account: "tester",
+    account: input.account ?? "tester",
     status: "expired",
     maxConcurrent: input.maxConcurrent ?? 1,
     probeUrl: input.probeUrl ?? null,

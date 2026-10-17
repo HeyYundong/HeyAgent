@@ -153,6 +153,22 @@ export const saveLoginResultSchema = z.object({
 })
 export type SaveLoginResult = z.infer<typeof saveLoginResultSchema>
 
+/** 「立刻登录」的结果：成功就已经写回保险箱；没成功时 Chrome 留着（browserId），给人在远程画面里接着登录 */
+export const autoLoginResultSchema = z.object({
+  ok: z.boolean(),
+  /** 要人处理（验证码、短信码、账号密码不对……） */
+  needHuman: z.boolean(),
+  detail: z.string(),
+  steps: z.number().int(),
+  costUsd: z.number(),
+  /** 没成功时留着的 Chrome，前端打开远程画面让人接着登录；关掉照常保存 */
+  browserId: z.string().optional(),
+  vaultVersion: z.number().int().optional(),
+  /** 登录后的账号探测 */
+  accounts: z.array(z.object({ accountId: z.string(), ok: z.boolean(), detail: z.string() })).optional(),
+})
+export type AutoLoginResult = z.infer<typeof autoLoginResultSchema>
+
 export const browserKindSchema = z.enum(["session", "login"])
 export const browserStateSchema = z.enum(["queued", "starting", "running", "held", "closing"])
 
@@ -231,6 +247,8 @@ const ACTION_TAGS: Record<string, string> = {
   browser_close: "Close",
   browser_resize: "Resize",
   browser_emulate_media: "Resize",
+  /** 不是 MCP 工具：用存的密码自动登录（登录小 agent） */
+  browser_login: "Login",
   browser_console_messages: "Inspect",
   browser_network_requests: "Inspect",
   browser_network_request: "Inspect",

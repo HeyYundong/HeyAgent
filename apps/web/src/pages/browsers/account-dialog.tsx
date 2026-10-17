@@ -1,11 +1,12 @@
-// 给某个 Chrome 加一个要登录的平台账号（只有主管）：平台（选已有的或输入新名字）、账号、并发上限、登录探测网址、要不要连 IndexedDB 一起存。
+// 给某个 Chrome 加 / 编辑一个要登录的平台账号（只有主管）：平台（选已有的或输入新名字）、账号、密码、登录网址、并发上限、
+// 要不要连 IndexedDB 一起存。传了 site 就是编辑（平台不能改）。
 // 表单：React Hook Form + shared 的 browserAccountInputSchema。表单里 platformId 先放平台「名字」，
-// 提交时换成真正的 id：平台表里有就用它的 id，没有就先调 platforms.create 新建平台。
-// 新平台可以顺手填域名（platforms.create 的 domains）。新账号的状态是「要登录」：在远程画面里登录一次，登录态进保险箱后 agent 才能用。
+// 提交时换成真正的 id：平台表里有就用它的 id，没有就先调 platforms.create 新建平台。新平台可以顺手填域名。
+// 密码只进不出：编辑时留空 = 不改，勾「去掉已存的密码」才删。存了密码能「立刻登录」，运行中遇到登录页 agent 也自己登录。
 import * as React from "react"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { Controller, useForm, useWatch } from "react-hook-form"
-import { browserAccountInputSchema, type BrowserAccountInput } from "@heyagent/shared"
+import { browserAccountInputSchema, type BrowserAccountInput, type BrowserSite } from "@heyagent/shared"
 
 import { CreatableCombobox } from "@/components/shell/creatable-combobox"
 import { Button } from "@/components/ui/button"
@@ -24,10 +25,13 @@ import { trpc } from "@/lib/trpc"
 
 import { MAX_ITEMS, type Chrome } from "./data"
 
-type AccountDialogProps = { profile: Chrome; onClose: () => void }
+/** site 不传就是新建 */
+type AccountDialogProps = { profile: Chrome; site?: BrowserSite; onClose: () => void }
 
-export function AccountDialog({ profile, onClose }: AccountDialogProps) {
+export function AccountDialog({ profile, site, onClose }: AccountDialogProps) {
   const platforms = usePlatformsQuery().data ?? []
+  const editPlatformName = site ? (platforms.find((platform) => platform.id === site.platformId)?.name ?? site.platformId) : ""
+  const [clearPassword, setClearPassword] = React.useState(false)
   // 刚输入的新平台名，还没建到平台表里，先放在下拉选项里
   const [typedNames, setTypedNames] = React.useState<string[]>([])
   // 新平台的域名（只在平台表里还没有这个平台时显示、提交）
@@ -35,18 +39,33 @@ export function AccountDialog({ profile, onClose }: AccountDialogProps) {
   const [domainError, setDomainError] = React.useState<string>()
   const form = useForm<BrowserAccountInput>({
     resolver: zodResolver(browserAccountInputSchema),
-    defaultValues: { profileId: profile.id, platformId: "", account: "", maxConcurrent: 1, probeUrl: "", saveIndexedDb: false },
+    defaultValues: site
+      ? { profileId: profile.id, platformId: editPlatformName || site.platformId, account: site.account, password: "", maxConcurrent: site.maxConcurrent, probeUrl: site.probeUrl ?? "", saveIndexedDb: Boolean(site.saveIndexedDb) }
+      : { profileId: profile.id, platformId: "", account: "", password: "", maxConcurrent: 1, probeUrl: "", saveIndexedDb: false },
   })
   const { errors } = form.formState
   const createPlatform = useAction(trpc.platforms.create.mutationOptions())
   const createAccount = useAction(trpc.browsers.createAccount.mutationOptions(), {
-    success: "账号加好了，状态是「要登录」。点「去登录」在远程画面里登录一次，agent 就能带着登录态用它",
+    success: (_data, vars) => (vars.password ? "账号加好了。点「立刻登录」让 agent 用这个密码登录一次" : "账号加好了。点「人工登录」在远程画面里登录一次"),
   })
-  const pending = createPlatform.isPending || createAccount.isPending
+  const updateAccount = useAction(trpc.browsers.updateAccount.mutationOptions(), { success: "账号已保存" })
+  const pending = createPlatform.isPending || createAccount.isPending || updateAccount.isPending
   const typedPlatform = (useWatch({ control: form.control, name: "platformId" }) ?? "").trim()
-  const isNewPlatform = Boolean(typedPlatform) && !platforms.some((platform) => platform.name === typedPlatform)
+  const isNewPlatform = !site && Boolean(typedPlatform) && !platforms.some((platform) => platform.name === typedPlatform)
 
   const submit = form.handleSubmit(async (values) => {
+    if (site) {
+      const saved = await updateAccount.submit({
+        id: site.accountId,
+        account: values.account,
+        ...(values.password ? { password: values.password } : clearPassword ? { clearPassword: true } : {}),
+        maxConcurrent: values.maxConcurrent,
+        probeUrl: values.probeUrl ?? "",
+        saveIndexedDb: values.saveIndexedDb,
+      })
+      if (saved) onClose()
+      return
+    }
     const name = values.platformId.trim()
     let platformId = platforms.find((platform) => platform.name === name)?.id
     if (!platformId) {
@@ -69,11 +88,11 @@ export function AccountDialog({ profile, onClose }: AccountDialogProps) {
       <DialogContent className="max-h-svh overflow-y-auto sm:max-w-lg">
         <form onSubmit={submit} className="flex flex-col gap-4">
           <DialogHeader>
-            <DialogTitle>给「{profile.name}」加账号</DialogTitle>
-            <DialogDescription>同一个平台可以加多个账号，并发上限按账号算。加好后要有人在远程画面里登录一次。</DialogDescription>
+            <DialogTitle>{site ? `编辑账号：${editPlatformName}` : `给「${profile.name}」加账号`}</DialogTitle>
+            <DialogDescription>同一个平台可以加多个账号，并发上限按账号算。</DialogDescription>
           </DialogHeader>
           <FieldGroup>
-            <Field data-invalid={!!errors.platformId}>
+            {!site && <Field data-invalid={!!errors.platformId}>
               <FieldLabel htmlFor="acc-platform">平台</FieldLabel>
               <Controller
                 control={form.control}
@@ -87,7 +106,7 @@ export function AccountDialog({ profile, onClose }: AccountDialogProps) {
               />
               <FieldDescription>没有的平台直接输入名字，保存时一起建好。</FieldDescription>
               <FieldError errors={[errors.platformId]} />
-            </Field>
+            </Field>}
             {isNewPlatform && (
               <Field data-invalid={!!domainError}>
                 <FieldLabel htmlFor="acc-domains">新平台的域名（可选）</FieldLabel>
@@ -98,10 +117,25 @@ export function AccountDialog({ profile, onClose }: AccountDialogProps) {
             )}
             <Field data-invalid={!!errors.account}>
               <FieldLabel htmlFor="acc-account">账号</FieldLabel>
-              <Input id="acc-account" placeholder="例如：店铺后台（美国站）" autoComplete="off" aria-invalid={!!errors.account} {...form.register("account")} />
-              <FieldDescription>写人能认出来的名字就行，不用填密码。</FieldDescription>
+              <Input id="acc-account" placeholder="登录用的用户名、邮箱或手机号" autoComplete="off" aria-invalid={!!errors.account} {...form.register("account")} />
               <FieldError errors={[errors.account]} />
             </Field>
+            <Field data-invalid={!!errors.password}>
+              <FieldLabel htmlFor="acc-password">密码（可选）</FieldLabel>
+              <Input id="acc-password" type="password" autoComplete="new-password" disabled={clearPassword}
+                placeholder={site?.hasPassword ? "已存过密码，不改就留空" : "不填就只能人工登录"} aria-invalid={!!errors.password} {...form.register("password")} />
+              <FieldDescription>只加密存，页面和 agent 都看不到原文。存了密码能「立刻登录」，运行中遇到登录页 agent 也会自己登录。</FieldDescription>
+              <FieldError errors={[errors.password]} />
+            </Field>
+            {site?.hasPassword && (
+              <Field orientation="horizontal">
+                <Checkbox id="acc-clear-password" checked={clearPassword} onCheckedChange={(checked) => setClearPassword(Boolean(checked))} />
+                <FieldContent>
+                  <FieldLabel htmlFor="acc-clear-password">去掉已存的密码</FieldLabel>
+                  <FieldDescription>去掉后只能人工登录。</FieldDescription>
+                </FieldContent>
+              </Field>
+            )}
             <Field data-invalid={!!errors.maxConcurrent}>
               <FieldLabel>这个账号同时最多几个 session</FieldLabel>
               <Controller
@@ -113,13 +147,13 @@ export function AccountDialog({ profile, onClose }: AccountDialogProps) {
                   </ToggleGroup>
                 )}
               />
-              <FieldDescription>同一个账号在多处同时登录容易触发风控，风控严的网站建议 1 个。以后可以在账号的「⋯」里改。</FieldDescription>
+              <FieldDescription>同一个账号在多处同时登录容易触发风控，风控严的网站建议 1 个。</FieldDescription>
               <FieldError errors={[errors.maxConcurrent]} />
             </Field>
             <Field data-invalid={!!errors.probeUrl}>
-              <FieldLabel htmlFor="acc-probe">登录网址（可选）</FieldLabel>
+              <FieldLabel htmlFor="acc-probe">登录网址</FieldLabel>
               <Input id="acc-probe" placeholder="https://example.com/login" aria-invalid={!!errors.probeUrl} {...form.register("probeUrl")} />
-              <FieldDescription>「去登录」时远程画面先打开这里；也用它检查登录态还在不在。</FieldDescription>
+              <FieldDescription>「立刻登录」「人工登录」都先打开这里；也用它检查登录态还在不在。</FieldDescription>
               <FieldError errors={[errors.probeUrl]} />
             </Field>
             <Controller
@@ -140,7 +174,7 @@ export function AccountDialog({ profile, onClose }: AccountDialogProps) {
             <DialogClose render={<Button type="button" variant="outline" />}>取消</DialogClose>
             <Button type="submit" disabled={pending}>
               {pending && <Spinner data-icon="inline-start" />}
-              加账号
+              {site ? "保存" : "加账号"}
             </Button>
           </DialogFooter>
         </form>

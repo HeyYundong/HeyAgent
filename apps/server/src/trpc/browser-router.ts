@@ -6,6 +6,7 @@ import { TRPCError } from "@trpc/server"
 import { and, asc, count, desc, eq, inArray, isNull, gt, sql } from "drizzle-orm"
 import {
   accountUsageSchema,
+  autoLoginResultSchema,
   browserHistoryRowSchema,
   browserIdInputSchema,
   can,
@@ -56,6 +57,31 @@ export const browserRouter = router({
       const result = await callWorker<{ browserId: string }>(ctx.keyring(), worker.controlUrl, "/browsers/login", { ...input, userId: ctx.user.id }).catch(fromWorker)
       await writeAudit(ctx.db, { actorId: ctx.user.id, action: "browser.open_for_login", targetTable: "browser_profiles", targetId: input.profileId, detail: { browserId: result.browserId, accountId: input.accountId } })
       return { browserId: result.browserId }
+    }),
+
+  /**
+   * 「立刻登录」：worker 开一个 Chrome，登录小 agent 用账号存的密码登录（模型只看到占位符）。
+   * 成功就写回保险箱；没成功时 Chrome 留着，返回 browserId，前端打开远程画面让人接着登录。
+   */
+  autoLogin: protectedProcedure
+    .input(z.object({ accountId: z.string().min(1) }))
+    .output(autoLoginResultSchema)
+    .mutation(async ({ ctx, input }) => {
+      if (!can(ctx.user, "browser.login", {})) throw forbidden("你不能登录 Chrome 里的账号")
+      const [account] = await ctx.db.select({ profileId: t.browserAccounts.profileId }).from(t.browserAccounts).where(eq(t.browserAccounts.id, input.accountId))
+      if (!account) throw new TRPCError({ code: "NOT_FOUND", message: `找不到账号 ${input.accountId}` })
+      const worker = await pickWorker(ctx.db)
+      if (!worker) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "没有带 Chrome 的 worker 在线，开不了浏览器" })
+      // 登录小 agent 最多十几步，每步一次模型调用：等久一点
+      const result = await callWorker<z.infer<typeof autoLoginResultSchema>>(ctx.keyring(), worker.controlUrl, "/browsers/autologin", { profileId: account.profileId, accountId: input.accountId, userId: ctx.user.id }, 300_000).catch(fromWorker)
+      await writeAudit(ctx.db, {
+        actorId: ctx.user.id,
+        action: "browser.auto_login",
+        targetTable: "browser_accounts",
+        targetId: input.accountId,
+        detail: { ok: result.ok, needHuman: result.needHuman, detail: result.detail.slice(0, 300), steps: result.steps, costUsd: result.costUsd, ...(result.vaultVersion ? { vaultVersion: result.vaultVersion } : {}) },
+      })
+      return result
     }),
 
   /** 关掉「打开 Chrome」的 Chrome：关就是保存——登录态合并进保险箱（谁最后写谁的算），再探测账号。已经关了返回 saved 为空 */

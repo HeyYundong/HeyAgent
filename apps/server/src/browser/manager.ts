@@ -8,6 +8,7 @@ import { randomBytes } from "node:crypto"
 import { hostname } from "node:os"
 
 import { and, eq, lt } from "drizzle-orm"
+import { browserActionTag } from "@heyagent/shared"
 
 import { readBrowserSettings } from "../data/config/settings.js"
 import type { Db } from "../db/client.js"
@@ -16,7 +17,8 @@ import { appendEvent } from "../engine/records.js"
 import type { Keyring } from "../lib/crypto.js"
 import { BrowserUnavailableError } from "./chrome.js"
 import { GostPool } from "./gost.js"
-import { BrowserInstance, type CloseSummary } from "./instance.js"
+import { autoLogin, loadAccountPassword, loginModelId, type AutoLoginResult } from "./auto-login.js"
+import { BrowserInstance, type CloseSummary, type ProbeResult } from "./instance.js"
 import { heartbeatLeases, sweepLeases, wakeProfileWaiters } from "./leases.js"
 
 export const LOGIN_IDLE_MS = 30 * 60_000
@@ -27,6 +29,8 @@ const SWEEP_MS = Number(process.env.HEYAGENT_BROWSER_SWEEP_MS) > 0 ? Number(proc
 const WORKER_STALE_MS = 2 * 60_000
 
 export class BrowserBusyError extends Error {}
+/** 自动登录用不了（没存密码、没设模型） */
+export class AutoLoginUnavailableError extends Error {}
 
 export interface ManagerOptions {
   db: Db
@@ -209,6 +213,39 @@ export class BrowserManager {
     } catch (error) {
       await instance.close({ writeBack: false, reason: `Chrome 没起来：${(error as Error).message}` })
       throw error instanceof BrowserUnavailableError ? error : new Error((error as Error).message)
+    }
+  }
+
+  /**
+   * 「立刻登录」：开一个登录用的 Chrome（打开账号的登录网址），让登录小 agent 用存的账号密码登录。
+   * 成功：关掉 Chrome，登录态合并进保险箱，探测账号；没成功：Chrome 留着给人接着登录（返回 browserId）。
+   */
+  async autoLogin(input: { profileId: string; accountId: string; userId: string }): Promise<AutoLoginResult & { browserId?: string; vaultVersion?: number; accounts?: ProbeResult[] }> {
+    const password = await loadAccountPassword(this.db, this.keyring(), input.accountId)
+    if (!password) throw new AutoLoginUnavailableError("这个账号没存密码，只能人工登录。主管可以在账号的「⋯ → 编辑账号」里存密码")
+    const modelId = await loginModelId(this.db)
+    if (!modelId) throw new AutoLoginUnavailableError("还没设默认的执行模型，先在「模型」页设好")
+    const instance = await this.openForLogin(input)
+    const account = instance.accounts.find((each) => each.accountId === input.accountId)!
+    let result: AutoLoginResult
+    try {
+      result = await autoLogin({ db: this.db, instance, account, credentials: { username: account.account, password }, modelId })
+    } catch (error) {
+      result = { ok: false, needHuman: false, detail: `自动登录出错：${(error as Error).message}`, steps: 0, tokensIn: 0, tokensOut: 0, costUsd: 0 }
+    }
+    // 操作历史记一行（「立刻登录」不属于哪次运行）
+    const url = instance.currentPage()?.url()
+    if (url && url !== "about:blank")
+      await this.db.insert(t.browserActions).values({ profileId: input.profileId, url, action: browserActionTag("browser_login"), failed: !result.ok }).catch(() => {})
+    if (!result.ok) return { ...result, browserId: instance.id }
+    const summary = await instance.close({ writeBack: true, reason: "自动登录好了，登录态已保存" })
+    const probe = summary.probes.find((each) => each.accountId === input.accountId)
+    return {
+      ...result,
+      ok: summary.vaultVersion !== undefined && probe?.ok !== false,
+      detail: summary.vaultVersion === undefined ? (summary.skipped ?? "登录态没保存上") : probe && !probe.ok ? `登录后检查没通过：${probe.detail}` : result.detail,
+      vaultVersion: summary.vaultVersion,
+      accounts: summary.probes,
     }
   }
 

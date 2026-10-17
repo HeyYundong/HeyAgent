@@ -1,0 +1,1 @@
+ALTER TYPE "public"."secret_scope" ADD VALUE 'browser_account';

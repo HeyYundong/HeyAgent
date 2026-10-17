@@ -115,7 +115,7 @@ export const providerKindEnum = pgEnum("provider_kind", values(modelProviderKind
 export const providerStatusEnum = pgEnum("provider_status", values(providerStatusSchema.options))
 export const modelRoleEnum = pgEnum("model_role", values(modelRoleSchema.options))
 /** 密钥属于什么：HTTP 工具模板里的 {{名字}}、MCP 服务器的环境变量、模型服务的 API key、Chrome 代理密码 */
-export const secretScopeEnum = pgEnum("secret_scope", ["http_tool", "mcp_env", "model_provider", "browser_proxy"])
+export const secretScopeEnum = pgEnum("secret_scope", ["http_tool", "mcp_env", "model_provider", "browser_proxy", "browser_account"])
 
 // ---------- 新 id 用的序列（规则见 shared/ids.ts） ----------
 

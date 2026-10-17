@@ -330,7 +330,10 @@ export const platformUpdateSchema = z.object({
 export const browserAccountInputSchema = z.object({
   profileId: z.string().min(1),
   platformId: z.string().min(1, "选一个平台"),
+  /** 登录用的账号（用户名、邮箱或手机号） */
   account: text("填账号", 200),
+  /** 登录密码：只加密存，任何接口都不返回；agent 只看到占位符。不填 = 只能人工登录 */
+  password: z.string().max(1000).optional(),
   maxConcurrent: z.number().int().min(1).max(20).default(1),
   probeUrl: z
     .string()
@@ -344,6 +347,10 @@ export type BrowserAccountInput = z.input<typeof browserAccountInputSchema>
 export const browserAccountUpdateSchema = z.object({
   id: z.string().min(1),
   account: text("填账号", 200).optional(),
+  /** 新密码；不填 = 不改 */
+  password: z.string().max(1000).optional(),
+  /** 去掉已存的密码 */
+  clearPassword: z.boolean().optional(),
   maxConcurrent: z.number().int().min(1).max(20).optional(),
   probeUrl: browserAccountInputSchema.shape.probeUrl,
   saveIndexedDb: z.boolean().optional(),

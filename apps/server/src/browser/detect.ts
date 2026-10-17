@@ -91,8 +91,26 @@ export function parseVisionAnswer(text: string): { captcha: boolean; login: bool
 }
 
 /** 登录探测：最终地址不像登录页，页面上也没有密码输入框，就算还在登录状态（通用判断，m2.md 第 4 条） */
-export function probeLooksLoggedIn(facts: Pick<PageFacts, "url" | "hasPasswordInput">): { ok: boolean; detail: string } {
+/**
+ * 登录探测：打开账号的登录网址后，看最后停在哪。
+ * 跳到了登录页（或页面上有密码框）= 掉登录了。但登录网址本身就是登录页、打开后没跳走时看不出来
+ * （很多网站已登录也照样显示登录表单），按已登录算，免得把好好的账号标成「要登录」、不写回登录态。
+ */
+export function probeLooksLoggedIn(facts: Pick<PageFacts, "url" | "hasPasswordInput">, requestedUrl?: string): { ok: boolean; detail: string } {
+  const looksLogin = facts.hasPasswordInput || LOGIN_URL.test(safePath(facts.url))
+  if (looksLogin && requestedUrl && samePage(facts.url, requestedUrl)) return { ok: true, detail: `登录网址本身就是登录页，看不出来，按已登录算（${shorten(facts.url)}）` }
   if (facts.hasPasswordInput) return { ok: false, detail: `探测网址打开后页面上有密码输入框（${shorten(facts.url)}）` }
   if (LOGIN_URL.test(safePath(facts.url))) return { ok: false, detail: `探测网址跳到了登录页（${shorten(facts.url)}）` }
   return { ok: true, detail: `还在登录状态（${shorten(facts.url)}）` }
+}
+
+/** 同一个页面（主机名 + 路径一样；查询参数、# 不算） */
+function samePage(a: string, b: string) {
+  try {
+    const left = new URL(a)
+    const right = new URL(b)
+    return left.hostname === right.hostname && left.pathname.replace(/\/$/, "") === right.pathname.replace(/\/$/, "")
+  } catch {
+    return false
+  }
 }

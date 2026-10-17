@@ -102,6 +102,7 @@ export async function deleteBrowserProfile(ctx: WriteCtx, input: { id: string })
     if (busy) throw conflict(`「${before.name}」现在有 ${busy} 个 session 在用，等它们用完再删。`)
     await tx.delete(t.browserProfiles).where(eq(t.browserProfiles.id, input.id))
     await deleteSecret(tx, { scope: "browser_proxy", refId: input.id, name: "password" })
+    for (const accountId of accounts) await deleteSecret(tx, accountPasswordRef(accountId))
     await audit(tx, ctx.actor.id, "browser_profile.delete", "browser_profiles", input.id, { name: before.name, accounts })
     return { id: input.id }
   })
@@ -155,7 +156,13 @@ export async function deletePlatform(ctx: WriteCtx, input: { id: string }) {
 
 // ---------- 平台账号 ----------
 
-export async function createBrowserAccount(ctx: WriteCtx, input: { profileId: string; platformId: string; account: string; maxConcurrent: number; probeUrl?: string; saveIndexedDb: boolean }) {
+/** 账号的登录密码：存在 secrets（scope = browser_account，ref_id = 账号 id），只进不出 */
+const accountPasswordRef = (accountId: string) => ({ scope: "browser_account" as const, refId: accountId, name: "password" })
+// 掩码一个字也不留（keepStart 取密码长度，mask 就全部打点）：密码哪怕露几位也不行
+const putAccountPassword = (tx: DbOrTx, ctx: WriteCtx, accountId: string, password: string) =>
+  putSecret(tx, ctx.keyring(), accountPasswordRef(accountId), password, ctx.actor.id, password.length)
+
+export async function createBrowserAccount(ctx: WriteCtx, input: { profileId: string; platformId: string; account: string; password?: string; maxConcurrent: number; probeUrl?: string; saveIndexedDb: boolean }) {
   assertCan(ctx.actor, "config.manage", {}, "只有主管能加账号")
   return ctx.db.transaction(async (tx) => {
     const [profile] = await tx.select({ id: t.browserProfiles.id }).from(t.browserProfiles).where(eq(t.browserProfiles.id, input.profileId))
@@ -182,12 +189,13 @@ export async function createBrowserAccount(ctx: WriteCtx, input: { profileId: st
       probeUrl: input.probeUrl || null,
       saveIndexedDb: input.saveIndexedDb,
     })
-    await audit(tx, ctx.actor.id, "browser_account.create", "browser_accounts", id, { profileId: input.profileId, platformId: input.platformId, maxConcurrent: input.maxConcurrent })
+    if (input.password) await putAccountPassword(tx, ctx, id, input.password)
+    await audit(tx, ctx.actor.id, "browser_account.create", "browser_accounts", id, { profileId: input.profileId, platformId: input.platformId, maxConcurrent: input.maxConcurrent, passwordSet: Boolean(input.password) })
     return { id }
   })
 }
 
-export async function updateBrowserAccount(ctx: WriteCtx, input: { id: string; account?: string; maxConcurrent?: number; probeUrl?: string; saveIndexedDb?: boolean }) {
+export async function updateBrowserAccount(ctx: WriteCtx, input: { id: string; account?: string; password?: string; clearPassword?: boolean; maxConcurrent?: number; probeUrl?: string; saveIndexedDb?: boolean }) {
   assertCan(ctx.actor, "config.manage", {}, "只有主管能改账号")
   return ctx.db.transaction(async (tx) => {
     const [before] = await tx.select().from(t.browserAccounts).where(eq(t.browserAccounts.id, input.id))
@@ -198,9 +206,13 @@ export async function updateBrowserAccount(ctx: WriteCtx, input: { id: string; a
       ...(input.probeUrl !== undefined ? { probeUrl: input.probeUrl || null } : {}),
       ...(input.saveIndexedDb !== undefined ? { saveIndexedDb: input.saveIndexedDb } : {}),
     }
-    if (Object.keys(next).length === 0) return { id: input.id }
-    await tx.update(t.browserAccounts).set(next).where(eq(t.browserAccounts.id, input.id))
-    await audit(tx, ctx.actor.id, "browser_account.update", "browser_accounts", input.id, { changed: Object.keys(next), ...(input.maxConcurrent !== undefined ? { maxConcurrent: input.maxConcurrent } : {}) })
+    // 密码：填了就换，勾了「去掉」就删；审计里只记动作，不记内容
+    const password = input.password ? "set" : input.clearPassword ? "cleared" : undefined
+    if (input.password) await putAccountPassword(tx, ctx, input.id, input.password)
+    else if (input.clearPassword) await deleteSecret(tx, accountPasswordRef(input.id))
+    if (Object.keys(next).length === 0 && !password) return { id: input.id }
+    if (Object.keys(next).length) await tx.update(t.browserAccounts).set(next).where(eq(t.browserAccounts.id, input.id))
+    await audit(tx, ctx.actor.id, "browser_account.update", "browser_accounts", input.id, { changed: Object.keys(next), ...(input.maxConcurrent !== undefined ? { maxConcurrent: input.maxConcurrent } : {}), ...(password ? { password } : {}) })
     return { id: input.id }
   })
 }
@@ -213,6 +225,7 @@ export async function deleteBrowserAccount(ctx: WriteCtx, input: { id: string })
     const busy = await activeLeases(tx, [input.id])
     if (busy) throw conflict(`这个账号现在有 ${busy} 个 session 在用，等它们用完再删。`)
     await tx.delete(t.browserAccounts).where(eq(t.browserAccounts.id, input.id))
+    await deleteSecret(tx, accountPasswordRef(input.id))
     await audit(tx, ctx.actor.id, "browser_account.delete", "browser_accounts", input.id, { profileId: before.profileId, platformId: before.platformId })
     return { id: input.id }
   })
