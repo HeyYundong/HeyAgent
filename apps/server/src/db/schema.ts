@@ -36,6 +36,7 @@ import {
   toolSourceSchema,
   type HttpSpec,
   type HumanDetail,
+  type SessionSnapshot,
   type TaskStep,
   type Verification,
 } from "@heyagent/shared"
@@ -462,6 +463,22 @@ export const sessions = pgTable(
     verification: jsonb("verification").$type<Verification>(),
     /** 乐观锁：状态变更用 where version = ? 防并发（M1） */
     version: integer("version").notNull().default(0),
+    /** 开始运行时冻结的任务配置（M1）：步骤、目标、检查点、记忆、技能、工具、规则、模型、附件 */
+    snapshot: jsonb("snapshot").$type<SessionSnapshot>(),
+    /** 额外的一句话（人加的待办的标题、立即运行时的备注） */
+    note: text("note"),
+    /** 谁点的「立即运行」 */
+    createdById: text("created_by_id").references(() => users.id, { onDelete: "set null" }),
+    /** 失败或取消的原因 */
+    error: text("error"),
+    /** 已经调了几次模型（步数上限按它算） */
+    stepCount: integer("step_count").notNull().default(0),
+    /** 这个 session 的花费上限 / 步数上限；为空用 settings 里的。人同意「继续」时调高 */
+    costLimitUsd: numeric("cost_limit_usd", { precision: 12, scale: 6, mode: "number" }),
+    maxSteps: integer("max_steps"),
+    /** session_events / session_messages 的序号计数器：API 和 worker 都会追加，用行锁发号 */
+    eventSeq: integer("event_seq").notNull().default(0),
+    msgSeq: integer("msg_seq").notNull().default(0),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -581,6 +598,10 @@ export const sessionWaits = pgTable(
     /** 谁让它继续的：timer / event / human / resume_now */
     firedCause: text("fired_cause"),
     firedAt: ts("fired_at"),
+    /** 等的是一件「要人办的事」（ask.human、花费上限）：处理完就继续 */
+    humanItemId: text("human_item_id").references((): AnyPgColumn => humanItems.id, { onDelete: "set null" }),
+    /** 兜底期限到了、已经提醒过负责人的时间 */
+    remindedAt: ts("reminded_at"),
     /** 挂起的时间（原型 waiting.since） */
     createdAt: createdAt(),
   },
@@ -780,6 +801,8 @@ export const files = pgTable(
   {
     id: text("id").primaryKey(),
     sessionId: text("session_id").references(() => sessions.id, { onDelete: "set null" }),
+    /** 任务附件：跨运行一直有效（session_id 为空）。session 的附件和产物只属于那次运行 */
+    taskId: text("task_id").references(() => tasks.id, { onDelete: "cascade" }),
     /** screenshot / artifact / upload */
     kind: text("kind").notNull(),
     name: text("name").notNull(),
@@ -790,7 +813,7 @@ export const files = pgTable(
     createdById: text("created_by_id").references(() => users.id, { onDelete: "set null" }),
     createdAt: createdAt(),
   },
-  (t) => [index("files_session_id_idx").on(t.sessionId)]
+  (t) => [index("files_session_id_idx").on(t.sessionId), index("files_task_id_idx").on(t.taskId)]
 )
 
 // ---------- M1 公共表（监工在并行开发前先建好，两个开发包都要用） ----------
@@ -820,3 +843,25 @@ export const settings = pgTable("settings", {
   updatedAt: updatedAt(),
   updatedById: text("updated_by_id").references(() => users.id, { onDelete: "set null" }),
 })
+
+// ---------- M1 引擎（包 P1） ----------
+
+/** 站内通知：给谁、标题、内容、链接、已读时间 */
+export const notifications = pgTable(
+  "notifications",
+  {
+    id: identity(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    body: text("body").notNull().default(""),
+    /** 控制台里的链接，例如 /sessions/R-1024-1 */
+    link: text("link"),
+    taskId: text("task_id").references(() => tasks.id, { onDelete: "set null" }),
+    sessionId: text("session_id").references(() => sessions.id, { onDelete: "set null" }),
+    readAt: ts("read_at"),
+    createdAt: createdAt(),
+  },
+  (t) => [index("notifications_user_created_idx").on(t.userId, t.createdAt.desc())]
+)

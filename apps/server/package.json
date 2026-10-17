@@ -10,8 +10,10 @@
   ],
   "scripts": {
     "dev": "tsx watch --conditions=source src/index.ts",
+    "dev:worker": "tsx watch --conditions=source src/worker.ts",
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
+    "start:worker": "node dist/worker.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",

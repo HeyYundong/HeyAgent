@@ -5,6 +5,7 @@ import { Hono } from "hono"
 
 import type { Auth } from "./auth.js"
 import type { Db } from "./db/client.js"
+import { registerEngineRoutes } from "./engine/http.js"
 import type { ChangeHub } from "./live/hub.js"
 import type { Context } from "./trpc/init.js"
 import { appRouter } from "./trpc/router.js"
@@ -46,6 +47,8 @@ export function createApp({ db, auth, hub }: AppDeps) {
     if (session) return next()
     return c.json({ error: { message: "请先登录", code: -32001, data: { code: "UNAUTHORIZED", httpStatus: 401 } } }, 401)
   })
+
+  registerEngineRoutes(app, { db, auth })
 
   app.all("/api/trpc/*", (c) =>
     fetchRequestHandler({
