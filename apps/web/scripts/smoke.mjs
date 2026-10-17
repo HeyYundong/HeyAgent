@@ -145,16 +145,27 @@ const dialog = (page) => page.getByRole("dialog").last()
 
 /**
  * 规则对话框（M3 起的流程）：点「保存并翻译」→ 等「规划」模型翻译完 → 能生效就「确认生效」，不支持就「知道了」。
- * 翻译要调模型，最多等 90 秒。
+ * 只改了名字、规则文字没变时不会重新翻译，弹窗保存后直接关掉。翻译要调模型，最多等 90 秒。
  */
 async function saveAndConfirmRule(page) {
   await dialog(page).getByRole("button", { name: "保存并翻译" }).click()
+  const content = page.locator('[data-slot="dialog-content"]')
   const confirm = dialog(page).getByRole("button", { name: "确认生效" })
   const gotIt = dialog(page).getByRole("button", { name: "知道了" })
-  await confirm.or(gotIt).first().waitFor({ timeout: 90_000 })
-  if (await confirm.isVisible()) await confirm.click()
-  else await gotIt.click()
-  await page.locator('[data-slot="dialog-content"]').waitFor({ state: "detached", timeout: 15_000 })
+  const deadline = Date.now() + 90_000
+  while (Date.now() < deadline) {
+    if ((await content.count()) === 0) return
+    if (await confirm.isVisible().catch(() => false)) {
+      await confirm.click()
+      break
+    }
+    if (await gotIt.isVisible().catch(() => false)) {
+      await gotIt.click()
+      break
+    }
+    await page.waitForTimeout(300)
+  }
+  await content.waitFor({ state: "detached", timeout: 15_000 })
 }
 
 /** Base UI 的下拉：点输入框，打字过滤，点选项 */
