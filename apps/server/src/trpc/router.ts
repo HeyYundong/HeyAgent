@@ -24,6 +24,7 @@ import {
 
 import * as load from "../data/loaders.js"
 import { protectedProcedure, router } from "./init.js"
+import { engineRouter } from "./engine-router.js"
 
 const idInput = z.object({ id: z.string().min(1) })
 
@@ -115,6 +116,9 @@ export const appRouter = router({
       .output(z.object({ providers: z.array(modelProviderSchema), defaults: modelDefaultsSchema }))
       .query(({ ctx }) => load.loadModels(ctx.db)),
   }),
+
+  /** 引擎相关（M1 包 P1）：立即运行、取消、处理要人办的事、附件和产物、通知等 */
+  engine: engineRouter,
 
   live: router({
     /**

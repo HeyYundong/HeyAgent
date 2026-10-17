@@ -303,4 +303,7 @@ base-lyra 的 registry 中**没有** `chart-*` 图表区块（`chart-area-defaul
 
 | 组件 / 改动 | 路径 | 原因（registry 缺什么） | 基于的 shadcn 组件 / 官方 Pattern | 新依赖 | 用户确认日期 |
 |---|---|---|---|---|---|
-| | | | | | |
+| 表单：React Hook Form + zod resolver，配合 shadcn `Field` | `apps/web/src` 下各表单 | registry 没有表单状态库（`form` 是空条目），官方 `/docs/forms` 推荐用表单库 | 官方 Forms 指南（React Hook Form）+ `field` | `react-hook-form` 7.90.0、`@hookform/resolvers` 5.9.1 | 2026-10-17 |
+| Markdown 显示（技能 SKILL.md、记忆、agent 输出） | `apps/web/src/components/markdown/` | registry 没有 Markdown 渲染组件 | 官方 Typeset / Typography 样式 | `react-markdown` 10.1.0、`remark-gfm` 4.0.1 | 2026-10-17 |
+
+2026-10-17 用户另外同意：开发中遇到 registry 确实没有的组件，可以先按第 6 节用现有组件组合实现、登记在上表，事后告诉用户（「先做后报」）。

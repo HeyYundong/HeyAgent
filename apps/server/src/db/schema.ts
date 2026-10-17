@@ -792,3 +792,31 @@ export const files = pgTable(
   },
   (t) => [index("files_session_id_idx").on(t.sessionId)]
 )
+
+// ---------- M1 公共表（监工在并行开发前先建好，两个开发包都要用） ----------
+
+/** 审计：谁在什么时候改了什么配置、批准了什么（方案 2.3.7）。只追加 */
+export const auditEvents = pgTable(
+  "audit_events",
+  {
+    id: identity(),
+    at: ts("at").notNull().defaultNow(),
+    /** 谁做的；系统自己做的（定时、agent）为空 */
+    actorId: text("actor_id").references(() => users.id, { onDelete: "set null" }),
+    /** 例如 task.create、memory.approve、human_item.resolve */
+    action: text("action").notNull(),
+    targetTable: text("target_table").notNull(),
+    targetId: text("target_id").notNull(),
+    /** 改了哪些字段、处理意见等；不放密钥原文 */
+    detail: jsonb("detail").$type<Record<string, unknown>>().notNull().default({}),
+  },
+  (t) => [index("audit_events_target_idx").on(t.targetTable, t.targetId), index("audit_events_at_idx").on(t.at)]
+)
+
+/** 全局设置（键值）：例如每个 session 的花费上限、只靠事件继续的兜底天数、通知渠道 */
+export const settings = pgTable("settings", {
+  key: text("key").primaryKey(),
+  value: jsonb("value").$type<unknown>().notNull(),
+  updatedAt: updatedAt(),
+  updatedById: text("updated_by_id").references(() => users.id, { onDelete: "set null" }),
+})

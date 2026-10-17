@@ -21,6 +21,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "cron-parser": "5.10.2",
     "zod": "4.6.7"
   },
   "devDependencies": {
