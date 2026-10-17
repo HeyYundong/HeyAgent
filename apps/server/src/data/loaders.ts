@@ -2,8 +2,10 @@
 // 规则：库里为空的字段直接省略；时间都转成 ISO；密钥只给掩码，登录态只给状态和个数，绝不读出原文。
 import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm"
 import {
+  compiledRuleSchema,
   NOTIFY_SECRET_PREFIX,
   relativeDayText,
+  type RuleCompileView,
   type BrowserProfile,
   type HumanItem,
   type HumanTodo,
@@ -25,6 +27,7 @@ import {
 
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
+import { parseCompiledText } from "./config/rules.js"
 
 const iso = (value: Date) => value.toISOString()
 const isoOpt = (value: Date | null) => (value ? value.toISOString() : undefined)
@@ -99,6 +102,7 @@ export async function listTasks(db: Db, ids?: string[]): Promise<TaskDef[]> {
       browserProfileIds: row.browserProfileIds,
       allowedDomains: row.allowedDomains,
       allowBrowserEvaluate: row.allowBrowserEvaluate,
+      verifyModelId: opt(row.verifyModelId),
     })
   )
 }
@@ -316,8 +320,38 @@ export async function listRules(db: Db): Promise<RuleRef[]> {
       action: row.action,
       toolIds: links.filter((link) => link.ruleId === row.id).map((link) => link.toolId),
       compiledTrigger: opt(row.compiledTrigger),
+      compile: ruleCompileView(row),
     })
   )
+}
+
+/** 规则的生效状态（M3）：现在这段文字翻译了没有、确认了没有；正在执行的是哪个版本 */
+export function ruleCompileView(row: typeof t.rules.$inferSelect): RuleCompileView {
+  const enforced = compiledRuleSchema.safeParse(row.compiledTrigger)
+  const enforcedText = parseCompiledText(row.compiledText)
+  const effective = enforced.success
+  const current = effective && enforcedText?.trigger === row.trigger && enforcedText?.action === row.action
+  const draft = row.compileDraft && row.compileDraft.trigger === row.trigger && row.compileDraft.action === row.action ? row.compileDraft : undefined
+  const status: RuleCompileView["status"] = current ? "active" : draft ? (draft.supported ? "pending" : "unsupported") : "untranslated"
+  return compact({
+    status,
+    understood: current && enforced.success ? enforced.data.understood : draft?.understood,
+    reason: !current && draft && !draft.supported ? draft.reason : undefined,
+    draft: current && enforced.success ? enforced.data : draft?.compiled,
+    translatedAt: current ? isoOpt(row.confirmedAt) : draft?.at,
+    modelId: draft?.modelId,
+    effective,
+    enforced: enforced.success
+      ? compact({
+          understood: enforced.data.understood,
+          trigger: enforcedText?.trigger ?? row.trigger,
+          action: enforcedText?.action ?? row.action,
+          confirmedAt: isoOpt(row.confirmedAt),
+          confirmedById: opt(row.confirmedById),
+        })
+      : undefined,
+    outdated: effective && !current ? true : undefined,
+  }) as RuleCompileView
 }
 
 export async function listTools(db: Db): Promise<{ tools: Tool[]; mcpServers: McpServer[]; savedSecrets: Record<string, SavedSecret> }> {

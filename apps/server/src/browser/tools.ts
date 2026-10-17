@@ -376,17 +376,21 @@ export class BrowserTools {
     const blocked = instance.drainBlocked()
     if (blocked.length) return this.blockedOutcome(blocked, lines.join("\n"))
 
-    if (NAVIGATION_TOOLS.has(name) && !result.isError) {
+    let facts: ToolOutcome["facts"]
+    if ((NAVIGATION_TOOLS.has(name) || (name === "browser_tabs" && args.action === "new")) && !result.isError) {
       const shot = await instance.screenshot()
       if (shot) {
         const row = await saveFile(db, { data: shot, name: `page-${Date.now()}.jpg`, mime: "image/jpeg", kind: "screenshot", sessionId: session.id })
         lines.push(`（已自动截图存档：${row.id}）`)
       }
+      // 给规则「自动记录检查点」用：打开的是哪个网页
+      const page = instance.currentPage()
+      if (page) facts = { url: page.url(), title: await page.title().catch(() => "") }
     }
 
     const hit = await this.detect(instance)
-    if (hit) return this.humanOutcome(instance, hit, lines.join("\n"))
-    return { output: lines.join("\n"), isError: result.isError }
+    if (hit) return { ...(await this.humanOutcome(instance, hit, lines.join("\n"))), facts }
+    return { output: lines.join("\n"), isError: result.isError, facts }
   }
 
   /** 检测验证码 / 登录页；规则拿不准时（设置打开了视觉判断）交给视觉模型 */
@@ -509,6 +513,7 @@ export class BrowserTools {
     }
     return {
       output: `${prefix}\n\n检测到${what}：${hit.verdict.reason}。已交给负责人在远程画面里处理（系统不破解验证码），处理好后会叫你继续；继续后先看一下页面现状再接着做。${file ? `截图：${file.id}` : ""}`,
+      signals: ["page_needs_human"],
       suspend: {
         kind: "human",
         item: {
@@ -524,6 +529,16 @@ export class BrowserTools {
         },
       },
     }
+  }
+
+  /** 规则要求「截图存证」（M3）：这次运行开着 Chrome 时截当前页面，存成 session 文件；没开着就返回 undefined */
+  async evidenceScreenshot(): Promise<{ fileId: string } | undefined> {
+    const instance = this.instance
+    if (!instance || instance.state === "closing") return undefined
+    const shot = await instance.screenshot().catch(() => undefined)
+    if (!shot) return undefined
+    const row = await saveFile(this.ctx.db, { data: shot, name: `rule-${Date.now()}.jpg`, mime: "image/jpeg", kind: "screenshot", sessionId: this.ctx.session.id })
+    return { fileId: row.id }
   }
 
   /** gateway 关闭（session 结束、挂起、交接）：要保留就保留（等人处理验证码），否则写回登录态、关掉 Chrome、释放租约 */

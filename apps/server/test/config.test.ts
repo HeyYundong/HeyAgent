@@ -98,12 +98,15 @@ describe("没登录、没权限", () => {
 describe("任务", () => {
   it("新建、修改、启停、删除；都记审计、都调 syncTaskSchedule", async () => {
     engine.syncTaskSchedule.mockClear()
-    const created = await mutate(ctx.app, "tasks.create", lin, { ...NEW_TASK, schedule: { cron: "0 9 * * 1", text: "每周一 09:00" }, ruleIds: ["rl-whitelist"] })
+    // M3：还没生效的规则（种子里白名单那条没翻译）建任务时选不了
+    const inactive = await mutate(ctx.app, "tasks.create", lin, { ...NEW_TASK, ruleIds: ["rl-whitelist"] })
+    expect(inactive.error?.message).toContain("还没生效")
+    const created = await mutate(ctx.app, "tasks.create", lin, { ...NEW_TASK, schedule: { cron: "0 9 * * 1", text: "每周一 09:00" }, ruleIds: ["rl-verify"] })
     expect(created.error).toBeUndefined()
     const id = created.data.id as string
     expect(id).toMatch(/^T-\d+$/)
     const task = (await query(ctx.app, "tasks.get", lin, { id })).data
-    expect(task).toMatchObject({ title: "整理每周报表", ownerId: "u-lin", modelId: "openrouter/anthropic/claude-sonnet-5.5", schedule: { cron: "0 9 * * 1" }, ruleIds: ["rl-whitelist"] })
+    expect(task).toMatchObject({ title: "整理每周报表", ownerId: "u-lin", modelId: "openrouter/anthropic/claude-sonnet-5.5", schedule: { cron: "0 9 * * 1" }, ruleIds: ["rl-verify"] })
     expect(task.steps).toEqual([
       { id: "s1", text: "读数据", wait: false },
       { id: "s2", text: "等确认", wait: true, checkpoint: "收到确认" },

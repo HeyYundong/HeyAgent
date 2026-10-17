@@ -1,6 +1,6 @@
 // 任务的写操作：新建、修改、启停、删除。保存后调引擎的 syncTaskSchedule（定时触发由引擎管）。
 import { and, count, eq, inArray } from "drizzle-orm"
-import { modelFamily, nextCronRun, sameFamily, taskId, type taskInputSchema } from "@heyagent/shared"
+import { compiledRuleSchema, modelFamily, nextCronRun, ruleCompileStatusLabel, sameFamily, taskId, type TaskStep, type taskInputSchema } from "@heyagent/shared"
 import type { z } from "zod"
 
 import type { Db } from "../../db/client.js"
@@ -15,15 +15,26 @@ async function defaultModel(db: DbOrTx, role: "run" | "verify") {
   return row?.modelId
 }
 
-/** 检查模型和关联的配置都存在；执行模型不许和验收模型同一家 */
-async function checkTask(db: DbOrTx, input: TaskInput) {
+/**
+ * 检查模型和关联的配置都存在；执行模型不许和验收模型同一家。
+ * 规则（M3）：新选上的规则必须已经生效（人确认过翻译）；原来就选着的规则保留（文字改过还没重新确认的，运行时照旧版本执行）
+ */
+async function checkTask(db: DbOrTx, input: TaskInput, previousRuleIds: string[] = []) {
   const modelId = input.modelId || (await defaultModel(db, "run"))
   if (!modelId) throw badRequest("还没有可用的模型：先去「模型」页接入模型服务并设置默认模型")
   const [model] = await db.select({ id: t.models.id, name: t.models.name }).from(t.models).where(eq(t.models.id, modelId))
   if (!model) throw badRequest(`模型 ${modelId} 不存在（可能刷新模型列表后下架了），请换一个`)
-  const verify = await defaultModel(db, "verify")
-  if (verify && sameFamily(modelId, verify)) {
-    throw badRequest(`执行模型和三方验收模型是同一家（${modelFamily(modelId)}），验收就不算第三方了。换一个执行模型，或去「模型」页换验收模型。`)
+  const verifyModelId = input.verifyModelId || null
+  if (verifyModelId) {
+    const [found] = await db.select({ id: t.models.id }).from(t.models).where(eq(t.models.id, verifyModelId))
+    if (!found) throw badRequest(`验收模型 ${verifyModelId} 不存在，请换一个`)
+    if (sameFamily(modelId, verifyModelId))
+      throw badRequest(`执行模型和这个任务选的验收模型是同一家（${modelFamily(modelId)}），验收就不算第三方了。换一个执行模型或验收模型。`)
+  } else {
+    const verify = await defaultModel(db, "verify")
+    if (verify && sameFamily(modelId, verify)) {
+      throw badRequest(`执行模型和三方验收模型是同一家（${modelFamily(modelId)}），验收就不算第三方了。换一个执行模型，或去「模型」页换验收模型。`)
+    }
   }
   const exist = async (table: typeof t.memories | typeof t.skills | typeof t.rules | typeof t.tools, list: string[], what: string) => {
     if (list.length === 0) return
@@ -34,6 +45,17 @@ async function checkTask(db: DbOrTx, input: TaskInput) {
   await exist(t.memories, input.memoryIds, "记忆")
   await exist(t.skills, input.skillIds, "技能")
   await exist(t.rules, input.ruleIds, "规则")
+  const added = input.ruleIds.filter((id) => !previousRuleIds.includes(id))
+  if (added.length) {
+    const rows = await db.select({ id: t.rules.id, name: t.rules.name, compiledTrigger: t.rules.compiledTrigger, compileDraft: t.rules.compileDraft }).from(t.rules).where(inArray(t.rules.id, added))
+    const inactive = rows.filter((row) => !compiledRuleSchema.safeParse(row.compiledTrigger).success)
+    if (inactive.length)
+      throw badRequest(
+        `这些规则还没生效，不能选：${inactive
+          .map((row) => `「${row.name}」（${row.compileDraft ? (row.compileDraft.supported ? ruleCompileStatusLabel.pending : `${ruleCompileStatusLabel.unsupported}：${row.compileDraft.reason ?? ""}`) : ruleCompileStatusLabel.untranslated}）`)
+          .join("、")}。先到规则页翻译并确认「系统理解为」。`
+      )
+  }
   await exist(t.tools, input.toolIds, "工具")
   if (input.browserProfileIds.length) {
     const rows = await db.select({ id: t.browserProfiles.id }).from(t.browserProfiles).where(inArray(t.browserProfiles.id, input.browserProfileIds))
@@ -44,10 +66,10 @@ async function checkTask(db: DbOrTx, input: TaskInput) {
   const alwaysOn = input.toolIds.length
     ? (await db.select({ id: t.tools.id }).from(t.tools).where(and(inArray(t.tools.id, input.toolIds), eq(t.tools.alwaysOn, true)))).map((row) => row.id)
     : []
-  return { modelId, toolIds: input.toolIds.filter((id) => !alwaysOn.includes(id)) }
+  return { modelId, verifyModelId, toolIds: input.toolIds.filter((id) => !alwaysOn.includes(id)) }
 }
 
-function columns(input: TaskInput, modelId: string) {
+function columns(input: TaskInput, modelId: string, verifyModelId: string | null) {
   const steps = input.steps.map((step, index) => ({
     id: step.id || `s${index + 1}`,
     text: step.text,
@@ -73,6 +95,7 @@ function columns(input: TaskInput, modelId: string) {
     browserProfileIds: [...new Set(input.browserProfileIds)],
     allowedDomains: [...new Set(input.allowedDomains)],
     allowBrowserEvaluate: input.allowBrowserEvaluate,
+    verifyModelId,
   }
 }
 
@@ -100,11 +123,11 @@ export async function createTask(ctx: WriteCtx, input: TaskInput): Promise<{ id:
   assertCan(ctx.actor, "task.create", {}, "只有主管能新建任务")
   const ownerId = input.ownerId || ctx.actor.id
   const id = await ctx.db.transaction(async (tx) => {
-    const { modelId, toolIds } = await checkTask(tx, input)
+    const { modelId, verifyModelId, toolIds } = await checkTask(tx, input)
     const [owner] = await tx.select({ id: t.users.id }).from(t.users).where(eq(t.users.id, ownerId))
     if (!owner) throw badRequest("负责人不存在")
     const id = taskId(await nextNo(tx, "task_no_seq"))
-    await tx.insert(t.tasks).values({ id, ownerId, ...columns(input, modelId) })
+    await tx.insert(t.tasks).values({ id, ownerId, ...columns(input, modelId, verifyModelId) })
     await writeLinks(tx, id, { ...input, toolIds })
     await audit(tx, ctx.actor.id, "task.create", "tasks", id, { title: input.title, ownerId, modelId })
     return id
@@ -119,8 +142,9 @@ export async function updateTask(ctx: WriteCtx, input: TaskInput & { id: string 
     assertCan(ctx.actor, "task.manage", { ownerId: before.ownerId }, "只有负责人和主管能改这个任务")
     // 员工不能把任务转给别人
     const ownerId = ctx.actor.isAdmin && input.ownerId ? input.ownerId : before.ownerId
-    const { modelId, toolIds } = await checkTask(tx, input)
-    const next = columns(input, modelId)
+    const previousRuleIds = (await tx.select({ id: t.taskRules.refId }).from(t.taskRules).where(eq(t.taskRules.taskId, input.id))).map((row) => row.id)
+    const { modelId, verifyModelId, toolIds } = await checkTask(tx, input, previousRuleIds)
+    const next = columns(input, modelId, verifyModelId)
     await tx.update(t.tasks).set({ ...next, ownerId }).where(eq(t.tasks.id, input.id))
     await writeLinks(tx, input.id, { ...input, toolIds })
     const changed = (Object.keys(next) as (keyof typeof next)[]).filter((key) => JSON.stringify(before[key]) !== JSON.stringify(next[key]))
@@ -140,6 +164,25 @@ export async function setTaskEnabled(ctx: WriteCtx, input: { id: string; enabled
   })
   await syncTaskSchedule(ctx.db, input.id)
   return { id: input.id, enabled: input.enabled }
+}
+
+/**
+ * 把一次运行里 agent 写下的步骤（plan.set）存成任务的步骤（M3）：整体覆盖原来的步骤（原来步骤上的检查点也一起换掉），记审计。
+ * 负责人或主管能做（task.manage）。已经在跑的运行不受影响（它们有自己的快照）
+ */
+export async function saveStepsFromSession(ctx: WriteCtx, input: { sessionId: string }): Promise<{ id: string; steps: TaskStep[] }> {
+  return ctx.db.transaction(async (tx) => {
+    const [session] = await tx.select({ id: t.sessions.id, taskId: t.sessions.taskId, exploredSteps: t.sessions.exploredSteps }).from(t.sessions).where(eq(t.sessions.id, input.sessionId))
+    if (!session) throw notFound("运行", input.sessionId)
+    const before = await loadTask(tx, session.taskId)
+    assertCan(ctx.actor, "task.manage", { ownerId: before.ownerId }, "只有任务负责人和主管能把步骤存到任务里")
+    const explored = (session.exploredSteps ?? []).map((text) => text.trim()).filter(Boolean)
+    if (explored.length === 0) throw badRequest("这次运行里 agent 没有写下步骤（plan.set），没有可存的")
+    const steps: TaskStep[] = explored.slice(0, 50).map((text, index) => ({ id: `s${index + 1}`, text: text.slice(0, 500), wait: false }))
+    await tx.update(t.tasks).set({ steps }).where(eq(t.tasks.id, before.id))
+    await audit(tx, ctx.actor.id, "task.save_steps", "tasks", before.id, { sessionId: session.id, before: before.steps, after: steps })
+    return { id: before.id, steps }
+  })
 }
 
 /** 有运行记录的不能删（运行记录要留着查），只能停用 */

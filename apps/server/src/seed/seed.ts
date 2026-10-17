@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto"
 
 import { hashPassword } from "better-auth/crypto"
 import { sql } from "drizzle-orm"
-import { LIVE_CHANNEL, shanghaiToIso, type Trigger as SharedTrigger } from "@heyagent/shared"
+import { describeCompiledRule, LIVE_CHANNEL, shanghaiToIso, type CompiledRule, type Trigger as SharedTrigger } from "@heyagent/shared"
 
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
@@ -16,6 +16,18 @@ import * as proto from "./fixtures/prototype.js"
 
 /** 原型里的「现在」 */
 export const PROTO_NOW = "2026-10-16 16:30"
+
+/** 演示规则翻译后的结构（种子数据：业务例子只放在这里） */
+const SEED_RULE_COMPILED: Record<string, Pick<CompiledRule, "trigger" | "actions">> = {
+  "rl-wa-confirm": { trigger: { type: "before_tool", toolIds: ["whatsapp.send"], risks: [] }, actions: [{ type: "ask_human", recipient: { to: "owner" } }] },
+  "rl-order-approval": { trigger: { type: "before_tool", toolIds: ["order.place"], risks: ["money"] }, actions: [{ type: "ask_human", recipient: { to: "admin" } }] },
+  "rl-captcha": { trigger: { type: "page_needs_human" }, actions: [{ type: "screenshot" }, { type: "notify", recipient: { to: "owner" } }] },
+  "rl-screenshot": { trigger: { type: "after_tool", toolIds: ["browser.open", "browser.act", "browser"], anyTool: false }, actions: [{ type: "screenshot" }] },
+  "rl-memory-review": { trigger: { type: "agent_proposes", what: ["memory"] }, actions: [{ type: "notify", recipient: { to: "owner" } }] },
+  "rl-checkpoint-sync": { trigger: { type: "after_tool", toolIds: [], anyTool: true }, actions: [{ type: "sync_checkpoint" }] },
+  "rl-verify": { trigger: { type: "agent_done" }, actions: [{ type: "verify" }] },
+  "rl-budget": { trigger: { type: "cost_over", usd: 20 }, actions: [{ type: "ask_human", recipient: { to: "owner" } }] },
+}
 
 /** 演示账号的邮箱（拼音） */
 export const SEED_EMAILS: Record<string, string> = {
@@ -237,7 +249,26 @@ export async function seedDemo(db: Db, keyring: Keyring, options: SeedOptions): 
         position,
       }))
     )
-    await tx.insert(t.rules).values(proto.rules.map(({ toolIds: _toolIds, ...rule }, position) => ({ ...rule, createdById: "u-lin", position })))
+    // M3：演示规则直接带上「人确认过的翻译」（白名单那条没写域名，留着演示「未生效」）
+    const toolName = (id: string) => proto.tools.find((tool) => tool.id === id)?.name
+    const userName = (id: string) => proto.staff.find((user) => user.id === id)?.name
+    await tx.insert(t.rules).values(
+      proto.rules.map(({ toolIds: _toolIds, ...rule }, position) => {
+        const shape = SEED_RULE_COMPILED[rule.id]
+        if (!shape) return { ...rule, createdById: "u-lin", position }
+        const compiled: CompiledRule = { v: 1, ...shape, understood: describeCompiledRule(shape, { tool: toolName, user: userName }) }
+        return {
+          ...rule,
+          createdById: "u-lin",
+          position,
+          compiledTrigger: compiled,
+          compiledText: JSON.stringify({ trigger: rule.trigger, action: rule.action }),
+          compileDraft: { supported: true, compiled, understood: compiled.understood, trigger: rule.trigger, action: rule.action, modelId: proto.modelDefaults.plan, at: clock.at("10-12 10:00").toISOString() },
+          confirmedById: "u-lin",
+          confirmedAt: clock.at("10-12 10:00"),
+        }
+      })
+    )
     const ruleTools = proto.rules.flatMap((rule) => rule.toolIds.map((toolId, position) => ({ ruleId: rule.id, toolId, position })))
     if (ruleTools.length) await tx.insert(t.ruleTools).values(ruleTools)
 

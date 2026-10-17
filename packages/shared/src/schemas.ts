@@ -5,6 +5,8 @@
 // - 数据库里为空的字段在接口里直接省略（对应原型的可选字段 ?:），不会出现 null。
 import { z } from "zod"
 
+import { ruleCompileViewSchema } from "./rules.js"
+
 /** ISO 8601 时间（UTC）。接口返回的时间都是这个格式 */
 export const isoTime = z.string()
 
@@ -210,8 +212,10 @@ export const ruleSchema = z.object({
   action: z.string(),
   /** 规则命中后会调用的工具 */
   toolIds: z.array(z.string()),
-  /** 新增：翻译后的触发条件（方案 2.3.2，M3 填）；还没翻译时省略 */
+  /** 翻译后、人确认过的规则（M3：compiledRuleSchema 的结构，正在执行的版本）；没有确认过时省略 */
   compiledTrigger: z.record(z.string(), z.unknown()).optional(),
+  /** M3：翻译和确认的状态（「系统理解为」、生效没有、为什么没生效）。见 rules.ts 的 ruleCompileViewSchema */
+  compile: ruleCompileViewSchema.optional(),
 })
 export type RuleRef = z.infer<typeof ruleSchema>
 
@@ -324,6 +328,8 @@ export const taskSchema = z.object({
   allowedDomains: z.array(z.string()),
   /** M2：是否允许 agent 在网页里执行脚本 */
   allowBrowserEvaluate: z.boolean(),
+  /** M3：这个任务自己选的三方验收模型；没有就用默认验收模型。必须和执行模型不是同一家 */
+  verifyModelId: z.string().optional(),
 })
 export type TaskDef = z.infer<typeof taskSchema>
 
@@ -376,11 +382,29 @@ export const runEventSchema = z.object({
 })
 export type RunEvent = z.infer<typeof runEventSchema>
 
+/** 验收模型对一条检查点的结论：通过 / 不通过 / 存疑 */
+export const verifyVerdictSchema = z.enum(["pass", "fail", "unsure"])
+export type VerifyVerdict = z.infer<typeof verifyVerdictSchema>
+
 export const verificationSchema = z.object({
   status: z.enum(["passed", "asking", "disputed"]),
   at: isoTime,
   headline: z.string(),
   notes: z.array(z.object({ by: z.enum(["verifier", "executor"]), text: z.string() })),
+  /** M3：第几轮验收（负责人「补充说明后继续」后从 1 重新数） */
+  round: z.number().int().optional(),
+  /** M3：验收用的模型 */
+  modelId: z.string().optional(),
+  /** M3：总结论 */
+  verdict: verifyVerdictSchema.optional(),
+  /** M3：每条检查点的结论和理由（index 是检查点序号，从 1 开始） */
+  items: z
+    .array(z.object({ index: z.number().int(), title: z.string(), verdict: verifyVerdictSchema, reason: z.string() }))
+    .optional(),
+  /** M3：验收争议交给负责人后，负责人怎么处理的：算通过 / 算失败 / 补充说明后继续 */
+  resolution: z
+    .object({ how: z.enum(["pass", "fail", "continue"]), byId: z.string(), byName: z.string().optional(), note: z.string().optional(), at: isoTime })
+    .optional(),
 })
 export type Verification = z.infer<typeof verificationSchema>
 
@@ -454,6 +478,15 @@ export const humanDetailSchema = z.object({
       screenshotFileId: z.string().optional(),
     })
     .optional(),
+  /**
+   * M3：规则「调工具前交给人审批」拦下的工具调用。批准 = 执行这次调用接着跑；拒绝 = 把「被拒绝：理由」作为工具结果交给 agent。
+   * input 是参数的 JSON（密钥类字段已隐藏、太长已截断）
+   */
+  toolCall: z
+    .object({ toolId: z.string(), toolName: z.string(), input: z.string(), risk: z.string().optional(), ruleId: z.string(), ruleName: z.string() })
+    .optional(),
+  /** M3：验收争议附的验收报告。三种处理：算通过（approve）/ 算失败（reject）/ 补充说明后继续（done），也可以用 engine.resolveVerifyDispute */
+  verification: verificationSchema.optional(),
 })
 export type HumanDetail = z.infer<typeof humanDetailSchema>
 

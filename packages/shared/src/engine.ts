@@ -41,6 +41,8 @@ export const sessionSnapshotSchema = z.object({
     steps: z.array(taskStepSchema),
   }),
   modelId: z.string(),
+  /** M3：任务自己选的验收模型（没有就在验收时取默认验收模型） */
+  verifyModelId: z.string().optional(),
   memories: z.array(
     z.object({ id: z.string(), content: z.string(), appliesTo: z.string() })
   ),
@@ -110,8 +112,10 @@ export const builtinToolInputs = {
       .min(1)
       .describe("检查点编号（系统提示里检查点清单的序号，从 1 开始）"),
     status: z
-      .enum(["done", "skipped"])
-      .describe("done = 完成；skipped = 跳过（必须写理由）"),
+      .enum(["done", "skipped", "doing"])
+      .describe(
+        "done = 完成；skipped = 跳过（必须写理由）；doing = 我现在在做这一个（同类型的检查点有好几个时，系统自动记录会记到它上面）"
+      ),
     record: z
       .string()
       .max(4000)
@@ -236,6 +240,13 @@ export const builtinToolInputs = {
       .optional()
       .describe("文本文件从第几个字符开始读（默认 0，长文件分段读）"),
   }),
+  "plan.set": z.object({
+    steps: z
+      .array(z.string().min(1).max(300))
+      .min(1)
+      .max(30)
+      .describe("你打算怎么做：按顺序写下每一步，一句话一步"),
+  }),
 } as const
 
 export type BuiltinToolId = keyof typeof builtinToolInputs
@@ -245,6 +256,7 @@ export const ALWAYS_ON_BUILTIN_TOOLS: readonly BuiltinToolId[] = [
   "checkpoint.mark",
   "session.wait",
   "ask.human",
+  "plan.set",
 ]
 
 // ---------- 引擎接口（engine-router）的输入输出 ----------
@@ -341,4 +353,21 @@ export type AppNotification = z.infer<typeof notificationSchema>
 export const notificationListSchema = z.object({
   items: z.array(notificationSchema),
   unread: z.number().int(),
+})
+
+// ---------- M3：存为任务步骤、验收争议 ----------
+
+/** 把一次运行里 agent 写下的步骤（plan.set）存成任务的步骤，覆盖原来的步骤 */
+export const saveStepsFromSessionInputSchema = z.object({
+  sessionId: z.string().min(1),
+})
+
+/** 验收争议的三种处理：算通过 / 算失败 / 补充说明后继续 */
+export const verifyDisputeHowSchema = z.enum(["pass", "fail", "continue"])
+export type VerifyDisputeHow = z.infer<typeof verifyDisputeHowSchema>
+export const resolveVerifyDisputeInputSchema = z.object({
+  itemId: z.string().min(1),
+  how: verifyDisputeHowSchema,
+  /** 「补充说明后继续」时交给 agent 的说明；另外两种是备注 */
+  note: z.string().max(4000).optional(),
 })

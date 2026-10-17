@@ -4,7 +4,7 @@
 //   入口用「status = 'waiting' 才改」的条件更新，谁先到谁生效，后到的什么都不做；
 // - 兜底期限：到期只提醒负责人，不自动继续；
 // - 继续时：追加一条「等到了什么」的消息，排进 session.run，同一个 session id 接着跑。
-import { and, eq, isNull, lte, sql } from "drizzle-orm"
+import { and, eq, inArray, isNull, lte, sql } from "drizzle-orm"
 import { fmtDateTime } from "@heyagent/shared"
 
 import type { Db } from "../db/client.js"
@@ -27,6 +27,10 @@ export interface SuspendInput {
   fallbackDays?: number | null
   deadlineAt?: Date | null
   humanItemId?: string | null
+  /** M3：等审批的工具调用 */
+  pending?: t.PendingToolCalls | null
+  /** session 现在应该是什么状态才能挂起（默认只认「执行中」；验收争议是「验收中」） */
+  fromStatuses?: ("running" | "verifying")[]
 }
 
 /** 挂起（在调用方的事务里）。session 已经不是「执行中」（例如刚被取消）时返回 false，调用方应回滚或放弃 */
@@ -39,7 +43,10 @@ export async function suspendInTx(
     .update(t.sessions)
     .set({ status: input.status })
     .where(
-      and(eq(t.sessions.id, input.sessionId), eq(t.sessions.status, "running"))
+      and(
+        eq(t.sessions.id, input.sessionId),
+        inArray(t.sessions.status, input.fromStatuses ?? ["running"])
+      )
     )
     .returning({ id: t.sessions.id })
   if (updated.length === 0) return undefined
@@ -55,6 +62,7 @@ export async function suspendInTx(
       fallbackDays: input.fallbackDays ?? null,
       deadlineAt: input.deadlineAt ?? null,
       humanItemId: input.humanItemId ?? null,
+      pending: input.pending ?? null,
     })
     .returning()
   if (input.resumeAt)
@@ -93,7 +101,7 @@ export interface ResumeInput {
   waitId?: number
   sessionId?: string
   cause: ResumeCause
-  /** 给 agent 的消息：等到了什么 */
+  /** 给 agent 的消息：等到了什么。空字符串 = 不加消息（审批工具调用：结果由引擎继续时作为工具结果写） */
   message: string
   /** 过程里显示的一句话 */
   title: string
@@ -129,14 +137,15 @@ export async function resumeInTx(
     )
     .returning({ id: t.sessions.id })
   if (updated.length === 0) return false
-  await appendMessage(tx, wait.sessionId, {
-    role: "user",
-    content: `【继续】现在是 ${fmtDateTime(new Date())}（上海时间）。${input.message}`,
-  })
+  if (input.message)
+    await appendMessage(tx, wait.sessionId, {
+      role: "user",
+      content: `【继续】现在是 ${fmtDateTime(new Date())}（上海时间）。${input.message}`,
+    })
   await appendEvent(tx, wait.sessionId, {
     kind: "resume",
     title: input.title,
-    detail: input.message,
+    detail: input.message || null,
   })
   await sendInTx(
     db,

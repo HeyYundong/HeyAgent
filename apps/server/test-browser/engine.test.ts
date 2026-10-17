@@ -1,5 +1,6 @@
 // 真浏览器 + 假模型走完整的引擎：账号租约排队和释放、验证码 → 等人 → 处理完在同一个 Chrome 里继续、白名单拦截、文件上传、截图存档。
 import { and, eq } from "drizzle-orm"
+import { describeCompiledRule, type CompiledRule } from "@heyagent/shared"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
 import type { BrowserManager } from "../src/browser/manager.js"
@@ -85,14 +86,9 @@ describe("账号租约", () => {
     expect(scriptB.promptText(1)).toContain("等到浏览器了")
     const events = await eventsOf(ctx.db, b)
     expect(events.some((event) => event.kind === "resume" && event.title.includes("等到浏览器"))).toBe(true)
-    // 「已完成」之后 gateway 关闭时写回、关 Chrome、释放租约
-    const leases = await waitFor(
-      async () => {
-        const rows = await ctx.db.select().from(t.accountLeases).where(eq(t.accountLeases.accountId, accountId))
-        return rows.every((lease) => lease.releasedAt) && rows
-      },
-      { what: "租约都释放" }
-    )
+    // M3 起先关资源（写回、关 Chrome、释放租约）再写「已完成」：读到「已完成」时租约已经都释放了
+    const leases = await ctx.db.select().from(t.accountLeases).where(eq(t.accountLeases.accountId, accountId))
+    expect(leases.every((lease) => lease.releasedAt)).toBe(true)
     expect(leases.map((lease) => lease.sessionId).sort()).toEqual([a, b].sort())
   })
 })
@@ -178,15 +174,12 @@ describe("白名单、文件上传、截图", () => {
     expect(shots.length).toBeGreaterThanOrEqual(3)
     const row = await sessionRow(ctx.db, sessionId)
     expect(row?.browserProfileId).toBe(profileId)
-    // session 先标「已完成」，Chrome 是在引擎收尾（gateway.close）时才关的，「关掉了 Chrome」这条过程记录会晚一点写进来
-    const events = await waitFor(
-      async () => {
-        const all = await eventsOf(ctx.db, sessionId)
-        return all.some((event) => event.title.startsWith("关掉了 Chrome")) ? all : undefined
-      },
-      { what: "「关掉了 Chrome」的过程记录" }
-    )
+    // M3 起先关 Chrome、写好过程记录，再写「已完成」：读到「已完成」时「关掉了 Chrome」已经在，而且在完成事件前面
+    const events = await eventsOf(ctx.db, sessionId)
     expect(events.some((event) => event.title.startsWith("打开了 Chrome"))).toBe(true)
+    const closedAt = events.findIndex((event) => event.title.startsWith("关掉了 Chrome"))
+    expect(closedAt).toBeGreaterThan(0)
+    expect(closedAt).toBeLessThan(events.findIndex((event) => event.kind === "done"))
   })
 })
 
@@ -264,5 +257,45 @@ describe("视觉判断", () => {
     // 取消后保留着的 Chrome 在清扫时关掉
     await manager.sweep()
     expect(manager.forSession(sessionId)).toBeUndefined()
+  })
+})
+
+describe("M3 规则（真浏览器）", () => {
+  it("打开网页后自动记访问检查点；遇到验证码：内置转人工照常，规则另外截图、通知别人", async () => {
+    useScript(
+      "test/m3-browser",
+      new Script([
+        step([call("browser.navigate", { url: site.url("127.0.0.1", "/upload") })]),
+        step([call("browser.navigate", { url: site.url("127.0.0.1", "/links?bad=x") })]),
+        // 换一个域名：cap.localhost 在前面的验证码测试里已经过了验证（cookie 写回了保险箱）
+        step([call("browser.navigate", { url: site.url("cap-m3.localhost", "/captcha") })]),
+        step([text("做完了")]),
+      ])
+    )
+    const taskId = await browserTask("test/m3-browser")
+    await ctx.db.update(t.tasks).set({ steps: [{ id: "s1", text: "看两个页面", wait: false, checkpoint: "访问 2 个页面" }] }).where(eq(t.tasks.id, taskId))
+    const rules: [string, Pick<CompiledRule, "trigger" | "actions">][] = [
+      ["rl-m3b-sync", { trigger: { type: "after_tool", toolIds: [], anyTool: true }, actions: [{ type: "sync_checkpoint" }] }],
+      ["rl-m3b-page", { trigger: { type: "page_needs_human" }, actions: [{ type: "screenshot" }, { type: "notify", recipient: { to: "user", userId: "u-li" } }] }],
+    ]
+    for (const [position, [id, shape]] of rules.entries()) {
+      await ctx.db.insert(t.rules).values({ id, name: id, trigger: "测试", action: "测试", compiledTrigger: { v: 1, ...shape, understood: describeCompiledRule(shape) } })
+      await ctx.db.insert(t.taskRules).values({ taskId, refId: id, position })
+    }
+    const sessionId = await runNow(taskId)
+    await waitStatus(ctx.db, sessionId, "needs_human", 90_000)
+    const run = (await query(ctx.app, "sessions.get", wang, { id: sessionId })).data
+    // 打开了 3 个不同的网页（验证码页也算打开过），目标 2 个，自动标完成
+    expect(run.checkpoints[0]).toMatchObject({ kind: "visit", target: 2, progress: 3, status: "done" })
+    expect(run.checkpoints[0].records.every((record: { synced: boolean }) => record.synced)).toBe(true)
+    expect(run.checkpoints[0].records[0].text).toContain("/upload")
+    const titles = run.events.map((event: { title: string }) => event.title)
+    expect(titles).toEqual(expect.arrayContaining(["规则「rl-m3b-page」：页面出现验证码或登录页", "规则「rl-m3b-page」：截图存证", "规则「rl-m3b-page」：通知李静"]))
+    const [item] = await ctx.db.select().from(t.humanItems).where(and(eq(t.humanItems.sessionId, sessionId), eq(t.humanItems.status, "open")))
+    expect(item).toMatchObject({ kind: "login", assigneeId: "u-wang" })
+    const notes = await ctx.db.select().from(t.notifications).where(and(eq(t.notifications.sessionId, sessionId), eq(t.notifications.userId, "u-li")))
+    expect(notes).toHaveLength(1)
+    await mutate(ctx.app, "engine.cancel", wang, { sessionId })
+    await manager.sweep()
   })
 })

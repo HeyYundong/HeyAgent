@@ -1,7 +1,7 @@
 // 落库：session 的过程事件、消息历史、审计。
 // 序号用 sessions 行上的计数器发（update ... returning，行锁保证 API 和 worker 同时追加也不撞号）；
 // 种子数据里的老 session 没有计数器，取「计数器」和「现有最大序号」里大的那个。
-import { and, asc, eq, sql } from "drizzle-orm"
+import { asc, eq, sql } from "drizzle-orm"
 import type { ModelMessage } from "ai"
 import type { RunEventKind } from "@heyagent/shared"
 
@@ -76,22 +76,38 @@ export async function appendMessage(
   return seq
 }
 
-/** 完整的消息历史（压缩掉的不算），继续时读回 */
+/**
+ * 发给模型的消息历史，继续时读回。压缩过的消息（compacted = true）用压缩后的内容（summary：摘要 + 文件引用）代替原文；
+ * 没有 summary 的压缩消息（老数据）直接跳过。库里的原文一直留着。
+ */
 export async function loadMessages(
   db: DbLike,
   sessionId: string
 ): Promise<ModelMessage[]> {
+  return (await loadMessageRows(db, sessionId)).map((row) => row.message)
+}
+
+export async function loadMessageRows(
+  db: DbLike,
+  sessionId: string
+): Promise<{ seq: number; message: ModelMessage; compacted: boolean }[]> {
   const rows = await db
-    .select({ content: t.sessionMessages.content })
+    .select({
+      seq: t.sessionMessages.seq,
+      content: t.sessionMessages.content,
+      compacted: t.sessionMessages.compacted,
+      summary: t.sessionMessages.summary,
+    })
     .from(t.sessionMessages)
-    .where(
-      and(
-        eq(t.sessionMessages.sessionId, sessionId),
-        eq(t.sessionMessages.compacted, false)
-      )
-    )
+    .where(eq(t.sessionMessages.sessionId, sessionId))
     .orderBy(asc(t.sessionMessages.seq))
-  return rows.map((row) => row.content as ModelMessage)
+  return rows
+    .filter((row) => !row.compacted || row.summary)
+    .map((row) => ({
+      seq: row.seq,
+      message: (row.compacted ? row.summary : row.content) as ModelMessage,
+      compacted: row.compacted,
+    }))
 }
 
 export interface AuditInput {

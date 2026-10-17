@@ -172,6 +172,7 @@ export async function buildSnapshot(
       steps: task.steps,
     },
     modelId: task.modelId,
+    ...(task.verifyModelId ? { verifyModelId: task.verifyModelId } : {}),
     memories: memories
       .filter((memory) => memory.status === "active")
       .map(({ id, content, appliesTo }) => ({ id, content, appliesTo })),

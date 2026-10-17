@@ -1371,6 +1371,7 @@ describe("其他接口", () => {
       "file.save",
       "memory.propose",
       "notify.staff",
+      "plan.set",
       "session.wait",
       "skill.load",
       "skill.propose",
@@ -1380,6 +1381,6 @@ describe("其他接口", () => {
         .filter((tool) => tool.alwaysOn)
         .map((tool) => tool.id)
         .sort()
-    ).toEqual(["ask.human", "checkpoint.mark", "session.wait"])
+    ).toEqual(["ask.human", "checkpoint.mark", "plan.set", "session.wait"])
   })
 })

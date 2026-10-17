@@ -1,16 +1,23 @@
 // agent 循环：读快照和完整消息历史 → 调模型 → 工具网关 → 落库 → 再调模型……
-// 直到模型给出最终答复（说做完了）、某个工具让 session 挂起、触发上限（转人工），或者出错（重试后标失败）。
-// 每一步都先落库再继续，进程随时被杀掉都能从库里接着跑（同一个 session id）。
+// 直到模型给出最终答复（说做完了，有验收规则的先过三方验收）、某个工具让 session 挂起、规则要求审批、触发上限（转人工），
+// 或者出错（重试后标失败）。每一步都先落库再继续，进程随时被杀掉都能从库里接着跑（同一个 session id）。
+// 结束时的顺序：最终结论确定后，先关资源（工具连接、Chrome），再写过程记录，最后写最终状态。
 import { setTimeout as sleep } from "node:timers/promises"
 
 import type { ModelMessage, ToolResultPart } from "ai"
-import { and, eq, sql } from "drizzle-orm"
-import type { SessionSnapshot } from "@heyagent/shared"
+import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm"
+import type { HumanDetail, SessionSnapshot } from "@heyagent/shared"
 
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
-import { ToolGateway, type GatewayResult } from "./gateway.js"
-import { runFinishHooks, runStartHooks } from "./hooks.js"
+import type { PendingToolCalls } from "../db/schema.js"
+import { maybeCompact } from "./compact.js"
+import {
+  ToolGateway,
+  type GatewayResult,
+  type ModelToolCall,
+} from "./gateway.js"
+import { runBeforeStepHooks, runFinishHooks, runStartHooks } from "./hooks.js"
 import { askHumanInTx, notifyAssignee } from "./humans.js"
 import {
   callModel,
@@ -25,6 +32,7 @@ import { buildSystemPrompt } from "./prompt.js"
 import { QUEUES, bossFor, runJobOptions } from "./queue.js"
 import { appendEvent, appendMessage, loadMessages } from "./records.js"
 import { runtime } from "./runtime.js"
+import { maskSecretFields } from "./secrets.js"
 import { loadEngineSettings } from "./settings.js"
 import type { SessionRow, ToolOutcome } from "./tools/builtin.js"
 import { suspendInTx } from "./waits.js"
@@ -117,21 +125,31 @@ async function failSession(
   snapshot: SessionSnapshot | null,
   reason: string
 ) {
-  const updated = await db
-    .update(t.sessions)
-    .set({
-      status: "failed",
-      endedAt: new Date(),
-      error: reason.slice(0, 2000),
+  // 过程记录和最终状态在同一个事务里写：读到「失败」时一定也读得到原因
+  const failed = await db.transaction(async (tx) => {
+    const updated = await tx
+      .update(t.sessions)
+      .set({
+        status: "failed",
+        endedAt: new Date(),
+        error: reason.slice(0, 2000),
+      })
+      .where(
+        and(
+          eq(t.sessions.id, session.id),
+          inArray(t.sessions.status, ["running", "verifying"])
+        )
+      )
+      .returning({ id: t.sessions.id })
+    if (updated.length === 0) return false
+    await appendEvent(tx, session.id, {
+      kind: "error",
+      title: "运行失败",
+      detail: reason,
     })
-    .where(and(eq(t.sessions.id, session.id), eq(t.sessions.status, "running")))
-    .returning({ id: t.sessions.id })
-  if (updated.length === 0) return
-  await appendEvent(db, session.id, {
-    kind: "error",
-    title: "运行失败",
-    detail: reason,
+    return true
   })
+  if (!failed) return
   if (snapshot) {
     await notifyUsers(db, {
       userIds: [snapshot.task.ownerId],
@@ -270,6 +288,94 @@ async function suspendWithResults(
   }
 }
 
+/** 规则要求审批：生成「审批工具调用」这件事，session 等人处理；这次调用和同一步里后面的调用都先存着，还没执行 */
+async function suspendForApproval(
+  db: Db,
+  session: SessionRow,
+  snapshot: SessionSnapshot,
+  calls: ModelToolCall[],
+  done: GatewayResult,
+  approvedRuleIds: readonly string[]
+): Promise<boolean> {
+  const approval = done.approval!
+  const input = maskSecretFields(JSON.stringify(approval.input ?? {}, null, 2))
+  const shown =
+    input.length > 4000
+      ? `${input.slice(0, 4000)}\n…（参数太长，只显示开头）`
+      : input
+  const title = `审批工具调用：${done.toolName}`
+  const summary = `${approval.reason}批准就执行这次调用，拒绝就把理由告诉 agent。`
+  const detail: HumanDetail = {
+    sections: [
+      { title: "为什么到了你这里", text: approval.reason },
+      { title: "工具", text: `${done.toolName}（${done.toolId}）` },
+      { title: "参数", block: { title: "agent 要传的参数", text: shown } },
+      {
+        title: "来自",
+        text: `任务「${snapshot.task.title}」的运行 ${session.id}。拒绝时写上理由，agent 会看到。`,
+      },
+    ],
+    primary: "批准",
+    secondary: "拒绝",
+    ...(approval.risk === "money"
+      ? {
+          pay: ["确定批准吗？", "这次调用涉及金钱，批准后会立即执行。"] as [
+            string,
+            string,
+          ],
+        }
+      : {}),
+    toolCall: {
+      toolId: done.toolId,
+      toolName: done.toolName,
+      input: shown,
+      ...(approval.risk ? { risk: approval.risk } : {}),
+      ruleId: approval.ruleId,
+      ruleName: approval.ruleName,
+    },
+  }
+  const pending: PendingToolCalls = {
+    calls: calls.map((call) => ({
+      toolCallId: call.toolCallId,
+      toolName: call.toolName,
+      input: call.input,
+      ...(call.invalid ? { invalid: true } : {}),
+      ...(call.error ? { error: call.error } : {}),
+    })),
+    approvedRuleIds: [...approvedRuleIds],
+    ruleId: approval.ruleId,
+    ruleName: approval.ruleName,
+  }
+  try {
+    const created = await db.transaction(async (tx) => {
+      const result = await askHumanInTx(db, tx, {
+        kind: "approval",
+        title,
+        summary,
+        assigneeId: approval.assigneeId,
+        taskId: snapshot.task.id,
+        sessionId: session.id,
+        ruleId: approval.ruleId,
+        urgency: approval.risk === "money" ? 0 : 1,
+        detail,
+        what: `等人审批：${done.toolName}`,
+        pending,
+      })
+      if (!result) throw new RollbackSignal()
+      return result
+    })
+    const [item] = await db
+      .select()
+      .from(t.humanItems)
+      .where(eq(t.humanItems.id, created.itemId))
+    if (item) await notifyAssignee(db, item)
+    return true
+  } catch (error) {
+    if (error instanceof RollbackSignal) return false
+    throw error
+  }
+}
+
 export async function runSession(
   db: Db,
   sessionId: string,
@@ -282,6 +388,14 @@ export async function runSession(
   if (!snapshot) return "skipped"
   const started = Date.now()
   let gateway: ToolGateway | undefined
+  let closed = false
+  // 资源（工具连接、Chrome）先关，过程记录写好，最后才写最终状态（M2 留下的先后顺序问题）
+  const closeGateway = async () => {
+    if (!gateway || closed) return
+    closed = true
+    await gateway.close()
+  }
+  let messages: ModelMessage[] = []
   try {
     let resolved: ResolvedModel
     try {
@@ -293,152 +407,48 @@ export async function runSession(
     gateway = await ToolGateway.create(db, first, snapshot)
     const system = buildSystemPrompt(snapshot, gateway.names())
     const tools = gateway.toolSet()
+    const screenshot = () => gateway!.screenshot()
     if (first.stepCount === 0)
-      await runStartHooks({ db, session: first, snapshot })
+      await runStartHooks({ db, session: first, snapshot, screenshot })
 
-    let messages = await repairDanglingCalls(
-      db,
-      sessionId,
-      await loadMessages(db, sessionId)
-    )
-    const settings = await loadEngineSettings(db)
-
-    for (;;) {
-      if (options.signal?.aborted) return "stopped"
-      const session = await loadSession(db, sessionId)
-      if (!session || session.status !== "running") return "stopped"
-
-      // 单个任务不跑太久：排一个新的 session.run（同一个 session 只会有一个排着），自己退出
-      if (Date.now() - started > runtime.maxRunMs) {
-        const boss = await bossFor(db)
-        await boss.send(QUEUES.run, { sessionId }, runJobOptions(sessionId))
-        await appendEvent(db, sessionId, {
-          kind: "plan",
-          title: "跑了一段时间，交接给下一轮继续",
-        })
-        return "handoff"
-      }
-
-      const costLimit = session.costLimitUsd ?? settings.maxCostUsd
-      if (Number(session.costUsd) >= costLimit) {
-        await hitLimit(db, session, snapshot, "cost", costLimit)
-        return "suspended"
-      }
-      const stepLimit = session.maxSteps ?? settings.maxSteps
-      if (session.stepCount >= stepLimit) {
-        await hitLimit(db, session, snapshot, "steps", stepLimit)
-        return "suspended"
-      }
-
-      let result: ModelCallResult
-      try {
-        result = await callWithRetry(db, sessionId, resolved, {
-          system,
-          messages,
-          tools,
-          abortSignal: options.signal,
-        })
-      } catch (error) {
-        if (options.signal?.aborted) return "stopped"
-        const reason =
-          error instanceof ModelConfigError
-            ? error.message
-            : `模型调用失败（已重试 ${runtime.modelRetries} 次）：${(error as Error).message}`
-        await failSession(db, session, snapshot, reason)
-        return "failed"
-      }
-
-      // 用量和花费累计到 session（不管状态，钱已经花了）
-      await db
-        .update(t.sessions)
-        .set({
-          tokensIn: sql`${t.sessions.tokensIn} + ${result.tokensIn}`,
-          tokensOut: sql`${t.sessions.tokensOut} + ${result.tokensOut}`,
-          costUsd: sql`${t.sessions.costUsd} + ${result.costUsd}`,
-          stepCount: sql`${t.sessions.stepCount} + 1`,
-        })
-        .where(eq(t.sessions.id, sessionId))
-      const callNames = result.toolCalls.map((call) =>
-        gateway!.label(call.toolName)
-      )
-      await appendEvent(db, sessionId, {
-        kind: "think",
-        title: callNames.length
-          ? `模型决定调用：${callNames.join("、")}`
-          : "模型给出答复",
-        detail: result.text || null,
-        tokensIn: result.tokensIn,
-        tokensOut: result.tokensOut,
-        ms: result.ms,
-        output: `花费 ${result.costUsd.toFixed(6)} 美元${result.cachedTokens ? `，缓存命中 ${result.cachedTokens} token` : ""}`,
-      })
-
-      const assistant: ModelMessage = result.assistant ?? {
-        role: "assistant",
-        content: result.text || "（空回复）",
-      }
-      await appendMessage(db, sessionId, assistant)
-      messages = [...messages, assistant]
-
-      // 说做完了
-      if (result.toolCalls.length === 0) {
-        const current = (await loadSession(db, sessionId))!
-        const decision = await runFinishHooks({
-          db,
-          session: current,
-          snapshot,
-          text: result.text,
-        })
-        if (decision.action === "continue") {
-          const message: ModelMessage = {
-            role: "user",
-            content: decision.message,
-          }
-          await appendMessage(db, sessionId, message)
-          messages = [...messages, message]
-          continue
-        }
-        const updated = await db
-          .update(t.sessions)
-          .set({ status: "done", endedAt: new Date() })
-          .where(
-            and(eq(t.sessions.id, sessionId), eq(t.sessions.status, "running"))
-          )
-          .returning({ id: t.sessions.id, costUsd: t.sessions.costUsd })
-        if (updated.length === 0) return "stopped"
-        await appendEvent(db, sessionId, {
-          kind: "done",
-          title: "agent 说做完了",
-          detail: result.text || null,
-        })
-        await notifyUsers(db, {
-          userIds: [snapshot.task.ownerId],
-          title: `${snapshot.task.title}：运行完成`,
-          body: (result.text || "").slice(0, 500),
-          link: sessionLink(session.taskId, sessionId),
-          taskId: session.taskId,
-          sessionId,
-          push: false,
-        })
-        return "done"
-      }
-
-      // 工具调用：依次交给网关
+    /** 依次交给网关执行一步里的工具调用。返回 undefined = 接着调模型 */
+    const processCalls = async (
+      calls: ModelToolCall[],
+      firstCall: { approvedRuleIds?: readonly string[]; prefix?: string } = {}
+    ): Promise<RunOutcome | undefined> => {
       const images: NonNullable<ToolOutcome["images"]> = []
-      for (let index = 0; index < result.toolCalls.length; index++) {
-        const call = result.toolCalls[index]!
+      for (let index = 0; index < calls.length; index++) {
+        const call = calls[index]!
         // 每个工具调用前再看一眼：被取消了就不再执行
         const live = await loadSession(db, sessionId)
         if (!live || live.status !== "running") return "stopped"
-        const done: GatewayResult = await gateway.call(call)
+        const approved = index === 0 ? (firstCall.approvedRuleIds ?? []) : []
+        const done: GatewayResult = await gateway!.call(call, {
+          approvedRuleIds: approved,
+        })
+        if (done.approval) {
+          const ok = await suspendForApproval(
+            db,
+            live,
+            snapshot,
+            calls.slice(index),
+            done,
+            approved
+          )
+          return ok ? "suspended" : "stopped"
+        }
+        const output =
+          index === 0 && firstCall.prefix
+            ? `${firstCall.prefix}\n${done.output}`
+            : done.output
         const message = toolResult(
           call.toolCallId,
           call.toolName,
-          done.output,
+          output,
           done.outcome.isError
         )
         if (done.outcome.suspend && !done.denied) {
-          const rest = result.toolCalls
+          const rest = calls
             .slice(index + 1)
             .map((other) =>
               toolResult(
@@ -479,10 +489,263 @@ export async function runSession(
         await appendMessage(db, sessionId, message)
         messages = [...messages, message]
       }
+      return undefined
+    }
+
+    messages = await loadMessages(db, sessionId)
+
+    // 审批过的工具调用（M3）：先处理它们（批准就执行，拒绝就告诉 agent），再调模型
+    const [pendingWait] = await db
+      .select()
+      .from(t.sessionWaits)
+      .where(
+        and(
+          eq(t.sessionWaits.sessionId, sessionId),
+          eq(t.sessionWaits.status, "fired"),
+          isNotNull(t.sessionWaits.pending)
+        )
+      )
+      .orderBy(desc(t.sessionWaits.id))
+      .limit(1)
+    const pending = pendingWait?.pending
+    if (pending?.decision && pending.state !== "done") {
+      const setState = (state: "executing" | "done") =>
+        db
+          .update(t.sessionWaits)
+          .set({ pending: { ...pending, state } })
+          .where(eq(t.sessionWaits.id, pendingWait!.id))
+      const [head, ...rest] = pending.calls
+      const answered = new Set(
+        messages
+          .filter((message) => message.role === "tool")
+          .flatMap((message) =>
+            (message.content as ToolResultPart[]).map((part) => part.toolCallId)
+          )
+      )
+      let outcome: RunOutcome | undefined
+      if (head && !answered.has(head.toolCallId)) {
+        const who = pending.decision.actorName
+        const note = pending.decision.note
+        if (pending.state === "executing") {
+          // 上次执行到一半 worker 没了：不确定执行没有，不重复执行
+          const message = toolResult(
+            head.toolCallId,
+            head.toolName,
+            `${who}批准了这次调用，开始执行后 worker 重启了，不确定有没有执行成功。需要的话先确认现状，再决定要不要重新调用。`,
+            true
+          )
+          await appendMessage(db, sessionId, message)
+          messages = [...messages, message]
+        } else if (pending.decision.how === "approve") {
+          await setState("executing")
+          outcome = await processCalls([head], {
+            approvedRuleIds: [...pending.approvedRuleIds, pending.ruleId],
+            prefix: `（${who}批准了这次调用${note ? `，备注：${note}` : ""}）`,
+          })
+        } else {
+          const message = toolResult(
+            head.toolCallId,
+            head.toolName,
+            `被拒绝：${who}拒绝了这次调用（规则「${pending.ruleName}」要求审批）。理由：${note || "没有写理由"}。不要换个办法绕过去；需要的话调整做法，或者用 ask.human 问清楚。`,
+            true
+          )
+          await appendMessage(db, sessionId, message)
+          messages = [...messages, message]
+          await appendEvent(db, sessionId, {
+            kind: "rule",
+            title: `规则「${pending.ruleName}」：${who}拒绝了，没有执行`,
+            detail: note ? `理由：${note}` : null,
+          })
+        }
+      }
+      if (!outcome) {
+        await setState("done")
+        outcome = await processCalls(
+          rest.filter((call) => !answered.has(call.toolCallId))
+        )
+      } else {
+        await setState("done")
+      }
+      if (outcome) return outcome
+    }
+
+    messages = await repairDanglingCalls(db, sessionId, messages)
+    const settings = await loadEngineSettings(db)
+    let lastInputTokens: number | undefined
+
+    for (;;) {
+      if (options.signal?.aborted) return "stopped"
+      const session = await loadSession(db, sessionId)
+      if (!session || session.status !== "running") return "stopped"
+
+      // 单个任务不跑太久：排一个新的 session.run（同一个 session 只会有一个排着），自己退出
+      if (Date.now() - started > runtime.maxRunMs) {
+        const boss = await bossFor(db)
+        await boss.send(QUEUES.run, { sessionId }, runJobOptions(sessionId))
+        await appendEvent(db, sessionId, {
+          kind: "plan",
+          title: "跑了一段时间，交接给下一轮继续",
+        })
+        return "handoff"
+      }
+
+      const costLimit = session.costLimitUsd ?? settings.maxCostUsd
+      if (Number(session.costUsd) >= costLimit) {
+        await hitLimit(db, session, snapshot, "cost", costLimit)
+        return "suspended"
+      }
+      const stepLimit = session.maxSteps ?? settings.maxSteps
+      if (session.stepCount >= stepLimit) {
+        await hitLimit(db, session, snapshot, "steps", stepLimit)
+        return "suspended"
+      }
+
+      // 调模型前的规则（M3：花费超过 X）
+      const before = await runBeforeStepHooks({
+        db,
+        session,
+        snapshot,
+        screenshot,
+      })
+      if (before?.action === "suspended") return "suspended"
+      if (before?.action === "fail") {
+        await closeGateway()
+        await failSession(db, session, snapshot, before.reason)
+        return "failed"
+      }
+
+      // 历史太长就压缩（M3）
+      const compacted = await maybeCompact(db, {
+        sessionId,
+        modelId: snapshot.modelId,
+        systemChars: system.length,
+        lastInputTokens,
+      })
+      if (compacted) messages = compacted
+
+      let result: ModelCallResult
+      try {
+        result = await callWithRetry(db, sessionId, resolved, {
+          system,
+          messages,
+          tools,
+          abortSignal: options.signal,
+        })
+      } catch (error) {
+        if (options.signal?.aborted) return "stopped"
+        const reason =
+          error instanceof ModelConfigError
+            ? error.message
+            : `模型调用失败（已重试 ${runtime.modelRetries} 次）：${(error as Error).message}`
+        await closeGateway()
+        await failSession(db, session, snapshot, reason)
+        return "failed"
+      }
+      lastInputTokens = result.tokensIn
+
+      // 用量和花费累计到 session（不管状态，钱已经花了）
+      await db
+        .update(t.sessions)
+        .set({
+          tokensIn: sql`${t.sessions.tokensIn} + ${result.tokensIn}`,
+          tokensOut: sql`${t.sessions.tokensOut} + ${result.tokensOut}`,
+          costUsd: sql`${t.sessions.costUsd} + ${result.costUsd}`,
+          stepCount: sql`${t.sessions.stepCount} + 1`,
+        })
+        .where(eq(t.sessions.id, sessionId))
+      const callNames = result.toolCalls.map((call) =>
+        gateway!.label(call.toolName)
+      )
+      await appendEvent(db, sessionId, {
+        kind: "think",
+        title: callNames.length
+          ? `模型决定调用：${callNames.join("、")}`
+          : "模型给出答复",
+        detail: result.text || null,
+        tokensIn: result.tokensIn,
+        tokensOut: result.tokensOut,
+        ms: result.ms,
+        output: `花费 ${result.costUsd.toFixed(6)} 美元${result.cachedTokens ? `，缓存命中 ${result.cachedTokens} token` : ""}`,
+      })
+
+      const assistant: ModelMessage = result.assistant ?? {
+        role: "assistant",
+        content: result.text || "（空回复）",
+      }
+      await appendMessage(db, sessionId, assistant)
+      messages = [...messages, assistant]
+
+      // 说做完了：先过「说做完了」的规则（三方验收），最终结论确定后再关资源、写过程记录、最后写状态
+      if (result.toolCalls.length === 0) {
+        const current = (await loadSession(db, sessionId))!
+        const decision = await runFinishHooks({
+          db,
+          session: current,
+          snapshot,
+          screenshot,
+          text: result.text,
+        })
+        if (decision.action === "continue") {
+          const message: ModelMessage = {
+            role: "user",
+            content: decision.message,
+          }
+          await appendMessage(db, sessionId, message)
+          messages = [...messages, message]
+          continue
+        }
+        if (decision.action === "suspended") return "suspended"
+        if (decision.action === "fail") {
+          await closeGateway()
+          await failSession(db, current, snapshot, decision.reason)
+          return "failed"
+        }
+        const live = await loadSession(db, sessionId)
+        if (!live || (live.status !== "running" && live.status !== "verifying"))
+          return "stopped"
+        const verified = live.verification?.status === "passed"
+        await closeGateway()
+        // 过程记录和最终状态同一个事务：读到「已完成」时，完成事件（以及关资源时写的记录）一定都在
+        const finished = await db.transaction(async (tx) => {
+          const updated = await tx
+            .update(t.sessions)
+            .set({ status: "done", endedAt: new Date() })
+            .where(
+              and(
+                eq(t.sessions.id, sessionId),
+                inArray(t.sessions.status, ["running", "verifying"])
+              )
+            )
+            .returning({ id: t.sessions.id })
+          if (updated.length === 0) return false
+          await appendEvent(tx, sessionId, {
+            kind: "done",
+            title: verified ? "验收通过，运行完成" : "agent 说做完了",
+            detail: result.text || null,
+          })
+          return true
+        })
+        if (!finished) return "stopped"
+        await notifyUsers(db, {
+          userIds: [snapshot.task.ownerId],
+          title: `${snapshot.task.title}：运行完成`,
+          body: (result.text || "").slice(0, 500),
+          link: sessionLink(session.taskId, sessionId),
+          taskId: session.taskId,
+          sessionId,
+          push: false,
+        })
+        return "done"
+      }
+
+      // 工具调用：依次交给网关
+      const outcome = await processCalls(result.toolCalls)
+      if (outcome) return outcome
     }
   } catch (error) {
     if (options.signal?.aborted) return "stopped"
     // 引擎自己的意外错误：写清楚原因标失败；连数据库都写不了就抛给 pg-boss 重试
+    await closeGateway().catch(() => {})
     const session = await loadSession(db, sessionId)
     if (session)
       await failSession(
@@ -493,6 +756,6 @@ export async function runSession(
       )
     return "failed"
   } finally {
-    await gateway?.close()
+    await closeGateway()
   }
 }

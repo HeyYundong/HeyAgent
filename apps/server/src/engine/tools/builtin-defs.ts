@@ -49,6 +49,14 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
     risk: "write",
   },
   {
+    id: "plan.set",
+    name: "写下步骤",
+    summary: "写下你打算怎么做（几步），中途做法变了可以更新",
+    description:
+      "开始干活前调用一次，按顺序写下打算怎么做，一句话一步；做法变了就再调一次（整体替换）。负责人能看到你的步骤，觉得好可以一键存成任务的步骤。",
+    risk: "write",
+  },
+  {
     id: "skill.load",
     name: "读取技能",
     summary: "按名字读取某个技能的全文",

@@ -8,10 +8,15 @@ import { createOpenRouter } from "@openrouter/ai-sdk-provider"
 import {
   APICallError,
   generateText,
+  NoObjectGeneratedError,
+  Output,
+  zodSchema,
   type LanguageModel,
+  type LanguageModelUsage,
   type ModelMessage,
   type ToolSet,
 } from "ai"
+import type { z } from "zod"
 import { eq } from "drizzle-orm"
 
 import type { Db } from "../db/client.js"
@@ -168,6 +173,101 @@ export async function callModel(
     cachedTokens: usage.inputTokenDetails?.cacheReadTokens ?? 0,
     costUsd,
     ms: Date.now() - started,
+  }
+}
+
+function costOf(
+  resolved: ResolvedModel,
+  usage: LanguageModelUsage | undefined,
+  providerMetadata: unknown
+) {
+  const tokensIn = usage?.inputTokens ?? 0
+  const tokensOut = usage?.outputTokens ?? 0
+  const metadata = (
+    providerMetadata as
+      { openrouter?: { usage?: { cost?: number } } } | undefined
+  )?.openrouter
+  const reported = metadata?.usage?.cost
+  const costUsd =
+    typeof reported === "number"
+      ? reported
+      : (tokensIn * resolved.priceIn + tokensOut * resolved.priceOut) /
+        1_000_000
+  return { tokensIn, tokensOut, costUsd }
+}
+
+/** 从模型的文字里抠出 JSON（有的模型会包一层 ```json``` 或前后加话） */
+export function extractJson(text: string): unknown {
+  const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(text)
+  const body = fenced ? fenced[1]! : text
+  const start = body.indexOf("{")
+  const end = body.lastIndexOf("}")
+  if (start < 0 || end <= start) throw new Error("模型没有返回 JSON")
+  return JSON.parse(body.slice(start, end + 1))
+}
+
+export interface StructuredResult<T> {
+  object: T
+  text: string
+  tokensIn: number
+  tokensOut: number
+  costUsd: number
+  ms: number
+}
+
+/**
+ * 结构化输出（规则翻译、三方验收、压缩摘要用）：ai 7 里 generateObject 已标记废弃，用 generateText + output: Output.object。
+ * 模型返回的 JSON 不合 schema 时抛 NoObjectGeneratedError；这里再按文字抠一次 JSON 用 zod 校验，还不行才抛错。
+ * 花费照样算（失败时也尽量从错误里拿到 usage）。
+ */
+export async function callStructured<T>(
+  resolved: ResolvedModel,
+  input: {
+    system: string
+    messages: ModelMessage[]
+    schema: z.ZodType<T>
+    name: string
+    abortSignal?: AbortSignal
+  }
+): Promise<StructuredResult<T>> {
+  const started = Date.now()
+  try {
+    const result = await generateText({
+      model: resolved.model,
+      instructions: input.system,
+      messages: input.messages,
+      output: Output.object({
+        schema: zodSchema(input.schema),
+        name: input.name,
+      }),
+      maxRetries: 1,
+      abortSignal: input.abortSignal,
+    })
+    const cost = costOf(resolved, result.usage, result.providerMetadata)
+    return {
+      object: result.output as T,
+      text: result.text,
+      ...cost,
+      ms: Date.now() - started,
+    }
+  } catch (error) {
+    if (!NoObjectGeneratedError.isInstance(error) || !error.text) throw error
+    const cost = costOf(resolved, error.usage, undefined)
+    const parsed = input.schema.safeParse(extractJson(error.text))
+    if (!parsed.success)
+      throw new Error(
+        `模型返回的结果格式不对：${parsed.error.issues
+          .slice(0, 3)
+          .map((issue) => `${issue.path.join(".")} ${issue.message}`)
+          .join("；")}`,
+        { cause: error }
+      )
+    return {
+      object: parsed.data,
+      text: error.text,
+      ...cost,
+      ms: Date.now() - started,
+    }
   }
 }
 
