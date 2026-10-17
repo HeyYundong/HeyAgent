@@ -3,7 +3,7 @@
 // - 密码只填到这个账号的平台域名、登录网址所在的网站上，别的网站一律拒绝（防止被引到别处把密码填出去）；
 // - 遇到验证码、短信码、扫码等要人的，模型调 login_need_human，或者检测到验证码页，就停下交给人；步数用完算失败。
 import { and, eq } from "drizzle-orm"
-import { hostMatches, hostOf } from "@heyagent/shared"
+import { browserActionLabel, hostMatches, hostOf } from "@heyagent/shared"
 import { jsonSchema, tool, type ModelMessage, type ToolResultPart, type ToolSet } from "ai"
 
 import type { Db } from "../db/client.js"
@@ -247,5 +247,7 @@ async function runTool(
     const here = instance.currentPage()?.url() ?? ""
     if (!allowed(here)) return { output: `密码只能填到 ${hosts.join("、")} 上的页面，现在的页面是 ${here || "空白页"}`, isError: true }
   }
+  // 说明用填密码之前的参数（说明本来也不带要填的内容）
+  instance.viewer.announce(browserActionLabel(name, args))
   return executeMcpTool(connection, name, filled.value as Record<string, unknown>)
 }

@@ -2,11 +2,14 @@
 // - 只在有人看的时候开 screencast，画面缩到 960 宽；收到帧立刻 ack，慢的观看端靠丢帧应对（缓冲超过 1MB 就不发）；
 // - 新标签页自动跟随；切换标签页时先 bringToFront（后台标签页不出帧）；
 // - 输入转发不 await：弹框打开期间 renderer 是阻塞的，CDP 调用要等弹框关掉才返回（实测）；
-// - 没有操作权限的连接，输入一律丢弃（API 转发时已经丢过一次，这里再挡一次）。
+// - 没有操作权限的连接，输入一律丢弃（API 转发时已经丢过一次，这里再挡一次）；
+// - agent 的鼠标（cdp-tap 记下的）推给观看端画虚拟光标：只推当前标签页的；agent 打字时把光标挪到有焦点的输入框
+//   （在隔离环境里查，网页看不到），还推 agent 正在调的工具（光标旁边的说明）。
 import { viewerClientMessageSchema, urlAllowed, type ViewerServerMessage } from "@heyagent/shared"
 import type { CDPSession, Dialog, Page } from "playwright-core"
 import type { WebSocket } from "ws"
 
+import type { AgentInput } from "./cdp-tap.js"
 import type { BrowserInstance } from "./instance.js"
 
 export interface ViewerClient {
@@ -17,6 +20,21 @@ export interface ViewerClient {
 
 const MAX_BUFFERED = 1 << 20
 const FRAME = { maxWidth: 960, maxHeight: 960, quality: 60 }
+/** 查焦点用的隔离环境（和网页自己的 JS 不通） */
+const CURSOR_WORLD = "heyagent-cursor"
+/** 有焦点的元素的中心（不在视口里、焦点在 body 上时给 null） */
+const FOCUS_SCRIPT = `(() => {
+  const el = document.activeElement
+  if (!el || el === document.body || el === document.documentElement) return null
+  const r = el.getBoundingClientRect()
+  if (r.width <= 0 || r.height <= 0) return null
+  const x = r.left + r.width / 2, y = r.top + r.height / 2
+  if (x < 0 || y < 0 || x > innerWidth || y > innerHeight) return null
+  return { x, y }
+})()`
+
+const withTimeout = <T>(promise: Promise<T>, ms: number, fallback: T) =>
+  Promise.race([promise.catch(() => fallback), new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms))])
 
 export class ViewerHub {
   readonly clients = new Set<ViewerClient>()
@@ -27,6 +45,11 @@ export class ViewerHub {
   private activating?: Promise<void>
   private metaTimer?: ReturnType<typeof setTimeout>
   private closed = false
+  /** agent 在各页面上的鼠标位置（target id → 页面视口的 CSS 像素） */
+  private readonly agentCursor = new Map<string, { x: number; y: number }>()
+  /** 查焦点的隔离环境（跟着 screencast 的 CDP session，导航后失效就重建） */
+  private world?: { cdp: CDPSession; contextId: number }
+  private focusing = false
   /** 观看的人变了（manager 用来更新 browser_instances.viewers） */
   onViewersChanged?: () => void
 
@@ -140,12 +163,17 @@ export class ViewerHub {
     })
     await cdp.send("Page.startScreencast", { format: "jpeg", quality: FRAME.quality, maxWidth: FRAME.maxWidth, maxHeight: FRAME.maxHeight, everyNthFrame: 1 }).catch(() => {})
     this.scheduleMeta()
+    // 换了标签页（或新来了观看端）：光标跟着换成这个标签页上的
+    const target = this.instance.targetIdOf(page)
+    const at = target ? this.agentCursor.get(target) : undefined
+    this.broadcast(at ? { t: "cursor", ...at, kind: "move" } : { t: "cursorHidden" })
   }
 
   private async stopScreencast() {
     const cdp = this.cdp
     this.cdp = undefined
     if (!cdp) return
+    if (this.world?.cdp === cdp) this.world = undefined
     await cdp.send("Page.stopScreencast").catch(() => {})
     await cdp.detach().catch(() => {})
   }
@@ -178,6 +206,70 @@ export class ViewerHub {
 
   onDialogClosed(page: Page) {
     if (page === this.active || !this.active) this.broadcast({ t: "dialogClosed" })
+  }
+
+  /** cdp-tap 记下的 agent 输入（没人看也记位置，后来的观看端一连上就能看到光标在哪） */
+  onAgentInput(input: AgentInput) {
+    if (this.closed) return
+    if (input.kind === "detached") {
+      this.agentCursor.delete(input.targetId)
+      return
+    }
+    const active = this.active ? this.instance.targetIdOf(this.active) : undefined
+    if (input.kind === "key") {
+      if (input.targetId === active) void this.followFocus(input.targetId)
+      return
+    }
+    const at = { x: Math.round(input.x * 10) / 10, y: Math.round(input.y * 10) / 10 }
+    this.agentCursor.set(input.targetId, at)
+    // 松开和按下在同一个点，不用再推
+    if (input.targetId !== active || input.type === "mouseReleased") return
+    this.broadcast({ t: "cursor", ...at, kind: input.type === "mousePressed" ? "press" : "move" })
+  }
+
+  /** agent 要调的浏览器工具（光标旁边的说明） */
+  announce(label: string) {
+    if (!this.closed && this.clients.size) this.broadcast({ t: "agentAction", label })
+  }
+
+  /** agent 在打字：光标挪到有焦点的输入框（agent 的「输入」不会先点它）。没人看就不查 */
+  private async followFocus(targetId: string) {
+    const cdp = this.cdp
+    const page = this.active
+    if (this.focusing || !cdp || !page || this.clients.size === 0 || this.instance.dialogs.has(page)) return
+    this.focusing = true
+    try {
+      // 弹框打开期间 renderer 是阻塞的，CDP 调用不返回：限时
+      const at = await withTimeout(this.focusedPoint(cdp), 1500, undefined)
+      if (!at || cdp !== this.cdp) return
+      const point = { x: Math.round(at.x * 10) / 10, y: Math.round(at.y * 10) / 10 }
+      const last = this.agentCursor.get(targetId)
+      if (last && Math.abs(last.x - point.x) < 4 && Math.abs(last.y - point.y) < 4) return
+      this.agentCursor.set(targetId, point)
+      this.broadcast({ t: "cursor", ...point, kind: "move" })
+    } finally {
+      this.focusing = false
+    }
+  }
+
+  private async focusedPoint(cdp: CDPSession): Promise<{ x: number; y: number } | undefined> {
+    // 导航后旧的隔离环境没了：重建一次再试
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (this.world?.cdp !== cdp) {
+        const tree = (await cdp.send("Page.getFrameTree")) as { frameTree: { frame: { id: string } } }
+        const created = (await cdp.send("Page.createIsolatedWorld", { frameId: tree.frameTree.frame.id, worldName: CURSOR_WORLD })) as { executionContextId: number }
+        this.world = { cdp, contextId: created.executionContextId }
+      }
+      try {
+        const evaluated = (await cdp.send("Runtime.evaluate", { expression: FOCUS_SCRIPT, contextId: this.world.contextId, returnByValue: true })) as {
+          result: { value?: { x: number; y: number } | null }
+        }
+        return evaluated.result.value ?? undefined
+      } catch {
+        this.world = undefined
+      }
+    }
+    return undefined
   }
 
   private onMessage(client: ViewerClient, raw: string) {

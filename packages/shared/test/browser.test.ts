@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { browserActionTag, domainSchema, groupBrowserActions, hostMatches, normalizeDomain, taskInputSchema, urlAllowed, viewerClientMessageSchema } from "../src/index.js"
+import { browserActionLabel, browserActionTag, domainSchema, groupBrowserActions, hostMatches, normalizeDomain, taskInputSchema, urlAllowed, viewerClientMessageSchema } from "../src/index.js"
 
 describe("域名", () => {
   it("规整用户填的域名", () => {
@@ -106,5 +106,25 @@ describe("groupBrowserActions", () => {
     ])
     expect(browserActionTag("browser_fill_form")).toBe("Input")
     expect(browserActionTag("browser_new_thing")).toBe("new_thing")
+  })
+})
+
+describe("browserActionLabel", () => {
+  it("动作标签 + 元素描述；不带要填的内容，网址只给域名", () => {
+    expect(browserActionLabel("browser_click", { target: "e12", element: "搜索按钮" })).toBe("Click · 搜索按钮")
+    expect(browserActionLabel("browser_type", { target: "e3", element: "密码框", text: "hunter2" })).toBe("Input · 密码框")
+    expect(
+      browserActionLabel("browser_fill_form", {
+        fields: [
+          { name: "账号", type: "textbox", target: "#user", value: "tester" },
+          { name: "密码", type: "textbox", target: "#pw", value: "{{password}}" },
+        ],
+      })
+    ).toBe("Input · 账号、密码")
+    expect(browserActionLabel("browser_drag", { startElement: "滑块", endElement: "终点" })).toBe("Drag · 滑块 → 终点")
+    expect(browserActionLabel("browser_press_key", { key: "Enter" })).toBe("Key · Enter")
+    expect(browserActionLabel("browser_navigate", { url: "https://shop.example.com/search?q=secret" })).toBe("Open · shop.example.com")
+    expect(browserActionLabel("browser_snapshot", {})).toBe("View")
+    expect(browserActionLabel("browser_click", { element: "一".repeat(60) })).toBe(`Click · ${"一".repeat(39)}…`)
   })
 })

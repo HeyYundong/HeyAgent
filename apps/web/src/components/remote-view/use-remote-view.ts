@@ -1,12 +1,14 @@
 // 远程画面的连接：WebSocket GET /api/browser/view/:browserId（同源，cookie 自动带上）。
 // - 二进制消息是一帧 JPEG：只画最新的一帧，解码跟不上就丢掉中间的；
 // - JSON 消息：meta（视口尺寸、标签页、地址、能不能操作）、dialog / dialogClosed（网页弹框）、closed（Chrome 关了）；
+//   agent 的光标和动作说明（cursor / cursorHidden / agentAction）不进 state，交给订阅的人（虚拟光标）直接改 DOM；
 // - 断线自动重连（服务端说 closed 的除外）；一直连不上就停下，告诉人「可能已经关了」。
 import * as React from "react"
 import type { ViewerClientMessage, ViewerServerMessage } from "@heyagent/shared"
 
 export type Meta = Extract<ViewerServerMessage, { t: "meta" }>
 export type PageDialog = Extract<ViewerServerMessage, { t: "dialog" }>
+export type AgentMessage = Extract<ViewerServerMessage, { t: "cursor" | "cursorHidden" | "agentAction" }>
 
 export type ViewStatus = "connecting" | "open" | "reconnecting" | "closed"
 
@@ -32,6 +34,7 @@ function viewUrl(browserId: string, viewOnly: boolean) {
 export function useRemoteView(browserId: string, canvasRef: React.RefObject<HTMLCanvasElement | null>, viewOnly = false) {
   const [state, setState] = React.useState<RemoteViewState>({ status: "connecting", hasFrame: false })
   const socketRef = React.useRef<WebSocket | null>(null)
+  const agentListeners = React.useRef(new Set<(message: AgentMessage) => void>())
 
   React.useEffect(() => {
     let disposed = false
@@ -96,7 +99,9 @@ export function useRemoteView(browserId: string, canvasRef: React.RefObject<HTML
         } catch {
           return
         }
-        if (message.t === "meta") setState((prev) => ({ ...prev, meta: message }))
+        if (message.t === "cursor" || message.t === "cursorHidden" || message.t === "agentAction") {
+          for (const listener of agentListeners.current) listener(message)
+        } else if (message.t === "meta") setState((prev) => ({ ...prev, meta: message }))
         else if (message.t === "dialog") setState((prev) => ({ ...prev, dialog: message }))
         else if (message.t === "dialogClosed") setState((prev) => ({ ...prev, dialog: undefined }))
         else if (message.t === "closed") {
@@ -135,5 +140,13 @@ export function useRemoteView(browserId: string, canvasRef: React.RefObject<HTML
   /** 本地先把弹框收起来（服务端处理完还会推 dialogClosed） */
   const dismissDialog = React.useCallback(() => setState((prev) => ({ ...prev, dialog: undefined })), [])
 
-  return { ...state, send, dismissDialog }
+  /** 订阅 agent 的光标和动作说明，返回取消订阅 */
+  const onAgent = React.useCallback((listener: (message: AgentMessage) => void) => {
+    agentListeners.current.add(listener)
+    return () => {
+      agentListeners.current.delete(listener)
+    }
+  }, [])
+
+  return { ...state, send, dismissDialog, onAgent }
 }

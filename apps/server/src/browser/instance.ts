@@ -1,6 +1,7 @@
 // 一个开着的 Chrome（m2.md 第 2 条）：独立的 Xvfb + 有界面 Chrome + 编排器自己的一条 CDP 连接（+ session 用的 Playwright MCP）。
 // 编排器这条连接负责：装登录态、导出登录态、拦截不在白名单里的主文档、按平台域名申请账号租约、挂弹框监听（不处理）、
-// 检测验证码、截图、远程画面。agent 通过 MCP 操作同一个 Chrome，手里没有导出 cookie 的工具。
+// 检测验证码、截图、远程画面。agent 通过 MCP 操作同一个 Chrome，手里没有导出 cookie 的工具；
+// MCP 经 cdp-tap 连 Chrome，远程画面靠它知道 agent 的鼠标在哪。
 import { randomBytes } from "node:crypto"
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -14,6 +15,7 @@ import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
 import { loadSecretById } from "../engine/secrets.js"
 import type { Keyring } from "../lib/crypto.js"
+import { startCdpTap, type CdpTap } from "./cdp-tap.js"
 import { BrowserUnavailableError, CHROME_BIN, chromeAvailable, killGroup, startChrome, startXvfb, type ChromeHandle, type XvfbHandle } from "./chrome.js"
 import { judgePage, probeLooksLoggedIn, type PageFacts } from "./detect.js"
 import type { GostPool } from "./gost.js"
@@ -121,9 +123,12 @@ export class BrowserInstance {
   private browser?: Browser
   private mcp?: BrowserMcp
   private mcpStarting?: Promise<BrowserMcp>
+  private tap?: CdpTap
   private base: StorageState = emptyState()
   private saveIndexedDb = false
   private readonly pageIds = new WeakMap<Page, number>()
+  /** 页面 → Chrome 的 target id（cdp-tap 记下的 agent 输入按它对上页面） */
+  private readonly targetIds = new WeakMap<Page, string>()
   private nextPageId = 1
   readonly dialogs = new Map<Page, Dialog>()
   private lastNavigated?: Page
@@ -273,6 +278,10 @@ export class BrowserInstance {
     return id
   }
 
+  targetIdOf(page: Page): string | undefined {
+    return this.targetIds.get(page)
+  }
+
   pages(): Page[] {
     return this.context?.pages() ?? []
   }
@@ -305,6 +314,8 @@ export class BrowserInstance {
     let session: CDPSession | undefined
     try {
       session = await this.context!.newCDPSession(page)
+      const info = (await session.send("Target.getTargetInfo")) as { targetInfo: { targetId: string } }
+      this.targetIds.set(page, info.targetInfo.targetId)
       const frameTree = (await session.send("Page.getFrameTree")) as { frameTree: { frame: { id: string } } }
       const mainFrameId = frameTree.frameTree.frame.id
       session.on("Fetch.requestPaused", (event) => void this.onRequestPaused(session!, mainFrameId, event as RequestPaused))
@@ -440,7 +451,14 @@ export class BrowserInstance {
   async ensureMcp(): Promise<BrowserMcp> {
     if (this.mcp) return this.mcp
     if (!this.chrome) throw new Error("Chrome 还没起来")
-    this.mcpStarting ??= startBrowserMcp(this.chrome.wsEndpoint, this.workDir, this.outputDir)
+    const wsEndpoint = this.chrome.wsEndpoint
+    this.mcpStarting ??= (async () => {
+      this.tap ??= await startCdpTap(wsEndpoint, {
+        onInput: (input) => this.viewer.onAgentInput(input),
+        shouldDelay: () => this.viewer.clients.size > 0,
+      })
+      return startBrowserMcp(this.tap.url, this.workDir, this.outputDir)
+    })()
     try {
       this.mcp = await this.mcpStarting
       return this.mcp
@@ -542,6 +560,8 @@ export class BrowserInstance {
     if (this.urlWrite) clearTimeout(this.urlWrite)
     await this.mcp?.close()
     this.mcp = undefined
+    await this.tap?.close()
+    this.tap = undefined
     await this.browser?.close().catch(() => {})
     await killGroup(this.chrome?.proc)
     await killGroup(this.xvfb?.proc, 2000)

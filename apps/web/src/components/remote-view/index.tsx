@@ -1,6 +1,6 @@
 // 远程画面（自定义组件，登记在 docs/ui-rules.md 第 8 节）：看、操作服务器上的 Chrome。
 // 组件库没有「远程桌面 / 画面」类组件，这里用 canvas 画 JPEG 帧，外面全部用 registry 组件组合：
-// 工具栏 Button + Input、标签页 Tabs、状态 Badge、网页弹框 AlertDialog、加载 Spinner、关闭后 Empty。
+// 工具栏 Button + Input、标签页 Tabs、状态 Badge、网页弹框 AlertDialog、加载 Spinner、关闭后 Empty；agent 的虚拟光标见 agent-cursor.tsx。
 // - 坐标按 meta.width/height（页面视口的 CSS 像素）换算；
 // - 键盘和输入法：焦点放在一个看不见的 textarea 上，组好的中文和粘贴的文字发 { t: "text" }，其余按键发 key 消息；
 // - 没有操作权限（meta.canControl = false）时只读：不发任何输入，工具栏和标签页都禁用。
@@ -26,6 +26,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 
+import { AgentCursor } from "./agent-cursor"
 import { buttonOf, keyDownMessage, keyUpMessage, modifiersOf, normalizeAddress, pressedButton, textChunks, toPage, wheelDelta } from "./input"
 import { useRemoteView, type PageDialog, type RemoteViewState } from "./use-remote-view"
 
@@ -312,6 +313,7 @@ function Screen({ view, canvasRef, canControl, closedReason }: { view: View; can
           if (canControl && text) sendText(text)
         }}
       />
+      <AgentCursor onAgent={view.onAgent} width={meta?.width} height={meta?.height} canControl={canControl} />
       {!view.hasFrame && !closedReason && (
         <div className="absolute inset-0 flex items-center justify-center gap-2 text-sm text-muted-foreground">
           <Spinner />

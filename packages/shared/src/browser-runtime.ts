@@ -101,6 +101,12 @@ export type ViewerServerMessage =
   /** 弹框已经关掉了（被人或 agent 处理了） */
   | { t: "dialogClosed" }
   | { t: "closed"; reason: string }
+  /** agent 的鼠标（画面上的虚拟光标）：页面视口的 CSS 像素；press = 在这里按下了（画一圈波纹） */
+  | { t: "cursor"; x: number; y: number; kind: "move" | "press" }
+  /** 当前标签页上 agent 还没动过鼠标（换了标签页） */
+  | { t: "cursorHidden" }
+  /** agent 正在调的浏览器工具（光标旁边显示一会儿），见 browserActionLabel */
+  | { t: "agentAction"; label: string }
 
 const modifiers = z.number().int().min(0).max(15).optional()
 
@@ -256,6 +262,25 @@ const ACTION_TAGS: Record<string, string> = {
 
 export function browserActionTag(toolName: string): string {
   return ACTION_TAGS[toolName] ?? toolName.replace(/^browser_/, "")
+}
+
+const LABEL_DETAIL_MAX = 40
+
+/**
+ * 远程画面上光标旁边的动作说明：动作标签 + agent 给的元素描述（MCP 参数里的 element 等），例如「Click · 搜索按钮」。
+ * 只取描述性的参数，不取要填的内容（text、value 里可能是密码）；打开网址只给域名。
+ */
+export function browserActionLabel(toolName: string, args: Record<string, unknown>): string {
+  const str = (value: unknown) => (typeof value === "string" ? value.trim() : "")
+  let detail = str(args.element)
+  if (toolName === "browser_drag") detail = [str(args.startElement), str(args.endElement)].filter(Boolean).join(" → ")
+  else if (toolName === "browser_fill_form" && Array.isArray(args.fields))
+    detail = args.fields.map((field) => str((field as { name?: unknown } | null)?.name)).filter(Boolean).join("、")
+  else if (toolName === "browser_press_key") detail = str(args.key)
+  else if (toolName === "browser_navigate" || (toolName === "browser_tabs" && args.url)) detail = hostOf(str(args.url)) ?? ""
+  if (detail.length > LABEL_DETAIL_MAX) detail = `${detail.slice(0, LABEL_DETAIL_MAX - 1)}…`
+  const tag = browserActionTag(toolName)
+  return detail ? `${tag} · ${detail}` : tag
 }
 
 /** 操作历史的一行：同一次运行在同一个网址上连着做的动作合成一行（动作去重、按第一次出现的顺序） */

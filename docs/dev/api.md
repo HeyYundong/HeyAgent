@@ -635,6 +635,7 @@ curl -s -X POST http://localhost:3100/api/events \
 - 只在有人看时开 screencast，画面最大 960×960（等比缩），JPEG q60；收到帧立刻 ack，跟不上的观看端丢帧（缓冲超过 1MB 不发）。
 - 消息格式（和 m2.md 第 8 条一致，另有两处补充，见下）：
   - 服务端 → 浏览器：二进制 = 一帧 JPEG；`{ t: "meta", width, height, tabs: [{ id, title, url, active }], url, canControl }`（`width/height` 是页面视口的 CSS 像素，鼠标坐标按它换算，不是图片尺寸；**`canControl` 是补充**）；`{ t: "dialog", kind, message, defaultValue? }`；**`{ t: "dialogClosed" }`（补充：弹框被人或 agent 处理掉了）**；`{ t: "closed", reason }`。
+  - **agent 的虚拟光标（2026-10-18 补充）**：`{ t: "cursor", x, y, kind: "move" | "press" }`（agent 鼠标的位置，页面视口的 CSS 像素；`press` = 在这里按下了；agent 打字时挪到有焦点的输入框）；`{ t: "cursorHidden" }`（当前标签页上 agent 还没动过鼠标）；`{ t: "agentAction", label }`（agent 正在调的浏览器工具，`browserActionLabel`：动作标签 + 元素描述，不带要填的内容）。坐标来自 worker 的 `cdp-tap`：Playwright MCP 经它连 Chrome，它原样转发，记下 MCP 发的 `Input.*` 指令（网页里不插任何东西）；有人看画面时，agent 每次按下鼠标前停 200 毫秒，让光标先移过去。人在画面里的操作不经过它，不会带动光标。
   - 浏览器 → 服务端：`mouse`（`type` 是 CDP 的 `mousePressed/mouseReleased/mouseMoved/mouseWheel`）、`key`（`keyDown/keyUp/rawKeyDown/char`）、`text`（`Input.insertText`）、`nav`（`back/forward/reload/goto`；goto 受任务白名单限制）、`tab`、`closeTab`（最后一个标签页不关）、`dialog`（`accept`、`promptText`）。按 `viewerClientMessageSchema` 校验，不认识的丢弃。
 
 ### 10.4 agent 看到的浏览器工具

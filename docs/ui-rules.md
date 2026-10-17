@@ -312,5 +312,6 @@ base-lyra 的 registry 中**没有** `chart-*` 图表区块（`chart-area-defaul
 | 全局滚动条样式 | `apps/web/src/index.css`（`@layer base` 里的 `scrollbar-width` / `scrollbar-color`，Safari 用 `::-webkit-scrollbar`） | 预设没有统一滚动条，各浏览器、各区域样子不一 | 只用主题 token（`--muted-foreground` 加透明度、`--spacing`），不新增 token；`no-scrollbar` 照样隐藏 | 无 | 2026-10-18（用户要求） |
 | 区块说明改成「?」提示 | `apps/web/src/components/shell/simple-page.tsx`（`HelpTip`、`DetailSection` 的 `description`） | 用户要求区块标题下不放子标题，说明放进标题旁「?」的悬停提示 | 只组合 registry 的 `tooltip` + `button`（`ghost` / `icon-xs`）+ lucide `CircleHelpIcon` | 无 | 2026-10-18（用户要求） |
 | 文件缩略图和查看弹窗 | `apps/web/src/components/files/index.tsx`（`FileList`、`FileViewer`） | 图片要缩略图、点了看大图；文本点了看内容 | 只组合 registry 的 `attachment`（`image` 变体、`vertical`、`AttachmentTrigger`）+ `dialog` + `code-block`，Markdown 用已登记的 `MarkdownView` | 无 | 2026-10-18（用户要求） |
+| agent 的虚拟光标 `AgentCursor` | `apps/web/src/components/remote-view/agent-cursor.tsx`（挂在 `RemoteView` 的画面上） | registry 没有光标类组件。看 agent 操作浏览器时画面上没有鼠标，要显示 agent 的鼠标在哪、点了哪、在做什么 | 箭头是 lucide `MousePointer2Icon`（`fill-primary stroke-primary-foreground`），动作说明是 registry 的 `Badge`，点击的波纹是 `rounded-full bg-primary/50 animate-ping`（圆形元素）。位置和远程画面的输入框一样，在 ref 上改 `left/top`（百分比），JSX 里没有 `style={{}}`；移动用 `transition-all duration-200` | 无 | 2026-10-18（用户确认方案） |
 
 2026-10-17 用户另外同意：开发中遇到 registry 确实没有的组件，可以先按第 6 节用现有组件组合实现、登记在上表，事后告诉用户（「先做后报」）。

@@ -10,6 +10,7 @@ import { extname, join } from "node:path"
 import { eq, lt, sql } from "drizzle-orm"
 import {
   BROWSER_VISION_MODEL,
+  browserActionLabel,
   browserActionTag,
   hostOf,
   leaseEventName,
@@ -381,6 +382,7 @@ export class BrowserTools {
 
     const before = new Set(listImages(instance.workDir))
     const mcp = await instance.ensureMcp()
+    instance.viewer.announce(browserActionLabel(name, input))
     const result = await executeMcpTool(this.connection(instance, mcp.client), name, args)
     const lines: string[] = [result.output]
     await this.record(name, Boolean(result.isError), instance.currentPage()?.url() ?? url)
