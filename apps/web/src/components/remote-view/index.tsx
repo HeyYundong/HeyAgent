@@ -34,11 +34,13 @@ export interface RemoteViewProps {
   className?: string
   /** Chrome 关了（服务端发了 closed，或一直连不上） */
   onClosed?: (reason: string) => void
+  /** 只看不操作 */
+  viewOnly?: boolean
 }
 
-export function RemoteView({ browserId, className, onClosed }: RemoteViewProps) {
+export function RemoteView({ browserId, className, onClosed, viewOnly }: RemoteViewProps) {
   const canvasRef = React.useRef<HTMLCanvasElement | null>(null)
-  const view = useRemoteView(browserId, canvasRef)
+  const view = useRemoteView(browserId, canvasRef, viewOnly)
   const { status, meta, send } = view
   const canControl = status === "open" && Boolean(meta?.canControl)
   const closedReason = status === "closed" ? (view.reason ?? "远程画面已断开") : undefined

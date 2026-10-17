@@ -5,13 +5,15 @@ import { serve } from "@hono/node-server"
 import { and, eq, isNull } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import WebSocket from "ws"
-import { leaseEventName, SETTING_KEYS } from "@heyagent/shared"
+import { leaseEventName, profileEventName, SETTING_KEYS } from "@heyagent/shared"
 
 import { adaptSchema, browserToolId } from "../src/browser/tools.js"
 import { chromeArgs } from "../src/browser/chrome.js"
 import { judgePage, parseVisionAnswer, probeLooksLoggedIn, type PageFacts } from "../src/browser/detect.js"
 import { gostConfig } from "../src/browser/gost.js"
-import { accountForHost, acquireLease, releaseLeases, sweepLeases, wakeLeaseWaiters } from "../src/browser/leases.js"
+import type { GostPool } from "../src/browser/gost.js"
+import { BrowserInstance, ProfileFullError } from "../src/browser/instance.js"
+import { accountForHost, acquireLease, profileSessionCount, releaseLeases, sweepLeases, wakeLeaseWaiters, wakeProfileWaiters } from "../src/browser/leases.js"
 import { listBrowserMcpTools } from "../src/browser/mcp.js"
 import { attachBrowserViewRelay } from "../src/browser/view-relay.js"
 import { casWrite, loadVault, mergeStates, writeBackMerged, type StorageState, type StoredCookie } from "../src/browser/vault.js"
@@ -226,6 +228,37 @@ describe("账号租约", () => {
     await sweepLeases(ctx.db)
     expect((await ctx.db.select().from(t.sessions).where(eq(t.sessions.id, "R-L-3")))[0]!.status).toBe("running")
     await ctx.db.update(t.sessions).set({ status: "failed" }).where(eq(t.sessions.taskId, taskId))
+  })
+})
+
+describe("Chrome 配置的名额", () => {
+  it("同时用它的运行满了：登记时抛 ProfileFullError；人开的不占名额；关掉一个叫醒最早排队的", async () => {
+    const workerId = "w-slot-test"
+    await ctx.db.insert(t.browserWorkers).values({ id: workerId, controlUrl: "http://127.0.0.1:9", maxBrowsers: 4 })
+    await ctx.db.insert(t.browserProfiles).values({ id: "br-slot", name: "名额测试", maxSessions: 1 })
+    const taskId = await createTask(ctx.db, { modelId: "test/slot" })
+    for (const id of ["R-S-1", "R-S-2"]) await ctx.db.insert(t.sessions).values({ id, taskId, status: "running", modelId: "test/slot", startedAt: new Date() })
+    const deps = { db: ctx.db, keyring: () => ctx.keyring, gost: {} as GostPool, workerId }
+    const open = (sessionId?: string) =>
+      new BrowserInstance(deps, sessionId ? { kind: "session", profileId: "br-slot", sessionId, allowedDomains: [] } : { kind: "login", profileId: "br-slot", openedById: "u-wang", allowedDomains: [] })
+    const first = open("R-S-1")
+    await first.register("starting")
+    // 人「打开 Chrome」开的不占名额
+    await open().register("starting")
+    expect(await profileSessionCount(ctx.db, "br-slot")).toBe(1)
+    const error = await open("R-S-2").register("starting").catch((each: unknown) => each)
+    expect(error).toBeInstanceOf(ProfileFullError)
+    expect(error).toMatchObject({ used: 1, max: 1, profileName: "名额测试" })
+    await ctx.db.transaction((tx) => suspendInTx(ctx.db, tx, { sessionId: "R-S-2", status: "waiting", what: "等待浏览器", triggerKind: "event", event: profileEventName("br-slot") }))
+    // 满着时叫不醒
+    expect(await wakeProfileWaiters(ctx.db, "br-slot")).toEqual([])
+    // R-S-1 的 Chrome 关了（登记删掉）：R-S-2 被叫醒
+    await ctx.db.delete(t.browserInstances).where(eq(t.browserInstances.id, first.id))
+    expect(await wakeProfileWaiters(ctx.db, "br-slot")).toEqual(["R-S-2"])
+    expect((await ctx.db.select().from(t.sessions).where(eq(t.sessions.id, "R-S-2")))[0]!.status).toBe("running")
+    await ctx.db.update(t.sessions).set({ status: "failed" }).where(eq(t.sessions.taskId, taskId))
+    await ctx.db.delete(t.browserWorkers).where(eq(t.browserWorkers.id, workerId))
+    await ctx.db.delete(t.browserProfiles).where(eq(t.browserProfiles.id, "br-slot"))
   })
 })
 

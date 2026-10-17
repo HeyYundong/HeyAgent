@@ -9,7 +9,7 @@
 //   CHROME_PATH / CHROME_LIBS / FONTCONFIG_FILE  同 smoke.mjs
 // 检查（docs/dev/m2.md 验收）：
 //   0. 设置页改浏览器设置；浏览器页新建 Chrome 配置、加账号（新平台带域名）；
-//   1. 「打开 Chrome 登录」：远程画面出帧，地址栏打开 example.com，关闭就保存（保险箱版本 +1、账号探测通过）；
+//   1. 「打开 Chrome」：远程画面出帧，地址栏打开 example.com，关闭就保存（保险箱版本 +1、账号探测通过）；
 //   2. 任务「打开 https://example.com，读出页面标题，用存文件工具保存」：任务表单选「浏览器」、Chrome 配置、白名单 → 完成，产物正确，过程里有截图；
 //   3. 本地验证码测试页 → session 等人 → 员工打开远程画面是只读 → 负责人在待办里「去浏览器里处理」，
 //      在远程画面里输入（输入法组字的中文 + 按键的英文）、点按钮、在网页弹框（confirm）里点确定 → 过了验证
@@ -295,7 +295,7 @@ try {
     if (!state.accountId) throw new Error("accountStatus 里没有新账号")
   })
 
-  console.log("\n== 1. 打开 Chrome 登录 → 远程画面 → 关闭就保存")
+  console.log("\n== 1. 打开 Chrome → 远程画面 → 关闭就保存")
   await step("账号行点「去登录」：远程画面出帧，可以操作", async () => {
     const { page } = admin
     await page.getByRole("button", { name: "去登录" }).first().click()

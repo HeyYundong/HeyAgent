@@ -13,6 +13,7 @@ import {
   browserActionTag,
   hostOf,
   leaseEventName,
+  profileEventName,
   urlAllowed,
   type HumanDetail,
   type McpToolInfo,
@@ -32,7 +33,7 @@ import { loadEngineSettings } from "../engine/settings.js"
 import type { SessionRow, ToolOutcome } from "../engine/tools/builtin.js"
 import { executeMcpTool, type McpConnection } from "../engine/tools/mcp.js"
 import { parseVisionAnswer, VISION_PROMPT, type Verdict } from "./detect.js"
-import type { BlockedNavigation, BrowserInstance } from "./instance.js"
+import { ProfileFullError, type BlockedNavigation, type BrowserInstance } from "./instance.js"
 import { accountForHost } from "./leases.js"
 import { getBrowserManager } from "./manager.js"
 import { BLOCKED_MCP_TOOLS, EVALUATE_TOOL, listBrowserMcpTools } from "./mcp.js"
@@ -267,9 +268,28 @@ export class BrowserTools {
         })
       return this.instance
     } catch (error) {
+      if (error instanceof ProfileFullError) return this.profileFullOutcome(profileId, error)
       const message = (error as Error).message
       if (/gost|代理/.test(message)) await this.warnProxy(message)
       return fail(`浏览器起不来：${message}`)
+    }
+  }
+
+  /** 这个 Chrome 配置同时在用的运行满了：session 挂起「等待浏览器」，有运行用完关掉 Chrome 时叫醒 */
+  private async profileFullOutcome(profileId: string, error: ProfileFullError): Promise<ToolOutcome> {
+    const settings = await loadEngineSettings(this.ctx.db)
+    return {
+      output: `Chrome「${error.profileName}」同时最多 ${error.max} 个运行在用，现在已经满了，已排队等空位。先挂起，轮到时会叫你继续（网页需要重新打开）。`,
+      suspend: {
+        kind: "wait",
+        input: {
+          what: `等待浏览器：Chrome「${error.profileName}」同时最多 ${error.max} 个运行在用`,
+          triggerKind: "event",
+          event: profileEventName(profileId),
+          fallbackDays: settings.eventFallbackDays,
+          deadlineAt: new Date(Date.now() + settings.eventFallbackDays * 24 * 60 * 60 * 1000),
+        },
+      },
     }
   }
 
@@ -512,7 +532,7 @@ export class BrowserTools {
         { title: "网址", text: hit.facts.url },
         {
           title: "怎么处理",
-          text: `在这次运行的「看浏览器」里打开远程画面（浏览器 ${instance.id}），处理好验证码或登录后点「已处理好了」。Chrome 保留 ${settings.humanHoldMinutes} 分钟；过了时间会写回登录态并关掉，到时请在浏览器页「打开 Chrome 登录」处理，再回来点「已处理好了」。`,
+          text: `在这次运行的「看浏览器」里打开远程画面（浏览器 ${instance.id}），处理好验证码或登录后点「已处理好了」。Chrome 保留 ${settings.humanHoldMinutes} 分钟；过了时间会写回登录态并关掉，到时请在浏览器页「打开 Chrome」处理，再回来点「已处理好了」。`,
         },
         { title: "来自", text: `任务「${snapshot.task.title}」的运行 ${session.id}` },
       ],

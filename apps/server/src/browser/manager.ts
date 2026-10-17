@@ -1,7 +1,7 @@
 // worker 里的浏览器管理（m2.md 第 2、5、8 条）：一个进程一个。
 // - 每个 worker 同时最多开 browser.maxPerWorker 个 Chrome（设置，默认 4），满了排队；
 // - session 的 Chrome：懒启动，session 结束或挂起时写回、关掉；遇到验证码等人处理时保留 browser.humanHoldMinutes 分钟；
-// - 「打开 Chrome 登录」的 Chrome：不挂 session，空闲 30 分钟自动关；
+// - 「打开 Chrome」的 Chrome：不挂 session，空闲 30 分钟自动关；
 // - 登记在 browser_workers / browser_instances，API 按这里找 worker 的内部控制地址；
 // - 心跳：续 worker 的心跳和账号租约；清扫：过期租约、保留到期的 Chrome、死掉的 worker 留下的登记。
 import { randomBytes } from "node:crypto"
@@ -17,7 +17,7 @@ import type { Keyring } from "../lib/crypto.js"
 import { BrowserUnavailableError } from "./chrome.js"
 import { GostPool } from "./gost.js"
 import { BrowserInstance, type CloseSummary } from "./instance.js"
-import { heartbeatLeases, sweepLeases } from "./leases.js"
+import { heartbeatLeases, sweepLeases, wakeProfileWaiters } from "./leases.js"
 
 export const LOGIN_IDLE_MS = 30 * 60_000
 const QUEUE_TIMEOUT_MS = Number(process.env.HEYAGENT_BROWSER_QUEUE_TIMEOUT_MS) > 0 ? Number(process.env.HEYAGENT_BROWSER_QUEUE_TIMEOUT_MS) : 10 * 60_000
@@ -101,6 +101,8 @@ export class BrowserManager {
     instance.onClosed(() => {
       this.instances.delete(instance.id)
       if (instance.sessionId && this.bySession.get(instance.sessionId) === instance) this.bySession.delete(instance.sessionId)
+      // session 的 Chrome 关了：这个配置空出一个名额，叫醒排队的
+      if (instance.kind === "session") void wakeProfileWaiters(this.db, instance.profileId).catch((error) => console.warn(`[browser] 叫醒等 Chrome 名额的 session 失败：${(error as Error).message}`))
       this.pumpSlots()
     })
   }
@@ -146,7 +148,13 @@ export class BrowserManager {
     this.track(instance)
     const max = await this.maxPerWorker()
     const full = this.used() >= max
-    await instance.register(full ? "queued" : "starting")
+    try {
+      // 这个 Chrome 配置同时在用的运行满了：抛 ProfileFullError，session 挂起排队（不占这台 worker 的空位）
+      await instance.register(full ? "queued" : "starting")
+    } catch (error) {
+      await instance.close({ writeBack: false, reason: (error as Error).message })
+      throw error
+    }
     try {
       if (full) {
         await input.onQueued?.(this.used(), max)
@@ -179,7 +187,7 @@ export class BrowserManager {
     return { held: false, summary }
   }
 
-  /** 浏览器页「打开 Chrome 登录」：不挂 session，装上这个配置的登录态，打开账号的探测网址或平台首页 */
+  /** 浏览器页「打开 Chrome」：不挂 session，装上这个配置的登录态，打开账号的探测网址或平台首页 */
   async openForLogin(input: { profileId: string; accountId?: string; userId: string }): Promise<BrowserInstance> {
     const max = await this.maxPerWorker()
     if (this.used() >= max) throw new BrowserBusyError(`这台 worker 已经开了 ${this.used()} 个 Chrome（上限 ${max}），稍后再试`)
@@ -230,7 +238,7 @@ export class BrowserManager {
             await appendEvent(this.db, instance.sessionId, {
               kind: "wait",
               title: "等人处理的保留时间到了，已写回登录态并关掉 Chrome",
-              detail: `${summary.skipped ?? (summary.vaultVersion ? `保险箱已更新到 v${summary.vaultVersion}` : "")}。人处理时请在浏览器页「打开 Chrome 登录」处理，再回来点「已处理好了」，继续时会新起一个 Chrome。`,
+              detail: `${summary.skipped ?? (summary.vaultVersion ? `保险箱已更新到 v${summary.vaultVersion}` : "")}。人处理时请在浏览器页「打开 Chrome」处理，再回来点「已处理好了」，继续时会新起一个 Chrome。`,
             }).catch(() => {})
           }
         } else if (instance.kind === "login" && instance.viewer.clients.size === 0 && Date.now() - instance.lastActiveAt > LOGIN_IDLE_MS) {

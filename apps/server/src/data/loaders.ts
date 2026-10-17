@@ -429,6 +429,7 @@ export async function listBrowsers(db: Db): Promise<BrowserProfile[]> {
           : { kind: "none" as const },
       exitIp: profile.exitIp,
       running: sessionsHere.size,
+      maxSessions: profile.maxSessions,
       sites: own.map((account) =>
         compact({
           accountId: account.id,

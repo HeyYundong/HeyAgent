@@ -123,7 +123,7 @@ export function RunSheet({ run, task, column, note, canAct, isAdmin, open, onClo
           <VerificationReport verification={run.verification} showNotes={false} />
         </DetailSection>
       )}
-      <DetailSection title="检查点" description={run.checkpoints.length > 0 && `完成 ${doneCount} / ${run.checkpoints.length}`}>
+      <DetailSection title={run.checkpoints.length > 0 ? `检查点 · 完成 ${doneCount} / ${run.checkpoints.length}` : "检查点"}>
         {run.checkpoints.length === 0 && <p className="text-muted-foreground">这次运行没有检查点。{run.exploredSteps?.length ? `agent 的步骤：${run.exploredSteps.join(" → ")}` : ""}</p>}
         <ul className="flex flex-col gap-1.5">
           {run.checkpoints.map(({ title, status, target, progress, skipReason }, index) => (

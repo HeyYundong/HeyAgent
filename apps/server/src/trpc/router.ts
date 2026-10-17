@@ -287,7 +287,7 @@ export const appRouter = router({
   /** 引擎相关（M1 包 P1）：立即运行、取消、处理要人办的事、附件和产物、通知等 */
   engine: engineRouter,
 
-  /** 浏览器（M2）：打开 Chrome 登录（关闭时保存登录状态）、远程画面相关 */
+  /** 浏览器（M2）：打开 Chrome（关闭时保存登录状态）、远程画面相关 */
   browser: browserRouter,
 
   live: router({

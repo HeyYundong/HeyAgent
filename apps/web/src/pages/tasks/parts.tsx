@@ -4,10 +4,10 @@ import { CircleCheckIcon, CircleDashedIcon, CircleDotIcon, CircleMinusIcon, Circ
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
-import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import { Spinner } from "@/components/ui/spinner"
-import { checkpointKindLabel, eventTimeText, runStatusLabel } from "@heyagent/shared"
+import { fmtShort, runStatusLabel } from "@heyagent/shared"
 import type { RunCheckpoint, RunStatus, SessionRun } from "@heyagent/shared"
 
 import { useRunNow } from "@/lib/data"
@@ -64,15 +64,15 @@ export function focusedCheckpoint(run: Pick<SessionRun, "status" | "events">): n
   return undefined
 }
 
-function CheckpointCard({ cp, run, doing }: { cp: RunCheckpoint; run: SessionRun; doing: boolean }) {
+function CheckpointCard({ cp, doing }: { cp: RunCheckpoint; doing: boolean }) {
   const status = doing && cp.status === "open" ? { icon: CircleDotIcon, label: "正在做", variant: "secondary" as const } : STATUS[cp.status]
   const progress = cp.target ? `${cp.progress ?? 0}/${cp.target}` : undefined
   return (
     <Card size="sm">
       <CardHeader>
         <CardTitle>{cp.title}</CardTitle>
-        <CardDescription>{checkpointKindLabel[cp.kind]}{cp.stepId ? "" : " · agent 自己加的"}</CardDescription>
-        <CardAction>
+        <CardAction className="flex flex-wrap justify-end gap-1">
+          {!cp.stepId && <Badge variant="outline">agent 自己加的</Badge>}
           <Badge variant={status.variant}><status.icon data-icon="inline-start" />{status.label}</Badge>
         </CardAction>
       </CardHeader>
@@ -83,12 +83,14 @@ function CheckpointCard({ cp, run, doing }: { cp: RunCheckpoint; run: SessionRun
           </Progress>
         )}
         {cp.records.length > 0 ? (
-          <ul className="flex flex-col gap-1.5 text-xs">
+          <ul className="flex flex-col gap-2 text-xs">
             {cp.records.map((record, index) => (
-              <li key={index} className="flex items-start gap-2">
-                <span className="shrink-0 tabular-nums text-muted-foreground">{eventTimeText(record.at, run)}</span>
-                <span className="min-w-0 flex-1">{record.text}</span>
-                {record.synced && <Badge variant="secondary">自动</Badge>}
+              <li key={index} className="flex flex-col gap-0.5">
+                <span className="flex items-center gap-2 tabular-nums text-muted-foreground">
+                  {fmtShort(record.at)}
+                  {record.synced && <Badge variant="secondary">自动</Badge>}
+                </span>
+                <span className="wrap-break-word">{record.text}</span>
               </li>
             ))}
           </ul>
@@ -101,7 +103,7 @@ function CheckpointCard({ cp, run, doing }: { cp: RunCheckpoint; run: SessionRun
   )
 }
 
-/** 检查点：每条一张小卡片，网格排列（记录的时间按这次运行显示：当天的只写时分，跨天的带日期） */
+/** 检查点：每条一张小卡片，网格排列。每条记录先一行时间（带日期），下面一行内容 */
 export function CheckpointGrid({ run }: { run: SessionRun }) {
   const { checkpoints } = run
   const focused = focusedCheckpoint(run)
@@ -109,7 +111,7 @@ export function CheckpointGrid({ run }: { run: SessionRun }) {
   return (
     <div className="flex flex-col gap-3">
       <div className="grid gap-3 sm:grid-cols-2">
-        {checkpoints.map((cp, index) => <CheckpointCard key={cp.title} cp={cp} run={run} doing={index === focused} />)}
+        {checkpoints.map((cp, index) => <CheckpointCard key={cp.title} cp={cp} doing={index === focused} />)}
       </div>
       {checkpoints.some((cp) => cp.records.some((record) => record.synced)) && (
         <p className="text-xs text-muted-foreground">标「自动」的记录是规则在工具调用后按工具类别自动写的（访问网页、对外发消息、存文件），agent 改不了。</p>

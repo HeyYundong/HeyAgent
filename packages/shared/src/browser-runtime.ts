@@ -80,6 +80,8 @@ export function urlAllowed(url: string, allowedDomains: readonly string[]): { ok
 
 /** 账号租约满了时 session 等的事件名（释放租约时叫醒最早的那个） */
 export const leaseEventName = (accountId: string) => `browser.lease:${accountId}`
+/** 等 Chrome 配置空出名额的事件（同时用它的运行满了时挂起等这个） */
+export const profileEventName = (profileId: string) => `browser.profile:${profileId}`
 
 // ---------- 远程画面的消息（worker ⇄ API ⇄ 控制台，格式两段相同） ----------
 
@@ -156,7 +158,7 @@ export const browserStateSchema = z.enum(["queued", "starting", "running", "held
 
 export const liveBrowserSchema = z.object({
   browserId: z.string(),
-  /** session = 某次运行在用；login = 人在浏览器页「打开 Chrome 登录」开的 */
+  /** session = 某次运行在用；login = 人在浏览器页「打开 Chrome」开的 */
   kind: browserKindSchema,
   /** queued 排队等空位；starting 正在起；running 开着；held 等人处理（验证码），保留到 holdUntil；closing 正在写回、关闭 */
   state: browserStateSchema,

@@ -1,4 +1,4 @@
-// 新建 / 编辑 Chrome（只有主管）：名称、给 agent 的说明、代理（不用 / SOCKS5）、出口地、时区、语言。并发上限按账号设，不在这里。
+// 新建 / 编辑 Chrome（只有主管）：名称、给 agent 的说明、同时最多几个 session、代理（不用 / SOCKS5）、出口地、时区、语言。账号的并发上限按账号设，不在这里。
 // 表单：React Hook Form + shared 的 browserProfileInputSchema；代理密码只进不出，编辑时留空 = 不改。
 import * as React from "react"
 import { zodResolver } from "@hookform/resolvers/zod"
@@ -19,7 +19,7 @@ import { useAction } from "@/lib/mutations"
 import { navigate } from "@/lib/router"
 import { trpc } from "@/lib/trpc"
 
-import { LOCALE_OPTIONS, type Chrome } from "./data"
+import { LOCALE_OPTIONS, MAX_ITEMS, type Chrome } from "./data"
 import { TimeZoneCombobox } from "./timezone-combobox"
 
 /** profile 不传就是新建 */
@@ -29,6 +29,8 @@ type Socks5 = Extract<BrowserProfileInput["proxy"], { kind: "socks5" }>
 type ProxyErrors = Partial<Record<keyof Socks5, FormFieldError>>
 
 const DEFAULT_PORT = 1080
+/** 新建时「同时最多几个 session」的默认值（和数据库默认值一致） */
+const DEFAULT_MAX_SESSIONS = 3
 
 /** 表单初始值。不用代理时也带上 SOCKS5 的几个空字段：切到 SOCKS5 时输入框有值可绑；提交时 schema 会把它们去掉 */
 function initialValues(profile?: Chrome): BrowserProfileInput {
@@ -49,6 +51,7 @@ function initialValues(profile?: Chrome): BrowserProfileInput {
     exitIp: profile?.exitIp ?? "",
     timezone: profile?.timezone || DEFAULT_BROWSER_TIMEZONE,
     locale: profile?.locale || DEFAULT_BROWSER_LOCALE,
+    maxSessions: profile?.maxSessions ?? DEFAULT_MAX_SESSIONS,
   }
 }
 
@@ -95,6 +98,20 @@ export function BrowserDialog({ profile, onClose }: BrowserDialogProps) {
               <Textarea id="br-desc" placeholder="例如：英国 IP，用于英国站的店铺后台" aria-invalid={!!errors.description} {...form.register("description")} />
               <FieldDescription>agent 靠这句话自己选用哪个 Chrome：写清楚 IP 在哪、用于哪些平台。</FieldDescription>
               <FieldError errors={[errors.description]} />
+            </Field>
+            <Field data-invalid={!!errors.maxSessions}>
+              <FieldLabel>同时最多几个 session 用这个 Chrome</FieldLabel>
+              <Controller
+                control={form.control}
+                name="maxSessions"
+                render={({ field }) => (
+                  <ToggleGroup variant="outline" spacing={0} value={[String(field.value ?? DEFAULT_MAX_SESSIONS)]} onValueChange={(next) => next[0] && field.onChange(Number(next[0]))}>
+                    {MAX_ITEMS.map((n) => <ToggleGroupItem key={n} value={n}>{n}</ToggleGroupItem>)}
+                  </ToggleGroup>
+                )}
+              />
+              <FieldDescription>满了的运行排队等，有运行用完就轮到下一个。</FieldDescription>
+              <FieldError errors={[errors.maxSessions]} />
             </Field>
             <Field>
               <FieldLabel>代理</FieldLabel>

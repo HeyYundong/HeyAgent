@@ -1,11 +1,17 @@
-// 附件和产物的显示与上传（组合 registry 的 Attachment、Button、Input）：任务附件、带附件运行、session 的附件和产物都用它。
-// 下载走 GET /api/files/:id（要求登录，cookie 自动带上）；图片在新标签页直接显示，其他文件下载。
+// 附件和产物的显示与上传（组合 registry 的 Attachment、Button、Input、Dialog、CodeBlock）：任务附件、带附件运行、session 的附件和产物都用它。
+// 图片显示缩略图，点了弹窗看大图；文本文件点了弹窗看内容（Markdown 按 Markdown 显示）。下载走 GET /api/files/:id（要求登录，cookie 自动带上）。
 import * as React from "react"
-import { DownloadIcon, FileTextIcon, ImageIcon, PaperclipIcon, XIcon } from "lucide-react"
+import { useQuery } from "@tanstack/react-query"
+import { DownloadIcon, FileTextIcon, PaperclipIcon, XIcon } from "lucide-react"
 import type { SessionFile, UploadedFile } from "@heyagent/shared"
 
-import { Attachment, AttachmentAction, AttachmentActions, AttachmentContent, AttachmentDescription, AttachmentMedia, AttachmentTitle } from "@/components/ui/attachment"
+import { MarkdownView } from "@/components/markdown"
+import {
+  Attachment, AttachmentAction, AttachmentActions, AttachmentContent, AttachmentDescription, AttachmentMedia, AttachmentTitle, AttachmentTrigger,
+} from "@/components/ui/attachment"
 import { Button } from "@/components/ui/button"
+import { CodeBlock, CodeBlockContent } from "@/components/ui/code-block"
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Spinner } from "@/components/ui/spinner"
 import { toast } from "@/components/ui/toast"
@@ -21,36 +27,130 @@ const KIND_LABEL: Record<SessionFile["kind"], string> = {
 
 type ShownFile = Pick<SessionFile, "id" | "name" | "mime" | "size" | "url"> & { kind?: SessionFile["kind"]; scope?: SessionFile["scope"] }
 
+/** 弹窗里最多显示这么多字，再多的请下载 */
+const MAX_PREVIEW_CHARS = 200_000
+const TEXT_MIME = /^(text\/|application\/(json|xml|yaml|x-yaml|javascript|x-ndjson|csv))/
+const TEXT_EXT = /\.(txt|md|markdown|json|jsonl|ya?ml|csv|tsv|log|xml|html?)$/i
+
+const isImage = (file: ShownFile) => file.mime.startsWith("image/")
+const isText = (file: ShownFile) => TEXT_MIME.test(file.mime) || TEXT_EXT.test(file.name)
+const isMarkdown = (file: ShownFile) => file.mime === "text/markdown" || /\.(md|markdown)$/i.test(file.name)
+
 function describe(file: ShownFile) {
   const parts = [fmtSize(file.size)]
   if (file.kind) parts.push(file.scope === "task" ? "任务附件" : KIND_LABEL[file.kind])
   return parts.join(" · ")
 }
 
-/** 一组文件：每个一张小卡，带下载；给了 onRemove 就多一个移除按钮 */
-export function FileList({ files, onRemove, removingId, empty }: { files: ShownFile[]; onRemove?: (file: ShownFile) => void; removingId?: string; empty?: React.ReactNode }) {
+interface FileListProps {
+  files: ShownFile[]
+  onRemove?: (file: ShownFile) => void
+  removingId?: string
+  empty?: React.ReactNode
+}
+
+/** 一组文件：图片是缩略图（点了看大图），其他的是小卡（文本文件点了看内容）；都带下载，给了 onRemove 就多一个移除按钮 */
+export function FileList({ files, onRemove, removingId, empty }: FileListProps) {
+  const [viewing, setViewing] = React.useState<ShownFile | null>(null)
   if (files.length === 0) return empty ? <>{empty}</> : null
+  const images = files.filter(isImage)
+  const others = files.filter((file) => !isImage(file))
+  const actions = (file: ShownFile) => (
+    <AttachmentActions>
+      <AttachmentAction aria-label={`下载 ${file.name}`} nativeButton={false} render={<a href={file.url} download={file.name} />}>
+        <DownloadIcon />
+      </AttachmentAction>
+      {onRemove && (
+        <AttachmentAction aria-label={`移除 ${file.name}`} disabled={removingId === file.id} onClick={() => onRemove(file)}>
+          {removingId === file.id ? <Spinner /> : <XIcon />}
+        </AttachmentAction>
+      )}
+    </AttachmentActions>
+  )
   return (
-    <div className="flex flex-wrap gap-2">
-      {files.map((file) => (
-        <Attachment key={file.id} size="sm" className="max-w-full sm:max-w-72">
-          <AttachmentMedia>{file.mime.startsWith("image/") ? <ImageIcon /> : <FileTextIcon />}</AttachmentMedia>
-          <AttachmentContent>
-            <AttachmentTitle title={file.name}>{file.name}</AttachmentTitle>
-            <AttachmentDescription>{describe(file)}</AttachmentDescription>
-          </AttachmentContent>
-          <AttachmentActions>
-            <AttachmentAction aria-label={`下载 ${file.name}`} nativeButton={false} render={<a href={file.url} target={file.mime.startsWith("image/") ? "_blank" : undefined} rel="noreferrer" download={file.mime.startsWith("image/") ? undefined : file.name} />}>
-              <DownloadIcon />
-            </AttachmentAction>
-            {onRemove && (
-              <AttachmentAction aria-label={`移除 ${file.name}`} disabled={removingId === file.id} onClick={() => onRemove(file)}>
-                {removingId === file.id ? <Spinner /> : <XIcon />}
-              </AttachmentAction>
-            )}
-          </AttachmentActions>
-        </Attachment>
-      ))}
+    <div className="flex flex-col gap-2">
+      {images.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {images.map((file) => (
+            <Attachment key={file.id} orientation="vertical">
+              <AttachmentMedia variant="image">
+                <img src={file.url} alt={file.name} loading="lazy" />
+              </AttachmentMedia>
+              <AttachmentContent>
+                <AttachmentTitle title={file.name}>{file.name}</AttachmentTitle>
+                <AttachmentDescription>{describe(file)}</AttachmentDescription>
+              </AttachmentContent>
+              <AttachmentTrigger aria-label={`看大图：${file.name}`} onClick={() => setViewing(file)} />
+              {actions(file)}
+            </Attachment>
+          ))}
+        </div>
+      )}
+      {others.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {others.map((file) => (
+            <Attachment key={file.id} size="sm" className="max-w-full sm:max-w-72">
+              <AttachmentMedia><FileTextIcon /></AttachmentMedia>
+              <AttachmentContent>
+                <AttachmentTitle title={file.name}>{file.name}</AttachmentTitle>
+                <AttachmentDescription>{describe(file)}</AttachmentDescription>
+              </AttachmentContent>
+              {isText(file) && <AttachmentTrigger aria-label={`看内容：${file.name}`} onClick={() => setViewing(file)} />}
+              {actions(file)}
+            </Attachment>
+          ))}
+        </div>
+      )}
+      {viewing && <FileViewer file={viewing} onClose={() => setViewing(null)} />}
+    </div>
+  )
+}
+
+/** 看大图 / 看文本内容的弹窗 */
+function FileViewer({ file, onClose }: { file: ShownFile; onClose: () => void }) {
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-h-svh overflow-y-auto sm:max-w-5xl">
+        <DialogHeader>
+          <DialogTitle className="break-all">{file.name}</DialogTitle>
+        </DialogHeader>
+        {isImage(file) ? <img src={file.url} alt={file.name} className="h-auto w-full border" /> : <TextPreview file={file} />}
+        <DialogFooter className="sm:items-center">
+          <span className="text-xs text-muted-foreground sm:mr-auto">{describe(file)}</span>
+          <Button variant="outline" nativeButton={false} render={<a href={file.url} download={file.name} />}>
+            <DownloadIcon data-icon="inline-start" />
+            下载
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function TextPreview({ file }: { file: ShownFile }) {
+  const query = useQuery({
+    queryKey: ["file-text", file.id],
+    queryFn: async () => {
+      const response = await fetch(file.url)
+      if (!response.ok) throw new Error(`读不到文件（${response.status}）`)
+      return response.text()
+    },
+    staleTime: Infinity,
+  })
+  if (query.isPending) return <Spinner />
+  if (query.isError) return <p className="text-destructive">{query.error.message}</p>
+  const cut = query.data.length > MAX_PREVIEW_CHARS
+  const text = cut ? query.data.slice(0, MAX_PREVIEW_CHARS) : query.data
+  return (
+    <div className="flex min-w-0 flex-col gap-2">
+      {isMarkdown(file) ? (
+        <MarkdownView>{text}</MarkdownView>
+      ) : (
+        <CodeBlock size="sm">
+          <CodeBlockContent wrap>{text}</CodeBlockContent>
+        </CodeBlock>
+      )}
+      {cut && <p className="text-xs text-muted-foreground">只显示了前 {MAX_PREVIEW_CHARS.toLocaleString()} 个字，完整内容请下载。</p>}
     </div>
   )
 }

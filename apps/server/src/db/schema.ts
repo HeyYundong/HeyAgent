@@ -300,11 +300,16 @@ export const browserProfiles = pgTable(
     exitIp: text("exit_ip").notNull().default(""),
     timezone: text("timezone"),
     locale: text("locale"),
+    /** 同时最多几个运行（session）用这个 Chrome；满了的排队「等待浏览器」 */
+    maxSessions: integer("max_sessions").notNull().default(3),
     position: position(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [check("browser_profiles_proxy_check", sql`${t.proxyKind} = 'none' or (${t.proxyHost} is not null and ${t.proxyPort} is not null)`)]
+  (t) => [
+    check("browser_profiles_proxy_check", sql`${t.proxyKind} = 'none' or (${t.proxyHost} is not null and ${t.proxyPort} is not null)`),
+    check("browser_profiles_max_sessions_check", sql`${t.maxSessions} >= 1`),
+  ]
 )
 
 /** 每个 Chrome 里登录过的平台账号：状态、并发上限、登录探测网址 */
@@ -689,7 +694,7 @@ export const accountLeases = pgTable(
   ]
 )
 
-/** M2：带 Chrome 的 worker（每个进程一行，心跳）。API 按 control_url 找它：打开 Chrome 登录、远程画面转发 */
+/** M2：带 Chrome 的 worker（每个进程一行，心跳）。API 按 control_url 找它：打开 Chrome、远程画面转发 */
 export const browserWorkers = pgTable("browser_workers", {
   id: text("id").primaryKey(),
   /** worker 的内部控制地址（只绑 127.0.0.1，API 和 worker 在同一个 pod 里），例如 http://127.0.0.1:3190 */
@@ -708,7 +713,7 @@ export const browserInstances = pgTable(
     workerId: text("worker_id")
       .notNull()
       .references(() => browserWorkers.id, { onDelete: "cascade" }),
-    /** session = 某次运行在用；login = 人「打开 Chrome 登录」开的 */
+    /** session = 某次运行在用；login = 人「打开 Chrome」开的 */
     kind: text("kind").$type<"session" | "login">().notNull(),
     profileId: text("profile_id")
       .notNull()

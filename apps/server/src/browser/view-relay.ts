@@ -1,6 +1,7 @@
 // GET /api/browser/view/:browserId（WebSocket 升级，要求登录）：把控制台和 worker 的远程画面接起来（m2.md 第 8 条）。
 // - 看：任何登录用户都能看；
 // - 操作：只有 session 的负责人、被分配处理的人、主管（登录 Chrome 是打开它的人）能做；没权限的连接，输入一律丢弃；
+//   带 ?viewOnly=1 的连接有权限也只能看（浏览器页「当前的 session」里的「查看」）；
 // - 画面帧：控制台跟不上时丢帧（缓冲超过 1MB 就不转），不堆积；
 // - 带 Origin 头的（浏览器发起的）必须是受信任的来源，防跨站 WebSocket 劫持。
 import type { IncomingMessage, Server } from "node:http"
@@ -60,7 +61,7 @@ export async function handleViewUpgrade(deps: ViewRelayDeps, wss: WebSocketServe
     refuse(socket, 404, "Not Found")
     return true
   }
-  const canControl = await canControlBrowser(deps.db, user, row)
+  const canControl = url.searchParams.get("viewOnly") !== "1" && (await canControlBrowser(deps.db, user, row))
   const controlUrl = await workerUrl(deps.db, row.workerId)
   if (!controlUrl) {
     refuse(socket, 502, "Bad Gateway")

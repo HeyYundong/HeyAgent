@@ -1,4 +1,4 @@
-// 远程画面放进一个大弹窗：session 的「看浏览器」、要人办的事里的「去浏览器里处理」、浏览器页的「打开 Chrome 登录」都用它，
+// 远程画面放进一个大弹窗：session 的「看浏览器」、要人办的事里的「去浏览器里处理」、浏览器页的「打开 Chrome」都用它，
 // 区别只在底部的按钮（footer）。
 import * as React from "react"
 
@@ -15,9 +15,11 @@ interface RemoteViewDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onClosed?: (reason: string) => void
+  /** 只看不操作 */
+  viewOnly?: boolean
 }
 
-export function RemoteViewDialog({ browserId, title, description, footer, open, onOpenChange, onClosed }: RemoteViewDialogProps) {
+export function RemoteViewDialog({ browserId, title, description, footer, open, onOpenChange, onClosed, viewOnly }: RemoteViewDialogProps) {
   return (
     // 点弹窗外面不关：人在画面里拖滑块时很容易拖出边界
     <Dialog open={open} onOpenChange={(next, details) => (next || details.reason !== "outside-press") && onOpenChange(next)}>
@@ -26,7 +28,7 @@ export function RemoteViewDialog({ browserId, title, description, footer, open, 
           <DialogTitle>{title}</DialogTitle>
           {description && <DialogDescription>{description}</DialogDescription>}
         </DialogHeader>
-        {open && <RemoteView browserId={browserId} onClosed={onClosed} />}
+        {open && <RemoteView browserId={browserId} onClosed={onClosed} viewOnly={viewOnly} />}
         {footer && <DialogFooter className="sm:items-center">{footer}</DialogFooter>}
       </DialogContent>
     </Dialog>

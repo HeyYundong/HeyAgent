@@ -134,6 +134,8 @@ export const browserProfileSchema = z.object({
   exitIp: z.string(),
   /** 这个 Chrome 现在开着几个 session（= 占着它账号租约的不同 session 数） */
   running: z.number().int(),
+  /** 同时最多几个运行用这个 Chrome */
+  maxSessions: z.number().int(),
   sites: z.array(browserSiteSchema),
   cookieCount: z.number().int(),
   /** 保险箱版本：每次回写 +1 */

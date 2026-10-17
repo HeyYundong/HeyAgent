@@ -71,6 +71,13 @@
       "when": 1792252921051,
       "tag": "0009_browser_actions",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1792254806074,
+      "tag": "0010_browser_max_sessions",
+      "breakpoints": true
     }
   ]
 }

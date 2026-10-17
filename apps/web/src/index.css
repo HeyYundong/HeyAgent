@@ -129,4 +129,25 @@
   html {
     @apply font-sans;
     }
+  /* 全局统一的滚动条（用户 2026-10-18 要求）：细、直角，颜色只用主题 token，浅色暗色自动跟着变。带 no-scrollbar 的照样隐藏 */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklab, var(--muted-foreground) 45%, transparent) transparent;
+    }
+  /* 不支持 scrollbar-color 的浏览器（Safari）用 webkit 伪元素画成一样的 */
+  @supports not (scrollbar-color: auto) {
+    ::-webkit-scrollbar {
+      width: calc(var(--spacing) * 2);
+      height: calc(var(--spacing) * 2);
+      }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+      }
+    ::-webkit-scrollbar-thumb {
+      background: color-mix(in oklab, var(--muted-foreground) 45%, transparent);
+      }
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--muted-foreground);
+      }
+  }
 }

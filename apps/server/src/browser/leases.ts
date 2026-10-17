@@ -2,8 +2,10 @@
 // - session 第一次打开某个平台域名下的网址时，用这个 Chrome 配置在该平台的账号申请租约；
 // - 满了：这次导航先拦下，session 挂起「等待浏览器」（等事件 browser.lease:<账号 id>）；有人释放租约时叫醒最早的那个；
 // - 租约带过期时间，持有的 worker 每 30 秒续一次；worker 死掉后过期的租约不再算数，定时清扫顺便叫醒排队的。
-import { and, asc, count, eq, gt, inArray, isNull, lte, sql } from "drizzle-orm"
-import { hostMatches, leaseEventName } from "@heyagent/shared"
+// 另外每个 Chrome 配置同时最多 max_sessions 个运行在用（按开着的 session Chrome 数）：满了 session 挂起等事件
+// browser.profile:<配置 id>，有 session 的 Chrome 关掉时叫醒排队的。
+import { and, asc, count, eq, gt, inArray, isNull, lte, ne, sql } from "drizzle-orm"
+import { hostMatches, leaseEventName, profileEventName } from "@heyagent/shared"
 
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
@@ -153,6 +155,51 @@ export async function wakeLeaseWaiters(db: Db, accountId: string): Promise<strin
   return woken
 }
 
+/** 这个 Chrome 配置现在开着几个 session 的 Chrome（不算正在关的、心跳超时的 worker 上的） */
+export async function profileSessionCount(db: DbLike, profileId: string) {
+  const [row] = await db
+    .select({ n: count() })
+    .from(t.browserInstances)
+    .innerJoin(t.browserWorkers, eq(t.browserWorkers.id, t.browserInstances.workerId))
+    .where(
+      and(
+        eq(t.browserInstances.profileId, profileId),
+        eq(t.browserInstances.kind, "session"),
+        ne(t.browserInstances.state, "closing"),
+        gt(t.browserWorkers.heartbeatAt, new Date(Date.now() - 60_000))
+      )
+    )
+  return row?.n ?? 0
+}
+
+/** Chrome 配置有空名额时，按挂起的先后叫醒排队的 session（叫醒后它重新起 Chrome，抢不到就再排队） */
+export async function wakeProfileWaiters(db: Db, profileId: string): Promise<string[]> {
+  const [profile] = await db.select({ max: t.browserProfiles.maxSessions, name: t.browserProfiles.name }).from(t.browserProfiles).where(eq(t.browserProfiles.id, profileId))
+  if (!profile) return []
+  let free = profile.max - (await profileSessionCount(db, profileId))
+  if (free <= 0) return []
+  const waits = await db
+    .select({ id: t.sessionWaits.id })
+    .from(t.sessionWaits)
+    .where(and(eq(t.sessionWaits.status, "waiting"), eq(t.sessionWaits.event, profileEventName(profileId)), isNull(t.sessionWaits.humanItemId)))
+    .orderBy(asc(t.sessionWaits.createdAt), asc(t.sessionWaits.id))
+  const woken: string[] = []
+  for (const wait of waits) {
+    if (free <= 0) break
+    const resumed = await resume(db, {
+      waitId: wait.id,
+      cause: "event",
+      title: `等到浏览器了：Chrome「${profile.name}」空出来了`,
+      message: `等到浏览器了：Chrome「${profile.name}」有空名额了。之前没打开的网页需要重新打开。`,
+    })
+    if (resumed) {
+      woken.push(resumed)
+      free--
+    }
+  }
+  return woken
+}
+
 /** 定时清扫：过期没释放的租约标成已释放；有空位的账号叫醒排队的（释放时没叫到的、worker 死掉留下的） */
 export async function sweepLeases(db: Db) {
   const now = new Date()
@@ -167,5 +214,14 @@ export async function sweepLeases(db: Db) {
   for (const row of waiting) {
     const accountId = row.event?.slice("browser.lease:".length)
     if (accountId) await wakeLeaseWaiters(db, accountId).catch(() => {})
+  }
+  // 等 Chrome 配置名额的：worker 死掉没叫到的、主管调大了上限的
+  const profiles = await db
+    .selectDistinct({ event: t.sessionWaits.event })
+    .from(t.sessionWaits)
+    .where(and(eq(t.sessionWaits.status, "waiting"), sql`${t.sessionWaits.event} like 'browser.profile:%'`))
+  for (const row of profiles) {
+    const profileId = row.event?.slice("browser.profile:".length)
+    if (profileId) await wakeProfileWaiters(db, profileId).catch(() => {})
   }
 }

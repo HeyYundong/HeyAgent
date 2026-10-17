@@ -1,0 +1,2 @@
+ALTER TABLE "browser_profiles" ADD COLUMN "max_sessions" integer DEFAULT 3 NOT NULL;--> statement-breakpoint
+ALTER TABLE "browser_profiles" ADD CONSTRAINT "browser_profiles_max_sessions_check" CHECK ("browser_profiles"."max_sessions" >= 1);

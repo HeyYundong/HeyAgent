@@ -1,5 +1,5 @@
 import * as React from "react"
-import { AppWindowIcon, CircleCheckIcon, EllipsisIcon, GaugeIcon, GlobeIcon, MonitorIcon, PencilIcon, PlusIcon, Trash2Icon, TriangleAlertIcon, UserPlusIcon } from "lucide-react"
+import { AppWindowIcon, CircleCheckIcon, EllipsisIcon, EyeIcon, GaugeIcon, GlobeIcon, MonitorIcon, PencilIcon, PlusIcon, Trash2Icon, TriangleAlertIcon, UserPlusIcon } from "lucide-react"
 
 import { DetailPanel, DetailSection, EmptyState, MasterDetail, PageFrame, PickGroup, PickItem, SimpleHeader } from "@/components/shell/simple-page"
 import {
@@ -34,7 +34,7 @@ import { SiteLimitDialog } from "./site-limit-dialog"
 const LINK = "underline underline-offset-4 hover:text-foreground"
 
 // 写操作：新建 / 编辑 / 删除 Chrome，加账号、改并发上限、改平台域名、删账号（都只有主管）。
-// M2 起：「打开 Chrome 登录」真的在服务器上起 Chrome（远程画面），保存登录状态进保险箱；开着的 Chrome、账号使用情况随实时推送刷新。
+// M2 起：「打开 Chrome」真的在服务器上起 Chrome（远程画面），保存登录状态进保险箱；开着的 Chrome、账号使用情况随实时推送刷新。
 
 export default function BrowsersPage() {
   const { user } = useMe()
@@ -62,6 +62,8 @@ export default function BrowsersPage() {
   const removeProfile = useAction(trpc.browsers.delete.mutationOptions({ onSuccess: () => setParams({ id: null }) }), { success: "Chrome 已删除" })
   const removeAccount = useAction(trpc.browsers.deleteAccount.mutationOptions(), { success: "账号已删除" })
   const liveOf = (profileId: string) => live.filter((each) => each.profileId === profileId)
+  const tasks = useTasksQuery().data ?? []
+  const taskTitle = (taskId?: string) => (taskId ? findById(tasks, taskId)?.title : undefined)
   const accountName = (accountId: string) => {
     const site = list.flatMap((profile) => profile.sites).find((each) => each.accountId === accountId)
     return site ? `${platformName(site.platformId)} · ${site.account}` : accountId
@@ -77,11 +79,6 @@ export default function BrowsersPage() {
     setDeleteSite(null)
   }
 
-  /** 开着的 Chrome 点「看画面」：自己（或主管）开的登录 Chrome 带保存 / 关闭按钮，其余只看（能不能操作由服务端定） */
-  function watch(browser: LiveBrowser) {
-    if (browser.kind === "login" && (isAdmin || browser.openedById === user.id)) login.show(browser.browserId, { profileId: browser.profileId, accountId: browser.accountId })
-    else setWatching(browser)
-  }
 
   const newButton = <Button onClick={() => setDialog("new")}><PlusIcon data-icon="inline-start" />新建 Chrome</Button>
 
@@ -127,11 +124,15 @@ export default function BrowsersPage() {
           list={
             <PickGroup>
               {list.map((profile) => {
-                const opened = liveOf(profile.id).length
                 return (
                   <PickItem key={profile.id} to={href("browsers", { id: profile.id })} selected={profile.id === selected?.id} title={profile.name}
-                    description={[proxyText(profile.proxy), profile.exitIp, opened ? `开着 ${opened} 个` : ""].filter(Boolean).join(" · ")}
-                    badge={problemCount(profile) > 0 && <Badge variant="destructive">{problemCount(profile)} 个要登录</Badge>}
+                    description={[proxyText(profile.proxy), profile.exitIp].filter(Boolean).join(" · ")}
+                    badge={
+                      <>
+                        {problemCount(profile) > 0 && <Badge variant="destructive">{problemCount(profile)} 个要登录</Badge>}
+                        <SessionCount profile={profile} live={liveOf(profile.id)} />
+                      </>
+                    }
                   />
                 )
               })}
@@ -141,7 +142,7 @@ export default function BrowsersPage() {
             selected && (
               <DetailPanel
                 title={selected.name}
-                badges={<Badge variant={selectedLive.length ? "secondary" : "outline"}>{selectedLive.length ? `开着 ${selectedLive.length} 个 Chrome` : "没有开着的"}</Badge>}
+                badges={<SessionCount profile={selected} live={selectedLive} />}
                 actions={
                   <>
                     <OpenLoginButton pending={login.pending && !login.pendingTarget?.accountId} onClick={() => void login.start({ profileId: selected.id })} />
@@ -150,20 +151,22 @@ export default function BrowsersPage() {
                 }
               >
                 <AgentNote profile={selected} />
-                {selectedLive.length > 0 && (
-                  <DetailSection title="开着的 Chrome" description="运行中的 Chrome 和人开的登录 Chrome。谁都能看画面；能操作的是任务负责人、被分配处理的人、主管，登录 Chrome 是打开它的人。">
+                <DetailSection title="当前的 session" description="正在运行的 Chrome 窗口。「查看」只看画面，不能操作。">
+                  {selectedLive.length === 0 ? (
+                    <p className="text-muted-foreground">现在没有开着的 Chrome。</p>
+                  ) : (
                     <ItemGroup className="gap-2">
                       {selectedLive.map((browser) => (
-                        <LiveRow key={browser.browserId} browser={browser} openedBy={staffName(browser.openedById)} onWatch={() => watch(browser)} />
+                        <LiveRow key={browser.browserId} browser={browser} taskTitle={taskTitle(browser.taskId)} openedBy={staffName(browser.openedById)} onWatch={() => setWatching(browser)} />
                       ))}
                     </ItemGroup>
-                  </DetailSection>
-                )}
+                  )}
+                </DetailSection>
                 <DetailSection title="登录过的网站"
                   action={isAdmin && <Button size="sm" variant="outline" onClick={() => setAddAccount(true)}><UserPlusIcon data-icon="inline-start" />加账号</Button>}>
                   {selected.sites.length === 0 ? (
                     <p className="text-muted-foreground">
-                      {isAdmin ? "还没有账号。点「加账号」选平台、填账号，再点「打开 Chrome 登录」在远程画面里登录一次。" : "还没有账号，由主管来加。"}
+                      {isAdmin ? "还没有账号。点「加账号」选平台、填账号，再点「打开 Chrome」在远程画面里登录一次。" : "还没有账号，由主管来加。"}
                     </p>
                   ) : (
                     <ItemGroup className="gap-2">
@@ -195,11 +198,11 @@ export default function BrowsersPage() {
         <LoginBrowserDialog
           key={login.opened.browserId}
           browserId={login.opened.browserId}
-          title={`${openedProfile ? openedProfile.name : login.opened.target.profileId} · 打开 Chrome 登录`}
+          title={openedProfile ? openedProfile.name : login.opened.target.profileId}
           description={
             login.opened.target.accountId
               ? `在画面里登录「${accountName(login.opened.target.accountId)}」，关掉就保存。`
-              : "在画面里登录要用的网站，关掉就保存。"
+              : "关掉就保存 cookie 和登录状态。"
           }
           accountName={accountName}
           onClose={login.clear}
@@ -209,8 +212,9 @@ export default function BrowsersPage() {
         <RemoteViewDialog
           open
           browserId={watching.browserId}
-          title={watching.kind === "session" ? `运行 ${watching.sessionId ?? ""} 的 Chrome` : `${watching.profileName} · 登录用的 Chrome`}
-          description={`${watching.profileName} · ${LIVE_STATE[watching.state]}${watching.holdUntil ? `，保留到 ${fmtShort(watching.holdUntil)}` : ""}`}
+          title={watching.kind === "session" ? `运行 ${watching.sessionId ?? ""}` : `${staffName(watching.openedById)} 打开的 Chrome`}
+          description={`${LIVE_STATE[watching.state]}${watching.holdUntil ? `，保留到 ${fmtShort(watching.holdUntil)}` : ""} · 只能看`}
+          viewOnly
           onOpenChange={(open) => !open && setWatching(null)}
         />
       )}
@@ -295,7 +299,7 @@ function History({ profileId }: { profileId: string }) {
                 <TableCell>{fmtDateTime(row.at)}</TableCell>
                 <TableCell className="w-full max-w-0"><div className="truncate" title={row.url}>{row.url}</div></TableCell>
                 <TableCell>
-                  <div className="flex flex-wrap gap-1">
+                  <div className="flex gap-1">
                     {row.actions.map((action) => (
                       <Badge key={action.tag} variant={action.failed ? "destructive" : "outline"}>
                         {action.tag}{action.count > 1 ? ` ×${action.count}` : ""}
@@ -312,19 +316,30 @@ function History({ profileId }: { profileId: string }) {
   )
 }
 
-/** 开着的一个 Chrome：哪次运行（或谁开的登录 Chrome）、在哪个页面、状态、几个人在看 */
-function LiveRow({ browser, openedBy, onWatch }: { browser: LiveBrowser; openedBy: string; onWatch: () => void }) {
+/** 现在有几个运行（session）在用这个 Chrome / 同时最多几个。人「打开 Chrome」开的不算 */
+function SessionCount({ profile, live }: { profile: Chrome; live: LiveBrowser[] }) {
+  const used = live.filter((each) => each.kind === "session" && each.state !== "closing").length
+  return <Badge variant={used ? "secondary" : "outline"}>{used}/{profile.maxSessions} 个 session 在用</Badge>
+}
+
+/** 开着的一个 Chrome：哪个任务的哪次运行在用（点了去任务）或谁打开的、现在在哪个页面、状态、几个人在看 */
+function LiveRow({ browser, taskTitle, openedBy, onWatch }: { browser: LiveBrowser; taskTitle?: string; openedBy: string; onWatch: () => void }) {
   const ready = browser.state === "running" || browser.state === "held"
+  const page = [browser.title, browser.url].filter(Boolean).join(" · ") || "空白页"
   return (
     <Item size="sm" variant="outline">
       <ItemContent className="min-w-0">
         <ItemTitle className="flex-wrap">
-          {browser.kind === "session" && browser.sessionId
-            ? <a href={href("sessions", { id: browser.sessionId })} className={LINK}>运行 {browser.sessionId}</a>
-            : <span>登录用 · {openedBy} 打开</span>}
+          {browser.kind === "session" && browser.sessionId ? (
+            <a href={browser.taskId ? href("tasks", { id: browser.taskId, run: browser.sessionId }) : href("sessions", { id: browser.sessionId })} className={LINK}>
+              {taskTitle ? `${taskTitle} · ${browser.sessionId}` : `运行 ${browser.sessionId}`}
+            </a>
+          ) : (
+            <span>{openedBy} 打开的</span>
+          )}
           <Badge variant={browser.state === "held" ? "default" : "secondary"}>{LIVE_STATE[browser.state]}</Badge>
         </ItemTitle>
-        <ItemDescription className="truncate">{browser.title || browser.url || "空白页"}</ItemDescription>
+        <ItemDescription className="truncate" title={page}>{page}</ItemDescription>
         <ItemDescription>
           开始 {fmtShort(browser.startedAt)}
           {browser.holdUntil && ` · 保留到 ${fmtShort(browser.holdUntil)}`}
@@ -332,7 +347,7 @@ function LiveRow({ browser, openedBy, onWatch }: { browser: LiveBrowser; openedB
         </ItemDescription>
       </ItemContent>
       <ItemActions className="basis-full sm:basis-auto">
-        <Button size="sm" variant="outline" disabled={!ready} onClick={onWatch}><MonitorIcon data-icon="inline-start" />看画面</Button>
+        <Button size="sm" variant="outline" disabled={!ready} onClick={onWatch}><EyeIcon data-icon="inline-start" />查看</Button>
       </ItemActions>
     </Item>
   )

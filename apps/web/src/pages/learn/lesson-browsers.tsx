@@ -23,7 +23,7 @@ export function BrowsersLesson() {
   return (
     <Lesson
       title="浏览器：多个 Chrome，共用登录态"
-      meta="服务器上开着几个 Chrome，各走各的代理。每个 Chrome 有一个登录态保险箱，存 cookie 和 session，所有 agent 共用：人登录一次，大家都能用。用哪个 Chrome 由 agent 看说明自己选。员工也能自己打开 Chrome 登录（新网站也行）；新建 Chrome、改代理只有主管能做。"
+      meta="服务器上开着几个 Chrome，各走各的代理。每个 Chrome 有一个登录态保险箱，存 cookie 和 session，所有 agent 共用：人登录一次，大家都能用。用哪个 Chrome 由 agent 看说明自己选。员工也能自己打开 Chrome（新网站也行）；新建 Chrome、改代理只有主管能做。"
       choice={{ label: "选一件要用浏览器的事", value: scenario.id, options, onChange: setScenarioId }}
     >
       <DetailSection title={`情况：${scenario.situation}`} description="agent 看到的 Chrome 列表就是这几句说明">

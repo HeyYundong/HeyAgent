@@ -1,4 +1,4 @@
-// 「打开 Chrome 登录」（m2.md 第 8 条）：服务器上起一个不挂 session 的 Chrome，装上这个配置的登录态，人在远程画面里登录。
+// 「打开 Chrome」（m2.md 第 8 条）：服务器上起一个不挂 session 的 Chrome，装上这个配置的登录态，人在远程画面里登录。
 // 关弹窗（右上角、Esc）就是保存：登录态合并进保险箱（谁最后写谁的算），再探测账号。空闲 30 分钟自动关，也会保存。
 // 浏览器页和「登录」类要人办的事（Chrome 过了保留时间时）都用这里。
 import * as React from "react"
@@ -87,8 +87,8 @@ export function LoginBrowserDialog({ browserId, title, description, accountName,
   )
 }
 
-/** 「打开 Chrome 登录」按钮：起 Chrome 时转圈 */
-export function OpenLoginButton({ pending, label = "打开 Chrome 登录", size = "default", variant = "default", onClick }: {
+/** 「打开 Chrome」按钮：起 Chrome 时转圈 */
+export function OpenLoginButton({ pending, label = "打开 Chrome", size = "default", variant = "default", onClick }: {
   pending: boolean
   label?: string
   size?: "sm" | "default"

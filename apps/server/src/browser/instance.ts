@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { eq, inArray } from "drizzle-orm"
+import { eq, inArray, sql } from "drizzle-orm"
 import { hostOf, urlAllowed } from "@heyagent/shared"
 import { chromium, type Browser, type BrowserContext, type CDPSession, type Dialog, type Page } from "playwright-core"
 
@@ -17,7 +17,7 @@ import type { Keyring } from "../lib/crypto.js"
 import { BrowserUnavailableError, CHROME_BIN, chromeAvailable, killGroup, startChrome, startXvfb, type ChromeHandle, type XvfbHandle } from "./chrome.js"
 import { judgePage, probeLooksLoggedIn, type PageFacts } from "./detect.js"
 import type { GostPool } from "./gost.js"
-import { accountForHost, acquireLease, profileAccounts, releaseLeases, type PlatformAccount } from "./leases.js"
+import { accountForHost, acquireLease, profileAccounts, profileSessionCount, releaseLeases, type PlatformAccount } from "./leases.js"
 import { startBrowserMcp, type BrowserMcp } from "./mcp.js"
 import { emptyState, loadVault, writeBackMerged, type StorageState } from "./vault.js"
 import { ViewerHub } from "./viewer.js"
@@ -52,6 +52,20 @@ export interface ProbeResult {
   accountId: string
   ok: boolean
   detail: string
+}
+
+/** 这个 Chrome 配置同时在用的运行满了 */
+export class ProfileFullError extends Error {
+  readonly profileName: string
+  readonly used: number
+  readonly max: number
+
+  constructor(profileName: string, used: number, max: number) {
+    super(`Chrome「${profileName}」同时最多 ${max} 个运行在用，现在已经 ${used} 个`)
+    this.profileName = profileName
+    this.used = used
+    this.max = max
+  }
 }
 
 export interface CloseSummary {
@@ -133,9 +147,13 @@ export class BrowserInstance {
   }
 
   /** 先登记（排队的时候也要让页面看得到「等待浏览器」） */
+  /**
+   * 登记到 browser_instances。session 的 Chrome 同时占这个配置的一个名额：锁住配置行再数，并发登记也不会超过 max_sessions；
+   * 满了抛 ProfileFullError（session 挂起排队）。人「打开 Chrome」开的不占名额。
+   */
   async register(state: InstanceState) {
     this.state = state
-    await this.db.insert(t.browserInstances).values({
+    const values = {
       id: this.id,
       workerId: this.deps.workerId,
       kind: this.kind,
@@ -144,6 +162,19 @@ export class BrowserInstance {
       accountId: this.accountId ?? null,
       openedById: this.openedById ?? null,
       state,
+    }
+    if (this.kind !== "session") {
+      await this.db.insert(t.browserInstances).values(values)
+      return
+    }
+    await this.db.transaction(async (tx) => {
+      const locked = await tx.execute<{ max_sessions: number; name: string }>(sql`select max_sessions, name from browser_profiles where id = ${this.profileId} for update`)
+      const profile = locked.rows[0]
+      if (profile) {
+        const used = await profileSessionCount(tx, this.profileId)
+        if (used >= profile.max_sessions) throw new ProfileFullError(profile.name, used, profile.max_sessions)
+      }
+      await tx.insert(t.browserInstances).values(values)
     })
   }
 

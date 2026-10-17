@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils"
 
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
-import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Empty,
   EmptyContent,
@@ -28,6 +28,7 @@ import {
   ItemTitle,
 } from "@/components/ui/item"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { href, setParams } from "@/lib/router"
 
 // v2 统一页面骨架：所有页面都是「标题 + 左边列表 + 右边详情」。
@@ -278,6 +279,18 @@ export function DetailPanel({ title, badges, meta, actions, children }: DetailPa
   )
 }
 
+/** 标题旁的「?」：鼠标放上去（或键盘聚焦）显示这一块是干嘛的。说明不写成标题下的子标题（用户 2026-10-18 定的） */
+export function HelpTip({ children }: { children: React.ReactNode }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger render={<Button type="button" variant="ghost" size="icon-xs" aria-label="说明" />}>
+        <CircleHelpIcon />
+      </TooltipTrigger>
+      <TooltipContent>{children}</TooltipContent>
+    </Tooltip>
+  )
+}
+
 /** 详情里的一个内容区域：单独一张卡，标题在上。一个详情最多 4 张 */
 export function DetailSection({
   title,
@@ -286,7 +299,7 @@ export function DetailSection({
   children,
 }: {
   title: string
-  /** 标题下一行说明（可选） */
+  /** 这一块是干嘛的（可选）：显示成标题旁的「?」，鼠标放上去才看到 */
   description?: React.ReactNode
   /** 卡片右上角的小操作（可选） */
   action?: React.ReactNode
@@ -295,8 +308,10 @@ export function DetailSection({
   return (
     <Card size="sm">
       <CardHeader>
-        <CardTitle>{title}</CardTitle>
-        {description && <CardDescription>{description}</CardDescription>}
+        <CardTitle className="flex items-center gap-1">
+          {title}
+          {description && <HelpTip>{description}</HelpTip>}
+        </CardTitle>
         {action && <CardAction>{action}</CardAction>}
       </CardHeader>
       <CardContent className="text-sm">{children}</CardContent>

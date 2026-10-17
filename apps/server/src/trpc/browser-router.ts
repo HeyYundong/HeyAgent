@@ -1,4 +1,4 @@
-// 浏览器相关的接口（M2，见 docs/dev/m2.md 第 9 条）：打开 Chrome 登录、关闭（关就是保存登录状态）、开着的 Chrome、session 的 Chrome、账号使用情况。
+// 浏览器相关的接口（M2，见 docs/dev/m2.md 第 9 条）：打开 Chrome、关闭（关就是保存登录状态）、开着的 Chrome、session 的 Chrome、账号使用情况。
 // 已经挂在 appRouter 的 browser 下。Chrome 跑在 worker 里：打开 / 关闭经 worker 的内部控制接口（browser/access.ts），
 // 列表类直接读 browser_instances、account_leases（worker 起关 Chrome、申请释放租约时写）。
 // 远程画面不是 tRPC：GET /api/browser/view/:browserId（WebSocket，browser/view-relay.ts）。
@@ -39,12 +39,12 @@ function fromWorker(error: unknown): never {
 const iso = (value: Date) => value.toISOString()
 
 export const browserRouter = router({
-  /** 浏览器页「打开 Chrome 登录」：起一个不挂 session 的 Chrome，装上这个配置的登录态，打开账号的探测网址或平台首页 */
+  /** 浏览器页「打开 Chrome」：起一个不挂 session 的 Chrome，装上这个配置的登录态，打开账号的探测网址或平台首页 */
   openForLogin: protectedProcedure
     .input(openForLoginInputSchema)
     .output(z.object({ browserId: z.string() }))
     .mutation(async ({ ctx, input }) => {
-      if (!can(ctx.user, "browser.login", {})) throw forbidden("你不能打开 Chrome 登录")
+      if (!can(ctx.user, "browser.login", {})) throw forbidden("你不能打开 Chrome")
       const [profile] = await ctx.db.select({ id: t.browserProfiles.id }).from(t.browserProfiles).where(eq(t.browserProfiles.id, input.profileId))
       if (!profile) throw new TRPCError({ code: "NOT_FOUND", message: `找不到 Chrome 配置 ${input.profileId}` })
       if (input.accountId) {
@@ -58,7 +58,7 @@ export const browserRouter = router({
       return { browserId: result.browserId }
     }),
 
-  /** 关掉「打开 Chrome 登录」的 Chrome：关就是保存——登录态合并进保险箱（谁最后写谁的算），再探测账号。已经关了返回 saved 为空 */
+  /** 关掉「打开 Chrome」的 Chrome：关就是保存——登录态合并进保险箱（谁最后写谁的算），再探测账号。已经关了返回 saved 为空 */
   close: protectedProcedure
     .input(browserIdInputSchema)
     .output(z.object({ saved: saveLoginResultSchema.optional() }))

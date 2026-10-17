@@ -23,12 +23,13 @@ export interface RemoteViewState {
 /** 连续失败几次（一次都没连上）就不再重连 */
 const MAX_FAILURES = 5
 
-function viewUrl(browserId: string) {
+function viewUrl(browserId: string, viewOnly: boolean) {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
-  return `${protocol}//${window.location.host}/api/browser/view/${encodeURIComponent(browserId)}`
+  return `${protocol}//${window.location.host}/api/browser/view/${encodeURIComponent(browserId)}${viewOnly ? "?viewOnly=1" : ""}`
 }
 
-export function useRemoteView(browserId: string, canvasRef: React.RefObject<HTMLCanvasElement | null>) {
+/** viewOnly：只看不操作（有权限也不给操作，例如浏览器页「当前的 session」里的「查看」） */
+export function useRemoteView(browserId: string, canvasRef: React.RefObject<HTMLCanvasElement | null>, viewOnly = false) {
   const [state, setState] = React.useState<RemoteViewState>({ status: "connecting", hasFrame: false })
   const socketRef = React.useRef<WebSocket | null>(null)
 
@@ -74,7 +75,7 @@ export function useRemoteView(browserId: string, canvasRef: React.RefObject<HTML
     }
 
     function connect() {
-      const ws = new WebSocket(viewUrl(browserId))
+      const ws = new WebSocket(viewUrl(browserId, viewOnly))
       ws.binaryType = "blob"
       socketRef.current = ws
       let opened = false
@@ -124,7 +125,7 @@ export function useRemoteView(browserId: string, canvasRef: React.RefObject<HTML
       socketRef.current = null
       ws?.close(1000)
     }
-  }, [browserId, canvasRef])
+  }, [browserId, canvasRef, viewOnly])
 
   const send = React.useCallback((message: ViewerClientMessage) => {
     const ws = socketRef.current

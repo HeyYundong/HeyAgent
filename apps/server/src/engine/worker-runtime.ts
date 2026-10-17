@@ -32,7 +32,7 @@ export interface EngineWorkerOptions {
   cronWorkerIntervalSeconds?: number
   instanceName?: string
   /**
-   * 浏览器（M2）：内部控制接口的端口（只绑 127.0.0.1，API 用它打开 Chrome 登录、转发远程画面）。
+   * 浏览器（M2）：内部控制接口的端口（只绑 127.0.0.1，API 用它打开 Chrome、转发远程画面）。
    * 默认 HEYAGENT_BROWSER_CONTROL_PORT 或 3190；0 = 随机端口（测试用）；false = 不开浏览器管理
    */
   browserControlPort?: number | false
@@ -70,7 +70,7 @@ export async function startEngineWorker(
   registerBoss(db, boss)
   await syncBuiltinTools(db)
 
-  // 浏览器管理：登记 worker、开内部控制接口（远程画面、打开 Chrome 登录）
+  // 浏览器管理：登记 worker、开内部控制接口（远程画面、打开 Chrome）
   let browser: BrowserManager | undefined
   let control: ControlServer | undefined
   if (options.browserControlPort !== false) {
@@ -173,7 +173,7 @@ export async function startEngineWorker(
       stopping = true
       for (const controller of controllers) controller.abort()
       await boss.stop({ graceful: true, timeout: 20_000 })
-      // 运行都停了以后：剩下的 Chrome（等人处理保留着的、打开 Chrome 登录的）写回或直接关掉
+      // 运行都停了以后：剩下的 Chrome（等人处理保留着的、打开 Chrome的）写回或直接关掉
       await browser?.stop()
       await control?.close()
       setBrowserManager(undefined)

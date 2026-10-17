@@ -21,7 +21,7 @@ export async function workerUrl(db: Db, workerId: string): Promise<string | unde
   return row?.url
 }
 
-/** 在线的、开着的 Chrome 最少的 worker（「打开 Chrome 登录」用） */
+/** 在线的、开着的 Chrome 最少的 worker（「打开 Chrome」用） */
 export async function pickWorker(db: Db): Promise<{ id: string; controlUrl: string } | undefined> {
   const workers = await db
     .select({ id: t.browserWorkers.id, controlUrl: t.browserWorkers.controlUrl })
@@ -61,7 +61,7 @@ export async function callWorker<T>(keyring: Keyring, controlUrl: string, path: 
 
 /**
  * 谁能在远程画面里操作（鼠标、键盘、导航）：主管；session 的 Chrome 是任务负责人、被分配处理这次运行里某件事的人；
- * 「打开 Chrome 登录」的 Chrome 是打开它的人。其他人只能看。
+ * 「打开 Chrome」的 Chrome 是打开它的人。其他人只能看。
  */
 export async function canControlBrowser(db: Db, user: { id: string; isAdmin: boolean }, row: Pick<InstanceRow, "kind" | "sessionId" | "openedById">): Promise<boolean> {
   if (user.isAdmin) return true
