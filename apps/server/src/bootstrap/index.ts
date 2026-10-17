@@ -82,9 +82,41 @@ async function setupOpenRouter(db: Db, options: BootstrapOptions): Promise<Boots
     options.log?.(`已接入 OpenRouter（key 已加密保存），模型列表已刷新`)
     return "created"
   } catch (error) {
-    // 连不上外网时不要挡住 API 启动：下次启动再试，或者由管理员在「模型」页手动加
-    options.log?.(`接入 OpenRouter 失败，下次启动会再试：${error instanceof Error ? error.message : String(error)}`)
+    // 连不上外网时不要挡住 API 启动：API 进程会在后台自动重试（retryOpenRouterInBackground），管理员也可以在「模型」页手动加
+    options.log?.(`接入 OpenRouter 失败，稍后会自动重试：${error instanceof Error ? error.message : String(error)}`)
     return "failed"
+  }
+}
+
+/** 后台重试的间隔：30 秒、1 分钟、2 分钟、5 分钟，之后每 10 分钟一次 */
+export const OPENROUTER_RETRY_DELAYS_MS = [30_000, 60_000, 120_000, 300_000, 600_000]
+
+/**
+ * 启动时接入 OpenRouter 失败（例如服务器开机时网络还没好），就在后台按间隔重试，直到接上，或者管理员已经在「模型」页手动加好。
+ * 不这样做的话，空白环境会一直没有模型，要等下次重启才再试。返回一个停止函数，关机时调用。
+ */
+export function retryOpenRouterInBackground(db: Db, options: BootstrapOptions, delaysMs: readonly number[] = OPENROUTER_RETRY_DELAYS_MS): () => void {
+  let stopped = false
+  let attempt = 0
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const schedule = () => {
+    if (stopped) return
+    const delay = delaysMs[Math.min(attempt, delaysMs.length - 1)] ?? 600_000
+    attempt += 1
+    timer = setTimeout(() => {
+      void setupOpenRouter(db, options)
+        .catch(() => "failed" as const)
+        .then((result) => {
+          if (result === "failed") schedule()
+        })
+    }, delay)
+    // 不让这个定时器拖住进程退出
+    timer.unref?.()
+  }
+  schedule()
+  return () => {
+    stopped = true
+    if (timer) clearTimeout(timer)
   }
 }
 

@@ -143,6 +143,20 @@ async function toast(page, text, timeout = 15_000) {
 
 const dialog = (page) => page.getByRole("dialog").last()
 
+/**
+ * 规则对话框（M3 起的流程）：点「保存并翻译」→ 等「规划」模型翻译完 → 能生效就「确认生效」，不支持就「知道了」。
+ * 翻译要调模型，最多等 90 秒。
+ */
+async function saveAndConfirmRule(page) {
+  await dialog(page).getByRole("button", { name: "保存并翻译" }).click()
+  const confirm = dialog(page).getByRole("button", { name: "确认生效" })
+  const gotIt = dialog(page).getByRole("button", { name: "知道了" })
+  await confirm.or(gotIt).first().waitFor({ timeout: 90_000 })
+  if (await confirm.isVisible()) await confirm.click()
+  else await gotIt.click()
+  await page.locator('[data-slot="dialog-content"]').waitFor({ state: "detached", timeout: 15_000 })
+}
+
 /** Base UI 的下拉：点输入框，打字过滤，点选项 */
 async function pick(page, inputSelector, text, optionName = text) {
   const input = page.locator(inputSelector)
@@ -288,8 +302,7 @@ console.log(`\n== 管理员（${ADMIN.email}）`)
         await d.locator("#rule-name").fill(name)
         await d.locator("#rule-trigger").fill("要对外发送消息时")
         await d.locator("#rule-action").fill("先拦下，让负责人确认")
-        await d.getByRole("button", { name: "新建规则" }).click()
-        await d.waitFor({ state: "hidden", timeout: 15_000 })
+        await saveAndConfirmRule(page)
         await page.locator("main h2", { hasText: name }).waitFor({ timeout: 10_000 })
       })
     }
@@ -366,8 +379,7 @@ console.log(`\n== 管理员（${ADMIN.email}）`)
       await page.locator("main").getByRole("button", { name: "编辑" }).click()
       const d = dialog(page)
       await d.locator("#rule-name").fill(`${NAMES.spareRule}（改）`)
-      await d.getByRole("button", { name: "保存" }).click()
-      await d.waitFor({ state: "hidden", timeout: 15_000 })
+      await saveAndConfirmRule(page)
       await page.locator("main h2", { hasText: `${NAMES.spareRule}（改）` }).waitFor({ timeout: 10_000 })
     })
     await step("没人用的规则：删除不弹确认，toast 里撤销能恢复", async () => {

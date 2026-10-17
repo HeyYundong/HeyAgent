@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 
 import { createApp } from "../src/app.js"
 import { createAuth } from "../src/auth.js"
-import { ADMIN_EMAIL, bootstrap } from "../src/bootstrap/index.js"
+import { ADMIN_EMAIL, bootstrap, retryOpenRouterInBackground } from "../src/bootstrap/index.js"
 import { createDb } from "../src/db/client.js"
 import * as t from "../src/db/schema.js"
 import { BUILTIN_TOOLS } from "../src/engine/tools/builtin-defs.js"
@@ -125,6 +125,34 @@ describe("空白环境初始化", () => {
     const result = await run()
     expect(result.openrouter).toBe("failed")
     expect(await db.select().from(t.modelProviders)).toHaveLength(0)
+  })
+
+  it("启动时没接上 OpenRouter：后台自动重试，接上为止，不用等下次重启", async () => {
+    await db.delete(t.modelDefaults)
+    await db.delete(t.modelProviders)
+    // 前两次连不上，第三次才通
+    fakeFetch.mockImplementationOnce(async () => {
+      throw new TypeError("fetch failed")
+    })
+    fakeFetch.mockImplementationOnce(async () => {
+      throw new TypeError("fetch failed")
+    })
+    const options = { auth, keyring, adminPasswordFile: passwordFile, openrouterApiKey: FAKE_KEY, log: (message: string) => logs.push(message) }
+    const result = await bootstrap(db, options)
+    expect(result.openrouter).toBe("failed")
+    const stop = retryOpenRouterInBackground(db, options, [20, 20])
+    try {
+      const deadline = Date.now() + 10_000
+      let providers = await db.select().from(t.modelProviders)
+      while (providers.length === 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        providers = await db.select().from(t.modelProviders)
+      }
+      expect(providers).toEqual([expect.objectContaining({ kind: "openrouter", status: "ok" })])
+      expect(logs.some((message) => message.includes("稍后会自动重试"))).toBe(true)
+    } finally {
+      stop()
+    }
   })
 })
 
