@@ -36,6 +36,13 @@
       "when": 1792226732689,
       "tag": "0004_p3_settings_live",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1792231101765,
+      "tag": "0005_m2_browser_fields",
+      "breakpoints": true
     }
   ]
 }

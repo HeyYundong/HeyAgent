@@ -76,6 +76,7 @@ import * as tools from "../data/config/tools.js"
 import * as users from "../data/config/users.js"
 import * as load from "../data/loaders.js"
 import { protectedProcedure, router, type Context, type SessionUser } from "./init.js"
+import { browserRouter } from "./browser-router.js"
 import { engineRouter } from "./engine-router.js"
 
 const idInput = z.object({ id: z.string().min(1) })
@@ -259,6 +260,9 @@ export const appRouter = router({
 
   /** 引擎相关（M1 包 P1）：立即运行、取消、处理要人办的事、附件和产物、通知等 */
   engine: engineRouter,
+
+  /** 浏览器（M2）：打开 Chrome 登录、保存登录状态、远程画面相关 */
+  browser: browserRouter,
 
   live: router({
     /**

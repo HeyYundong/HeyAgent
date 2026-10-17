@@ -174,6 +174,8 @@ export const authVerifications = pgTable(
 export const platforms = pgTable("platforms", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
+  /** 这个平台的域名（M2）：session 打开这些域名下的网址时，按「平台 × 账号」申请租约。例如 ["example.com"]，子域名也算 */
+  domains: text("domains").array().notNull().default(sql`'{}'::text[]`),
   position: position(),
 })
 
@@ -408,6 +410,12 @@ export const tasks = pgTable(
     nextRunAt: ts("next_run_at"),
     /** 不加外键：模型列表会随服务刷新变化，模型没了任务要换模型才能运行（原型模型页的说法） */
     modelId: text("model_id").notNull(),
+    /** M2：选了「浏览器」工具时，允许用哪些 Chrome 配置（browser_profiles.id）；空表示不限 */
+    browserProfileIds: text("browser_profile_ids").array().notNull().default(sql`'{}'::text[]`),
+    /** M2：网址白名单（域名，子域名也算）；空表示不限制 */
+    allowedDomains: text("allowed_domains").array().notNull().default(sql`'{}'::text[]`),
+    /** M2：是否允许 agent 在网页里执行脚本（Playwright MCP 的 browser_evaluate），默认不允许 */
+    allowBrowserEvaluate: boolean("allow_browser_evaluate").notNull().default(false),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
