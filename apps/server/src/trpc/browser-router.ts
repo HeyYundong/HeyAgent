@@ -3,11 +3,13 @@
 // 列表类直接读 browser_instances、account_leases（worker 起关 Chrome、申请释放租约时写）。
 // 远程画面不是 tRPC：GET /api/browser/view/:browserId（WebSocket，browser/view-relay.ts）。
 import { TRPCError } from "@trpc/server"
-import { and, asc, count, eq, inArray, isNull, gt, sql } from "drizzle-orm"
+import { and, asc, count, desc, eq, inArray, isNull, gt, sql } from "drizzle-orm"
 import {
   accountUsageSchema,
+  browserHistoryRowSchema,
   browserIdInputSchema,
   can,
+  groupBrowserActions,
   leaseEventName,
   liveBrowserSchema,
   openForLoginInputSchema,
@@ -174,4 +176,18 @@ export const browserRouter = router({
       }
     })
   }),
+
+  /** 浏览器页「操作历史」：这个 Chrome 最近的动作，同一次运行在同一个网址上连着做的合成一行（最近 500 个动作） */
+  history: protectedProcedure
+    .input(z.object({ profileId: z.string() }))
+    .output(z.array(browserHistoryRowSchema))
+    .query(async ({ ctx, input }) => {
+      const rows = await ctx.db
+        .select()
+        .from(t.browserActions)
+        .where(eq(t.browserActions.profileId, input.profileId))
+        .orderBy(desc(t.browserActions.at), desc(t.browserActions.id))
+        .limit(500)
+      return groupBrowserActions(rows.map((row) => ({ ...row, at: iso(row.at) })))
+    }),
 })

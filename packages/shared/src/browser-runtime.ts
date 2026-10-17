@@ -203,3 +203,70 @@ export const accountUsageSchema = z.object({
   waiting: z.number().int(),
 })
 export type AccountUsage = z.infer<typeof accountUsageSchema>
+
+// ---------- 操作历史（浏览器页） ----------
+
+/** 浏览器工具（Playwright MCP 的工具名）→ 操作历史里的动作标签；不在表里的取工具名去掉 browser_ */
+const ACTION_TAGS: Record<string, string> = {
+  browser_navigate: "Open",
+  browser_navigate_back: "Back",
+  browser_snapshot: "View",
+  browser_find: "View",
+  browser_take_screenshot: "Screenshot",
+  browser_click: "Click",
+  browser_type: "Input",
+  browser_fill_form: "Input",
+  browser_press_key: "Key",
+  browser_select_option: "Select",
+  browser_hover: "Hover",
+  browser_drag: "Drag",
+  browser_drop: "Upload",
+  browser_file_upload: "Upload",
+  browser_handle_dialog: "Dialog",
+  browser_tabs: "Tab",
+  browser_wait_for: "Wait",
+  browser_evaluate: "Script",
+  browser_close: "Close",
+  browser_resize: "Resize",
+  browser_emulate_media: "Resize",
+  browser_console_messages: "Inspect",
+  browser_network_requests: "Inspect",
+  browser_network_request: "Inspect",
+}
+
+export function browserActionTag(toolName: string): string {
+  return ACTION_TAGS[toolName] ?? toolName.replace(/^browser_/, "")
+}
+
+/** 操作历史的一行：同一次运行在同一个网址上连着做的动作合成一行（动作去重、按第一次出现的顺序） */
+export const browserHistoryRowSchema = z.object({
+  /** 这一行第一个动作的时间 */
+  at: isoTime,
+  url: z.string(),
+  sessionId: z.string().optional(),
+  actions: z.array(z.object({ tag: z.string(), count: z.number().int(), failed: z.boolean() })),
+})
+export type BrowserHistoryRow = z.infer<typeof browserHistoryRowSchema>
+
+/** 按时间倒序的原始动作 → 操作历史的行（也是倒序） */
+export function groupBrowserActions(
+  actions: { at: string; url: string; sessionId?: string | null; action: string; failed: boolean }[]
+): BrowserHistoryRow[] {
+  const rows: BrowserHistoryRow[] = []
+  // 倒序进来：同一行里越往后的越早，at 取最早的那个，动作顺序最后再翻过来
+  for (const each of actions) {
+    const last = rows.at(-1)
+    const sessionId = each.sessionId ?? undefined
+    const row = last && last.url === each.url && last.sessionId === sessionId ? last : undefined
+    const target = row ?? { at: each.at, url: each.url, ...(sessionId ? { sessionId } : {}), actions: [] }
+    if (!row) rows.push(target)
+    target.at = each.at
+    const tag = target.actions.find((one) => one.tag === each.action)
+    if (tag) {
+      tag.count += 1
+      tag.failed ||= each.failed
+    } else target.actions.push({ tag: each.action, count: 1, failed: each.failed })
+  }
+  for (const row of rows) row.actions.reverse()
+  return rows
+}

@@ -729,6 +729,24 @@ export const browserInstances = pgTable(
   (t) => [index("browser_instances_session_id_idx").on(t.sessionId), index("browser_instances_worker_id_idx").on(t.workerId)]
 )
 
+/** 浏览器页「操作历史」：agent 每调一次浏览器工具记一行（哪个 Chrome、哪次运行、调完停在哪个网址、什么动作）。只留 90 天 */
+export const browserActions = pgTable(
+  "browser_actions",
+  {
+    id: identity(),
+    profileId: text("profile_id")
+      .notNull()
+      .references(() => browserProfiles.id, { onDelete: "cascade" }),
+    sessionId: text("session_id").references(() => sessions.id, { onDelete: "set null" }),
+    url: text("url").notNull(),
+    /** 动作标签，例如 Click、Input（见 shared 的 browserActionTag） */
+    action: text("action").notNull(),
+    failed: boolean("failed").notNull().default(false),
+    at: ts("at").notNull().defaultNow(),
+  },
+  (t) => [index("browser_actions_profile_at_idx").on(t.profileId, t.at)]
+)
+
 // ---------- 记忆、技能 ----------
 
 export const memories = pgTable(

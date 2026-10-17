@@ -7,9 +7,10 @@
 import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { extname, join } from "node:path"
 
-import { eq, sql } from "drizzle-orm"
+import { eq, lt, sql } from "drizzle-orm"
 import {
   BROWSER_VISION_MODEL,
+  browserActionTag,
   hostOf,
   leaseEventName,
   urlAllowed,
@@ -322,7 +323,10 @@ export class BrowserTools {
     const target = this.navigationUrl(name, input)
     if (target) {
       const allowed = urlAllowed(target, this.ctx.snapshot.browser?.allowedDomains ?? [])
-      if (!allowed.ok) return fail(`被拦下：${allowed.reason}。只能打开白名单里的网址。`)
+      if (!allowed.ok) {
+        await this.record(name, true, target)
+        return fail(`被拦下：${allowed.reason}。只能打开白名单里的网址。`)
+      }
     }
     const ready = await this.ensure()
     if (!("id" in ready)) return ready
@@ -334,7 +338,10 @@ export class BrowserTools {
     const url = this.navigationUrl(name, input)
     if (url) {
       const blocked = await instance.checkNavigation(url)
-      if (blocked) return this.blockedOutcome([blocked], "")
+      if (blocked) {
+        await this.record(name, true, url)
+        return this.blockedOutcome([blocked], "")
+      }
     }
     const args = { ...input }
     if (name === "browser_file_upload" || name === "browser_drop") {
@@ -354,6 +361,7 @@ export class BrowserTools {
     const mcp = await instance.ensureMcp()
     const result = await executeMcpTool(this.connection(instance, mcp.client), name, args)
     const lines: string[] = [result.output]
+    await this.record(name, Boolean(result.isError), instance.currentPage()?.url() ?? url)
     if (PROXY_ERROR.test(result.output)) await this.warnProxy(PROXY_ERROR.exec(result.output)![0])
 
     // 截图：存成 session 文件（证据），不交给模型
@@ -391,6 +399,16 @@ export class BrowserTools {
     const hit = await this.detect(instance)
     if (hit) return { ...(await this.humanOutcome(instance, hit, lines.join("\n"))), facts }
     return { output: lines.join("\n"), isError: result.isError, facts }
+  }
+
+  /** 操作历史记一行（浏览器页看）。记不上不影响工具本身 */
+  private async record(name: string, failed: boolean, url: string | undefined) {
+    const profileId = this.selected
+    if (!profileId || !url || url === "about:blank") return
+    await this.ctx.db
+      .insert(t.browserActions)
+      .values({ profileId, sessionId: this.ctx.session.id, url, action: browserActionTag(name), failed })
+      .catch((error) => console.warn(`[browser] 操作历史没记上：${(error as Error).message}`))
   }
 
   /** 检测验证码 / 登录页；规则拿不准时（设置打开了视觉判断）交给视觉模型 */
@@ -546,6 +564,8 @@ export class BrowserTools {
     const manager = getBrowserManager()
     const { db, session } = this.ctx
     if (!manager || !manager.forSession(session.id)) return
+    // 顺手清掉 90 天前的操作历史
+    await db.delete(t.browserActions).where(lt(t.browserActions.at, new Date(Date.now() - 90 * 24 * 60 * 60 * 1000))).catch(() => {})
     const holdMinutes = this.holdMinutes
     this.holdMinutes = undefined
     this.instance = undefined

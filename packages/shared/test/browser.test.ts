@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { domainSchema, hostMatches, normalizeDomain, taskInputSchema, urlAllowed, viewerClientMessageSchema } from "../src/index.js"
+import { browserActionTag, domainSchema, groupBrowserActions, hostMatches, normalizeDomain, taskInputSchema, urlAllowed, viewerClientMessageSchema } from "../src/index.js"
 
 describe("域名", () => {
   it("规整用户填的域名", () => {
@@ -76,5 +76,35 @@ describe("最近选用了这个 Chrome 的运行", () => {
     const found = recentRunsUsing("br-a.b", runs, [{ id: "T-1" } as never])
     expect(found.map((item) => item.run.id)).toEqual(["R-1", "R-2"])
     expect(found[0]!.task?.id).toBe("T-1")
+  })
+})
+
+describe("groupBrowserActions", () => {
+  it("同一次运行同一个网址上连着的动作合成一行，动作去重计数，at 取最早", () => {
+    // 倒序（最新的在前）
+    const rows = groupBrowserActions([
+      { at: "2026-10-17T10:05:00.000Z", url: "https://b.example/", sessionId: "R-1-1", action: "Click", failed: false },
+      { at: "2026-10-17T10:04:00.000Z", url: "https://a.example/", sessionId: "R-1-1", action: "Input", failed: true },
+      { at: "2026-10-17T10:03:00.000Z", url: "https://a.example/", sessionId: "R-1-1", action: "Click", failed: false },
+      { at: "2026-10-17T10:02:00.000Z", url: "https://a.example/", sessionId: "R-1-1", action: "Click", failed: false },
+      { at: "2026-10-17T10:01:00.000Z", url: "https://a.example/", sessionId: "R-1-1", action: "Open", failed: false },
+      { at: "2026-10-17T10:00:00.000Z", url: "https://a.example/", sessionId: "R-2-1", action: "Open", failed: false },
+    ])
+    expect(rows).toEqual([
+      { at: "2026-10-17T10:05:00.000Z", url: "https://b.example/", sessionId: "R-1-1", actions: [{ tag: "Click", count: 1, failed: false }] },
+      {
+        at: "2026-10-17T10:01:00.000Z",
+        url: "https://a.example/",
+        sessionId: "R-1-1",
+        actions: [
+          { tag: "Open", count: 1, failed: false },
+          { tag: "Click", count: 2, failed: false },
+          { tag: "Input", count: 1, failed: true },
+        ],
+      },
+      { at: "2026-10-17T10:00:00.000Z", url: "https://a.example/", sessionId: "R-2-1", actions: [{ tag: "Open", count: 1, failed: false }] },
+    ])
+    expect(browserActionTag("browser_fill_form")).toBe("Input")
+    expect(browserActionTag("browser_new_thing")).toBe("new_thing")
   })
 })

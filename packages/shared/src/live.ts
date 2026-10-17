@@ -32,6 +32,7 @@ export const liveQueriesByTable: Record<string, string[]> = {
   account_leases: ["browsers.list", "browser.accountStatus"],
   // M2：开着的 Chrome（远程画面入口、谁在看）
   browser_instances: ["browser.live", "browser.sessionBrowser"],
+  browser_actions: ["browser.history"],
   platforms: ["platforms.list", "browsers.list"],
   model_providers: ["models.overview"],
   models: ["models.overview"],

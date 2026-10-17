@@ -8,9 +8,13 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { Skeleton } from "@/components/ui/skeleton"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "@/components/ui/item"
 import { RemoteViewDialog } from "@/components/remote-view/remote-view-dialog"
 import { accountStatusLabel, can, findById, fmtDateTime, fmtShort, type BrowserSite, type LiveBrowser, type Platform } from "@heyagent/shared"
+
+import { useQuery } from "@tanstack/react-query"
 
 import { useBrowsersQuery, usePlatformsQuery, useSessionsQuery, useStaffName, useStaffQuery, useTasksQuery } from "@/lib/data"
 import { useAction } from "@/lib/mutations"
@@ -178,6 +182,7 @@ export default function BrowsersPage() {
                 <DetailSection title="代理、时区和登录态">
                   <Facts rows={profileRows(selected)} />
                 </DetailSection>
+                <History profileId={selected.id} />
               </DetailPanel>
             )
           }
@@ -261,6 +266,48 @@ function AgentNote({ profile }: { profile: Chrome }) {
           </p>
         )}
       </div>
+    </DetailSection>
+  )
+}
+
+const HISTORY_ROWS = 50
+
+/** 操作历史：agent 在这个 Chrome 里做过什么。同一次运行在同一个网址上连着做的动作合成一行 */
+function History({ profileId }: { profileId: string }) {
+  const query = useQuery(trpc.browser.history.queryOptions({ profileId }))
+  const rows = query.data ?? []
+  return (
+    <DetailSection title="操作历史">
+      {query.isPending ? (
+        <Skeleton className="h-24 w-full" />
+      ) : query.isError ? (
+        <p className="text-destructive">操作历史没取到：{query.error.message}</p>
+      ) : rows.length === 0 ? (
+        <p className="text-muted-foreground">还没有操作记录。</p>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow><TableHead>时间</TableHead><TableHead>网站 URL</TableHead><TableHead>动作</TableHead></TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.slice(0, HISTORY_ROWS).map((row) => (
+              <TableRow key={`${row.at}-${row.url}-${row.sessionId ?? ""}`}>
+                <TableCell>{fmtDateTime(row.at)}</TableCell>
+                <TableCell className="w-full max-w-0"><div className="truncate" title={row.url}>{row.url}</div></TableCell>
+                <TableCell>
+                  <div className="flex flex-wrap gap-1">
+                    {row.actions.map((action) => (
+                      <Badge key={action.tag} variant={action.failed ? "destructive" : "outline"}>
+                        {action.tag}{action.count > 1 ? ` ×${action.count}` : ""}
+                      </Badge>
+                    ))}
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
     </DetailSection>
   )
 }

@@ -64,6 +64,13 @@
       "when": 1792246622516,
       "tag": "0008_exit_ip_placeholder",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1792252921051,
+      "tag": "0009_browser_actions",
+      "breakpoints": true
     }
   ]
 }
