@@ -138,7 +138,6 @@ export default function BrowsersPage() {
               <DetailPanel
                 title={selected.name}
                 badges={<Badge variant={selectedLive.length ? "secondary" : "outline"}>{selectedLive.length ? `开着 ${selectedLive.length} 个 Chrome` : "没有开着的"}</Badge>}
-                meta={[selected.exitIp && `出口 ${selected.exitIp}`, `保险箱 v${selected.vaultVersion}`, `更新于 ${fmtDateTime(selected.updatedAt)}`].filter(Boolean).join(" · ")}
                 actions={
                   <>
                     <OpenLoginButton pending={login.pending && !login.pendingTarget?.accountId} onClick={() => void login.start({ profileId: selected.id })} />
@@ -157,7 +156,6 @@ export default function BrowsersPage() {
                   </DetailSection>
                 )}
                 <DetailSection title="登录过的网站"
-                  description="人在远程画面里登录一次，保存后所有 agent 都能用。并发上限按账号设：同一账号多处同时登录容易被平台风控，不同账号互不影响。"
                   action={isAdmin && <Button size="sm" variant="outline" onClick={() => setAddAccount(true)}><UserPlusIcon data-icon="inline-start" />加账号</Button>}>
                   {selected.sites.length === 0 ? (
                     <p className="text-muted-foreground">
@@ -251,7 +249,7 @@ export default function BrowsersPage() {
 function AgentNote({ profile }: { profile: Chrome }) {
   const recent = recentRunsUsing(profile.id, useSessionsQuery().data ?? [], useTasksQuery().data ?? [])
   return (
-    <DetailSection title="给 agent 的说明" description="agent 靠这句话自己选用哪个 Chrome。">
+    <DetailSection title="给 agent 的说明">
       <div className="flex flex-col gap-2">
         <p>{profile.description || "（还没写说明，agent 不会主动选它）"}</p>
         {recent.length > 0 && (
