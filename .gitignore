@@ -24,3 +24,6 @@ design/
 .DS_Store
 .idea/
 .vscode/
+
+# Claude Code 子 agent 的临时 git worktree
+.claude/worktrees/
