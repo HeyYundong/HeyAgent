@@ -131,6 +131,8 @@ export const taskInputSchema = z.object({
   allowedDomains: z.array(domainSchema).max(100).default([]),
   /** 是否允许 agent 在网页里执行脚本（M2，Playwright MCP 的 browser_evaluate），默认不允许 */
   allowBrowserEvaluate: z.boolean().default(false),
+  /** 三方验收模型（M3）；不填（或空串）用默认验收模型。必须和执行模型不是同一家 */
+  verifyModelId: z.string().optional(),
 })
 export type TaskInput = z.input<typeof taskInputSchema>
 export const taskUpdateSchema = taskInputSchema.extend({ id: z.string().min(1) })
@@ -422,6 +424,10 @@ export const SETTING_KEYS = {
   browserVisionCheck: "browser.visionCheck",
   /** 遇到验证码等人处理时，Chrome 最多保留多少分钟（M2） */
   browserHumanHoldMinutes: "browser.humanHoldMinutes",
+  /** 三方验收最多几轮（M3）：前几轮有不通过或存疑就反问执行的 agent，到最后一轮还说不清就交给负责人 */
+  verifyMaxRounds: "verify.maxRounds",
+  /** 发给模型的历史超过多少 token 就压缩（M3）；0 = 只按模型上下文的 60% */
+  compactMaxTokens: "context.compactMaxTokens",
 } as const
 
 export const SETTINGS_DEFAULTS = {
@@ -431,6 +437,8 @@ export const SETTINGS_DEFAULTS = {
   browserMaxPerWorker: 4,
   browserVisionCheck: false,
   browserHumanHoldMinutes: 30,
+  verifyMaxRounds: 2,
+  compactMaxTokens: 0,
 } as const
 
 /** 视觉判断用的模型（OpenRouter 上便宜的视觉模型；有显卡后换内网的） */
@@ -479,8 +487,18 @@ export const settingsBrowserInputSchema = z.object({
 })
 export type SettingsBrowserInput = z.infer<typeof settingsBrowserInputSchema>
 
+/** agent 相关的设置（M3）：验收最多几轮、上下文压缩的 token 上限 */
+export const settingsAgentInputSchema = z.object({
+  verifyMaxRounds: z.number().int().min(1, "至少 1 轮").max(10, "最多 10 轮"),
+  /** 0 = 只按模型上下文的 60% */
+  compactMaxTokens: z.number().int().min(0).max(10_000_000),
+})
+export type SettingsAgentInput = z.infer<typeof settingsAgentInputSchema>
+
 export const settingsViewSchema = settingsLimitsInputSchema.extend({
   browser: settingsBrowserInputSchema,
+  /** M3：验收轮数、压缩上限（老前端不认也不影响） */
+  agent: settingsAgentInputSchema.optional(),
   eventToken: z.object({ hint: z.string(), createdAt: z.string() }).optional(),
   channels: z.array(notifyChannelSchema.extend({ urlMasked: z.string().optional() })),
 })

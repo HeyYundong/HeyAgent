@@ -10,6 +10,7 @@ import {
   SETTINGS_DEFAULTS,
   snakeName,
   type NotifyChannel,
+  type SettingsAgentInput,
   type SettingsBrowserInput,
   type SettingsLimitsInput,
   type SettingsView,
@@ -71,6 +72,8 @@ export async function ensureDefaultSettings(db: DbOrTx) {
     [SETTING_KEYS.browserMaxPerWorker, SETTINGS_DEFAULTS.browserMaxPerWorker],
     [SETTING_KEYS.browserVisionCheck, SETTINGS_DEFAULTS.browserVisionCheck],
     [SETTING_KEYS.browserHumanHoldMinutes, SETTINGS_DEFAULTS.browserHumanHoldMinutes],
+    [SETTING_KEYS.verifyMaxRounds, SETTINGS_DEFAULTS.verifyMaxRounds],
+    [SETTING_KEYS.compactMaxTokens, SETTINGS_DEFAULTS.compactMaxTokens],
   ]
   for (const [key, value] of defaults) await db.insert(t.settings).values({ key, value }).onConflictDoNothing()
 }
@@ -88,7 +91,29 @@ export async function getSettings(ctx: WriteCtx): Promise<SettingsView> {
     })
   )
   const browser = await readBrowserSettings(ctx.db)
-  return { ...limits, browser, ...(token ? { eventToken: { hint: token.hint, createdAt: token.createdAt } } : {}), channels: withMask }
+  const agent = await readAgentSettings(ctx.db)
+  return { ...limits, browser, agent, ...(token ? { eventToken: { hint: token.hint, createdAt: token.createdAt } } : {}), channels: withMask }
+}
+
+/** agent 相关的设置（M3）：验收最多几轮、压缩上下文的 token 上限。引擎每次用到时重新读 */
+export async function readAgentSettings(db: DbOrTx): Promise<SettingsAgentInput> {
+  const values = await readKeys(db, [SETTING_KEYS.verifyMaxRounds, SETTING_KEYS.compactMaxTokens])
+  const int = (value: unknown, fallback: number, min: number) => (typeof value === "number" && Number.isInteger(value) && value >= min ? value : fallback)
+  return {
+    verifyMaxRounds: int(values.get(SETTING_KEYS.verifyMaxRounds), SETTINGS_DEFAULTS.verifyMaxRounds, 1),
+    compactMaxTokens: int(values.get(SETTING_KEYS.compactMaxTokens), SETTINGS_DEFAULTS.compactMaxTokens, 0),
+  }
+}
+
+export async function updateAgentSettings(ctx: WriteCtx, input: SettingsAgentInput) {
+  assertCan(ctx.actor, "settings.manage", {}, "只有主管能改全局设置")
+  return ctx.db.transaction(async (tx) => {
+    const before = await readAgentSettings(tx)
+    await writeKey(tx, SETTING_KEYS.verifyMaxRounds, input.verifyMaxRounds, ctx.actor.id)
+    await writeKey(tx, SETTING_KEYS.compactMaxTokens, input.compactMaxTokens, ctx.actor.id)
+    await audit(tx, ctx.actor.id, "settings.agent.update", "settings", "agent", { before, after: input })
+    return input
+  })
 }
 
 export async function updateBrowserSettings(ctx: WriteCtx, input: SettingsBrowserInput) {

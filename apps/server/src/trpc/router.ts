@@ -35,6 +35,9 @@ import {
   providerInputSchema,
   providerUpdateSchema,
   reviewInputSchema,
+  ruleCompileInputSchema,
+  ruleCompileResultSchema,
+  ruleConfirmInputSchema,
   ruleInputSchema,
   ruleRestoreSchema,
   ruleSchema,
@@ -42,7 +45,9 @@ import {
   savedSecretSchema,
   secretInputSchema,
   secretNameSchema,
+  saveStepsFromSessionInputSchema,
   sessionRunSchema,
+  settingsAgentInputSchema,
   settingsBrowserInputSchema,
   settingsLimitsInputSchema,
   settingsViewSchema,
@@ -54,6 +59,7 @@ import {
   taskInputSchema,
   taskSchema,
   taskSetEnabledSchema,
+  taskStepSchema,
   taskUpdateSchema,
   todoInputSchema,
   todoUpdateSchema,
@@ -141,6 +147,11 @@ export const appRouter = router({
     setEnabled: protectedProcedure.input(taskSetEnabledSchema).mutation(({ ctx, input }) => tasks.setTaskEnabled(w(ctx), input)),
     /** 有运行记录的不能删，只能停用 */
     delete: protectedProcedure.input(idInput).mutation(({ ctx, input }) => tasks.deleteTask(w(ctx), input)),
+    /** M3：把一次运行里 agent 写下的步骤（plan.set）存成任务的步骤（整体覆盖），负责人或主管 */
+    saveStepsFromSession: protectedProcedure
+      .input(saveStepsFromSessionInputSchema)
+      .output(z.object({ id: z.string(), steps: z.array(taskStepSchema) }))
+      .mutation(({ ctx, input }) => tasks.saveStepsFromSession(w(ctx), input)),
   }),
 
   sessions: router({
@@ -204,6 +215,13 @@ export const appRouter = router({
     /** 被任务用着的不能删；返回删掉的规则，页面上「撤销」时交给 restore */
     delete: protectedProcedure.input(idInput).output(ruleSchema).mutation(({ ctx, input }) => rules.deleteRule(w(ctx), input)),
     restore: protectedProcedure.input(ruleRestoreSchema).mutation(({ ctx, input }) => rules.restoreRule(w(ctx), input)),
+    /** M3：翻译（给 id：翻译这条规则现在的文字，存成待确认；只给文字：预览不存）。调模型，只有主管 */
+    compile: protectedProcedure.input(ruleCompileInputSchema).output(ruleCompileResultSchema).mutation(({ ctx, input }) => rules.compileRule(w(ctx), input)),
+    /** M3：确认「系统理解为……」，规则生效 */
+    confirm: protectedProcedure
+      .input(ruleConfirmInputSchema)
+      .output(z.object({ id: z.string(), understood: z.string() }))
+      .mutation(({ ctx, input }) => rules.confirmRule(w(ctx), input)),
   }),
 
   tools: router({
@@ -257,6 +275,8 @@ export const appRouter = router({
     updateLimits: protectedProcedure.input(settingsLimitsInputSchema).mutation(({ ctx, input }) => settings.updateLimits(w(ctx), input)),
     /** M2：浏览器设置（每个 worker 最多几个 Chrome、视觉判断、等人时 Chrome 保留多久） */
     updateBrowser: protectedProcedure.input(settingsBrowserInputSchema).mutation(({ ctx, input }) => settings.updateBrowserSettings(w(ctx), input)),
+    /** M3：三方验收最多几轮、压缩上下文的 token 上限 */
+    updateAgent: protectedProcedure.input(settingsAgentInputSchema).mutation(({ ctx, input }) => settings.updateAgentSettings(w(ctx), input)),
     /** 生成新的外部事件令牌：原文只在这次返回 */
     regenerateEventToken: protectedProcedure.mutation(({ ctx }) => settings.regenerateEventToken(w(ctx))),
     clearEventToken: protectedProcedure.mutation(({ ctx }) => settings.clearEventToken(w(ctx))),

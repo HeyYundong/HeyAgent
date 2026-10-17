@@ -53,6 +53,10 @@ export interface ToolOutcome {
   images?: { name: string; mime: string; base64: string }[]
   /** 要从输出里隐藏的密钥原文 */
   secrets?: string[]
+  /** M3：给规则用的事实（自动记录检查点）：打开的网页、存下的文件 */
+  facts?: { url?: string; title?: string; fileId?: string; fileName?: string }
+  /** M3：引擎内部信号。page_needs_human = 浏览器检测到验证码或登录页（规则 page_needs_human 在内置转人工之外再加动作） */
+  signals?: "page_needs_human"[]
 }
 
 const fail = (output: string): ToolOutcome => ({ output, isError: true })
@@ -101,16 +105,28 @@ const handlers: {
       return fail(
         `没有第 ${input.checkpoint} 个检查点（一共 ${rows.length} 个）`
       )
+    if (input.status === "doing") {
+      // 只是指定「现在在做这个」：同类型的检查点有好几个时，规则自动写的记录记到它上面
+      await ctx.db
+        .update(t.checkpoints)
+        .set({
+          focusedAt: new Date(),
+          progress: input.progress ?? checkpoint.progress,
+        })
+        .where(eq(t.checkpoints.id, checkpoint.id))
+      if (input.record?.trim())
+        await ctx.db.insert(t.checkpointRecords).values({
+          checkpointId: checkpoint.id,
+          at: new Date(),
+          text: input.record.trim(),
+          synced: false,
+        })
+      return {
+        output: `好的，第 ${input.checkpoint} 个检查点「${checkpoint.title}」标为正在做。系统自动记录（访问、发消息、产出文件）会记到它上面；做完记得标 done。`,
+      }
+    }
     if (input.status === "skipped" && !input.reason?.trim())
       return fail("跳过检查点必须写理由（reason）")
-    await ctx.db
-      .update(t.checkpoints)
-      .set({
-        status: input.status,
-        progress: input.progress ?? checkpoint.progress,
-        skipReason: input.status === "skipped" ? input.reason!.trim() : null,
-      })
-      .where(eq(t.checkpoints.id, checkpoint.id))
     if (input.record?.trim())
       await ctx.db.insert(t.checkpointRecords).values({
         checkpointId: checkpoint.id,
@@ -118,6 +134,23 @@ const handlers: {
         text: input.record.trim(),
         synced: false,
       })
+    // 「数量」按记录条数累计：agent 没填 progress 时，用这个检查点的记录条数
+    let progress = input.progress ?? checkpoint.progress
+    if (input.progress === undefined && checkpoint.kind === "count") {
+      const [row] = await ctx.db
+        .select({ n: sql<number>`count(*)::int` })
+        .from(t.checkpointRecords)
+        .where(eq(t.checkpointRecords.checkpointId, checkpoint.id))
+      progress = row?.n ?? progress
+    }
+    await ctx.db
+      .update(t.checkpoints)
+      .set({
+        status: input.status,
+        progress,
+        skipReason: input.status === "skipped" ? input.reason!.trim() : null,
+      })
+      .where(eq(t.checkpoints.id, checkpoint.id))
     await appendEvent(ctx.db, ctx.session.id, {
       kind: "checkpoint",
       title: `${input.status === "done" ? "勾上" : "跳过"}检查点：${checkpoint.title}`,
@@ -397,6 +430,33 @@ const handlers: {
     })
     return {
       output: `已保存文件 ${row.name}（id ${row.id}，${row.size} 字节），界面里能看能下载。`,
+      facts: { fileId: row.id, fileName: row.name },
+    }
+  },
+
+  async "plan.set"(ctx, input) {
+    const steps = input.steps.map((step) => step.trim()).filter(Boolean)
+    if (steps.length === 0) return fail("至少写一步")
+    const [before] = await ctx.db
+      .select({ exploredSteps: t.sessions.exploredSteps })
+      .from(t.sessions)
+      .where(eq(t.sessions.id, ctx.session.id))
+    const first = !before?.exploredSteps?.length
+    await ctx.db
+      .update(t.sessions)
+      .set({ exploredSteps: steps })
+      .where(eq(t.sessions.id, ctx.session.id))
+    await appendEvent(ctx.db, ctx.session.id, {
+      kind: "plan",
+      title: first
+        ? `agent 定了 ${steps.length} 步`
+        : `agent 更新了步骤（${steps.length} 步）`,
+      detail: steps.map((step, index) => `${index + 1}. ${step}`).join("\n"),
+      toolId: "plan.set",
+      input: JSON.stringify({ steps }),
+    })
+    return {
+      output: `已记下你的 ${steps.length} 步。之后做法变了就再调一次 plan.set。`,
     }
   },
 

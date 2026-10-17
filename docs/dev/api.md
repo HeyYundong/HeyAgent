@@ -15,6 +15,8 @@
 7. 外部事件（HTTP）
 8. 实时推送
 9. 附录：审计 action 一览、已知限制
+10. 浏览器（M2-A）
+11. 规则、检查点、三方验收、压缩、探索出的步骤（M3-A）
 
 ---
 
@@ -161,7 +163,7 @@ curl -s -b 'better-auth.session_token=<COOKIE>' -H 'content-type: application/js
 | `todos.board` | 登录即可 | 无 | `{ humanItems: HumanItem[]; humanTodos: HumanTodo[] }`：还没处理的「要人办的事」（按急迫程度 `urgency` 小的在前，再按时间）和有效的「人加的待办」（新的在前） | 运行卡不在这里，用 `sessions.list` + shared 的 `boardCards` 拼 |
 | `memories.list` | 登录即可 | 无 | `MemoryRef[]`，按 id。含已拒绝、已归档的，页面自己筛。`note.lastUsed` 是服务端按当前时间生成的文字；待审核的带 `reviewItemId` | |
 | `skills.list` | 登录即可 | 无 | `Skill[]`：带 `version updatedAt body toolIds`，有待审核的修改建议时带 `suggestion{taskId summary reviewerId createdAt itemId?}` | |
-| `rules.list` | 登录即可 | 无 | `RuleRef[]`：`id name trigger action toolIds compiledTrigger?`（`compiledTrigger` 是 M3 填的） | |
+| `rules.list` | 登录即可 | 无 | `RuleRef[]`：`id name trigger action toolIds compiledTrigger? compile?`。`compiledTrigger` 是人确认过、正在执行的翻译结果（`CompiledRule`），`compile` 是生效状态和「系统理解为」，见第 11.1 节 | |
 | `tools.list` | 登录即可 | 无 | `{ tools: Tool[]; mcpServers: McpServer[]; savedSecrets: Record<名字, {by byId at}> }`。HTTP 工具的模板里密钥只以 `{{名字}}` 出现；`McpServer.env` 是每行「名字=••••」 | |
 | `browsers.list` | 登录即可 | 无 | `BrowserProfile[]`：代理（无密码，只有 `hasPassword`）、`sites[]`（账号、状态、并发上限、`running` = 没释放的账号租约数）、`vaultVersion`、`cookieCount` | |
 | `models.overview` | 登录即可 | 无 | `{ providers: ModelProvider[]; defaults: {run plan verify} }`。`status` 有 `ok / error / unconfigured`；`apiKeyMasked` 只有掩码 | |
@@ -172,7 +174,7 @@ curl -s -b 'better-auth.session_token=<COOKIE>' -H 'content-type: application/js
 
 ### SessionRun
 
-`sessions.list`/`get` 的一条（一次运行 = 一个 session）：`id taskId parentSessionId? startedAt endedAt? status modelId tokensIn tokensOut costUsd exploredSteps? checkpoints[] events[] waiting? verification?`。
+`sessions.list`/`get` 的一条（一次运行 = 一个 session）：`id taskId parentSessionId? startedAt endedAt? status modelId tokensIn tokensOut costUsd exploredSteps? checkpoints[] events[] waiting? verification?`。M3：`exploredSteps` 是 agent 用 `plan.set` 写下的步骤，`verification` 多了逐条结论，见第 11 节。
 
 | 字段 | 说明 |
 |---|---|
@@ -263,7 +265,7 @@ curl -s -b 'better-auth.session_token=<COOKIE>' -H 'content-type: application/js
 | `skills.acceptSuggestion` | 审核人或主管（`humanItem.resolve`，对象是建议的 `reviewerId`） | `{ id }`（**技能 id**，不是待办 id） | `{ id, version }` | `NOT_FOUND`；`FORBIDDEN`；`CONFLICT`：没有待审核的建议、或技能在建议之后又被改过，diff 对不上 | `skill.suggestion.accept`；把 diff 合并进正文成新一版；处理掉待办里那件事；推 `skills`、`skill_suggestions`、`human_items` |
 | `skills.rejectSuggestion` | 同上 | `{ id, reason?(≤500) }` | `{ id }` | 同上（无 diff 冲突） | `skill.suggestion.reject` |
 | `rules.create` | 主管 | `{ name(1-100), trigger(1-500), action(1-500), toolIds }` | `{ id }`（`rl-<短名>` 或 `rl-<序号>`） | `BAD_REQUEST`：工具不存在 | `rule.create`；推 `rules`、`rule_tools` |
-| `rules.update` | 主管 | 同上 + `id` | `{ id }` | `NOT_FOUND` | `rule.update`；触发条件文字改了，`compiledTrigger` 清空（M3 重新翻译） |
+| `rules.update` | 主管 | 同上 + `id` | `{ id }` | `NOT_FOUND` | `rule.update`；**M3 改了**：触发条件或「命中后怎么办」的文字改了，待确认的翻译（`compile_draft`）作废；已经确认过的旧版本（`compiledTrigger`）继续执行，直到新文字翻译并确认（见第 11.1 节） |
 | `rules.delete` | 主管 | `{ id }` | 被删掉的 `RuleRef`（页面「撤销」时交给 `restore`） | `NOT_FOUND`；`CONFLICT`：被任务选用着 | `rule.delete` |
 | `rules.restore` | 主管 | `{ id, name, trigger, action, toolIds }`（就是 `delete` 返回的内容） | `{ id }` | `CONFLICT`：id 已存在 | `rule.restore`；已经不存在的工具 id 会被丢掉 |
 
@@ -574,15 +576,15 @@ curl -s -X POST http://localhost:3100/api/events \
 | 范围 | action |
 |---|---|
 | 账号 | `user.create` `user.update` `user.disable` `user.enable` `user.reset_password` `user.change_password` |
-| 任务 | `task.create` `task.update` `task.enable` `task.disable` `task.delete` `task.attach` `task.detach` |
+| 任务 | `task.create` `task.update` `task.enable` `task.disable` `task.delete` `task.attach` `task.detach` `task.save_steps`（M3） |
 | 待办 | `todo.create` `todo.update` `todo.delete` `todo.run` |
 | 记忆 | `memory.create` `memory.update` `memory.approve` `memory.reject` `memory.archive` `memory.delete` |
 | 技能 | `skill.create` `skill.update` `skill.publish` `skill.draft` `skill.disable` `skill.suggestion.accept` `skill.suggestion.reject` |
-| 规则 | `rule.create` `rule.update` `rule.delete` `rule.restore` |
+| 规则 | `rule.create` `rule.update` `rule.delete` `rule.restore` `rule.compile` `rule.confirm`（M3） |
 | 工具 | `tool.create` `tool.update` `tool.delete` `tool.restore` `secret.create` `secret.update` `secret.delete` `mcp_server.create` `mcp_server.update` `mcp_server.delete` |
 | 浏览器 | `browser_profile.create` `browser_profile.update` `browser_profile.delete` `platform.create` `platform.delete` `browser_account.create` `browser_account.update` `browser_account.delete` |
 | 模型 | `model_provider.create` `model_provider.update` `model_provider.test` `model_provider.refresh` `model_provider.delete` `model_defaults.update` |
-| 设置 | `settings.update` `settings.event_token.regenerate` `settings.event_token.clear` `settings.channel.create` `settings.channel.update` `settings.channel.delete` |
+| 设置 | `settings.update` `settings.event_token.regenerate` `settings.event_token.clear` `settings.channel.create` `settings.channel.update` `settings.channel.delete` `settings.browser.update`（M2） `settings.agent.update`（M3） |
 | 运行 | `session.start`（`runNow`）`session.cancel` `session.resume.resume_now` `session.resume.human` `session.resume.event`（控制台触发，webhook 没有操作人所以不记）`human_item.resolve` `event.fire` |
 
 ### 9.2 已知限制（写代码时要知道）
@@ -646,3 +648,147 @@ curl -s -X POST http://localhost:3100/api/events \
 ### 10.6 实时推送
 
 新表 `browser_instances` → `browser.live`、`browser.sessionBrowser`；`account_leases`、`browser_accounts`、`session_waits` 另外让 `browser.accountStatus` 失效。租约心跳（每 30 秒续期）不推送。
+
+---
+
+## 11. 规则、检查点、三方验收、压缩、探索出的步骤（M3-A，2026-10-17）
+
+> 本节是 M3-A 新增或改动的接口和行为。设计见 `docs/dev/m3.md`；共享类型在 `packages/shared/src/rules.ts`（规则）、`schemas.ts`（`Verification`、`HumanDetail.toolCall/verification`、`TaskDef.verifyModelId`）、`engine.ts`（`plan.set`、存为任务步骤、验收争议的输入）、`config.ts`（agent 设置）。引擎代码在 `apps/server/src/engine/`：`rules.ts`（规则钩子）、`rule-compile.ts`（翻译）、`checkpoint-sync.ts`、`verify.ts`、`compact.ts`。迁移 `0007_m3_rules_verify.sql`。
+
+### 11.1 规则：保存 → 翻译 → 确认 → 生效
+
+规则用一句话写（`rules.create/update`，和 M1 一样），保存后要再走两步才生效：
+
+1. `rules.compile`：用「规划」默认模型把「触发条件 + 命中后怎么办」翻译成结构（zod schema 约束输出），再由程序校验：工具和员工必须真实存在、域名按白名单规则规整、触发和动作的组合必须是 v1 支持的。「系统理解为」那句话由程序按结构生成（`describeCompiledRule`），**不是模型写的**，所以人看到的就是程序要执行的。
+2. `rules.confirm`：人确认后，翻译结果写进 `compiledTrigger`，规则生效。
+
+翻译不进去（模型说不支持、引用了不存在的工具或人、组合不合法）的规则保存为「未生效（v1 还不支持）」，确认不了、建任务时选不了，**绝不退回让模型运行时自己判断**。
+
+| 接口 | 类型 | 谁能调 | 输入 | 返回 | 主要错误 / 审计 |
+|---|---|---|---|---|---|
+| `rules.compile` | mutation | 主管（`config.manage`，要调模型花钱） | `{ id }`：翻译这条规则现在的文字，结果存成待确认；或者 `{ trigger, action, toolIds? }`：只预览，不存 | `RuleCompileResult`：`{ supported, compiled?, understood, reason?, trigger, action, modelId, at }`。`supported = false` 时 `understood` 是「v1 还不支持：原因」 | `NOT_FOUND`；`BAD_REQUEST`：没有设置「规划」默认模型、模型用不了或出错（`message` 写原因）；`CONFLICT`：翻译期间文字被改了。审计 `rule.compile`（detail 有 supported、understood、modelId、costUsd）；推 `rules` |
+| `rules.confirm` | mutation | 主管 | `{ id }` | `{ id, understood }` | `BAD_REQUEST`：现在的文字还没翻译、翻译结果是不支持。审计 `rule.confirm`（detail 有 understood 和结构）；推 `rules` |
+
+**`RuleRef.compile`**（`ruleCompileViewSchema`，`rules.list` 每条都有）：
+
+| 字段 | 说明 |
+|---|---|
+| `status` | `untranslated` 未翻译 / `pending` 待确认 / `active` 生效 / `unsupported` 未生效（v1 还不支持）。中文标签 `ruleCompileStatusLabel` |
+| `understood?` | 现在这段文字的「系统理解为……」 |
+| `reason?` | 不支持的原因 |
+| `draft?` | 现在这段文字翻译出来的结构（`CompiledRule`） |
+| `translatedAt?` `modelId?` | 什么时候、用哪个模型翻译的 |
+| `effective` | 运行时会不会执行它、建任务时能不能选（有确认过的版本就是 true） |
+| `enforced?` | 正在执行的版本：`{ understood, trigger, action, confirmedAt?, confirmedById? }` |
+| `outdated?` | `true` = 文字改过还没重新确认，引擎仍按 `enforced` 那个旧版本执行 |
+
+**`CompiledRule`**（`compiledRuleSchema`）：`{ v: 1, trigger, actions[], understood }`。
+
+| 触发类型 `trigger.type` | 参数 | 能配的动作 |
+|---|---|---|
+| `before_tool` | `toolIds[]`、`risks[]`（`external` 对外发送 / `money` 涉及金钱），任一命中即可。`toolIds` 里写 `browser` 表示整组浏览器工具 | `deny` `ask_human` `screenshot` `notify` |
+| `after_tool` | `toolIds[]`、`anyTool` | `screenshot` `notify` `sync_checkpoint` |
+| `url_not_allowed` | `domains[]`（规整过的域名，子域名也算）。网址从参数里叫 `url / href / link / targetUrl / target_url / uri` 的字段取；HTTP 工具按模板填好参数后的地址 | `deny` `ask_human` `screenshot` `notify` |
+| `page_needs_human` | — （浏览器检测到验证码或登录页时的内部信号） | `screenshot` `notify` |
+| `cost_over` | `usd` | `ask_human`（决定要不要继续）`notify` `deny`（结束运行） |
+| `agent_done` | — | `verify` `notify` |
+| `agent_proposes` | `what[]`：`memory` / `skill` | `deny` `notify` |
+
+动作：`{ type: "deny", reason }`、`{ type: "ask_human", recipient }`、`{ type: "screenshot" }`、`{ type: "notify", recipient }`、`{ type: "sync_checkpoint" }`、`{ type: "verify" }`。`recipient` 是 `{ to: "owner" }`（任务负责人）、`{ to: "admin" }`（主管：审批交给第一位没停用的主管，通知发给所有主管）、`{ to: "user", userId }`（指定的人；找不到或停用了就交给任务负责人）。一条规则里 `deny` 和 `ask_human` 只能有一个。
+
+**任务选规则**：`tasks.create` 选的规则、`tasks.update` 新加的规则都必须已经生效（`effective`），否则 `BAD_REQUEST`「这些规则还没生效，不能选：…」。原来就选着的规则保留。种子数据里的演示规则都带了确认过的翻译（「只访问白名单网站」没写域名，留着演示「未生效」）。
+
+### 11.2 运行时怎么执行规则
+
+session 开始时把规则（含 `compiledTrigger`）冻结进快照，引擎只按快照里**确认过**的翻译执行；没确认过的规则不执行，开始时写一条 `rule` 事件「N 条规则还没生效，这次运行不执行」。每次命中都写 `rule` 事件（标题 `规则「名字」：做了什么`）。系统提示里列的是「系统理解为」那句话。
+
+| 阶段 | 规则 | 做什么 |
+|---|---|---|
+| 调模型前 | `cost_over` | 每条规则每次运行只触发一次（记在 `sessions.rule_state.costFired`）。`ask_human`：生成一件「审批」（`detail.pay` 有二次确认文案），session 等人处理；批准就继续，拒绝就结束运行（`failed`）。`deny`：直接结束运行 |
+| 调工具前 | `before_tool` `url_not_allowed` `agent_proposes` | `deny`：工具不执行，「被拦下：理由」作为工具结果交给 agent。`ask_human`：见下面「审批工具调用」。`screenshot` / `notify` 马上做 |
+| 调工具后 | `after_tool`（工具出错时不触发；「任意工具」不含勾检查点、写步骤、挂起、问人、读技能、读附件这几个内置工具） | `screenshot`、`notify`、`sync_checkpoint`（见 11.4） |
+| 调工具后 | `page_needs_human` | M2 内置的「截图 + 登录类要人办的事 + 等人」照常做，规则只能**再加**截图、通知 |
+| 调工具后 | `agent_proposes` | `notify`（提议本身照常生成记忆审核 / 技能修改这件事） |
+| 说做完了 | `agent_done` | `notify`；`verify` 交给三方验收（11.5） |
+
+`screenshot` 要这次运行开着 Chrome（截当前页面，存成 `kind = screenshot` 的 session 文件）；没开着就写一条事件说明没截。
+
+**审批工具调用**（`ask_human`）：
+
+- 生成一件 `kind = approval` 的事，`ruleId` 是这条规则，`detail.toolCall = { toolId, toolName, input, risk?, ruleId, ruleName }`（`input` 是参数 JSON，像密钥的字段换成 `••••`，超过 4000 字截断），主按钮「批准」、次按钮「拒绝」；涉及金钱的工具带 `detail.pay`。
+- session 进入「等人处理」。这次调用和同一步里后面的调用都**先存着**（`session_waits.pending`），还没执行，也还没写工具结果。
+- 处理：`engine.resolveHumanItem({ itemId, how, note })`。`approve` = 执行这次调用，接着处理同一步里后面的调用（它们照样过规则），工具结果前面加「（某某批准了这次调用，备注：…）」；`reject` = 不执行，把「被拒绝：某某拒绝了这次调用（规则「…」要求审批）。理由：…」作为工具结果交给 agent，再接着跑；`done` 对这类事是 `BAD_REQUEST`（只能批准或拒绝）。返回 `{ resumedSessionId }`。
+- worker 在执行批准的调用时被杀掉：继续时不重复执行，写「不确定有没有执行成功」交给 agent。
+
+### 11.3 `plan.set` 和存为任务步骤
+
+- 新的内置工具 `plan.set({ steps: string[] })`（1～30 步，每步 ≤300 字），每个任务都自带（`alwaysOn`）。agent 开始时写下打算怎么做，中途可以再调（整体替换）。写进 `sessions.explored_steps`（`SessionRun.exploredSteps`），并写一条 `kind = plan` 的事件：`toolId = "plan.set"`，`title` 是「agent 定了 N 步」/「agent 更新了步骤（N 步）」，`detail` 是编号的步骤，`input` 是 `{"steps":[…]}`。
+- `tasks.saveStepsFromSession`（mutation，任务负责人或主管 `task.manage`）：输入 `{ sessionId }`，把这次运行最后一版步骤存成任务的步骤（**整体覆盖**，原来步骤上的检查点也一起换掉，每步 `wait: false`），返回 `{ id, steps }`。错误：`NOT_FOUND`、`FORBIDDEN`、`BAD_REQUEST`（这次运行没有写下步骤）。审计 `task.save_steps`（detail 有 sessionId、before、after）；推 `tasks`。已经在跑的运行不受影响。
+
+### 11.4 检查点
+
+- 识别：保存任务时用 shared 的 `recognizeCheckpoints` 认出类型和目标数，开始运行时存进 `checkpoints`（M1 已有）。
+- **自动记录**（任务选了带 `sync_checkpoint` 动作的 `after_tool` 规则时），标「自动」（`records[].synced = true`），agent 改不了：
+
+  | 检查点类型 | 什么时候记 | 记什么 |
+  |---|---|---|
+  | 访问 `visit` | 浏览器打开网页后（`browser_navigate`、`browser_navigate_back`、`browser_tabs` 新开） | `页面标题 · 网址` |
+  | 发送消息 `message` | 调了风险等级为「外发」的工具后（浏览器工具除外） | `工具名：发给 X：原文`（从参数里叫 to / recipient / phone / email / chatId… 和 text / message / content / body… 的字段取；认不出就记参数原文） |
+  | 产出文件 `artifact` | `file.save` 之后 | `文件名 · /api/files/<id>` |
+  | 数量 `count` | agent 用 `checkpoint.mark` 写记录时，没填 `progress` 就按记录条数累计 | — |
+
+  进度：访问、发消息按不同记录的条数算，到了目标数自动标「完成」；产出文件有一条记录就标「完成」。每条自动记录写一条 `checkpoint` 事件（`「标题」2/3`，detail「由规则「…」自动记下：…」）。
+- 同类型的检查点有好几个时：记到 agent 最近用 `checkpoint.mark({ checkpoint, status: "doing" })` 指定的那个（`checkpoints.focused_at`）；没指定过就记到第一个还没完成的。`status: "doing"` 是 M3 新加的取值（只标「正在做」，不改完成状态）。
+
+### 11.5 三方验收
+
+- **什么时候**：任务选了 `agent_done → verify` 的规则时，agent 说做完了（回复不调工具）就交给验收；没选的直接完成（和 M1 一样）。
+- **验收模型**：任务的 `verifyModelId`（新字段，见 11.7），没有就用默认验收模型。运行时再查一次：和执行模型同一家（`sameFamily`）就直接失败，原因写「三方验收模型 … 和执行模型 … 是同一家（…）」。
+- **验收中**：session 状态 `verifying`。
+- **输入**：目标、任务步骤、每条检查点（状态、进度、记录（自动 / agent 写的）、跳过理由）、最终答复、前几轮问答、证据：产物文件的摘录（每个最多 3000 字、最多 6 个）、过程记录（最近 60 条工具调用、规则命中、人的处理，系统自动记的）、截图（验收模型能看图时附最近 3 张）。
+- **输出**：结构化，存进 `sessions.verification`（`Verification`）：
+
+  | 字段 | 说明 |
+  |---|---|
+  | `status` | `passed` 通过 / `asking` 反问中 / `disputed` 交给负责人了（原型的三种） |
+  | `at` `headline` | 时间、一句话结论 |
+  | `notes[]` | 验收问答：`{ by: "verifier" \| "executor", text }` |
+  | `round?` | 第几轮（负责人「补充说明后继续」后从 1 重新数） |
+  | `modelId?` | 验收模型 |
+  | `verdict?` | 总结论 `pass` / `fail` / `unsure` |
+  | `items?[]` | 每条检查点：`{ index（从 1 开始）, title, verdict, reason }`。模型漏了的按 `unsure` 算 |
+  | `resolution?` | 负责人怎么处理的：`{ how: "pass" \| "fail" \| "continue", byId, byName?, note?, at }` |
+
+- **流程**：全部通过 → 写 `verify` 事件「验收通过：…」，再按「关资源 → 完成事件和状态同一事务」完成。有不通过或存疑：前 `verify.maxRounds - 1` 轮把问题清单作为一条「【三方验收】…」的消息交给执行 agent（`FinishDecision.continue`），它可以补做；**最后一轮**还说不清（或验收模型出错）→ 生成一件 `kind = verify` 的事给任务负责人，`detail.verification` 是验收报告，主按钮「算通过」、次按钮「算失败」，session 等人处理。`verify.maxRounds` 默认 2：第 1 轮反问，第 2 轮还不行就交给人。
+- **验收争议的三种处理**：`engine.resolveVerifyDispute`（新）或 `engine.resolveHumanItem`：
+
+  | 处理 | `resolveVerifyDispute.how` | `resolveHumanItem.how` | 结果 |
+  |---|---|---|---|
+  | 算通过 | `pass` | `approve` | session `done`，`verification.status` 改成 `passed`、headline 前加「某某判定通过：」，写 `resolution`；最后一条事件 `done`「某某判定验收通过，运行完成」 |
+  | 算失败 | `fail` | `reject` | session `failed`，`error`「验收没通过，某某判定失败：备注」 |
+  | 补充说明后继续 | `continue`（`note` 必填） | `done`（`note` 必填） | 带着说明回到同一个 session 接着干，返回 `{ resumedSessionId }`；agent 再说做完了会重新验收（从第 1 轮数） |
+
+  `engine.resolveVerifyDispute`：mutation，分给他的人或主管（`humanItem.resolve`），输入 `{ itemId, how: "pass" | "fail" | "continue", note?（≤4000）}`，返回 `{ resumedSessionId?, endedSessionId? }`。错误：`NOT_FOUND`、`FORBIDDEN`、`BAD_REQUEST`（不是验收争议、继续时没写说明）、`CONFLICT`（已经处理过）。审计 `human_item.resolve`（detail 带 `kind: "verify"`）。
+- 验收的花费（和压缩摘要的花费）都算进这次运行的 `costUsd`，并写一条 `think` 事件。
+
+### 11.6 长 session 压缩上下文
+
+- 每次调模型前检查：上一步的真实输入 token 和按字数估的 token 取大的，超过上限就压缩。上限 = 模型上下文（`models.context_k`，查不到按 128K）的 60%；设置里 `compactMaxTokens > 0` 时取两者中小的。
+- 压缩对象：最近 6 条消息之外、超过 1500 字的工具结果（勾检查点、问人、写步骤、挂起、读技能的结果除外），以及 `file.read` 交给模型的图片消息。检查点、关键结论（assistant 的话）、人的回复保留原文。
+- 换成：`【已压缩】工具名 的输出原有 N 字……全文是文件 f-…，需要时用 file.read 读。摘要：…`。摘要先交给「规划」默认模型写，模型不可用就用开头和结尾的摘录；全文另存成 `kind = tool_output` 的文件（网关截断时已经存过的沿用）。
+- 库里保留完整历史：原消息 `session_messages.compacted = true`，压缩后的内容在新列 `summary`，继续时读 `summary`。每次压缩写一条 `kind = plan` 的事件「上下文压缩：N 条较早的大块内容换成了摘要」（detail 有估算的 token 和上限）。
+
+### 11.7 新字段、设置、其他改动
+
+| 位置 | 改动 |
+|---|---|
+| 任务输入 / `TaskDef` | `verifyModelId?: string`：这个任务自己的验收模型，不填用默认。要存在，且不能和执行模型同一家（`BAD_REQUEST`）。冻结进快照（`snapshot.verifyModelId`）。`tasks.update` 是整体替换，不传就清空 |
+| `settings.get` 输出 | `agent?: { verifyMaxRounds, compactMaxTokens }`，默认 2、0 |
+| 新接口 `settings.updateAgent` | 主管。`{ verifyMaxRounds(1-10 整数), compactMaxTokens(0-10000000 整数，0 = 只按模型上下文的 60%) }`，原样返回。审计 `settings.agent.update`；推 `settings`。引擎每次用到时重新读 |
+| `SETTING_KEYS` | `verifyMaxRounds: "verify.maxRounds"`、`compactMaxTokens: "context.compactMaxTokens"` |
+| `HumanDetail` | `toolCall?`（11.2）、`verification?`（11.5） |
+| 内置工具 | 新增 `plan.set`（每个任务都自带）；`checkpoint.mark` 的 `status` 多了 `doing` |
+| 结束的先后顺序（M2 留下的） | 说做完了：先验收；最终结论确定后，先关资源（工具连接、Chrome），再在**同一个事务**里写完成事件和 `done` 状态。失败也是「失败事件 + `failed` 状态」同一事务。读到「已完成 / 失败」时，对应的过程记录一定都在 |
+| 数据库（迁移 0007） | `rules.compiled_text / compile_draft / confirmed_by_id / confirmed_at`、`tasks.verify_model_id`、`sessions.rule_state`、`session_messages.summary`、`session_waits.pending`、`checkpoints.focused_at`。都是加列，没有新表 |
+| 审计 action | 新增 `rule.compile` `rule.confirm` `task.save_steps` `settings.agent.update` |
+| 记忆和技能的提议 | 和 M1 一样：生成 `kind = memory / skill` 的事，给任务负责人（技能给技能负责人），主管也能处理；用 `memories.approve/reject`、`skills.acceptSuggestion/rejectSuggestion` 处理。待办里点进去用 `memoryId` / `skillId` 跳到记忆页、技能页 |

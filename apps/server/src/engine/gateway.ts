@@ -5,6 +5,7 @@ import { jsonSchema, tool, type ToolSet } from "ai"
 import {
   BROWSER_TOOL_ID,
   builtinToolInputs,
+  type Risk,
   type SessionSnapshot,
   type SnapshotTool,
 } from "@heyagent/shared"
@@ -20,7 +21,7 @@ import {
 } from "./hooks.js"
 import { appendEvent } from "./records.js"
 import { runtime } from "./runtime.js"
-import { redactSecrets } from "./secrets.js"
+import { maskSecretFields, redactSecrets } from "./secrets.js"
 import {
   executeBuiltin,
   type SessionRow,
@@ -59,6 +60,16 @@ export interface GatewayResult {
   /** 交给模型的文字（截断、隐藏密钥之后） */
   output: string
   denied: boolean
+  /** M3：规则要求先审批，工具还没执行（调用方让 session 等人处理） */
+  approval?: {
+    ruleId: string
+    ruleName: string
+    assigneeId: string
+    reason: string
+    /** 校验过的参数（给人看之前要隐藏密钥类字段） */
+    input: unknown
+    risk?: Risk
+  }
 }
 
 function safeName(id: string, taken: Set<string>) {
@@ -218,6 +229,11 @@ export class ToolGateway {
     return Boolean(this.browser)
   }
 
+  /** 规则「截图存证」：这次运行开着 Chrome 时截当前页面 */
+  async screenshot(): Promise<{ fileId: string } | undefined> {
+    return this.browser?.evidenceScreenshot()
+  }
+
   /** 给 AI SDK 的工具定义（不带 execute） */
   toolSet(): ToolSet {
     return Object.fromEntries(
@@ -254,7 +270,14 @@ export class ToolGateway {
     )
   }
 
-  async call(call: ModelToolCall): Promise<GatewayResult> {
+  /**
+   * 处理模型提出的一次调用。approvedRuleIds：已经由人批准过的规则（审批通过后继续执行这次调用时传），
+   * 这些规则不再要求审批，其他规则和内置检查照常。
+   */
+  async call(
+    call: ModelToolCall,
+    options: { approvedRuleIds?: readonly string[] } = {}
+  ): Promise<GatewayResult> {
     const entry = this.entryFor(call.toolName)
     // 不在本任务里的内置工具：也换回原来的 id，过程里好认
     const builtin = entry
@@ -267,7 +290,11 @@ export class ToolGateway {
     const started = Date.now()
     const hookCtx: ToolCallContext = {
       ...this.ctx,
+      screenshot: () => this.screenshot(),
       toolId,
+      toolName,
+      risk: entry?.def.risk ?? builtin?.risk,
+      approvedRuleIds: options.approvedRuleIds,
       input:
         call.invalid && typeof call.input === "string"
           ? { __raw: call.input }
@@ -280,6 +307,30 @@ export class ToolGateway {
         ? call.input
         : JSON.stringify(call.input ?? {})
     const decision = await runBeforeToolHooks(hookCtx)
+    if (decision.action === "ask_human") {
+      await appendEvent(this.ctx.db, this.ctx.session.id, {
+        kind: "rule",
+        title: `规则「${decision.ruleName}」：拦下 ${toolName}，交给人审批`,
+        detail: decision.reason,
+        toolId,
+        input: redactSecrets(maskSecretFields(inputText), []),
+      })
+      return {
+        toolId,
+        toolName,
+        outcome: { output: "", isError: true },
+        output: "",
+        denied: false,
+        approval: {
+          ruleId: decision.ruleId,
+          ruleName: decision.ruleName,
+          assigneeId: decision.assigneeId,
+          reason: decision.reason,
+          input: entry?.validator.safeParse(call.input ?? {}).data ?? call.input,
+          risk: hookCtx.risk,
+        },
+      }
+    }
     if (decision.action === "deny") {
       const output = `被拦下：${decision.reason}`
       await appendEvent(this.ctx.db, this.ctx.session.id, {

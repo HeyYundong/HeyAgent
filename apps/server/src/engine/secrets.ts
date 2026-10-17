@@ -99,3 +99,35 @@ export function redactSecrets(text: string, values: Iterable<string>): string {
   }
   return result
 }
+
+const SECRET_KEY =
+  /pass(word|wd)?|secret|token|api[_-]?key|access[_-]?key|authorization|cookie|credential|private[_-]?key/i
+
+/**
+ * 参数里像密钥的字段（password、token、apiKey、authorization……）换成 ••••（M3：审批单上给人看的参数）。
+ * 模型本来只看得到 {{名字}}，这里是多一层保险。给字符串就按 JSON 解析，解析不了原样返回
+ */
+export function maskSecretFields(value: string): string
+export function maskSecretFields(value: unknown): unknown
+export function maskSecretFields(value: unknown): unknown {
+  if (typeof value !== "string") return maskValue(value)
+  try {
+    return JSON.stringify(maskValue(JSON.parse(value) as unknown))
+  } catch {
+    return value
+  }
+}
+
+function maskValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => maskValue(item))
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+        key,
+        SECRET_KEY.test(key) && item != null && item !== ""
+          ? "••••"
+          : maskValue(item),
+      ])
+    )
+  return value
+}

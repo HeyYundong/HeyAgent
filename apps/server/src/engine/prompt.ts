@@ -2,6 +2,7 @@
 // 会变的东西（现在几点、等到了什么）放在消息里。平台通用：这里只有通用的说明，业务全部来自任务配置。
 import {
   checkpointKindLabel,
+  compiledRuleSchema,
   riskLabel,
   type SessionSnapshot,
 } from "@heyagent/shared"
@@ -56,9 +57,14 @@ export function buildSystemPrompt(
     )
   }
 
-  if (snapshot.rules.length) {
+  // 只列人确认过的规则，用「系统理解为」那句话（就是程序真正执行的）；没生效的规则这次不执行，不告诉模型
+  const rules = snapshot.rules.flatMap((rule) => {
+    const parsed = compiledRuleSchema.safeParse(rule.compiledTrigger)
+    return parsed.success ? [`- ${rule.name}：${parsed.data.understood}`] : []
+  })
+  if (rules.length) {
     sections.push(
-      `## 规则（由系统执行，你绕不过；了解它们能少走弯路）\n${snapshot.rules.map((rule) => `- ${rule.name}：${rule.trigger} → ${rule.action}`).join("\n")}`
+      `## 规则（由系统执行，你绕不过；了解它们能少走弯路）\n${rules.join("\n")}\n被规则拦下或被人拒绝时，不要换个工具或换个说法绕过去。`
     )
   }
 
@@ -102,11 +108,13 @@ export function buildSystemPrompt(
   sections.push(
     [
       "## 怎么工作",
+      "- 开始干活前先用 plan.set 写下你打算怎么做（几步）；做法变了就再调一次。",
       "- 每一步先想清楚再调工具；能并行的工具调用可以一次提出多个。",
       "- 要等外部的事或等一段时间，用 session.wait；要人批准、回答或去登录，用 ask.human。不要假装已经等到或已经拿到批准。",
       "- 要交付的表格、文档用 file.save 存成文件。",
       "- 工具输出太长时只给你开头部分，全文存成了文件，需要时用 file.read 读。",
       "- 全部做完后，直接回复一段总结（做了什么、结果在哪、哪些检查点没完成以及原因），不要再调工具。回复不调工具就表示你认为任务做完了。",
+      "- 如果有三方验收，验收员会逐条核对检查点和证据（记录、文件、截图）；被反问时如实说明原因，能补做的就补做。",
     ].join("\n")
   )
   return sections.join("\n\n")

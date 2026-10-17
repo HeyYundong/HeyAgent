@@ -11,6 +11,7 @@ import {
   listMcpServerToolsResultSchema,
   notificationListSchema,
   resolveHumanItemInputSchema,
+  resolveVerifyDisputeInputSchema,
   runNowInputSchema,
   sessionFileSchema,
   sessionIdInputSchema,
@@ -23,7 +24,10 @@ import {
   fireEventImpl,
   resumeNowImpl,
 } from "../engine/control.js"
-import { resolveHumanItemImpl } from "../engine/humans.js"
+import {
+  resolveHumanItemImpl,
+  resolveVerifyDisputeImpl,
+} from "../engine/humans.js"
 import { writeAudit } from "../engine/records.js"
 import { fireTodo } from "../engine/schedule.js"
 import { EngineError, startSessionImpl } from "../engine/sessions.js"
@@ -210,6 +214,37 @@ export const engineRouter = router({
         throw forbidden("这件事不是分给你的")
       return engineCall(() =>
         resolveHumanItemImpl(ctx.db, {
+          itemId: input.itemId,
+          how: input.how,
+          note: input.note,
+          actorId: ctx.user.id,
+          actorName: ctx.user.name,
+        })
+      )
+    }),
+
+  /**
+   * 验收争议（M3）：算通过 / 算失败 / 补充说明后继续（note 必填，交给 agent）。
+   * 和 resolveHumanItem 处理 kind = verify 的事效果一样（approve = 算通过，reject = 算失败，done = 补充说明后继续）
+   */
+  resolveVerifyDispute: protectedProcedure
+    .input(resolveVerifyDisputeInputSchema)
+    .output(
+      z.object({
+        resumedSessionId: z.string().optional(),
+        endedSessionId: z.string().optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const [item] = await ctx.db
+        .select({ assigneeId: t.humanItems.assigneeId })
+        .from(t.humanItems)
+        .where(eq(t.humanItems.id, input.itemId))
+      if (!item) throw notFound(`找不到待办 ${input.itemId}`)
+      if (!can(ctx.user, "humanItem.resolve", { assigneeId: item.assigneeId }))
+        throw forbidden("这件事不是分给你的")
+      return engineCall(() =>
+        resolveVerifyDisputeImpl(ctx.db, {
           itemId: input.itemId,
           how: input.how,
           note: input.note,

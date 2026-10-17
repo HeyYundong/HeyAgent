@@ -18,6 +18,10 @@ export interface EngineSettings {
   /** 外部事件令牌的 sha256（hex）；没配就不接受外部事件 */
   eventTokenSha256?: string
   channels: NotifyChannel[]
+  /** M3：三方验收最多几轮（最后一轮还说不清就交给负责人） */
+  verifyMaxRounds: number
+  /** M3：发给模型的历史超过多少 token 就压缩；0 = 只按模型上下文的 60% */
+  compactMaxTokens: number
 }
 
 const positive = (value: unknown, fallback: number) =>
@@ -62,5 +66,11 @@ export async function loadEngineSettings(
       ? token.data.sha256.toLowerCase()
       : undefined,
     channels: channels.success ? channels.data : [],
+    verifyMaxRounds: Math.round(
+      positive(value(SETTING_KEYS.verifyMaxRounds), SETTINGS_DEFAULTS.verifyMaxRounds)
+    ),
+    compactMaxTokens: Math.round(
+      positive(value(SETTING_KEYS.compactMaxTokens), SETTINGS_DEFAULTS.compactMaxTokens)
+    ),
   }
 }

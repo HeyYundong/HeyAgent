@@ -36,6 +36,7 @@ import {
   toolSourceSchema,
   type HttpSpec,
   type HumanDetail,
+  type RuleCompileResult,
   type SessionSnapshot,
   type TaskStep,
   type Verification,
@@ -56,6 +57,36 @@ const updatedAt = () =>
 /** 列表里的显示顺序（种子数据照原型的顺序） */
 const position = () => integer("position").notNull().default(0)
 const identity = () => bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity()
+
+// ---------- M3 的 jsonb 结构 ----------
+
+export interface SessionRuleState {
+  /** 「花费超过 X」已经触发过的规则 id */
+  costFired?: string[]
+  /** 已经提示过「还没生效、这次不执行」的规则 */
+  warned?: boolean
+}
+
+export interface PendingCall {
+  toolCallId: string
+  toolName: string
+  input: unknown
+  invalid?: boolean
+  error?: string
+}
+
+/** 一步里从等审批的那个调用开始、还没处理的工具调用 */
+export interface PendingToolCalls {
+  calls: PendingCall[]
+  /** 已经批准过的规则（继续时第一个调用不再因为这些规则拦下） */
+  approvedRuleIds: string[]
+  ruleId: string
+  ruleName: string
+  /** 人处理完写上：approve = 执行；reject = 不执行，把理由告诉 agent */
+  decision?: { how: "approve" | "reject"; note?: string; actorName: string }
+  /** executing：正在执行批准的那个调用（进程中途被杀掉时，继续时不再重复执行）；done：处理完了 */
+  state?: "executing" | "done"
+}
 
 // ---------- 枚举 ----------
 
@@ -370,6 +401,12 @@ export const rules = pgTable("rules", {
   action: text("action").notNull(),
   /** 翻译后的触发条件（方案 2.3.2：一种触发类型 + 参数），人确认后才写入；M3 用 */
   compiledTrigger: jsonb("compiled_trigger").$type<Record<string, unknown>>(),
+  /** M3：正在执行的版本（compiled_trigger）是按哪段文字翻译、确认的：「触发条件\n命中后怎么办」 */
+  compiledText: text("compiled_text"),
+  /** M3：最近一次翻译的结果（不管支不支持）；文字改了就清空 */
+  compileDraft: jsonb("compile_draft").$type<RuleCompileResult>(),
+  confirmedById: text("confirmed_by_id").references(() => users.id, { onDelete: "set null" }),
+  confirmedAt: ts("confirmed_at"),
   createdById: text("created_by_id").references(() => users.id, { onDelete: "set null" }),
   position: position(),
   createdAt: createdAt(),
@@ -416,6 +453,8 @@ export const tasks = pgTable(
     allowedDomains: text("allowed_domains").array().notNull().default(sql`'{}'::text[]`),
     /** M2：是否允许 agent 在网页里执行脚本（Playwright MCP 的 browser_evaluate），默认不允许 */
     allowBrowserEvaluate: boolean("allow_browser_evaluate").notNull().default(false),
+    /** M3：这个任务自己选的三方验收模型；为空用默认验收模型 */
+    verifyModelId: text("verify_model_id"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -489,6 +528,8 @@ export const sessions = pgTable(
     msgSeq: integer("msg_seq").notNull().default(0),
     /** M2：这次运行选用的 Chrome 配置（agent 调 browser.use 选的，或者任务只允许一个时自动选的）。挂起再继续时沿用 */
     browserProfileId: text("browser_profile_id"),
+    /** M3：规则执行的状态（例如「花费超过 X」已经触发过的规则，不再重复触发） */
+    ruleState: jsonb("rule_state").$type<SessionRuleState>().notNull().default({}),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -512,6 +553,8 @@ export const sessionMessages = pgTable(
     content: jsonb("content").notNull(),
     /** 长 session 压缩上下文时，被摘要替换掉的消息标记为 true（方案 2.3.5） */
     compacted: boolean("compacted").notNull().default(false),
+    /** M3：压缩后发给模型的内容（摘要 + 文件引用）。compacted = true 时读这个，原文 content 留着 */
+    summary: jsonb("summary"),
     createdAt: createdAt(),
   },
   (t) => [primaryKey({ columns: [t.sessionId, t.seq] })]
@@ -557,6 +600,8 @@ export const checkpoints = pgTable(
     status: checkpointStatusEnum("status").notNull().default("open"),
     progress: integer("progress"),
     skipReason: text("skip_reason"),
+    /** M3：agent 用 checkpoint.mark(status = doing) 指定「现在在做这个」的时间；同类型有多个时，自动记录记到最近指定的那个 */
+    focusedAt: ts("focused_at"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -612,6 +657,8 @@ export const sessionWaits = pgTable(
     humanItemId: text("human_item_id").references((): AnyPgColumn => humanItems.id, { onDelete: "set null" }),
     /** 兜底期限到了、已经提醒过负责人的时间 */
     remindedAt: ts("reminded_at"),
+    /** M3：等审批的工具调用（规则「调工具前交给人审批」）。处理完写上 decision，继续时由引擎先处理这些调用 */
+    pending: jsonb("pending").$type<PendingToolCalls>(),
     /** 挂起的时间（原型 waiting.since） */
     createdAt: createdAt(),
   },

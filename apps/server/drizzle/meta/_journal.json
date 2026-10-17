@@ -50,6 +50,13 @@
       "when": 1792232261256,
       "tag": "0006_m2_browser_runtime",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1792237431276,
+      "tag": "0007_m3_rules_verify",
+      "breakpoints": true
     }
   ]
 }
