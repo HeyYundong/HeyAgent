@@ -1,0 +1,1 @@
+podman run --rm --init --shm-size=2g --security-opt no-new-privileges --cap-drop=all --cap-add=SYS_CHROOT -v /mnt/toshiba/Projects/HeyAgent/spikes/browser:/opt/browser/spike:ro -w /opt/browser/spike --dns=127.0.0.1 --sysctl net.ipv4.ip_unprivileged_port_start=0 -e UPSTREAM_DNS=10.0.2.3 localhost/heyagent-browser-base:m0 node t-gost.mjs

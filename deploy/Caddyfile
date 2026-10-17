@@ -1,0 +1,28 @@
+# 整套 pod 的入口（docs/dev/m0.md 包 3 第 10 步）：8080 端口提供控制台的静态文件，/api 反向代理到同一个 pod 里的 api（127.0.0.1:3100）。
+# 内网 http 访问，不用 Caddy 的自动 HTTPS；管理接口也关掉。
+{
+	admin off
+	auto_https off
+}
+
+:8080 {
+	encode zstd gzip
+
+	# API：页面数据（tRPC）、登录（better-auth）、实时推送（SSE）。
+	# flush_interval -1：收到就转，SSE 不攒在缓冲里（Caddy 对 text/event-stream 本来也会立即转发，这里写明）
+	handle /api/* {
+		reverse_proxy 127.0.0.1:3100 {
+			flush_interval -1
+		}
+	}
+
+	# 控制台：hash 路由（#/tasks），只有 index.html 一个页面。带 hash 的资源文件名每次构建都会变，可以长期缓存
+	handle {
+		root * /srv
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+}

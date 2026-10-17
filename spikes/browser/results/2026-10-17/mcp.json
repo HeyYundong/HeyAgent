@@ -1,0 +1,73 @@
+{
+  "mcpVersion": {
+    "name": "Playwright",
+    "version": "1.64.0-alpha-1790635538000"
+  },
+  "toolCount": 25,
+  "tools": [
+    "browser_close",
+    "browser_resize",
+    "browser_console_messages",
+    "browser_handle_dialog",
+    "browser_emulate_media",
+    "browser_evaluate",
+    "browser_file_upload",
+    "browser_drop",
+    "browser_find",
+    "browser_fill_form",
+    "browser_press_key",
+    "browser_type",
+    "browser_navigate",
+    "browser_navigate_back",
+    "browser_network_requests",
+    "browser_network_request",
+    "browser_run_code_unsafe",
+    "browser_take_screenshot",
+    "browser_snapshot",
+    "browser_click",
+    "browser_drag",
+    "browser_hover",
+    "browser_select_option",
+    "browser_tabs",
+    "browser_wait_for"
+  ],
+  "runCodeUnsafe": {
+    "present": true,
+    "description": "Run a Playwright code snippet. Unsafe: executes arbitrary JavaScript in the Playwright server process and is RCE-equivalent."
+  },
+  "toolsListChars": 20286,
+  "navigate": {
+    "chars": 382,
+    "head": "### Ran Playwright code\n```js\nawait page.goto('http://127.0.0.1:35815/index.html');\n```\n### Page\n- Page URL: http://127.0.0.1:35815/index.html\n- Page Title: HeyAgent 远程画面测试页\n- Console: 1 errors, 0 warnings\n### Snapshot\n- [Snapshot](../../../tmp/mcp-out/page-2026-10-17T05-18-34-608Z.yml)\n### Events\n-"
+  },
+  "snapshotParams": ["target", "filename", "depth", "boxes"],
+  "clickParams": ["element", "target", "doubleClick", "button", "modifiers"],
+  "snapshot": {
+    "chars": 1208,
+    "hasInput": true,
+    "hasButton": true
+  },
+  "clickRef": "e25",
+  "sharedContext": {
+    "mcpClickVisibleToOrchestrator": true,
+    "orchestratorPages": ["http://127.0.0.1:35815/index.html"],
+    "clickResultChars": 291
+  },
+  "exampleCom": {
+    "ok": true,
+    "navError": false
+  },
+  "webdriverViaMcp": "[\n  false,\n  false\n]",
+  "dialogNoOrchListener": {
+    "mcpClickResult": "### Ran Playwright code\n```js\nawait page.getByRole('button', { name: '弹 alert' }).click();\n```\n### Page\n- Page URL: http://127.0.0.1:35815/index.html\n### Modal state\n- [\"alert\" dialog with message \"这是 alert：你好\"]: can be handled by browser_handle_dialog\n### Snapshot\n- [Snapshot](../../../tmp/mcp-out/page-2026-10-17T05-18-39-511Z.yml)",
+    "pageResult": "alert 已关闭"
+  },
+  "dialogOrchHolds": {
+    "orchestratorSaw": ["这是 alert：你好"],
+    "mcpClickResult": "### Ran Playwright code\n```js\nawait page.getByRole('button', { name: '弹 alert' }).click();\n```\n### Page\n- Page URL: http://127.0.0.1:35815/index.html\n### Modal state\n- [\"alert\" dialog with message \"这是 alert：你好\"]: can be handled by browser_handle_dialog\n### Snapshot\n- [Snapshot](../../../tmp/mcp-out/page-2026-10-17T05-18-40-138Z.yml)",
+    "handleDialog": "### Page\n- Page URL: http://127.0.0.1:35815/index.html\n- Page Title: HeyAgent 远程画面测试页",
+    "pageResult": "alert 已关闭"
+  },
+  "mcpPssMB": 114.9,
+  "chromeAliveAfterMcpClose": true
+}

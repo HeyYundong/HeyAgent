@@ -1,0 +1,17 @@
+{
+  "noSandbox": false,
+  "uid": 1000,
+  "shm": "1907MB",
+  "chromeSandboxMode": "4755",
+  "pid1": "/dev/init -- node t-sandbox.mjs",
+  "started": true,
+  "cdpListen": ["127.0.0.1:38465"],
+  "sandboxPage": [
+    "Sandbox Status",
+    " Layer 1 SandboxNamespacePID namespacesYesNetwork namespacesYesSeccomp-BPF sandboxYesSeccomp-BPF sandbox supports TSYNCYesPtrace Protection with Yama LSM (Broker)YesPtrace Protection with Yama LSM (Non-broker)No",
+    " You are adequately sandboxed."
+  ],
+  "renderOk": true,
+  "stderrWarnings": [],
+  "zombiesAfterClose": []
+}

@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>延迟页</title>
+<style>body { margin: 0; } #b { width: 100vw; height: 100vh; background: #fff; }</style></head>
+<body>
+<div id="b"></div>
+<script>
+  // 每次按键 / 点击切换整页颜色。页面平时静止，screencast 只在内容变化时出帧，
+  // 所以「输入发出后的第一帧」就是这次变化的画面。
+  let on = false
+  const flip = () => { on = !on; document.getElementById("b").style.background = on ? "#222" : "#fff" }
+  window.addEventListener("keydown", flip)
+  window.addEventListener("mousedown", flip)
+</script>
+</body>
+</html>

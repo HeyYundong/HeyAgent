@@ -1,0 +1,19 @@
+PASS 点击输入框后键入 abc "abc"
+PASS Ctrl+A + Backspace 清空 ""
+PASS Input.insertText 中文 + emoji "亚马逊 买家 账号 😀 第二行"
+PASS insertText 触发 input 事件（页面显示同步） ""
+PASS mouseMoved 触发 :hover ""
+PASS 点击按钮 3 次 ""
+PASS mouseWheel 滚动页面 {"scrollY":800}
+PASS Tab 键移动焦点 {"focused":"confirmBtn"}
+PASS Enter 键触发按钮 ""
+PASS 自写拖动滑块拖到头 {"moves":30,"done":true,"maxX":360}
+PASS 原生 range 滑块拖到头 {"value":"100"}
+PASS 新标签页（target=_blank 链接）触发 context.on("page") "http://127.0.0.1:44691/newtab.html"
+PASS 切到新标签页后 screencast 有帧（target=_blank 链接） {"n":1,"size":"1365x680"}
+PASS 新标签页（window.open）触发 context.on("page") "http://127.0.0.1:44691/newtab.html?from=window.open"
+PASS 切到新标签页后 screencast 有帧（window.open） {"n":1,"size":"1365x680"}
+PASS 后台标签页开 screencast 的表现（记录） {"visibilityBefore":"hidden","backgroundFrames":{"n":1,"size":"1365x624"},"foregroundFrames":{"n":89,"size":"1365x624"},"visibilityAfterBringToFront":"visible"}
+PASS JS 弹框 alert {"result":"alert 已关闭","dialog":{"type":"alert","message":"这是 alert：你好","defaultValue":""}}
+PASS JS 弹框 confirm {"result":"confirm=false","dialog":{"type":"confirm","message":"确定要继续吗？","defaultValue":""}}
+PASS JS 弹框 prompt {"result":"prompt=人工填写的备注","dialog":{"type":"prompt","message":"请输入备注","defaultValue":"默认值"}}

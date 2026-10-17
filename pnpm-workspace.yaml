@@ -1,0 +1,7 @@
+packages:
+  - apps/*
+  - packages/*
+
+# esbuild（tsx、drizzle-kit、vite 用）安装时要跑脚本装平台二进制
+allowBuilds:
+  esbuild: true

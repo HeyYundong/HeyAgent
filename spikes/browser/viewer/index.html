@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>远程画面试用（M0 实测）</title>
+<!-- 实测用的临时页面，不是控制台产品界面；正式版在 apps/web 里用 shadcn 组件重做 -->
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: #111; color: #ddd; }
+  header { display: flex; gap: 6px; align-items: center; padding: 6px 8px; background: #1b1b1b; border-bottom: 1px solid #333; flex-wrap: wrap; }
+  button { background: #2a2a2a; color: #ddd; border: 1px solid #444; padding: 3px 10px; cursor: default; font: inherit; }
+  button:hover { background: #333; }
+  #url { flex: 1; min-width: 200px; background: #000; color: #ddd; border: 1px solid #444; padding: 3px 6px; font: inherit; }
+  #tabs { display: flex; gap: 4px; padding: 4px 8px; background: #161616; border-bottom: 1px solid #333; overflow-x: auto; }
+  .tab { display: flex; align-items: center; border: 1px solid #444; background: #222; max-width: 220px; }
+  .tab.active { background: #3a1a1a; border-color: #a33; }
+  .tab span { padding: 2px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: default; }
+  .tab b { padding: 0 6px; cursor: default; color: #999; font-weight: normal; }
+  #stage { position: relative; padding: 8px; }
+  canvas { display: block; max-width: 100%; background: #000; outline: 1px solid #333; cursor: default; touch-action: none; }
+  canvas.focused { outline-color: #a33; }
+  #ime { position: absolute; width: 2px; height: 20px; opacity: 0; border: 0; padding: 0; resize: none; overflow: hidden; left: 0; top: 0; }
+  #stats { color: #888; font-size: 12px; margin-left: auto; white-space: nowrap; }
+  #dialog { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; align-items: center; justify-content: center; }
+  #dialog > div { background: #1e1e1e; border: 1px solid #555; padding: 16px; min-width: 320px; max-width: 90vw; }
+  #dialog input { width: 100%; box-sizing: border-box; margin: 8px 0; background: #000; color: #ddd; border: 1px solid #444; padding: 4px; }
+  .hint { color: #888; font-size: 12px; padding: 0 8px 8px; }
+</style>
+</head>
+<body>
+<header>
+  <button id="back">后退</button>
+  <button id="fwd">前进</button>
+  <button id="reload">刷新</button>
+  <input id="url" spellcheck="false" placeholder="只允许本地测试页、example.com、wikipedia.org">
+  <button id="go">前往</button>
+  <span id="stats">未连接</span>
+</header>
+<div id="tabs"></div>
+<div id="stage">
+  <canvas id="screen" width="1366" height="680"></canvas>
+  <textarea id="ime" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
+</div>
+<div class="hint">点画面后直接打字；中文用本机输入法，粘贴用 Ctrl+V。看不到 Chrome 自己的地址栏和原生弹框，弹框会显示成本页的对话框。</div>
+<div id="dialog"><div>
+  <div id="dlgType" style="color:#888;font-size:12px"></div>
+  <div id="dlgMsg" style="margin:6px 0;white-space:pre-wrap"></div>
+  <input id="dlgInput">
+  <div style="text-align:right;margin-top:8px"><button id="dlgCancel">取消</button> <button id="dlgOk">确定</button></div>
+</div></div>
+
+<script>
+const $ = (id) => document.getElementById(id)
+const canvas = $("screen"), g = canvas.getContext("2d"), ime = $("ime")
+let ws, meta = { w: 1366, h: 680 }, frames = 0, bytes = 0, lastSize = 0, decoding = false, pendingBlob = null
+const send = (o) => ws && ws.readyState === 1 && ws.send(JSON.stringify(o))
+
+function connect() {
+  ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`)
+  ws.binaryType = "blob"
+  ws.onmessage = (e) => {
+    if (typeof e.data !== "string") { frames++; bytes += e.data.size; lastSize = e.data.size; draw(e.data); return }
+    const m = JSON.parse(e.data)
+    if (m.t === "meta") { meta = { w: m.w, h: m.h }; canvas.width = m.w; canvas.height = m.h }
+    if (m.t === "tabs") renderTabs(m.list)
+    if (m.t === "dialog") showDialog(m)
+  }
+  ws.onclose = () => { $("stats").textContent = "连接断开，2 秒后重连"; setTimeout(connect, 2000) }
+}
+// 只画最新的一帧：解码跟不上时丢掉中间帧
+async function draw(blob) {
+  if (decoding) { pendingBlob = blob; return }
+  decoding = true
+  try { const bmp = await createImageBitmap(blob); g.drawImage(bmp, 0, 0, canvas.width, canvas.height); bmp.close() } catch {}
+  decoding = false
+  if (pendingBlob) { const b = pendingBlob; pendingBlob = null; draw(b) }
+}
+setInterval(() => { $("stats").textContent = `${frames} 帧/秒 · ${(bytes / 1024).toFixed(0)} KB/s · 单帧 ${(lastSize / 1024).toFixed(1)} KB · ${meta.w}×${meta.h}`; frames = 0; bytes = 0 }, 1000)
+
+function renderTabs(list) {
+  const el = $("tabs"); el.innerHTML = ""
+  for (const t of list) {
+    const d = document.createElement("div"); d.className = "tab" + (t.active ? " active" : "")
+    const s = document.createElement("span"); s.textContent = t.title || t.url; s.title = t.url; s.onclick = () => send({ t: "tab", id: t.id })
+    const x = document.createElement("b"); x.textContent = "×"; x.title = "关闭"; x.onclick = () => send({ t: "closeTab", id: t.id })
+    d.append(s, x); el.append(d)
+    if (t.active && document.activeElement !== $("url")) $("url").value = t.url
+  }
+}
+
+// ---------- 鼠标 ----------
+const mods = (e) => (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0)
+const pos = (e) => { const r = canvas.getBoundingClientRect(); return { x: (e.clientX - r.left) * meta.w / r.width, y: (e.clientY - r.top) * meta.h / r.height } }
+const BTN = ["left", "middle", "right"]
+canvas.addEventListener("pointerdown", (e) => {
+  e.preventDefault()
+  canvas.setPointerCapture(e.pointerId)
+  focusIme(e)
+  send({ t: "mouse", type: "mousePressed", ...pos(e), button: BTN[e.button] || "left", buttons: e.buttons, clickCount: e.detail || 1, modifiers: mods(e) })
+})
+canvas.addEventListener("pointerup", (e) => {
+  send({ t: "mouse", type: "mouseReleased", ...pos(e), button: BTN[e.button] || "left", buttons: e.buttons, clickCount: e.detail || 1, modifiers: mods(e) })
+})
+canvas.addEventListener("pointermove", (e) => {
+  // 拖动滑块要求连续的 mousemove，这里不节流，每个事件都发
+  const button = e.buttons & 1 ? "left" : e.buttons & 2 ? "right" : e.buttons & 4 ? "middle" : "none"
+  send({ t: "mouse", type: "mouseMoved", ...pos(e), button, buttons: e.buttons, modifiers: mods(e) })
+})
+canvas.addEventListener("wheel", (e) => {
+  e.preventDefault()
+  const k = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 800 : 1
+  send({ t: "mouse", type: "mouseWheel", ...pos(e), deltaX: e.deltaX * k, deltaY: e.deltaY * k, modifiers: mods(e) })
+}, { passive: false })
+canvas.addEventListener("contextmenu", (e) => e.preventDefault())
+
+// ---------- 键盘 + 输入法 ----------
+// 焦点放在隐藏 textarea 上，并把它挪到点击位置，输入法候选框就会出现在点的地方
+function focusIme(e) {
+  const r = canvas.getBoundingClientRect(), sr = $("stage").getBoundingClientRect()
+  ime.style.left = (e.clientX - sr.left) + "px"; ime.style.top = (e.clientY - sr.top) + "px"
+  ime.focus({ preventScroll: true })
+}
+ime.addEventListener("focus", () => canvas.classList.add("focused"))
+ime.addEventListener("blur", () => canvas.classList.remove("focused"))
+let composing = false
+const sent = new Set()
+ime.addEventListener("compositionstart", () => (composing = true))
+ime.addEventListener("compositionend", (e) => { composing = false; if (e.data) send({ t: "text", text: e.data }); ime.value = "" })
+ime.addEventListener("input", (e) => {
+  // 非输入法的直接文字（如部分软键盘）兜底；输入法过程中的 insertCompositionText 不处理
+  if (!composing && e.inputType === "insertText" && e.data) send({ t: "text", text: e.data })
+  if (!composing) ime.value = ""
+})
+ime.addEventListener("paste", (e) => { e.preventDefault(); const t = e.clipboardData.getData("text/plain"); if (t) send({ t: "text", text: t }) })
+ime.addEventListener("keydown", (e) => {
+  if (e.isComposing || e.keyCode === 229) return // 交给输入法
+  const ctrl = e.ctrlKey || e.metaKey
+  if (ctrl && (e.key === "v" || e.key === "V")) return // 让 paste 事件处理本机剪贴板
+  e.preventDefault()
+  const printable = e.key.length === 1 && !ctrl && !e.altKey
+  const text = printable ? e.key : e.key === "Enter" ? "\r" : undefined
+  send({ t: "key", type: text ? "keyDown" : "rawKeyDown", key: e.key, code: e.code, keyCode: e.keyCode, text, modifiers: mods(e) })
+  sent.add(e.code)
+})
+ime.addEventListener("keyup", (e) => {
+  if (!sent.has(e.code)) return
+  sent.delete(e.code)
+  send({ t: "key", type: "keyUp", key: e.key, code: e.code, keyCode: e.keyCode, modifiers: mods(e) })
+})
+
+// ---------- 导航 / 弹框 ----------
+$("back").onclick = () => send({ t: "nav", action: "back" })
+$("fwd").onclick = () => send({ t: "nav", action: "forward" })
+$("reload").onclick = () => send({ t: "nav", action: "reload" })
+$("go").onclick = () => send({ t: "nav", action: "goto", url: $("url").value.trim() })
+$("url").addEventListener("keydown", (e) => e.key === "Enter" && $("go").onclick())
+function showDialog(m) {
+  $("dlgType").textContent = { alert: "网页提示（alert）", confirm: "网页确认（confirm）", prompt: "网页输入（prompt）", beforeunload: "离开页面" }[m.type] || m.type
+  $("dlgMsg").textContent = m.message
+  $("dlgInput").style.display = m.type === "prompt" ? "" : "none"; $("dlgInput").value = m.defaultValue || ""
+  $("dlgCancel").style.display = m.type === "alert" ? "none" : ""
+  $("dialog").style.display = "flex"
+  ;(m.type === "prompt" ? $("dlgInput") : $("dlgOk")).focus()
+}
+const closeDialog = (accept) => { $("dialog").style.display = "none"; send({ t: "dialog", accept, text: $("dlgInput").style.display === "" ? $("dlgInput").value : undefined }); ime.focus() }
+$("dlgOk").onclick = () => closeDialog(true)
+$("dlgCancel").onclick = () => closeDialog(false)
+connect()
+</script>
+</body>
+</html>

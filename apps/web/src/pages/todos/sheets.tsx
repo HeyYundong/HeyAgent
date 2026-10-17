@@ -1,0 +1,176 @@
+// 看板卡片的详情 Sheet：外壳 + 运行（session）详情 + 人加的待办详情。「要人办的事」在 human-sheet.tsx。
+import { Fragment, createElement, type ReactNode } from "react"
+import { BrainIcon, CircleCheckIcon, CircleDashedIcon, CircleSlashIcon, EllipsisIcon, FlagIcon, ListTodoIcon, PauseIcon } from "lucide-react"
+import { PlayIcon, ShieldIcon, ShieldQuestionIcon, TriangleAlertIcon, UserIcon, UserPenIcon, WrenchIcon, ZapIcon, type LucideIcon } from "lucide-react"
+
+import { DetailSection } from "@/components/shell/simple-page"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { CodeBlock, CodeBlockContent, CodeBlockHeader, CodeBlockTitle } from "@/components/ui/code-block"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { Kbd } from "@/components/ui/kbd"
+import { Separator } from "@/components/ui/separator"
+import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
+import { Spinner } from "@/components/ui/spinner"
+import { Trace, TraceDescription, TraceIcon, TraceLine, TraceTitle } from "@/components/ui/trace"
+import { href } from "@/lib/router"
+import { addDaysIso, boardColumns, eventTimeText, findById, fmtDateTime, fmtShort, suspendedRun, triggerText } from "@heyagent/shared"
+import type { BoardColumn, HumanTodo, RunEventKind, SessionRun, TaskDef, Trigger } from "@heyagent/shared"
+
+import { useModels, useStaffName } from "@/lib/data"
+
+import { nextRuns, shortTime } from "./cron"
+
+/** ISO 时间 →「10-17 周六 10:00」（按上海时间） */
+export const isoShortTime = (iso: string) => shortTime(fmtDateTime(iso))
+
+type SheetProps = { open: boolean; onClose: () => void; title: ReactNode; badges: ReactNode; meta: ReactNode; footer?: ReactNode; children: ReactNode }
+
+/** 外壳：标题 + 分区卡（可滚动）+ 底部操作（最多两个可见按钮，其余放「⋯」） */
+export function DetailSheet({ open, onClose, title, badges, meta, footer, children }: SheetProps) {
+  return (
+    <Sheet open={open} onOpenChange={(next) => !next && onClose()}>
+      <SheetContent className="gap-0 data-[side=right]:w-full data-[side=right]:sm:max-w-lg">
+        <SheetHeader className="pr-12">
+          <div className="flex flex-wrap items-center gap-2 pb-1">{badges}</div>
+          <SheetTitle>{title}</SheetTitle><SheetDescription>{meta}</SheetDescription>
+        </SheetHeader>
+        <Separator />
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4">{children}</div>
+        {footer && <><Separator /><SheetFooter className="mt-0 flex-row flex-wrap items-center">{footer}</SheetFooter></>}
+      </SheetContent>
+    </Sheet>
+  )
+}
+
+export const TextLink = ({ to, children }: { to: string; children: ReactNode }) => <a href={to} className="underline underline-offset-4 hover:text-foreground">{children}</a>
+
+/** 一块原文：要发的消息、订单、证据、diff */
+export const Block = ({ title, children }: { title: string; children: ReactNode }) => (
+  <CodeBlock size="sm">
+    <CodeBlockHeader><CodeBlockTitle>{title}</CodeBlockTitle></CodeBlockHeader>
+    <CodeBlockContent wrap>{children}</CodeBlockContent>
+  </CodeBlock>
+)
+
+/** 几样东西用 · 隔开（空的跳过） */
+export const dots = (...parts: ReactNode[]) => parts.filter(Boolean).map((part, index) => <Fragment key={index}>{index > 0 && " · "}{part}</Fragment>)
+
+/** 验收对话的一句 */
+export const Said = ({ by, text }: { by: string; text: string }) => <p><span className="text-muted-foreground">{by === "verifier" ? "三方 AI：" : "执行 agent："}</span>{text}</p>
+
+const EVENT_ICON: Record<RunEventKind, LucideIcon> = { plan: ListTodoIcon, think: BrainIcon, tool: WrenchIcon, checkpoint: FlagIcon, rule: ShieldIcon,
+  wait: PauseIcon, resume: PlayIcon, human: UserIcon, verify: ShieldQuestionIcon, done: CircleCheckIcon, error: TriangleAlertIcon }
+const CHECK_ICON = { done: CircleCheckIcon, open: CircleDashedIcon, skipped: CircleSlashIcon }
+
+type RunProps = { run: SessionRun; task: TaskDef; column: BoardColumn; note?: string; canAct: boolean; open: boolean; onClose: () => void; onResume: () => void }
+
+/** 员工看别人的任务只读：canAct 为 false 时没有「立即继续」。「等人处理」的运行（?id= 直接打开）也不能手动继续 */
+export function RunSheet({ run, task, column, note, canAct, open, onClose, onResume }: RunProps) {
+  const { modelName } = useModels()
+  const waiting = note ? undefined : run.waiting
+  const doneCount = run.checkpoints.filter((checkpoint) => checkpoint.status === "done").length
+  const last = run.events.slice(-4)
+  const k = (n: number) => `${(n / 1000).toFixed(1)}k`
+  return (
+    <DetailSheet
+      open={open} onClose={onClose} title={task.title}
+      badges={<Badge variant={column === "done" ? "outline" : "secondary"}>{findById(boardColumns, column)?.name}</Badge>}
+      meta={dots(run.id, modelName(run.modelId), `开始 ${fmtShort(run.startedAt)}`, `${k(run.tokensIn)} / ${k(run.tokensOut)} token`, `$${run.costUsd.toFixed(2)}`)}
+      footer={<>
+        {waiting && column === "waiting" && canAct && <Button onClick={onResume}><PlayIcon data-icon="inline-start" />立即继续</Button>}
+        <Button variant="outline" nativeButton={false} render={<a href={href("tasks", { id: task.id, run: run.id })} />}>看完整运行记录 →</Button>
+      </>}
+    >
+      {waiting && (
+        <DetailSection title="在等什么" description={`${fmtShort(waiting.since)} 挂起，session 不占着资源`}>
+          <p className="text-base">{waiting.what}</p>
+          <p className="mt-2"><span className="text-muted-foreground">什么时候继续：</span>{waitText(waiting.trigger, waiting.since)}</p>
+          <p className="mt-2 text-muted-foreground">等到了就继续这个 session（{run.id}），之前的上下文和检查点都还在，不会新开一个。</p>
+        </DetailSection>
+      )}
+      {run.status === "running" && <DetailSection title="正在做什么"><p className="flex items-center gap-2"><Spinner />{run.events.at(-1)?.title}</p></DetailSection>}
+      {note && (
+        <DetailSection title={column === "done" ? "已完成" : run.status === "waiting" ? "已手动继续同一个 session" : "已处理，继续同一个 session"} description="没有新开 session">
+          <p className="flex items-center gap-2 text-base">{column === "running" && <Spinner />}{note}</p>
+          <p className="mt-2 text-muted-foreground">{column === "done" ? "验收通过（同意跳过），这次运行结束。" : `agent 从挂起的地方接着做（${run.id}），之前的上下文和检查点都还在。`}</p>
+        </DetailSection>
+      )}
+      {run.verification && (
+        <DetailSection title={column === "done" ? "验收结果" : column === "verifying" ? "三方 AI 正在验收" : "验收记录"} description={run.verification.headline}>
+          {run.verification.notes.map((note, index) => <Said key={index} {...note} />)}
+        </DetailSection>
+      )}
+      <DetailSection title="检查点" description={run.checkpoints.length > 0 && `完成 ${doneCount} / ${run.checkpoints.length}`}>
+        {run.checkpoints.length === 0 && <p className="text-muted-foreground">任务没写步骤，agent 在探索：{run.exploredSteps?.join(" → ")}。检查点会边做边记。</p>}
+        <ul className="flex flex-col gap-1.5">
+          {run.checkpoints.map(({ title, status, target, progress, skipReason }) => (
+            <li key={title} className="flex items-start gap-2">
+              {createElement(CHECK_ICON[status], { className: "mt-0.5 size-3.5 shrink-0 text-muted-foreground" })}
+              <span className="min-w-0 flex-1">{title}{skipReason && <span className="block text-xs text-muted-foreground">跳过：{skipReason}</span>}</span>
+              {target !== undefined && <span className="text-muted-foreground tabular-nums">{progress ?? 0}/{target}</span>}
+            </li>
+          ))}
+        </ul>
+      </DetailSection>
+      <DetailSection title="最近的过程" description={`共 ${run.events.length} 条，这里显示最后 ${last.length} 条`}>
+        <Trace>
+          {last.map((event, index) => (
+            <TraceLine key={event.seq} status={run.status === "running" && index === last.length - 1 ? "running" : undefined}>
+              <TraceIcon>{createElement(EVENT_ICON[event.kind])}</TraceIcon>
+              <TraceTitle>{event.title}</TraceTitle>
+              <TraceDescription>{eventTimeText(event.at, run)}</TraceDescription>
+            </TraceLine>
+          ))}
+        </Trace>
+      </DetailSection>
+    </DetailSheet>
+  )
+}
+
+/** 「什么时候」的大字：cron 只写人话，表达式和下几次另起一行 */
+export const triggerHeadline = (trigger: Trigger, since: string) => trigger.kind === "cron" ? trigger.text : trigger.kind === "time" ? `${isoShortTime(trigger.at)} 到点` : waitText(trigger, since)
+
+/** 触发说明；只等事件的写出最晚时间（since + fallbackDays），到期提醒负责人 */
+export const waitText = (trigger: Trigger, since: string) => trigger.kind !== "event" ? triggerText(trigger)
+  : `等到「${trigger.event}」；最多等到 ${isoShortTime(addDaysIso(since, trigger.fallbackDays))}，到期提醒负责人`
+
+type TodoProps = { todo: HumanTodo; runs: SessionRun[]; tasks: TaskDef[]; open: boolean; canRun: boolean; canManage: boolean; onClose: () => void; onRun: () => void; onEdit: () => void; onDelete: () => void }
+
+/** canRun：主管、加这条的人、任务负责人能「立即执行」；canManage：只有主管和加这条的人能编辑、删除 */
+export function TodoSheet({ todo, runs, tasks, open, canRun, canManage, onClose, onRun, onEdit, onDelete }: TodoProps) {
+  const staffName = useStaffName()
+  const task = findById(tasks, todo.taskId)
+  const suspended = suspendedRun(runs, todo.taskId)
+  const { trigger } = todo
+  return (
+    <DetailSheet
+      open={open} onClose={onClose} title={todo.title}
+      badges={<Badge variant="outline"><UserPenIcon data-icon="inline-start" />人加的</Badge>}
+      meta={dots(`${staffName(todo.createdById)} 加的`, fmtShort(todo.createdAt))}
+      footer={canRun && <>
+        <Button onClick={onRun}><ZapIcon data-icon="inline-start" />立即执行</Button>
+        {canManage && <DropdownMenu>
+          <DropdownMenuTrigger render={<Button variant="ghost" size="icon" aria-label="更多操作" />}><EllipsisIcon /></DropdownMenuTrigger>
+          <DropdownMenuContent align="end"><DropdownMenuItem onClick={onEdit}>编辑</DropdownMenuItem><DropdownMenuItem variant="destructive" onClick={onDelete}>删除</DropdownMenuItem></DropdownMenuContent>
+        </DropdownMenu>}
+      </>}
+    >
+      <DetailSection title="什么时候">
+        <p className="text-base">{triggerHeadline(trigger, todo.createdAt)}</p>
+        {trigger.kind === "cron" && <p className="mt-2 flex flex-wrap items-center gap-2 text-muted-foreground">cron <Kbd>{trigger.cron}</Kbd>接下来 3 次：{nextRuns(trigger.cron, new Date()).map(shortTime).join("、")}</p>}
+      </DetailSection>
+      <DetailSection title="到点后做什么">
+        <p>{todo.title}</p>
+        <p className="mt-2 text-muted-foreground">{suspended
+          ? `${todo.taskId} 现在有一个挂起的 session（${suspended.id}，在等：${suspended.waiting?.what}），到点会继续它，不会新开。`
+          : `${todo.taskId} 现在没有挂起的 session，到点会开始一次新的运行。`}</p>
+      </DetailSection>
+      {task && (
+        <DetailSection title="关联的任务" description={`负责人 ${staffName(task.ownerId)}${task.schedule ? ` · 任务本身也定时：${task.schedule.text}` : ""}`}>
+          <TextLink to={href("tasks", { id: task.id })}>{task.id} {task.title} →</TextLink>
+        </DetailSection>
+      )}
+    </DetailSheet>
+  )
+}

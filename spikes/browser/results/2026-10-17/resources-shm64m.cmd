@@ -1,0 +1,1 @@
+podman run --rm --init --security-opt no-new-privileges --cap-drop=all --cap-add=SYS_CHROOT -v /mnt/toshiba/Projects/HeyAgent/spikes/browser:/opt/browser/spike:ro -w /opt/browser/spike localhost/heyagent-browser-base:m0 node t-resources.mjs 5

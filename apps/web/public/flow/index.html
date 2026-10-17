@@ -1,0 +1,1096 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HeyAgent 架构流程</title>
+<style>
+:root {
+  --page: #101115;
+  --bg: #1b1d23;
+  --bg-2: #20232a;
+  --bg-3: #262a32;
+  --line: #3a3f4b;
+  --line-dim: #2b2f38;
+  --text: #d6dae1;
+  --muted: #8a919e;
+  --dim: #4c525e;
+  --orange: #e8925a;
+  --green: #7ccf8a;
+  --blue: #7aa7e6;
+  --purple: #b294e8;
+  --red: #f0717a;
+  --yellow: #e5c07b;
+  --mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", "WenQuanYi Micro Hei Mono", "WenQuanYi Micro Hei", "PingFang SC", "Microsoft YaHei", monospace;
+  --sans: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", "WenQuanYi Micro Hei", system-ui, sans-serif;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: var(--page); color: var(--text); font-family: var(--mono); }
+#viewport { position: fixed; inset: 0; overflow: hidden; }
+#stage { position: absolute; left: 0; top: 0; width: 1600px; height: 1000px; transform-origin: 0 0; }
+
+.c-orange { color: var(--orange); } .c-green { color: var(--green); } .c-blue { color: var(--blue); }
+.c-purple { color: var(--purple); } .c-red { color: var(--red); } .c-yellow { color: var(--yellow); }
+.c-muted { color: var(--muted); } .c-dim { color: var(--dim); } .c-text { color: var(--text); }
+b { font-weight: 700; }
+/* ---------- 终端窗口 ---------- */
+.win { position: absolute; left: 0; top: 0; width: 1600px; height: 858px; background: var(--bg); border: 1px solid #2f333c; border-radius: 10px; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,.45); }
+.titlebar { position: absolute; left: 0; top: 0; right: 0; height: 30px; background: #24272e; border-bottom: 1px solid #2f333c; display: flex; align-items: center; justify-content: center; }
+.titlebar .lights { position: absolute; left: 14px; top: 9px; display: flex; gap: 8px; }
+.titlebar .lights i { width: 12px; height: 12px; border-radius: 50%; display: block; }
+.titlebar .lights i:nth-child(1) { background: #ff5f57; } .titlebar .lights i:nth-child(2) { background: #febc2e; } .titlebar .lights i:nth-child(3) { background: #28c840; }
+.titlebar .wtitle { font-size: 13px; color: var(--muted); }
+.content { position: absolute; left: 20px; right: 20px; top: 30px; bottom: 0; }
+
+.hdr { position: absolute; left: 0; right: 0; top: 10px; height: 30px; text-align: center; font-size: 19px; font-weight: 700; letter-spacing: 1.5px; color: var(--text); white-space: nowrap; }
+.hdr .sep { color: var(--dim); margin: 0 10px; }
+.hdr-rule { position: absolute; left: 0; right: 0; top: 44px; height: 4px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.legend { position: absolute; left: 0; right: 0; top: 54px; height: 22px; display: flex; gap: 28px; font-size: 13.5px; color: var(--muted); white-space: nowrap; }
+.legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 8px; background: var(--k); vertical-align: -1px; }
+/* ---------- 主区 ---------- */
+.main { position: absolute; left: 0; top: 84px; width: 1560px; height: 594px; }
+#wires { position: absolute; left: 0; top: 0; width: 1560px; height: 594px; overflow: visible; pointer-events: none; }
+#wires .w { fill: none; stroke: var(--line); stroke-width: 1.5; }
+#wires .w.on { stroke: #5b6170; }
+#wires .rl { fill: none; stroke-width: 1.5; stroke-dasharray: 4 4; opacity: 0; }
+.box { position: absolute; border: 1px solid var(--k); background: var(--bg); padding: 8px 12px; font-size: 13px; line-height: 19px; transition: border-color .25s, box-shadow .25s, opacity .3s; }
+.box.idle { border-color: var(--line-dim); }
+.box.idle > * { opacity: .32; }
+.box.glow { box-shadow: 0 0 0 1px var(--k), 0 0 22px -4px var(--k); }
+.box.alert { --k: var(--red) !important; box-shadow: 0 0 0 1px var(--red), 0 0 26px -2px rgba(240,113,122,.55); }
+.box.adapt { --k: var(--orange) !important; box-shadow: 0 0 0 1px var(--orange), 0 0 26px -2px rgba(232,146,90,.6); }
+.k-orange { --k: var(--orange); } .k-green { --k: var(--green); } .k-blue { --k: var(--blue); }
+.k-purple { --k: var(--purple); } .k-yellow { --k: var(--yellow); } .k-red { --k: var(--red); }
+.box .ttl { font-size: 14.5px; font-weight: 700; color: var(--k); white-space: nowrap; display: flex; justify-content: space-between; align-items: baseline; }
+.box .ttl small { font-size: 12px; font-weight: 400; color: var(--muted); }
+.box .row { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.box .hr { border-top: 1px dashed var(--line); margin: 5px 0; }
+.ellip { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 面板（左：规则；右：工具 / 人） */
+.panel { position: absolute; border: 1px solid var(--k); padding: 16px 12px 10px; font-size: 13px; line-height: 20px; }
+.panel .notch { position: absolute; left: 10px; top: -10px; background: var(--bg); padding: 0 6px; font-weight: 700; font-size: 13.5px; color: var(--k); white-space: nowrap; }
+.panel .sub { color: var(--muted); font-size: 12.5px; margin-bottom: 6px; }
+#rules .rule { padding: 1px 6px; margin: 0 -6px 3px; white-space: nowrap; transition: background .15s; }
+#rules .rule .r1 { display: flex; justify-content: space-between; gap: 8px; }
+#rules .rule .tg { font-size: 11.5px; line-height: 15px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+#rules .rule .nm { color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+#rules .rule .ct { color: var(--dim); font-size: 12px; flex: none; }
+#rules .rule.hit-pass { background: rgba(124,207,138,.14); }
+#rules .rule.hit-pass .ct { color: var(--green); }
+#rules .rule.hit-block { background: rgba(240,113,122,.22); }
+#rules .rule.hit-block .nm, #rules .rule.hit-block .ct { color: var(--red); }
+#rules .rule.hit-wait { background: rgba(229,192,123,.18); }
+#rules .rule.hit-wait .nm, #rules .rule.hit-wait .ct { color: var(--yellow); }
+#rules .rule.hit-info { background: rgba(178,148,232,.18); }
+#rules .rule.hit-info .ct { color: var(--purple); }
+.ct.pass { color: var(--green); } .ct.block { color: var(--red); } .ct.wait { color: var(--yellow); } .ct.info { color: var(--purple); }
+.kv { display: flex; justify-content: space-between; }
+.kv .v { color: var(--text); }
+.br { color: var(--dim); }
+
+.tool-row { display: grid; grid-template-columns: 142px 1fr 34px 36px; align-items: center; gap: 6px; white-space: nowrap; padding: 0 4px; margin: 0 -4px; font-size: 12.5px; line-height: 17px; transition: background .15s; }
+.tool-row .id { color: var(--blue); overflow: hidden; }
+.tool-row .nm { color: var(--muted); overflow: hidden; font-size: 12px; }
+.tool-row .n { text-align: right; color: var(--text); }
+.tool-row .bar { height: 6px; background: var(--line-dim); position: relative; }
+.tool-row .bar i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--blue); }
+.tool-row.zero .id, .tool-row.zero .n { color: var(--dim); }
+.tool-row.flash { background: rgba(122,167,230,.18); }
+.tool-row.ext .id { color: var(--yellow); }
+
+.hum { padding: 2px 6px; margin: 0 -6px 2px; border-left: 2px solid transparent; }
+.hum .l1 { display: flex; justify-content: space-between; white-space: nowrap; }
+.hum .l2 { color: var(--muted); font-size: 12px; line-height: 17px; white-space: nowrap; }
+.hum.idle { opacity: .3; }
+.hum.wait { border-left-color: var(--yellow); background: rgba(229,192,123,.10); }
+.hum.wait .st { color: var(--yellow); }
+.hum.done .st { color: var(--green); }
+/* 检查点面板 */
+.panel.glow { box-shadow: 0 0 0 1px var(--k), 0 0 22px -4px var(--k); }
+.cp { padding: 1px 6px; margin: 0 -6px 3px; transition: background .15s; }
+.cp .c1 { display: grid; grid-template-columns: 16px 16px 1fr auto 40px; gap: 4px; white-space: nowrap; }
+.cp .ic { color: var(--dim); } .cp .sn { color: var(--dim); } .cp .tt { overflow: hidden; text-overflow: ellipsis; }
+.cp .pg { color: var(--muted); font-size: 12px; } .cp .vf { text-align: right; font-size: 12px; color: var(--purple); }
+.cp .rc { padding-left: 40px; font-size: 11.5px; line-height: 15px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cp.done .ic, .cp.done .pg { color: var(--green); }
+.cp.doing .ic { color: var(--blue); } .cp.wait .ic, .cp.wait .rc { color: var(--yellow); }
+.cp.flash { background: rgba(124,207,138,.16); }
+.cp.vcur { background: rgba(178,148,232,.18); }
+.cp.vq { background: rgba(232,146,90,.18); } .cp.vq .vf { color: var(--orange); }
+.cp-foot { margin-top: 6px; border-top: 1px dashed var(--line); padding-top: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+/* 待办看板条 */
+.board { display: flex; gap: 3px; align-items: center; margin: 0 0 5px; font-size: 11.5px; white-space: nowrap; }
+.board .rid { color: var(--muted); margin-right: 4px; }
+.board i { flex: 1; font-style: normal; text-align: center; line-height: 18px; border: 1px solid var(--line-dim); color: var(--dim); }
+.board i.on { border-color: var(--c); color: var(--c); background: color-mix(in srgb, var(--c) 14%, transparent); font-weight: 700; }
+/* session 挂起 / 继续 横幅 */
+.banner { position: absolute; left: 440px; top: 243px; width: 680px; height: 28px; line-height: 26px; text-align: center; font-size: 14.5px; font-weight: 700; border: 1px solid var(--k); color: var(--k); background: var(--bg); opacity: 0; z-index: 6; white-space: nowrap; }
+.box.held { border-style: dashed; }
+.box.held > * { opacity: .5; }
+/* 子 agent 框 */
+.agent .meter { display: flex; gap: 3px; margin: 1px 0 2px; height: 19px; align-items: center; }
+.agent .meter i { width: 11px; height: 7px; background: var(--line-dim); display: block; }
+.agent .meter i.f { background: var(--k); }
+.agent .meter span { margin-left: 6px; white-space: nowrap; font-size: 12px; color: var(--muted); }
+.agent .lines { height: 57px; overflow: hidden; }
+.agent .ln { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+.agent .ln.new { color: var(--text); }
+.agent .ln .tl { color: var(--blue); }
+.agent .ln.err { color: var(--red); }
+.agent .ln.ok { color: var(--green); }
+.agent .ln.adapt { color: var(--orange); }
+.agent .ln.brw { color: var(--text); }
+.agent .st { margin-top: 2px; font-weight: 700; white-space: nowrap; }
+
+.chip-skill { display: inline-block; font-size: 12px; line-height: 19px; padding: 0 5px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; transition: all .2s; }
+.chip-skill.load { border-color: var(--green); color: #12241a; background: var(--green); font-weight: 700; }
+.chip-skill.seen { color: var(--text); }
+.skills { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px 5px; margin-top: 3px; }
+.mem { display: flex; gap: 8px; white-space: nowrap; overflow: hidden; font-size: 12.5px; line-height: 18px; }
+.mem .id { color: var(--green); flex: none; }
+.mem .tx { overflow: hidden; text-overflow: ellipsis; }
+.mem.prop { outline: 1px dashed var(--yellow); outline-offset: -1px; background: rgba(229,192,123,.08); padding: 0 4px; margin: 0 -4px; }
+.mem.prop .id { color: var(--yellow); }
+
+.tag { position: absolute; font-size: 12.5px; font-weight: 700; padding: 1px 8px; white-space: nowrap; border: 1px solid; background: var(--bg); opacity: 0; transition: opacity .25s; z-index: 5; pointer-events: none; }
+.tag.rule { color: var(--red); border-color: var(--red); }
+.tag.flow { color: var(--orange); border-color: var(--orange); }
+.tag.show { opacity: 1; }
+
+.fork-lbl { position: absolute; left: 520px; top: 249px; width: 500px; text-align: center; font-size: 13px; color: var(--muted); }
+.fork-lbl span { background: var(--bg); padding: 0 8px; }
+.fork-lbl b { color: var(--blue); }
+.arrow-in { position: absolute; left: 691px; top: 140px; width: 18px; text-align: center; font-size: 13px; color: var(--dim); }
+
+.finale { position: absolute; left: 340px; top: 244px; width: 860px; height: 264px; border: 1px solid #555b68; background: var(--bg); padding: 22px 30px; opacity: 0; z-index: 8; pointer-events: none; box-shadow: 0 0 40px rgba(0,0,0,.5); }
+.finale .fl { border-left: 4px solid var(--k); padding-left: 16px; }
+.finale .fl { margin-bottom: 20px; }
+.finale .big { font-family: var(--sans); font-size: 30px; font-weight: 700; }
+.finale .exp { font-family: var(--sans); font-size: 18px; color: var(--text); margin-top: 6px; min-height: 26px; }
+.finale .foot { color: var(--muted); font-size: 13px; }
+/* 底部：日志、命令行、状态栏 */
+.log { position: absolute; left: 0; right: 0; top: 690px; height: 84px; border: 1px solid var(--line); padding: 12px 14px 6px; font-size: 13px; line-height: 20px; }
+.log .notch { position: absolute; left: 14px; top: -10px; background: var(--bg); padding: 0 6px; color: var(--muted); font-size: 12.5px; }
+.log .lr { display: grid; grid-template-columns: 78px 120px 1fr; white-space: nowrap; overflow: hidden; }
+.log .lr .ts { color: var(--dim); }
+.log .lr .who { font-weight: 700; }
+.log .lr .msg { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.log .lr:last-child .msg { color: var(--text); }
+.cmd { position: absolute; left: 0; top: 782px; font-size: 14px; white-space: nowrap; }
+.cmd .p { color: var(--text); font-weight: 700; }
+.cursor { display: inline-block; width: 9px; height: 16px; background: var(--green); vertical-align: -3px; margin-left: 2px; }
+.status { position: absolute; left: 0; right: 0; top: 806px; font-size: 13.5px; white-space: nowrap; display: flex; gap: 30px; color: var(--muted); }
+.status b { font-weight: 400; }
+/* 字幕 */
+.caption { position: absolute; left: 0; top: 868px; width: 1600px; height: 72px; background: var(--bg-2); border: 1px solid #2f333c; border-left: 4px solid var(--k, var(--line)); display: flex; align-items: center; padding: 0 22px 0 18px; gap: 18px; font-family: var(--sans); }
+.caption .num { flex: none; width: 40px; height: 40px; border-radius: 50%; border: 2px solid var(--k, var(--muted)); color: var(--k, var(--muted)); display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-weight: 700; font-size: 18px; }
+.caption .txt { flex: 1; font-size: 26px; line-height: 34px; color: #eef0f3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.caption .txt .hl-o { color: var(--orange); font-weight: 700; }
+.caption .txt .hl-p { color: var(--purple); font-weight: 700; }
+.caption .chip { flex: none; font-size: 18px; font-weight: 700; padding: 4px 14px; border: 2px solid var(--k); color: var(--k); }
+.caption .chip:empty { display: none; }
+.caption.flow { --k: var(--orange); }
+.caption.rule { --k: var(--purple); }
+/* 播放控制 */
+.controls { position: absolute; left: 0; top: 948px; width: 1600px; height: 52px; display: flex; align-items: flex-start; gap: 10px; padding-top: 6px; font-size: 13px; color: var(--muted); }
+.controls button { font-family: var(--mono); font-size: 13px; background: var(--bg-2); color: var(--text); border: 1px solid var(--line); height: 28px; padding: 0 10px; cursor: pointer; }
+.controls button:hover { border-color: var(--muted); }
+.controls button:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+.controls button.on { border-color: var(--blue); color: var(--blue); }
+.controls .speeds { display: flex; }
+.controls .speeds button + button { border-left: none; }
+.track-wrap { position: relative; flex: 1; height: 46px; margin: 0 10px; cursor: pointer; }
+.track { position: absolute; left: 0; right: 0; top: 11px; height: 6px; background: var(--line-dim); }
+.track .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--blue); }
+.track .tick { position: absolute; top: -4px; width: 2px; height: 14px; background: var(--muted); }
+.track .head { position: absolute; top: -5px; width: 4px; height: 16px; background: #fff; margin-left: -2px; }
+.controls .chap { position: absolute; top: 24px; font-size: 12px; color: var(--muted); white-space: nowrap; background: none; border: none; padding: 0; height: auto; font-family: var(--sans); cursor: pointer; }
+.controls .chap.cur { color: var(--text); font-weight: 700; }
+.controls .chap:hover { color: var(--text); }
+.time { width: 96px; text-align: right; padding-top: 6px; font-variant-numeric: tabular-nums; }
+
+@media (prefers-reduced-motion: reduce) {
+  .box, .rule, .tool-row, .tag, .chip-skill, .cp { transition: none !important; }
+}
+</style>
+</head>
+<body>
+<div id="viewport">
+<div id="stage">
+  <div class="win">
+    <div class="titlebar"><span class="lights"><i></i><i></i><i></i></span><span class="wtitle">~/heyagent — 搜品任务 T-1024 · session R-1024-1</span></div>
+    <div class="content">
+      <div class="hdr" id="hdr">HEYAGENT<span class="sep">·</span>搜品任务 <span class="c-blue">T-1024</span><span class="sep">·</span>SESSION <span id="h-sess" class="c-dim">R-1024-1</span><span class="sep">·</span><span class="c-blue" id="h-agents">3</span> <span class="c-blue">个子 AGENT</span><span class="sep">·</span><span class="c-green" id="h-tools">0</span> <span class="c-green">次工具调用</span><span class="sep">·</span><span class="c-purple">0 次越权</span></div>
+      <div class="hdr-rule"></div>
+      <div class="legend" id="legend">
+        <span style="--k:var(--orange)">规划 agent · Opus 5.5</span>
+        <span style="--k:var(--blue)">子 agent · Sonnet 5.5</span>
+        <span style="--k:var(--purple)">规则 · 三方验收（qwen3）</span>
+        <span style="--k:var(--green)">记忆 / 技能 / 检查点</span>
+        <span style="--k:var(--yellow)">人 · 待办看板</span>
+        <span style="--k:var(--red)">出问题 / 被拦下</span>
+      </div>
+      <div class="main" id="main">
+        <svg id="wires" viewBox="0 0 1560 594"></svg>
+        <!-- 左上：本任务选的规则 -->
+        <div class="panel k-purple" id="p-rules" style="left:0;top:0;width:320px;height:304px">
+          <div class="notch">本任务选的规则 · 代码执行，模型绕不过</div>
+          <div class="sub">建任务时按任务挑的，没有全局规则</div>
+          <div id="rules"></div>
+          <div class="hr" style="border-top:1px dashed var(--line);margin:4px 0 4px"></div>
+          <div class="kv"><span>命中 <span class="br">[</span><span id="r-hit" class="c-purple">0</span><span class="br">]</span></span><span>挂起 <span class="br">[</span><span id="r-hold" class="c-yellow">0</span><span class="br">]</span></span><span>拦下 <span class="br">[</span><span id="r-block" class="c-red">0</span><span class="br">]</span></span><span>越权 <span class="br">[</span><span class="c-purple">0</span><span class="br">]</span></span></div>
+          <div class="ellip" style="color:var(--muted)">最近一次：<b id="r-last" class="c-red">—</b></div>
+        </div>
+        <!-- 左下：检查点 -->
+        <div class="panel k-green" id="p-cp" style="left:0;top:320px;width:320px;height:274px">
+          <div class="notch">检查点 · T-1024 的 4 个步骤</div>
+          <div class="sub">agent 做完自己勾；网页、文件由规则自动记</div>
+          <div id="cps"></div>
+          <div class="cp-foot" id="cp-foot"></div>
+        </div>
+        <!-- 中：流程 -->
+        <div class="box k-yellow" id="b-cust" style="left:450px;top:0;width:640px;height:46px;padding:4px 12px">
+          <div class="row"><b class="c-yellow">客户 Nova Home · WhatsApp ▸ </b><span id="cust-msg"></span></div>
+          <div class="row c-muted" id="cust-2">&nbsp;</div>
+        </div>
+        <div class="box k-orange" id="b-plan" style="left:340px;top:64px;width:350px;height:172px">
+          <div class="ttl">规划 agent <small>Claude Opus 5.5 · 拆任务、汇总</small></div>
+          <div class="row c-muted" style="font-size:12px">步骤写的是目标，每步怎么做它自己定</div>
+          <div class="hr"></div>
+          <div style="display:flex;gap:8px"><span class="c-orange" style="flex:none">决定 ▸</span><span id="plan-dec" style="font-weight:700;height:38px;overflow:hidden"></span></div>
+          <div class="row" id="plan-prod" style="margin-top:2px"></div>
+          <div class="row c-muted" style="font-size:12px">步骤 <span class="br">[</span><span id="plan-steps" class="c-text">0/4</span><span class="br">]</span>　<span class="c-dim">第 4 步可以等待</span></div>
+          <div class="row c-muted" style="font-size:12px">执行 <span class="c-blue">Claude Sonnet 5.5</span> · 验收 <span class="c-purple">qwen3:32b</span></div>
+        </div>
+        <div class="arrow-in" id="arrow-in">◀</div>
+        <div class="box k-green" id="b-mem" style="left:710px;top:64px;width:490px;height:172px">
+          <div class="ttl">记忆 · 技能 <small>本任务选的 · 开始时读入</small></div>
+          <div class="mem" id="mem-1"><span class="id">m-003</span><span class="tx">Nova Home 只要工厂，不要贸易商；单价 3 美元以内；发美国</span></div>
+          <div class="mem" id="mem-2"><span class="id">m-001</span><span class="tx">家居类商品用 1688 以图搜同款，命中率最高，优先用</span></div>
+          <div class="mem" id="mem-3"><span class="id">m-002</span><span class="tx">亚马逊搜索结果要按销量排序，否则前几页大多是广告</span></div>
+          <div class="mem" id="mem-4"><span class="id">&nbsp;</span><span class="tx">&nbsp;</span></div>
+          <div class="row c-muted" style="font-size:12px;line-height:18px" id="sk-lbl">技能 5 个 · 先只给名字和一句描述，用到才读全文</div>
+          <div class="skills" id="skills"></div>
+        </div>
+        <div class="fork-lbl" id="fork-lbl"><span><b>3</b> 个子 agent · 同时搜 · 执行模型 <b>Claude Sonnet 5.5</b></span></div>
+        <div class="banner" id="banner"></div>
+        <div class="box k-blue agent" id="ag-amz" style="left:340px;top:282px;width:270px;height:132px"></div>
+        <div class="box k-blue agent" id="ag-temu" style="left:635px;top:282px;width:270px;height:132px"></div>
+        <div class="box k-blue agent" id="ag-1688" style="left:930px;top:282px;width:270px;height:132px"></div>
+        <div class="tag rule" id="tag-amz" style="right:960px;top:273px">■ 规则拦下 · 模型绕不过</div>
+        <div class="tag flow" id="tag-temu" style="right:665px;top:273px">↻ agent 自己换办法 · 步骤里没写</div>
+        <div class="tag rule" id="tag-ver" style="left:514px;top:501px;color:var(--purple);border-color:var(--purple)">换一家模型来核对 · 干活 Sonnet，验收 qwen3</div>
+        <div class="tag rule" id="tag-wa" style="left:862px;top:501px">■ 规则拦下 · 等 Emily</div>
+        <div class="box k-orange" id="b-merge" style="left:570px;top:452px;width:400px;height:48px;padding:4px 12px;text-align:center">
+          <div class="row" id="merge-1" style="font-weight:700"></div>
+          <div class="row c-muted" style="font-size:12.5px" id="merge-2"></div>
+        </div>
+        <div class="box k-yellow" id="p1" style="left:340px;top:522px;width:164px;height:66px;padding:6px 10px">
+          <div class="ttl">王悦 · 负责人</div><div class="row c-muted">审核比价表</div><div class="row" id="p1-s"></div>
+        </div>
+        <div class="box k-purple" id="p2" style="left:514px;top:522px;width:164px;height:66px;padding:6px 10px">
+          <div class="ttl">三方 AI 验收</div><div class="row c-muted">qwen3:32b（内网）</div><div class="row" id="p2-s"></div>
+        </div>
+        <div class="box k-blue" id="p3" style="left:688px;top:522px;width:164px;height:66px;padding:6px 10px">
+          <div class="ttl">AM 助手</div><div class="row c-muted">子 agent · 起草回复</div><div class="row" id="p3-s"></div>
+        </div>
+        <div class="box k-purple" id="p4" style="left:862px;top:522px;width:164px;height:66px;padding:6px 10px">
+          <div class="ttl">规则 · 发消息前</div><div class="row c-muted">由 AM 确认</div><div class="row" id="p4-s"></div>
+        </div>
+        <div class="box k-yellow" id="p5" style="left:1036px;top:522px;width:164px;height:66px;padding:6px 10px">
+          <div class="ttl">WhatsApp · 客户</div><div class="row c-muted">发给 Nova Home</div><div class="row" id="p5-s"></div>
+        </div>
+        <div class="finale" id="finale">
+          <div class="fl" style="--k:var(--orange)"><div class="big c-orange">流程不写死</div><div class="exp" id="fin-1"></div></div>
+          <div class="fl" style="--k:var(--purple)"><div class="big c-purple">规矩写死</div><div class="exp" id="fin-2"></div></div>
+          <div class="foot" id="fin-3"></div>
+        </div>
+        <!-- 右：工具 + 待办看板 -->
+        <div class="panel k-blue" id="p-tools" style="left:1220px;top:0;width:340px;height:274px">
+          <div class="notch">工具 · 选的 10 个 + 自带 3 个</div>
+          <div class="sub">数字是这次 session 里调用的次数 · 合计 <span class="br">[</span><span id="t-total" class="c-text">0</span><span class="br">]</span> 次</div>
+          <div id="tools"></div>
+        </div>
+        <div class="panel k-yellow" id="p-hum" style="left:1220px;top:290px;width:340px;height:304px">
+          <div class="notch">待办看板 · 等人处理</div>
+          <div class="sub">规则把事停下来，看板上多一张卡给对应的人</div>
+          <div class="board" id="board"><span class="rid">R-1024-1</span><i style="--c:var(--blue)">执行中</i><i style="--c:var(--yellow)">等人处理</i><i style="--c:var(--muted)">等待中</i><i style="--c:var(--purple)">验收中</i><i style="--c:var(--green)">已完成</i></div>
+          <div id="hums"></div>
+          <div class="kv"><span class="c-muted">等人处理</span><span class="v"><span class="br">[</span><span id="h-wait" class="c-yellow">0</span><span class="br">]</span></span></div>
+        </div>
+      </div>
+      <div class="log" id="log"><span class="notch">会话日志 · session log · R-1024-1</span><div id="log-rows"></div></div>
+      <div class="cmd"><span class="p">~/heyagent $ </span><span id="cmd-txt"></span><span class="cursor" id="cursor"></span></div>
+      <div class="status" id="status"></div>
+    </div>
+  </div>
+  <div class="caption" id="caption"><div class="num" id="cap-num">1</div><div class="txt" id="cap-txt"></div><div class="chip" id="cap-chip"></div></div>
+  <div class="controls" id="controls">
+    <button id="btn-play" aria-label="播放 / 暂停" title="播放 / 暂停（空格）">❚❚ 暂停</button>
+    <button id="btn-replay" title="从头播放（R）">↺ 重播</button>
+    <div class="speeds" role="group" aria-label="速度">
+      <button data-speed="0.5">0.5×</button><button data-speed="1" class="on">1×</button><button data-speed="2">2×</button>
+    </div>
+    <div class="track-wrap" id="track-wrap" title="点击跳转；← → 切换章节">
+      <div class="track" id="track"><div class="fill" id="fill"></div><div class="head" id="head"></div></div>
+    </div>
+    <div class="time" id="time">0.0 / 55s</div>
+  </div>
+</div>
+</div>
+
+<script>
+"use strict";
+const DUR = 55;
+const RM = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+// ---------------- 章节与字幕 ----------------
+const CHAPTERS = [
+  { t: 0, name: "启动" },
+  { t: 4, name: "客户来消息" },
+  { t: 7.5, name: "读记忆技能" },
+  { t: 11, name: "第 1 步" },
+  { t: 15.2, name: "分 3 路" },
+  { t: 21, name: "自己换办法" },
+  { t: 27.6, name: "验证码挂起" },
+  { t: 31.2, name: "继续 session" },
+  { t: 35, name: "汇总审核" },
+  { t: 39.4, name: "三方验收" },
+  { t: 44.8, name: "发消息确认" },
+  { t: 50.6, name: "总结" },
+];
+// chip: flow = 流程不写死, rule = 规矩写死
+const CAPTIONS = [
+  { t: 0, text: "一个真实的搜品任务：看 HeyAgent 里各个部分怎么配合（平台只是例子）" },
+  { t: 4, text: "客户在 WhatsApp 发来商品链接，想找能做这款收纳篮的工厂" },
+  { t: 5.6, text: "Emily 建任务 T-1024：写好 4 个步骤和检查点，挑好这次用的规则" },
+  { t: 7.5, text: "任务开始，系统开一个 session R-1024-1，读入这个任务选的记忆" },
+  { t: 9.4, text: "技能是操作手册：先只看名字和一句描述，用到哪本才读全文" },
+  { t: 11, text: "规划模型 Claude Opus 5.5 定第一步：先读「解析客户商品链接」", chip: "flow" },
+  { t: 13, text: "它调接口读出商品信息，做完自己勾上检查点 1" },
+  { t: 15.2, text: "它把搜索拆成 3 路，交给 3 个子 agent 同时找，干活的是 Claude Sonnet 5.5", chip: "flow" },
+  { t: 17.6, text: "子 agent 自己挑浏览器：亚马逊、Temu 用美国 Chrome，1688 用国内 Chrome" },
+  { t: 19.2, text: "每打开一个网页，规则「同步检查点」就自动记一笔，不靠 agent 自觉", chip: "rule" },
+  { t: 21, text: "Temu 的价格和客户看到的对不上。步骤里没写，agent 自己决定切到美国站", chip: "flow" },
+  { t: 23.8, text: "它把这条经验提议成新记忆；规则规定：新记忆先审核，王悦同意才生效", chip: "rule" },
+  { t: 25.4, text: "1688 按客户偏好只留工厂：7 家，检查点 3「工厂 ≥ 5 家」打勾" },
+  { t: 27.6, text: "亚马逊弹出验证码：规则「遇到验证码就停下」截图，把 session 挂起", chip: "rule" },
+  { t: 29, text: "挂起时不占模型、不花钱；待办看板「等人处理」多一张卡，通知王悦" },
+  { t: 32, text: "王悦过了验证码，系统继续同一个 session：做过的都还在，接着搜" },
+  { t: 34.6, text: "三路汇总成比价表；保存时，规则自动把链接记进检查点 4" },
+  { t: 36.4, text: "第 4 步写了「可以等待」：等王悦审核时，session 同样挂起、不花钱" },
+  { t: 38.2, text: "王悦审核通过，继续同一个 session，检查点全部打勾" },
+  { t: 39.4, text: "agent 说做完了。规则「三方 AI 验收」启动：换一家模型来核对", chip: "rule" },
+  { t: 40.4, text: "干活的是 Claude Sonnet，验收的是内网 qwen3:32b，逐条核对检查点" },
+  { t: 41.4, text: "验收模型反问：「这 7 家里有没有贸易商？」不是走过场", chip: "rule" },
+  { t: 42.6, text: "执行 agent 拿出供应商库的记录作答，这一条才算过" },
+  { t: 44.0, text: "5 条检查点全部核对通过，才把结果告诉客户" },
+  { t: 44.8, text: "AM 助手按「WhatsApp 回复规范」起草回复，准备发给客户" },
+  { t: 46.4, text: "规则拦下：给客户发消息必须由 AM 确认，Emily 不点头就发不出去", chip: "rule" },
+  { t: 47.6, text: "等 Emily 的时候 session 也是挂起的，不占模型、不花钱" },
+  { t: 49.0, text: "Emily 看过原文点了确认，继续同一个 session，消息才发出" },
+  { t: 50.6, html: '<span class="hl-o">流程不写死</span>：agent 自己换办法　·　<span class="hl-p">规矩写死</span>：挂起等人、换模型验收、发消息要人确认', final: true },
+];
+// ---------------- 事件（全部画面由它和 t 算出） ----------------
+// k: plan 决定 | tool 工具调用 | hook 规则命中 | block 规则拦下 | mem 记忆/技能 | human 人 | err 出问题 | ok 结果 | br 浏览器 | sys session | ver 验收
+const WHO = {
+  planner: ["规划 agent", "orange"], amz: ["亚马逊", "blue"], temu: ["Temu", "blue"], a1688: ["1688", "blue"],
+  exec: ["执行 agent", "blue"], am: ["AM 助手", "blue"], rule: ["规则", "purple"], mem: ["记忆", "green"],
+  skill: ["技能", "green"], wang: ["王悦", "yellow"], emily: ["Emily", "yellow"], nova: ["Nova Home", "yellow"],
+  sys: ["session", "text"], ver: ["验收 qwen3", "purple"],
+};
+const E = [];
+function ev(t, k, who, extra) { E.push(Object.assign({ t, k, who }, extra)); }
+function tool(t, who, id, arg, log) { ev(t, "tool", who, { tool: id, arg, log }); }
+
+ev(4.0, "human", "nova", { log: "WhatsApp：这个帮我找工厂 shop.novahome.com/products/… 目标价 $3" });
+ev(5.6, "human", "emily", { log: "建任务 T-1024：4 个步骤 + 检查点 · 选好记忆 3 条、技能 5 个、规则 5 条 · 负责人 王悦" });
+ev(7.5, "sys", "sys", { log: "开 session R-1024-1 · 规划 Claude Opus 5.5 · 执行 Claude Sonnet 5.5 · 验收 qwen3:32b" });
+ev(8.0, "mem", "mem", { log: "读入 m-003 客户偏好：Nova Home 只要工厂，不要贸易商；单价 3 美元以内" });
+ev(8.4, "mem", "mem", { log: "读入 m-001：家居类商品用 1688 以图搜同款，命中率最高" });
+ev(8.8, "mem", "mem", { log: "读入 m-002：亚马逊搜索结果要按销量排序" });
+ev(9.4, "mem", "skill", { log: "读入本任务的 5 个技能（只有名字和一句描述）" });
+ev(11.0, "plan", "planner", { log: "Claude Opus 5.5 → 按步骤 1：先解析客户发来的链接" });
+tool(11.8, "planner", "skill.load", "解析客户商品链接", "skill.load「解析客户商品链接」→ 读全文");
+tool(13.0, "planner", "shopify.product", "novahome.com", "shopify.product → 走接口读商品，不用开浏览器");
+ev(14.0, "plan", "planner", { log: "拿到商品：硅胶折叠收纳篮 · $12.99 · 主图 5 张" });
+tool(14.4, "planner", "checkpoint.mark", "1", "checkpoint.mark 勾上检查点 1「解析客户商品链接」");
+ev(15.2, "plan", "planner", { log: "步骤 2：拆成 3 路，交给 3 个子 agent（Claude Sonnet 5.5）同时搜" });
+tool(16.4, "amz", "skill.load", "多平台找同款", "skill.load「多平台找同款」");
+tool(16.6, "temu", "skill.load", "多平台找同款");
+tool(16.8, "a1688", "skill.load", "多平台找同款");
+ev(17.6, "br", "amz", { line: "◆ 选 美国 Chrome · cookie v31", log: "自己选浏览器：美国 Chrome（SOCKS5 · 美国 IP）· 从保险箱带上 cookie v31" });
+ev(17.9, "br", "temu", { line: "◆ 选 美国 Chrome · cookie v31" });
+ev(18.1, "br", "a1688", { line: "◆ 选 国内 Chrome · 直连", log: "自己选浏览器：国内 Chrome（国内 IP）" });
+tool(18.6, "amz", "browser.open", "amazon.com");
+tool(18.8, "a1688", "image.search", "主图 → 1688", "image.search 主图 → 1688 以图搜同款");
+tool(19.0, "temu", "browser.open", "temu.com", "browser.open temu.com · rl-checkpoint-sync 自动记下这个页面");
+tool(19.4, "amz", "browser.act", "按销量排序（m-002）");
+tool(19.6, "a1688", "browser.open", "detail.1688.com");
+tool(19.8, "temu", "browser.act", "搜 硅胶折叠收纳篮");
+tool(20.2, "amz", "browser.open", "amazon.com/dp/…");
+tool(20.4, "temu", "browser.open", "temu.com/search");
+tool(20.6, "a1688", "browser.open", "detail.1688.com");
+ev(21.0, "err", "temu", { line: "! 价格是 ¥，和客户看到的不一样", log: "搜到的是中国站价格，和客户看到的对不上" });
+tool(21.2, "amz", "browser.open", "amazon.com/dp/…");
+ev(21.8, "plan", "temu", { line: "↻ 自己判断：先切到美国站", adapt: true, log: "Claude Sonnet 5.5 → 自己判断：先切到美国站再重搜（步骤里没写）" });
+tool(22.0, "a1688", "browser.act", "翻到第 2 页");
+tool(22.4, "temu", "browser.act", "切换站点 → 美国站", "browser.act 切换站点 → 美国站");
+tool(22.6, "amz", "browser.open", "amazon.com/dp/…");
+tool(22.8, "temu", "browser.open", "temu.com 美国站");
+tool(23.0, "a1688", "browser.open", "detail.1688.com");
+ev(23.2, "ok", "temu", { line: "✓ 和客户看到的一致 · 9 款", log: "美国站结果一致 · 9 款 → 检查点 2「访问 3 个平台」1/3（自动）" });
+tool(23.8, "temu", "memory.propose", "m-008 切美国站", "memory.propose「Temu 搜索要先切换到美国站，结果才和客户看到的一致」");
+ev(24.0, "hook", "rule", { rule: "rl-memory-review", log: "rl-memory-review 新记忆先审核 → m-008 进待办，王悦同意前不生效" });
+tool(24.2, "amz", "browser.act", "翻到第 2 页");
+tool(24.4, "a1688", "browser.open", "detail.1688.com");
+tool(25.0, "a1688", "skill.load", "供应商评估标准");
+ev(25.4, "plan", "a1688", { line: "› 按记忆 m-003：只留工厂", log: "按记忆 m-003 筛选：只要工厂，去掉贸易商" });
+tool(25.6, "amz", "browser.open", "amazon.com/dp/…");
+tool(25.8, "a1688", "supplier.lookup", "查合作记录", "supplier.lookup 查公司供应商库：7 家工厂，3 家贸易商");
+ev(26.2, "ok", "a1688", { line: "✓ 12 家 · 工厂 7 家", log: "找到 12 家，其中工厂 7 家 → 检查点 2「访问 3 个平台」2/3（自动）" });
+tool(26.6, "a1688", "checkpoint.mark", "3 · 7 家", "checkpoint.mark 勾上检查点 3「工厂 ≥ 5 家」· 7 家");
+tool(27.2, "amz", "browser.open", "amazon.com/dp/…");
+ev(27.6, "err", "amz", { line: "× 页面出现验证码", log: "browser.open → 页面出现验证码" });
+ev(27.8, "block", "rule", { rule: "rl-captcha", log: "rl-captcha 遇到验证码就停下 → 截图，挂起 session，通知王悦" });
+tool(27.9, "rule", "browser.screenshot", "验证码页面");
+ev(28.2, "sys", "sys", { log: "R-1024-1 挂起 · 不占模型、不花钱 · 待办看板「等人处理」+1" });
+ev(28.6, "human", "wang", { log: "收到通知：处理亚马逊验证码（美国 Chrome）" });
+ev(31.4, "human", "wang", { log: "在「浏览器」里打开美国 Chrome，过了验证码 ✓" });
+ev(32.0, "sys", "sys", { log: "继续同一个 session R-1024-1 · 之前做过的都还在" });
+tool(32.4, "amz", "browser.open", "amazon.com/s?k=…", "browser.open amazon.com · 接着搜");
+tool(32.8, "amz", "browser.act", "按销量排序（m-002）");
+tool(33.2, "amz", "browser.open", "amazon.com/dp/…");
+ev(33.8, "ok", "amz", { line: "✓ 找到 6 款", log: "找到 6 款同款 → 检查点 2「访问 3 个平台」3/3 ✓（自动）" });
+ev(34.2, "br", "amz", { line: "↺ cookie 合并回保险箱 v32", log: "美国 Chrome 用完：cookie 变化合并回保险箱 v31 → v32" });
+ev(34.6, "plan", "planner", { log: "汇总 3/3 平台 → 比价表：推荐工厂 3 家，最低 $2.6" });
+tool(34.8, "planner", "skill.load", "比价表格式");
+tool(35.2, "planner", "quote.save", "比价表", "quote.save → ERP 比价表 #8812 · 规则自动记进检查点 4");
+tool(36.4, "planner", "session.wait", "等王悦审核", "session.wait 第 4 步可以等待：挂起，等王悦审核比价表");
+ev(36.6, "human", "wang", { log: "待办看板多一张卡：审核比价表" });
+ev(38.0, "human", "wang", { log: "审核比价表 → 通过 ✓" });
+ev(38.2, "sys", "sys", { log: "继续同一个 session R-1024-1 · 检查点 5/5" });
+ev(39.2, "plan", "planner", { log: "告诉系统：任务做完了" });
+ev(39.4, "hook", "rule", { rule: "rl-verify", log: "rl-verify 三方 AI 验收 → 换一家模型 qwen3:32b（Ollama 内网）来核对" });
+ev(40.0, "ver", "ver", { log: "检查点 1 ✓ 有商品信息" });
+ev(40.5, "ver", "ver", { log: "检查点 2 ✓ 3 个平台都有页面记录" });
+ev(41.4, "ver", "ver", { log: "反问：「工厂 ≥ 5 家」这 7 家里有没有贸易商？" });
+ev(42.6, "plan", "exec", { log: "回答：供应商库核对过，7 家都是工厂，3 家贸易商已排除（附记录）" });
+ev(43.4, "ver", "ver", { log: "检查点 3 ✓ 回答有记录可查" });
+ev(44.0, "ver", "ver", { log: "检查点 5/5 全部核对通过 · 验收通过" });
+ev(44.4, "plan", "planner", { log: "交给 AM 助手起草给客户的回复" });
+tool(45.2, "am", "skill.load", "WhatsApp 回复规范", "skill.load「WhatsApp 回复规范」");
+tool(46.2, "am", "whatsapp.send", "Nova Home", "whatsapp.send 给 Nova Home 发比价摘要");
+tool(46.5, "am", "ask.human", "Emily", "ask.human 规则 rl-wa-confirm 调用：把摘要原文交给 Emily 确认");
+ev(46.4, "block", "rule", { rule: "rl-wa-confirm", log: "rl-wa-confirm 给客户发消息前由 AM 确认 → 拦下，等 Emily" });
+ev(46.6, "sys", "sys", { log: "R-1024-1 挂起 · 等 Emily 确认 · 待办看板「等人处理」+1" });
+ev(49.0, "human", "emily", { log: "看过原文，确认发送 ✓ → 继续同一个 session" });
+ev(49.4, "ok", "am", { log: "已发送给 Nova Home：3 家工厂，最低 $2.6 · 原文由规则自动记下" });
+ev(49.8, "plan", "planner", { log: "任务完成 · session R-1024-1 结束 · 1 条记忆待王悦审核" });
+E.sort((a, b) => a.t - b.t);
+
+const TOOL_EVENTS = E.filter((e) => e.k === "tool");
+const TOTAL_TOOLS = TOOL_EVENTS.length;
+const SUB = ["amz", "temu", "a1688"];
+// rl-checkpoint-sync：子 agent 打开网页、保存比价表、发出消息之后
+const SYNC_TIMES = TOOL_EVENTS.filter((e) => e.tool === "browser.open" && SUB.includes(e.who)).map((e) => e.t + 0.15).concat([35.4, 49.4]).sort((a, b) => a - b);
+const PAGE_TIMES = SYNC_TIMES.filter((x) => x < 35);
+// ---------------- 规则（T-1024 的 ruleIds，名字和触发条件取自 shared.ts 的 rules） ----------------
+const RULES = [
+  ["rl-checkpoint-sync", "同步检查点", "发出消息、打开网页、保存文件之后"],
+  ["rl-memory-review", "新记忆先审核", "agent 提议记住一件事时"],
+  ["rl-captcha", "遇到验证码就停下", "打开网页后看到验证码或登录页时"],
+  ["rl-verify", "三方 AI 验收", "agent 说任务做完时"],
+  ["rl-wa-confirm", "给客户发消息前由 AM 确认", "agent 要给客户发 WhatsApp 消息时"],
+];
+// ---------------- 工具：T-1024 选的 10 个 + 每个任务都自带的 3 个 ----------------
+const TOOLS = [
+  ["skill.load", "读取技能"], ["shopify.product", "解析商品"], ["image.search", "以图搜同款"],
+  ["browser.open", "打开网页"], ["browser.act", "网页操作"], ["browser.screenshot", "网页截图"],
+  ["supplier.lookup", "查供应商库"], ["memory.propose", "提议记忆"], ["quote.save", "保存比价表"],
+  ["whatsapp.send", "发 WhatsApp"],
+  ["checkpoint.mark", "勾检查点·自带"], ["session.wait", "挂起等待·自带"], ["ask.human", "问人·自带"],
+];
+// ---------------- 待办看板 · 等人处理 ----------------
+const HUMANS = [
+  { who: "Emily", what: "建任务 T-1024", why: "写步骤和检查点、选规则", t0: 4.6, t1: 5.6, done: "✓ 已建" },
+  { who: "王悦", what: "审核新记忆 m-008", why: "rl-memory-review · 不挡任务", t0: 24.0, t1: null, done: "" },
+  { who: "王悦", what: "处理亚马逊验证码", why: "rl-captcha · session 挂起中", t0: 28.2, t1: 31.4, done: "✓ 已处理" },
+  { who: "王悦", what: "审核比价表", why: "第 4 步可以等待 · session 挂起", t0: 36.4, t1: 38.0, done: "✓ 通过" },
+  { who: "Emily", what: "确认 WhatsApp 摘要", why: "rl-wa-confirm · session 挂起", t0: 46.4, t1: 49.0, done: "✓ 已确认" },
+];
+// ---------------- 检查点（T-1024 的 4 个步骤） ----------------
+const CPS = [
+  { step: "1", title: "解析客户商品链接" },
+  { step: "2", title: "访问 3 个平台" },
+  { step: "3", title: "工厂 ≥ 5 家" },
+  { step: "4", title: "比价表已保存" },
+  { step: "4", title: "负责人已审核" },
+];
+const VER_PASS = [40.0, 40.5, 43.4, 43.7, 44.0];
+const VER_Q = [41.4, 43.4]; // 对检查点 3 反问
+
+const SKILLS = ["解析客户商品链接", "多平台找同款", "供应商评估标准", "比价表格式", "WhatsApp 回复规范"];
+const SKILL_LOADS = { 0: [11.8], 1: [16.4, 16.6, 16.8], 2: [25.0], 3: [34.8], 4: [45.2] };
+
+// session 挂起区间；token、花费在挂起时不动
+const HOLDS = [[28.2, 32.0], [36.4, 38.2], [46.6, 49.0]];
+const held = (t) => HOLDS.some(([a, b]) => t >= a && t < b);
+const TOK = [[7.5, 0], [11, 6.2], [14.4, 8.6], [21, 60], [27.8, 118], [28.2, 120], [32, 120], [35.2, 150], [36.4, 152], [38.2, 152], [39.4, 160], [44, 170], [46.6, 180], [49.0, 180], [49.8, 191.8]];
+const COST = [[7.5, 0], [14.4, 0.04], [27.8, 0.29], [28.2, 0.30], [32, 0.30], [36.4, 0.38], [38.2, 0.38], [39.4, 0.39], [44, 0.40], [46.6, 0.43], [49.0, 0.43], [49.8, 0.46]];
+const hm = (h, m, s) => h * 3600 + m * 60 + (s || 0);
+const CLK = [[0, hm(9, 8)], [4, hm(9, 8)], [7.5, hm(9, 12)], [14.4, hm(9, 14)], [23.2, hm(9, 31)], [26.6, hm(9, 52)], [27.8, hm(10, 2)], [28.2, hm(10, 2, 20)], [31.4, hm(10, 20)], [32, hm(10, 21)], [35.2, hm(10, 34)], [36.4, hm(10, 35)], [38.0, hm(11, 18)], [39.4, hm(11, 19)], [44, hm(11, 24)], [49.8, hm(11, 31)], [55, hm(11, 32)]];
+
+function sessState(t) {
+  if (t < 7.5) return ["未开始", "dim", -1];
+  if (t >= 49.8) return ["已完成", "green", 4];
+  if (held(t)) return ["挂起 · 不花钱", "yellow", 1];
+  if (t >= 39.4 && t < 44) return ["验收中", "purple", 3];
+  return ["运行中", "green", 0];
+}
+// ---------------- 工具函数 ----------------
+const $ = (id) => document.getElementById(id);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const ramp = (t, t0, d) => clamp((t - t0) / (d || 0.4), 0, 1);
+const textCache = new WeakMap();
+function setText(el, s) { if (textCache.get(el) !== s) { el.textContent = s; textCache.set(el, s); } }
+function setHTML(el, s) { if (textCache.get(el) !== s) { el.innerHTML = s; textCache.set(el, s); } }
+function cls(el, name, on) { el.classList.toggle(name, !!on); }
+function interp(keys, t) {
+  if (t <= keys[0][0]) return keys[0][1];
+  for (let i = 1; i < keys.length; i++) if (t <= keys[i][0]) {
+    const [t0, v0] = keys[i - 1], [t1, v1] = keys[i];
+    return v0 + (v1 - v0) * ((t - t0) / (t1 - t0));
+  }
+  return keys[keys.length - 1][1];
+}
+function lastBefore(list, t) { let r = null; for (const x of list) { if (x.t <= t) r = x; else break; } return r; }
+function typed(s, t, t0, cps) { const n = Math.floor(clamp((t - t0) * (cps || 30), 0, s.length)); return s.slice(0, n); }
+function clock(t) {
+  const s = interp(CLK, t);
+  const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, ss = Math.floor(s) % 60;
+  return [h, m, ss].map((x) => String(x).padStart(2, "0")).join(":");
+}
+function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+const SPIN = "◐◓◑◒";
+function spin(t) { return RM ? "◐" : SPIN[Math.floor(t * 6) % 4]; }
+const flashing = (times, t, d) => !RM && times.some((x) => t >= x && t - x < (d || 0.4));
+const countTo = (times, t) => times.filter((x) => x <= t).length;
+// ---------------- 构建 DOM ----------------
+const ruleEls = {};
+(function buildRules() {
+  const root = $("rules");
+  for (const [id, name, trig] of RULES) {
+    const r = document.createElement("div"); r.className = "rule"; r.id = "rule-" + id; r.title = id;
+    r.innerHTML = `<div class="r1"><span class="nm">${name}</span><span class="ct">—</span></div><div class="tg">触发：${trig}</div>`;
+    root.appendChild(r); ruleEls[id] = { el: r, ct: r.querySelector(".ct") };
+  }
+})();
+const toolEls = {};
+(function buildTools() {
+  const root = $("tools");
+  for (const [id, name] of TOOLS) {
+    const r = document.createElement("div"); r.className = "tool-row" + (id === "whatsapp.send" ? " ext" : "");
+    r.innerHTML = `<span class="id">${id}</span><span class="nm">${name}</span><span class="n">0</span><span class="bar"><i></i></span>`;
+    root.appendChild(r); toolEls[id] = { el: r, n: r.querySelector(".n"), bar: r.querySelector(".bar i"), times: TOOL_EVENTS.filter((e) => e.tool === id).map((e) => e.t) };
+  }
+})();
+const humEls = HUMANS.map((h) => {
+  const r = document.createElement("div"); r.className = "hum";
+  r.innerHTML = `<div class="l1"><span><b class="c-yellow">${h.who}</b> · ${h.what}</span><span class="st"></span></div><div class="l2">${h.why}</div>`;
+  $("hums").appendChild(r); return { el: r, st: r.querySelector(".st") };
+});
+const cpEls = CPS.map((c) => {
+  const r = document.createElement("div"); r.className = "cp";
+  r.innerHTML = `<div class="c1"><span class="ic">○</span><span class="sn">${c.step}</span><span class="tt">${c.title}</span><span class="pg"></span><span class="vf"></span></div><div class="rc"></div>`;
+  $("cps").appendChild(r);
+  return { el: r, ic: r.querySelector(".ic"), pg: r.querySelector(".pg"), vf: r.querySelector(".vf"), rc: r.querySelector(".rc") };
+});
+const boardCells = [...$("board").querySelectorAll("i")];
+const skillEls = SKILLS.map((name) => { const s = document.createElement("span"); s.className = "chip-skill"; s.textContent = name; $("skills").appendChild(s); return s; });
+
+const AGENTS = {
+  amz: { el: $("ag-amz"), name: "亚马逊", browser: "美国 Chrome · SOCKS5", bt: 17.6 },
+  temu: { el: $("ag-temu"), name: "Temu", browser: "美国 Chrome · SOCKS5", bt: 17.9 },
+  a1688: { el: $("ag-1688"), name: "1688", browser: "国内 Chrome · 直连", bt: 18.1 },
+};
+for (const a of Object.values(AGENTS)) {
+  a.el.innerHTML = `<div class="ttl">${a.name} <small></small></div>
+    <div class="meter">${"<i></i>".repeat(10)}<span></span></div>
+    <div class="lines"></div><div class="st"></div>`;
+  a.sm = a.el.querySelector(".ttl small");
+  a.cells = [...a.el.querySelectorAll(".meter i")]; a.meterTxt = a.el.querySelector(".meter span");
+  a.lines = a.el.querySelector(".lines"); a.st = a.el.querySelector(".st");
+}
+const PROGRESS = {
+  amz: [[15.6, 0], [16.4, 0.05], [27.6, 0.6], [32, 0.6], [33.8, 1]],
+  temu: [[15.6, 0], [16.6, 0.05], [21, 0.5], [22.4, 0.12], [23.2, 1]],
+  a1688: [[15.6, 0], [16.8, 0.05], [26.2, 1]],
+};
+function agentStatus(id, t) {
+  if (t < 15.6) return ["· 待命", "c-dim"];
+  const a = AGENTS[id];
+  if (t < a.bt) return [spin(t) + " 读技能「多平台找同款」", "c-blue"];
+  if (t < a.bt + 0.9) return [spin(t) + " 选浏览器 · 带上 cookie", "c-blue"];
+  if (id === "amz") {
+    if (t < 27.6) return [spin(t) + " 搜索中 · 按销量排序", "c-blue"];
+    if (t < 28.2) return ["× 验证码 · 规则拦下", "c-red"];
+    if (t < 31.4) return ["‖ 挂起 · 等王悦处理", "c-yellow"];
+    if (t < 32.0) return ["✓ 王悦处理完", "c-green"];
+    if (t < 33.8) return ["▶ 继续同一个 session", "c-blue"];
+    if (t < 34.2) return ["✓ 找到 6 款", "c-green"];
+    return ["✓ 6 款 · cookie 已存回 v32", "c-green"];
+  }
+  if (id === "temu") {
+    if (t < 21.0) return [spin(t) + " 搜索中", "c-blue"];
+    if (t < 21.8) return ["! 结果和客户看到的对不上", "c-red"];
+    if (t < 22.8) return ["↻ 换办法：切到美国站", "c-orange"];
+    if (t < 23.2) return [spin(t) + " 美国站重搜", "c-orange"];
+    if (t < 23.8) return ["✓ 找到 9 款", "c-green"];
+    return ["✓ 找到 9 款 · 提议 1 条记忆", "c-green"];
+  }
+  if (t < 25.4) return [spin(t) + " 以图搜同款 · 看店铺", "c-blue"];
+  if (t < 26.2) return [spin(t) + " 按记忆筛：只要工厂", "c-green"];
+  return ["✓ 12 家 · 工厂 7 家", "c-green"];
+}
+function agentFound(id, t) {
+  if (id === "amz") return t >= 33.8 ? "6 款" : t >= 19.4 ? Math.min(4, Math.floor((Math.min(t, 27.6) - 19.4) * 0.6) + 1) + " 款" : "";
+  if (id === "temu") return t >= 23.2 ? "9 款" : (t >= 19.8 && t < 21) ? Math.floor((t - 19.8) * 3) + 1 + " 款 ?" : t >= 21 && t < 22.8 ? "作废" : "";
+  return t >= 26.2 ? "工厂 7 / 12 家" : t >= 18.8 ? Math.min(11, Math.floor((t - 18.8) * 1.6) + 1) + " 家" : "";
+}
+function agentLineHTML(e) {
+  if (e.k === "tool") return `<span class="tl">› ${e.tool}</span> ${esc(e.arg)}`;
+  return esc(e.line);
+}
+function agentLineCls(e) {
+  if (e.k === "err") return "err";
+  if (e.k === "ok") return "ok";
+  if (e.k === "br" || e.k === "sys") return "brw";
+  if (e.adapt) return "adapt";
+  return "";
+}
+// ---------------- 连线（SVG） ----------------
+const SVGNS = "http://www.w3.org/2000/svg";
+const wires = $("wires");
+function path(d, extraCls) {
+  const p = document.createElementNS(SVGNS, "path");
+  p.setAttribute("d", d); p.setAttribute("class", "w " + (extraCls || ""));
+  wires.appendChild(p); return p;
+}
+function circle(x, y, r, fill) {
+  const c = document.createElementNS(SVGNS, "circle");
+  c.setAttribute("cx", x); c.setAttribute("cy", y); c.setAttribute("r", r); c.setAttribute("fill", fill);
+  wires.appendChild(c); return c;
+}
+const W = {
+  cust: path("M530 46 V64"),
+  forkTrunk: path("M530 236 V258"),
+  forkH: path("M475 258 H1065"),
+  forkA: path("M475 258 V282"), forkB: path("M770 258 V282"), forkC: path("M1065 258 V282"),
+  convA: path("M475 414 V476 H570"), convB: path("M770 414 V452"), convC: path("M1065 414 V476 H970"),
+  toPipe: path("M770 500 V511 H422 V522"),
+  p12: path("M504 555 H514"), p23: path("M678 555 H688"), p34: path("M852 555 H862"), p45: path("M1026 555 H1036"),
+};
+// 流动的小圆点：沿路径移动（session 挂起时不流动）
+const FLOWS = [
+  { d: "M530 46 V64", t0: 5.6, t1: 8.4, n: 1, speed: 1.2, color: "var(--yellow)" },
+  { d: "M530 236 V258 H475 V282", t0: 15.4, t1: 27.6, n: 3, speed: 0.55, color: "var(--orange)", fast: [15.4, 18.6] },
+  { d: "M530 236 V258 H770 V282", t0: 15.4, t1: 23.2, n: 3, speed: 0.55, color: "var(--orange)", fast: [15.4, 18.6] },
+  { d: "M530 236 V258 H1065 V282", t0: 15.4, t1: 26.2, n: 3, speed: 0.55, color: "var(--orange)", fast: [15.4, 18.6] },
+  { d: "M530 236 V258 H475 V282", t0: 32.0, t1: 33.8, n: 3, speed: 0.9, color: "var(--green)" },
+  { d: "M770 500 V511 H422 V522", t0: 35.4, t1: 36.4, n: 2, speed: 0.9, color: "var(--orange)" },
+  { d: "M504 555 H514", t0: 38.2, t1: 39.6, n: 1, speed: 1.5, color: "var(--orange)" },
+  { d: "M678 555 H688", t0: 44.0, t1: 44.8, n: 1, speed: 1.5, color: "var(--purple)" },
+  { d: "M852 555 H862", t0: 46.2, t1: 46.6, n: 1, speed: 2.5, color: "var(--blue)" },
+  { d: "M1026 555 H1036", t0: 49.0, t1: 49.8, n: 1, speed: 1.5, color: "var(--green)" },
+];
+for (const f of FLOWS) {
+  const p = document.createElementNS(SVGNS, "path"); p.setAttribute("d", f.d); p.setAttribute("fill", "none");
+  wires.appendChild(p); f.path = p; f.len = p.getTotalLength();
+  f.dots = Array.from({ length: f.n }, () => circle(0, 0, 3.5, f.color));
+}
+// 汇合处的点线（随进度点亮）
+const LANES = {
+  amz: [[475, 426], [475, 442], [475, 458]],
+  temu: [[770, 422], [770, 432], [770, 442]],
+  a1688: [[1065, 426], [1065, 442], [1065, 458]],
+};
+const laneDots = {};
+for (const [id, pts] of Object.entries(LANES)) laneDots[id] = pts.map(([x, y]) => circle(x, y, 3.5, "var(--line)"));
+// 规则 → 被拦对象 的虚线（运行时根据规则行的位置生成）
+const RULE_LINKS = [
+  { rule: "rl-memory-review", t0: 24.0, t1: 25.6, color: "var(--yellow)", to: (y) => `M320 ${y} H330 V55 H1000 V64` },
+  { rule: "rl-captcha", t0: 27.8, t1: 32.0, color: "var(--red)", to: (y) => `M320 ${y} H330 V348 H340` },
+  { rule: "rl-verify", t0: 39.4, t1: 44.0, color: "var(--purple)", to: (y) => `M320 ${y} H330 V592 H596 V588` },
+  { rule: "rl-wa-confirm", t0: 46.4, t1: 49.0, color: "var(--red)", to: (y) => `M320 ${y} H330 V592 H944 V588` },
+];
+function buildRuleLinks() {
+  const main = $("main");
+  for (const l of RULE_LINKS) {
+    const el = ruleEls[l.rule].el.querySelector(".r1");
+    let y = 0, n = el; while (n && n !== main) { y += n.offsetTop; n = n.offsetParent; }
+    y += el.offsetHeight / 2;
+    if (l.path) l.path.remove();
+    const p = document.createElementNS(SVGNS, "path");
+    p.setAttribute("d", l.to(Math.round(y))); p.setAttribute("class", "rl"); p.setAttribute("stroke", l.color);
+    wires.appendChild(p); l.path = p;
+  }
+}
+// ---------------- render(t) ----------------
+function render(t) {
+  const shown = E.filter((e) => e.t <= t);
+  const tools = shown.filter((e) => e.k === "tool");
+  const nTools = tools.length;
+  const [sName, sColor, sCol] = sessState(t);
+  const isHeld = held(t);
+
+  // 开场：标题、图例、骨架淡入
+  $("hdr").style.opacity = 0.35 + 0.65 * ramp(t, 0.2, 0.8);
+  $("legend").style.opacity = 0.25 + 0.75 * ramp(t, 2.6, 0.8);
+  const skel = 0.25 + 0.75 * ramp(t, 3.0, 0.8);
+  for (const id of ["main", "log", "status"]) $(id).style.opacity = skel;
+  setText($("h-tools"), String(nTools));
+  setText($("h-agents"), String(t >= 15.6 ? 3 : 0));
+  $("h-sess").className = "c-" + (sColor === "dim" ? "dim" : sColor);
+
+  // 命令行
+  const cmdStr = "heyagent run T-1024";
+  let cmd = typed(cmdStr, t, 0.6, 9);
+  if (t >= 7.5) cmd += "  → session R-1024-1";
+  if (isHeld) cmd += "  ‖ 挂起中（不占模型、不花钱）";
+  else if ((t >= 32 && t < 34) || (t >= 38.2 && t < 39.4)) cmd += "  ▶ 继续同一个 session";
+  if (t >= 50.6) cmd = cmdStr + "  → session R-1024-1  ✓ 完成 · 验收通过 · 1 条记忆待王悦审核";
+  setText($("cmd-txt"), cmd);
+  $("cursor").style.opacity = RM || isHeld ? 1 : (Math.floor(t * 2) % 2 === 0 ? 1 : 0.15);
+  $("cursor").style.background = isHeld ? "var(--yellow)" : "var(--green)";
+
+  // 客户消息
+  const cust = $("b-cust");
+  cls(cust, "idle", t < 4); cls(cust, "glow", t >= 4 && t < 7.5);
+  setText($("cust-msg"), typed("这个帮我找工厂 shop.novahome.com/products/… 目标价 $3", t, 4.1, 34));
+  setText($("cust-2"), t >= 5.6 ? "→ Emily 建任务 T-1024 · 4 个步骤 + 检查点 · 负责人 王悦（搜品）" : " ");
+
+  // 规划 agent
+  const plan = $("b-plan");
+  cls(plan, "idle", t < 7.5);
+  cls(plan, "held", isHeld);
+  cls(plan, "glow", !isHeld && ((t >= 11 && t < 15.8) || (t >= 34.6 && t < 36.4) || (t >= 38.2 && t < 39.4)));
+  let dec = "等任务…";
+  if (t >= 7.5) dec = "开 session R-1024-1，读入这次选的记忆和技能";
+  if (t >= 11) dec = "步骤 1：先解析客户发来的链接";
+  if (t >= 14.4) dec = "检查点 1 ✓ · 步骤 2：分 3 路同时找";
+  if (t >= 16) dec = "等 3 个子 agent；怎么搜由它们自己定";
+  if (t >= 28.2) dec = "session 挂起：等王悦处理验证码";
+  if (t >= 32) dec = "继续同一个 session：亚马逊接着搜";
+  if (t >= 34.6) dec = "步骤 4：汇总 3 / 3 平台 → 比价表";
+  if (t >= 36.4) dec = "挂起，等王悦审核比价表";
+  if (t >= 38.2) dec = "审核通过 → 告诉系统：做完了";
+  if (t >= 39.4) dec = "等三方验收；被问到就拿记录回答";
+  if (t >= 44.4) dec = "验收通过 → 交给 AM 助手起草回复";
+  if (t >= 46.6) dec = "挂起，等 Emily 确认消息";
+  if (t >= 49.0) dec = "Emily 已确认 → 继续，消息发出";
+  if (t >= 49.8) dec = "任务完成";
+  setText($("plan-dec"), dec);
+  setHTML($("plan-prod"), t >= 14.0
+    ? '<span class="c-muted">商品 ▸ </span>硅胶折叠收纳篮 · <span class="c-green">$12.99</span> · 主图 5 张'
+    : t >= 13.0 ? '<span class="c-muted">商品 ▸ </span><span class="c-blue">shopify.product 读取中…</span>'
+    : '<span class="c-muted">商品 ▸ </span><span class="c-dim">等解析链接</span>');
+  setText($("plan-steps"), (t >= 34.6 ? 4 : t >= 25.4 ? 3 : t >= 15.2 ? 2 : t >= 11 ? 1 : 0) + "/4");
+
+  // 记忆 · 技能
+  const mem = $("b-mem");
+  const memFlash = flashing([11.8, 16.4, 25.0, 34.8, 45.2], t, 0.9);
+  cls(mem, "idle", t < 7.5);
+  cls(mem, "glow", (t >= 7.8 && t < 10.4) || memFlash || (t >= 23.8 && t < 25.4));
+  $("mem-1").style.opacity = ramp(t, 8.0, 0.3);
+  $("mem-2").style.opacity = ramp(t, 8.4, 0.3);
+  $("mem-3").style.opacity = ramp(t, 8.8, 0.3);
+  const m4 = $("mem-4");
+  if (t >= 24.0) {
+    setHTML(m4, '<span class="id">m-008</span><span class="tx">提议：Temu 搜索要先切换到美国站 · <b class="c-yellow">待王悦审核，审核前不生效</b></span>');
+    m4.className = "mem prop"; m4.style.opacity = ramp(t, 24.0, 0.3);
+  } else { setHTML(m4, '<span class="id">&nbsp;</span><span class="tx">&nbsp;</span>'); m4.className = "mem"; m4.style.opacity = 1; }
+  $("sk-lbl").style.opacity = ramp(t, 9.4, 0.3);
+  skillEls.forEach((el, i) => {
+    el.style.opacity = ramp(t, 9.4 + i * 0.15, 0.25);
+    const loads = SKILL_LOADS[i] || [];
+    cls(el, "load", loads.some((x) => t >= x && t - x < 1.4));
+    cls(el, "seen", loads.some((x) => t >= x));
+  });
+  $("arrow-in").style.color = (t >= 7.8 && t < 10.4) || memFlash ? "var(--green)" : "var(--dim)";
+
+  // 分叉 + session 横幅
+  for (const k of ["forkTrunk", "forkH", "forkA", "forkB", "forkC"]) cls(W[k], "on", t >= 15.4);
+  const mins = (a) => Math.max(1, Math.round((interp(CLK, t) - interp(CLK, a)) / 60));
+  let ban = null;
+  if (t >= 28.2 && t < 31.4) ban = ["‖ session R-1024-1 挂起 · 不占模型、不花钱 · 已等 " + mins(28.2) + " 分钟", "var(--yellow)"];
+  else if (t >= 31.4 && t < 32) ban = ["✓ 王悦处理完验证码 → 准备继续", "var(--green)"];
+  else if (t >= 32 && t < 34) ban = ["▶ 继续同一个 session R-1024-1 · 之前做过的都还在", "var(--green)"];
+  else if (t >= 36.4 && t < 38.2) ban = ["‖ session R-1024-1 挂起 · 等王悦审核比价表 · 已等 " + mins(36.4) + " 分钟 · 不花钱", "var(--yellow)"];
+  else if (t >= 38.2 && t < 39.4) ban = ["▶ 审核通过 · 继续同一个 session R-1024-1", "var(--green)"];
+  else if (t >= 46.6 && t < 49.0) ban = ["‖ session R-1024-1 挂起 · 等 Emily 确认发给客户的消息 · 不花钱", "var(--yellow)"];
+  else if (t >= 49.0 && t < 49.8) ban = ["▶ Emily 已确认 · 继续同一个 session，消息发出", "var(--green)"];
+  const bEl = $("banner");
+  bEl.style.opacity = ban ? 1 : 0;
+  if (ban) { setText(bEl, ban[0]); bEl.style.setProperty("--k", ban[1]); }
+  $("fork-lbl").style.opacity = ban ? 0 : 0.35 + 0.65 * ramp(t, 15.2, 0.4);
+
+  // 子 agent
+  for (const [id, a] of Object.entries(AGENTS)) {
+    const p = interp(PROGRESS[id], t);
+    cls(a.el, "idle", t < 15.6);
+    const [st, stc] = agentStatus(id, t);
+    cls(a.el, "alert", (id === "amz" && t >= 27.6 && t < 31.4) || (id === "temu" && t >= 21 && t < 21.8));
+    cls(a.el, "adapt", id === "temu" && t >= 21.8 && t < 23.2);
+    cls(a.el, "held", isHeld && !(id === "amz" && t < 31.4));
+    cls(a.el, "glow", (t >= 15.6 && t < 16.8) || (id === "amz" && t >= 32 && t < 33.8));
+    setText(a.sm, t >= a.bt ? a.browser : "子 agent · Sonnet 5.5");
+    a.cells.forEach((c, i) => cls(c, "f", i < Math.round(p * 10)));
+    setText(a.meterTxt, agentFound(id, t));
+    const mine = shown.filter((e) => e.who === id && (e.k === "tool" || e.line)).slice(-3);
+    setHTML(a.lines, mine.map((e) => `<div class="ln ${agentLineCls(e)} ${t - e.t < 0.7 ? "new" : ""}">${agentLineHTML(e)}</div>`).join(""));
+    setText(a.st, st); a.st.className = "st " + stc;
+  }
+  cls($("tag-amz"), "show", t >= 27.8 && t < 31.4);
+  cls($("tag-temu"), "show", t >= 21.8 && t < 26);
+  cls($("tag-ver"), "show", t >= 39.6 && t < 44);
+  cls($("tag-wa"), "show", t >= 46.4 && t < 49.0);
+
+  // 汇合点线
+  for (const [id, dots] of Object.entries(laneDots)) {
+    const p = interp(PROGRESS[id], t);
+    const lit = Math.floor(p * 3 + 1e-6);
+    dots.forEach((d, i) => {
+      let fill = "var(--line)";
+      if (i < lit) fill = p >= 1 ? "var(--green)" : "var(--blue)";
+      if (id === "amz" && t >= 27.6 && t < 32 && i === lit) fill = "var(--red)";
+      d.setAttribute("fill", fill);
+    });
+  }
+  const doneCount = (t >= 23.2) + (t >= 26.2) + (t >= 33.8);
+  cls(W.convA, "on", t >= 33.8); cls(W.convB, "on", t >= 23.2); cls(W.convC, "on", t >= 26.2);
+
+  // 汇总
+  const merge = $("b-merge");
+  cls(merge, "idle", t < 23.2);
+  cls(merge, "held", t >= 36.4 && t < 38.2);
+  cls(merge, "glow", t >= 34.6 && t < 36.2);
+  setHTML($("merge-1"), t >= 34.6
+    ? '比价表 · <span class="c-green">3 / 3</span> 平台 · 推荐工厂 3 家 · 最低 <span class="c-green">$2.6</span>'
+    : `汇总比价表 · <span class="c-orange">${doneCount} / 3</span> 平台`);
+  setText($("merge-2"), t >= 35.4 ? "已存 ERP 比价表 #8812 · 规则自动记进检查点 4" : "做完要过验收；发给客户要人确认");
+  cls(W.toPipe, "on", t >= 35.4);
+
+  // 交付流水线
+  const P = (id, idleBefore, glowRange, alertRange) => {
+    const el = $(id); cls(el, "idle", t < idleBefore);
+    cls(el, "glow", glowRange && t >= glowRange[0] && t < glowRange[1]);
+    cls(el, "alert", alertRange && t >= alertRange[0] && t < alertRange[1]);
+  };
+  P("p1", 36.4, [36.4, 38.2]); P("p2", 39.4, [39.4, 44.4]); P("p3", 44.4, [44.4, 46.2]); P("p4", 46.2, [49.0, 49.8], [46.4, 49.0]); P("p5", 49.0, [49.4, 50.6]);
+  setHTML($("p1-s"), t >= 38.0 ? '<span class="c-green">✓ 通过 · 继续</span>' : t >= 36.4 ? `<span class="c-yellow">‖ 等审核 · 已挂起</span>` : '<span class="c-dim">—</span>');
+  const vN = countTo(VER_PASS, t);
+  setHTML($("p2-s"), t >= 44.0 ? '<span class="c-green">✓ 5 / 5 通过</span>'
+    : t >= VER_Q[0] && t < VER_Q[1] ? '<span class="c-orange">? 反问 1 条</span>'
+    : t >= 39.4 ? `<span class="c-purple">${spin(t)} 核对 ${vN} / 5</span>` : '<span class="c-dim">—</span>');
+  setHTML($("p3-s"), t >= 46.2 ? '<span class="c-blue">→ whatsapp.send</span>' : t >= 45.2 ? `<span class="c-blue">${spin(t)} 起草中</span>` : t >= 44.4 ? `<span class="c-blue">${spin(t)} 准备起草</span>` : '<span class="c-dim">—</span>');
+  setHTML($("p4-s"), t >= 49.0 ? '<span class="c-green">✓ Emily 已确认</span>' : t >= 46.4 ? '<span class="c-red">■ 拦下 · 等 Emily</span>' : '<span class="c-dim">—</span>');
+  setHTML($("p5-s"), t >= 49.4 ? '<span class="c-green">✓ 已发送</span>' : t >= 46.2 ? '<span class="c-muted">未发送</span>' : '<span class="c-dim">—</span>');
+  cls(W.p12, "on", t >= 38.2); cls(W.p23, "on", t >= 44.0); cls(W.p34, "on", t >= 46.2); cls(W.p45, "on", t >= 49.4);
+
+  // 规则面板
+  const rule = (id, text, kind, hit) => {
+    const r = ruleEls[id]; setText(r.ct, text); r.ct.className = "ct " + (kind || "");
+    r.el.className = "rule" + (hit ? " hit-" + hit : "");
+  };
+  const nSync = countTo(SYNC_TIMES, t);
+  rule("rl-checkpoint-sync", nSync ? `同步 ${nSync}` : "—", nSync ? "info" : "", flashing(SYNC_TIMES, t, 0.35) ? "info" : "");
+  rule("rl-memory-review", t >= 24 ? "转审核 1" : "—", t >= 24 ? "wait" : "", t >= 24 && t < 25.6 ? "wait" : "");
+  rule("rl-captcha", t >= 32 ? "挂起 1 · 已继续" : t >= 27.8 ? "挂起 session" : "—", t >= 32 ? "info" : t >= 27.8 ? "block" : "", t >= 27.8 && t < 32 ? "block" : "");
+  rule("rl-verify", t >= 44 ? "✓ 通过" : t >= VER_Q[0] ? "反问 1" : t >= 39.4 ? "核对中" : "—", t >= 44 ? "pass" : t >= VER_Q[0] ? "wait" : t >= 39.4 ? "info" : "", t >= 39.4 && t < 44 ? (t >= VER_Q[0] && t < VER_Q[1] ? "wait" : "info") : "");
+  rule("rl-wa-confirm", t >= 49.0 ? "✓ 已确认" : t >= 46.4 ? "拦下" : "—", t >= 49.0 ? "pass" : t >= 46.4 ? "block" : "", t >= 46.4 && t < 49.0 ? "block" : "");
+  const blocks = (t >= 46.4) ? 1 : 0;
+  setText($("r-hit"), String(nSync + (t >= 24) + (t >= 27.8) + (t >= 39.4) + (t >= 46.4)));
+  setText($("r-hold"), String((t >= 27.8) + (t >= 46.6)));
+  setText($("r-block"), String(blocks));
+  setText($("r-last"), t >= 46.4 ? "whatsapp.send → 拦下，等 Emily" : t >= 27.8 ? "亚马逊验证码 → 挂起 session" : "—");
+  for (const l of RULE_LINKS) if (l.path) {
+    l.path.style.opacity = t >= l.t0 && t < l.t1 ? 1 : 0;
+    l.path.style.strokeDashoffset = RM ? 0 : String(-((t * 24) % 8));
+  }
+
+  // 检查点面板
+  const pages = countTo(PAGE_TIMES, t);
+  const visit = (t >= 23.2) + (t >= 26.2) + (t >= 33.8);
+  const vCur = t >= 39.4 && t < 44 ? vN : -1;
+  const CPV = [
+    t >= 14.4 ? ["done", "", "硅胶折叠收纳篮 · $12.99 · 主图 5 张"] : ["", "", "agent 做完自己勾"],
+    visit >= 3 ? ["done", "3/3", `自动 · 3 个平台，记了 ${pages} 个页面`] : pages ? ["doing", visit + "/3", `自动 · 已记 ${pages} 个页面`] : ["", "0/3", "打开网页后规则自动记"],
+    t >= 26.6 ? ["done", "7/5", "7 家工厂（排除 3 家贸易商）"] : ["", "", "agent 填数量并附清单"],
+    t >= 35.4 ? ["done", "", "自动 · ERP 比价表 #8812"] : ["", "", "保存后规则自动附链接"],
+    t >= 38.0 ? ["done", "", "王悦 ✓ 审核通过"] : t >= 36.4 ? ["wait", "", "可以等待 · 等王悦，session 挂起"] : ["", "", "这一步可以等待"],
+  ];
+  const cpFlash = [[14.4], SYNC_TIMES.filter((x) => x < 35), [26.6], [35.4], [38.0]];
+  CPV.forEach(([st, pg, rc], i) => {
+    const c = cpEls[i];
+    c.el.className = "cp " + st + (flashing(cpFlash[i], t, 0.5) ? " flash" : "") + (i === vCur ? (t >= VER_Q[0] && t < VER_Q[1] ? " vq" : " vcur") : "");
+    setText(c.ic, st === "done" ? "✓" : st === "doing" ? "◐" : st === "wait" ? "‖" : "○");
+    setText(c.pg, pg); setText(c.rc, rc);
+    setText(c.vf, t >= VER_PASS[i] ? "验 ✓" : i === 2 && t >= VER_Q[0] ? "验 ?" : "");
+  });
+  const nCp = CPV.filter((x) => x[0] === "done").length;
+  cls($("p-cp"), "glow", flashing([14.4, 26.6, 35.4, 38.0], t, 0.8) || (t >= 39.4 && t < 44));
+  setHTML($("cp-foot"), t >= 44 ? '<span class="c-purple">验收 qwen3:32b ▸</span> <span class="c-green">✓ 5 / 5 核对通过</span>'
+    : t >= VER_Q[0] && t < VER_Q[1] ? '<span class="c-purple">验收 qwen3:32b ▸</span> <span class="c-orange">? 7 家里有没有贸易商</span>'
+    : t >= 39.4 ? `<span class="c-purple">验收 qwen3:32b ▸ 逐条核对 ${vN} / 5</span>`
+    : `已完成 <span class="c-green">${nCp} / 5</span> · 做完后由三方 AI 逐条核对`);
+
+  // 工具面板
+  for (const [id] of TOOLS) {
+    const r = toolEls[id]; const n = countTo(r.times, t);
+    setText(r.n, "×" + n);
+    r.bar.style.width = Math.min(100, (n / 16) * 100) + "%";
+    cls(r.el, "zero", n === 0);
+    cls(r.el, "flash", flashing(r.times, t, 0.35));
+  }
+  setText($("t-total"), String(nTools));
+
+  // 待办看板
+  boardCells.forEach((c, i) => cls(c, "on", i === sCol));
+  let waiting = 0;
+  HUMANS.forEach((h, i) => {
+    const r = humEls[i];
+    const state = t < h.t0 ? "idle" : (h.t1 === null || t < h.t1) ? "wait" : "done";
+    if (state === "wait") waiting++;
+    r.el.className = "hum " + state;
+    setText(r.st, state === "idle" ? "—" : state === "wait" ? (h.t1 === null ? "● 待审核" : "● 等处理") : h.done);
+  });
+  setText($("h-wait"), String(waiting));
+
+  // 连线中的流动圆点
+  for (const f of FLOWS) {
+    const on = !RM && t >= f.t0 && t < f.t1;
+    const sp = f.fast && t >= f.fast[0] && t < f.fast[1] ? f.speed * 1.8 : f.speed;
+    f.dots.forEach((d, i) => {
+      if (!on) { d.setAttribute("r", 0); return; }
+      const ph = (((t - f.t0) * sp + i / f.n) % 1 + 1) % 1;
+      const pt = f.path.getPointAtLength(ph * f.len);
+      d.setAttribute("cx", pt.x); d.setAttribute("cy", pt.y); d.setAttribute("r", 3.5);
+    });
+  }
+  cls(W.cust, "on", t >= 5.6);
+
+  // 日志
+  const logs = shown.filter((e) => e.log).slice(-3);
+  setHTML($("log-rows"), logs.map((e) => {
+    const [name, color] = WHO[e.who];
+    const c = e.k === "block" || e.k === "err" ? "red" : color;
+    return `<div class="lr"><span class="ts">${clock(e.t)}</span><span class="who c-${c}">${name}</span><span class="msg">${esc(e.log)}</span></div>`;
+  }).join(""));
+
+  // 状态栏
+  const B = (label, val, c) => `<span>${label} <span class="br">[</span><b class="c-${c}">${val}</b><span class="br">]</span></span>`;
+  setHTML($("status"),
+    B("session R-1024-1", sName, sColor) +
+    B("子 agent", (t >= 15.6 ? 3 : 0) + "/3", "blue") +
+    B("工具调用", String(nTools).padStart(2, " "), "green") +
+    B("token", interp(TOK, t).toFixed(1) + "k", "text") +
+    B("花费", "$" + interp(COST, t).toFixed(2), "text") +
+    B("检查点", nCp + "/5", "green") +
+    B("等人处理", waiting, "yellow") +
+    B("规则拦下", blocks, "red"));
+
+  // 收尾总结
+  const fin = $("finale");
+  fin.style.opacity = ramp(t, 50.6, 0.6);
+  setText($("fin-1"), typed("步骤只写目标，每步怎么做 agent 自己定；结果不对，它自己换办法", t, 51.0, 40));
+  setText($("fin-2"), typed("任务选的规则由代码执行：验证码就挂起，做完换一家模型验收，发消息必须人确认", t, 52.0, 40));
+  setText($("fin-3"), t >= 53.2 ? `本次：session R-1024-1 · 3 个子 agent · ${TOTAL_TOOLS} 次工具调用 · 挂起 3 次，都接着原 session 做完 · 0 次越权` : "");
+
+  // 字幕
+  const cap = lastBefore(CAPTIONS, t) || CAPTIONS[0];
+  const ch = CHAPTERS.filter((c) => c.t <= t).length || 1;
+  $("caption").className = "caption " + (cap.chip || "");
+  setText($("cap-num"), String(ch));
+  if (cap.html) setHTML($("cap-txt"), cap.html); else setText($("cap-txt"), cap.text);
+  $("cap-txt").style.opacity = 0.2 + 0.8 * ramp(t, cap.t, 0.3);
+  setText($("cap-chip"), cap.chip === "flow" ? "流程不写死" : cap.chip === "rule" ? "规矩写死" : "");
+
+  // 控制条
+  $("fill").style.width = (t / DUR) * 100 + "%";
+  $("head").style.left = (t / DUR) * 100 + "%";
+  setText($("time"), t.toFixed(1) + " / " + DUR + "s");
+  chapEls.forEach((el, i) => cls(el, "cur", i === ch - 1));
+}
+// ---------------- 播放控制 ----------------
+const chapEls = [];
+(function buildTrack() {
+  const track = $("track"), wrap = $("track-wrap");
+  CHAPTERS.forEach((c, i) => {
+    const tick = document.createElement("div"); tick.className = "tick"; tick.style.left = (c.t / DUR) * 100 + "%"; track.appendChild(tick);
+    const b = document.createElement("button"); b.className = "chap"; b.textContent = c.name;
+    b.style.left = (c.t / DUR) * 100 + "%";
+    b.title = `第 ${i + 1} 段 · ${c.name}`;
+    b.addEventListener("click", (ev) => { ev.stopPropagation(); seek(c.t + 0.01); });
+    wrap.appendChild(b); chapEls.push(b);
+  });
+})();
+
+const params = new URLSearchParams(location.search);
+let T = clamp(parseFloat(params.get("t")) || 0, 0, DUR);
+let playing = params.get("paused") !== "1";
+let speed = parseFloat(params.get("speed")) || 1;
+let last = null;
+
+function setPlaying(p) { playing = p; setText($("btn-play"), p ? "❚❚ 暂停" : "▶ 播放"); last = null; }
+function seek(t) { T = clamp(t, 0, DUR); render(T); }
+function setSpeed(s) {
+  speed = s;
+  document.querySelectorAll("[data-speed]").forEach((b) => cls(b, "on", parseFloat(b.dataset.speed) === s));
+}
+$("btn-play").addEventListener("click", () => { if (!playing && T >= DUR) T = 0; setPlaying(!playing); });
+$("btn-replay").addEventListener("click", () => { seek(0); setPlaying(true); });
+document.querySelectorAll("[data-speed]").forEach((b) => b.addEventListener("click", () => setSpeed(parseFloat(b.dataset.speed))));
+$("track-wrap").addEventListener("click", (ev) => {
+  const r = $("track").getBoundingClientRect();
+  seek(((ev.clientX - r.left) / r.width) * DUR);
+});
+function chapterIndex(t) { return Math.max(0, CHAPTERS.filter((c) => c.t <= t + 0.02).length - 1); }
+window.addEventListener("keydown", (ev) => {
+  if (ev.key === " ") { ev.preventDefault(); $("btn-play").click(); }
+  else if (ev.key === "ArrowRight") { const i = chapterIndex(T); seek((CHAPTERS[i + 1] || { t: DUR }).t + 0.01); }
+  else if (ev.key === "ArrowLeft") { const i = chapterIndex(T); const back = T - CHAPTERS[i].t < 1.5 ? i - 1 : i; seek(CHAPTERS[Math.max(0, back)].t + 0.01); }
+  else if (ev.key === "r" || ev.key === "R") $("btn-replay").click();
+});
+setSpeed(speed);
+setPlaying(playing);
+
+function fit() {
+  const PAD = 16; // 四周留边，窗口边框和控制栏不贴边
+  const s = Math.min((window.innerWidth - PAD * 2) / 1600, (window.innerHeight - PAD * 2) / 1000);
+  const st = $("stage");
+  st.style.transform = `scale(${s})`;
+  st.style.left = Math.max(0, (window.innerWidth - 1600 * s) / 2) + "px";
+  st.style.top = Math.max(0, (window.innerHeight - 1000 * s) / 2) + "px";
+}
+window.addEventListener("resize", fit);
+fit();
+buildRuleLinks();
+render(T);
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { buildRuleLinks(); render(T); });
+
+function frame(now) {
+  if (playing) {
+    if (last !== null) {
+      T += ((now - last) / 1000) * speed;
+      if (T >= DUR) T = T - DUR; // 循环
+    }
+    last = now;
+    render(T);
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+window.__heyagent = { render, seek, DUR, TOTAL_TOOLS };
+</script>
+</body>
+</html>

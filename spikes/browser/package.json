@@ -1,0 +1,14 @@
+{
+  "name": "heyagent-spike-browser",
+  "private": true,
+  "type": "module",
+  "description": "M0 包 2：浏览器基础镜像实测脚本。只在 browser-base 容器里跑，playwright-core 用镜像 /opt/browser 里的 1.64.1。",
+  "scripts": {
+    "spikes": "./run-spikes.sh",
+    "viewer": "./run-viewer.sh start"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "ws": "8.22.0"
+  }
+}

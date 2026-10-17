@@ -1,0 +1,14 @@
+{"label":"静态页，空闲","screencast":false,"cpu":{"chrome":8.2,"xvfb":0,"node":0.2,"container":11}}
+{"label":"静态页（内容不变）","quality":60,"ackDelayMs":0,"everyNthFrame":1,"fps":0,"frameKB":{"avg":0,"p95":0,"max":0},"kbps":0,"imageSize":null,"cpu":{"chrome":7,"xvfb":0.1,"node":0.1,"container":7.3}}
+{"label":"动画页，不开 screencast","screencast":false,"cpu":{"chrome":24.5,"xvfb":0.8,"node":0.1,"container":25.7}}
+{"label":"动画页 q60","quality":60,"ackDelayMs":0,"everyNthFrame":1,"fps":60,"frameKB":{"avg":12.5,"p95":12.6,"max":12.6},"kbps":5979.2,"imageSize":"1365x680","cpu":{"chrome":184.2,"xvfb":0.8,"node":16.8,"container":203}}
+{"label":"动画页 q80","quality":80,"ackDelayMs":0,"everyNthFrame":1,"fps":60.1,"frameKB":{"avg":15.1,"p95":15.2,"max":15.2},"kbps":7257.8,"imageSize":"1365x680","cpu":{"chrome":186.6,"xvfb":1,"node":13.1,"container":200.5}}
+{"label":"动画页 q60，ack 延迟 50ms（模拟按观看端 RTT 确认）","quality":60,"ackDelayMs":50,"everyNthFrame":1,"fps":51,"frameKB":{"avg":12.5,"p95":12.6,"max":12.6},"kbps":5082.6,"imageSize":"1365x680","cpu":{"chrome":181,"xvfb":0.9,"node":11.1,"container":193.2}}
+{"label":"动画页 q60，ack 延迟 100ms","quality":60,"ackDelayMs":100,"everyNthFrame":1,"fps":22.5,"frameKB":{"avg":12.5,"p95":12.6,"max":12.6},"kbps":2243.9,"imageSize":"1365x680","cpu":{"chrome":133.3,"xvfb":0.9,"node":6.6,"container":140.7}}
+{"label":"动画页 q60，everyNthFrame=2","quality":60,"ackDelayMs":0,"everyNthFrame":2,"fps":30,"frameKB":{"avg":12.5,"p95":12.6,"max":12.6},"kbps":2994.4,"imageSize":"1365x680","cpu":{"chrome":150.4,"xvfb":0.8,"node":6.1,"container":161.4}}
+{"label":"动画页 q60，缩到 960x540 以内","quality":60,"ackDelayMs":0,"everyNthFrame":1,"fps":60,"frameKB":{"avg":7.9,"p95":8,"max":8},"kbps":3808,"imageSize":"960x478","cpu":{"chrome":144,"xvfb":0.7,"node":10.9,"container":155.6}}
+{"label":"维基长页面滚动，不开 screencast","screencast":false,"cpu":{"chrome":43.3,"xvfb":1.5,"node":2.2,"container":47.1}}
+{"label":"维基长页面滚动 q60（每 100ms 一次滚轮）","quality":60,"ackDelayMs":0,"everyNthFrame":1,"fps":13.2,"frameKB":{"avg":115.5,"p95":129.5,"max":136.5},"kbps":12198.5,"imageSize":"1365x680","cpu":{"chrome":111.1,"xvfb":1.6,"node":10.5,"container":126.5}}
+{"label":"维基长页面滚动 q40","quality":40,"ackDelayMs":0,"everyNthFrame":1,"fps":13.5,"frameKB":{"avg":90.6,"p95":104.6,"max":106.4},"kbps":9788.5,"imageSize":"1365x680","cpu":{"chrome":100.5,"xvfb":1.6,"node":9.9,"container":114.4}}
+{"label":"维基长页面滚动 q60，缩到 960x540 以内","quality":60,"ackDelayMs":0,"everyNthFrame":1,"fps":13.8,"frameKB":{"avg":61.6,"p95":71.8,"max":73.6},"kbps":6803,"imageSize":"960x478","cpu":{"chrome":90.5,"xvfb":1.7,"node":7,"container":99.4}}
+{"key":{"n":30,"p50":33,"p95":34.5,"max":39.8},"mouse":{"n":30,"p50":33.1,"p95":34.4,"max":36.9}}

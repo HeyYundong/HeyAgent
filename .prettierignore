@@ -1,0 +1,7 @@
+node_modules/
+dist/
+coverage/
+design/
+.dev/
+pnpm-lock.yaml
+apps/server/drizzle/

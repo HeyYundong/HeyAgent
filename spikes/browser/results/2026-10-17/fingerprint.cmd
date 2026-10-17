@@ -1,0 +1,1 @@
+podman run --rm --init --shm-size=2g --security-opt no-new-privileges --cap-drop=all --cap-add=SYS_CHROOT -v /mnt/toshiba/Projects/HeyAgent/spikes/browser:/opt/browser/spike:ro -w /opt/browser/spike --userns=keep-id -v /mnt/toshiba/Projects/HeyAgent/spikes/browser/out/20261017-051320:/out -e OUT_DIR=/out localhost/heyagent-browser-base:m0 node t-fingerprint.mjs

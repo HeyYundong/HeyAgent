@@ -1,0 +1,17 @@
+{
+  "noSandbox": false,
+  "uid": 1000,
+  "shm": "1907MB",
+  "chromeSandboxMode": "4755",
+  "pid1": "/dev/init -- node t-sandbox.mjs",
+  "started": false,
+  "error": [
+    "Chrome 退出 code=null signal=SIGTRAP",
+    "[1017/131406.012452:WARNING:chrome/app/chrome_main_linux.cc:84] Read channel stable from /opt/google/chrome/CHROME_VERSION_EXTRA",
+    "Check failed: sys_chroot(\"/proc/self/fdinfo/\") == 0",
+    "[13:13:1017/131406.212471:FATAL:content/browser/zygote_host/zygote_host_impl_linux.cc:251] Zygote process exited prematurely with exit code -1",
+    "[1017/131406.214210:ERROR:third_party/crashpad/crashpad/util/linux/scoped_ptrace_attach.cc:27] ptrace: Operation not permitted (1)",
+    ""
+  ],
+  "zombiesAfterClose": []
+}

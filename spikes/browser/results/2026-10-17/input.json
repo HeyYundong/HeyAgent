@@ -1,0 +1,145 @@
+{
+  "passed": 19,
+  "total": 19,
+  "results": [
+    {
+      "name": "点击输入框后键入 abc",
+      "ok": true,
+      "detail": "abc"
+    },
+    {
+      "name": "Ctrl+A + Backspace 清空",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "Input.insertText 中文 + emoji",
+      "ok": true,
+      "detail": "亚马逊 买家 账号 😀 第二行"
+    },
+    {
+      "name": "insertText 触发 input 事件（页面显示同步）",
+      "ok": true
+    },
+    {
+      "name": "mouseMoved 触发 :hover",
+      "ok": true
+    },
+    {
+      "name": "点击按钮 3 次",
+      "ok": true
+    },
+    {
+      "name": "mouseWheel 滚动页面",
+      "ok": true,
+      "detail": {
+        "scrollY": 800
+      }
+    },
+    {
+      "name": "Tab 键移动焦点",
+      "ok": true,
+      "detail": {
+        "focused": "confirmBtn"
+      }
+    },
+    {
+      "name": "Enter 键触发按钮",
+      "ok": true
+    },
+    {
+      "name": "自写拖动滑块拖到头",
+      "ok": true,
+      "detail": {
+        "moves": 30,
+        "done": true,
+        "maxX": 360
+      }
+    },
+    {
+      "name": "原生 range 滑块拖到头",
+      "ok": true,
+      "detail": {
+        "value": "100"
+      }
+    },
+    {
+      "name": "新标签页（target=_blank 链接）触发 context.on(\"page\")",
+      "ok": true,
+      "detail": "http://127.0.0.1:44691/newtab.html"
+    },
+    {
+      "name": "切到新标签页后 screencast 有帧（target=_blank 链接）",
+      "ok": true,
+      "detail": {
+        "n": 1,
+        "size": "1365x680"
+      }
+    },
+    {
+      "name": "新标签页（window.open）触发 context.on(\"page\")",
+      "ok": true,
+      "detail": "http://127.0.0.1:44691/newtab.html?from=window.open"
+    },
+    {
+      "name": "切到新标签页后 screencast 有帧（window.open）",
+      "ok": true,
+      "detail": {
+        "n": 1,
+        "size": "1365x680"
+      }
+    },
+    {
+      "name": "后台标签页开 screencast 的表现（记录）",
+      "ok": true,
+      "detail": {
+        "visibilityBefore": "hidden",
+        "backgroundFrames": {
+          "n": 1,
+          "size": "1365x624"
+        },
+        "foregroundFrames": {
+          "n": 89,
+          "size": "1365x624"
+        },
+        "visibilityAfterBringToFront": "visible"
+      }
+    },
+    {
+      "name": "JS 弹框 alert",
+      "ok": true,
+      "detail": {
+        "result": "alert 已关闭",
+        "dialog": {
+          "type": "alert",
+          "message": "这是 alert：你好",
+          "defaultValue": ""
+        }
+      }
+    },
+    {
+      "name": "JS 弹框 confirm",
+      "ok": true,
+      "detail": {
+        "result": "confirm=false",
+        "dialog": {
+          "type": "confirm",
+          "message": "确定要继续吗？",
+          "defaultValue": ""
+        }
+      }
+    },
+    {
+      "name": "JS 弹框 prompt",
+      "ok": true,
+      "detail": {
+        "result": "prompt=人工填写的备注",
+        "dialog": {
+          "type": "prompt",
+          "message": "请输入备注",
+          "defaultValue": "默认值"
+        }
+      }
+    }
+  ]
+}

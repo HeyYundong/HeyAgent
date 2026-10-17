@@ -1,0 +1,19 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": [
+      "node"
+    ],
+    "noEmit": true,
+    "customConditions": [
+      "source"
+    ],
+    "declaration": false
+  },
+  "include": [
+    "src",
+    "test",
+    "drizzle.config.ts",
+    "vitest.config.ts"
+  ]
+}

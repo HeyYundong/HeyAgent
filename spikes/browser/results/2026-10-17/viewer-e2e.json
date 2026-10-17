@@ -1,0 +1,71 @@
+{
+  "passed": 11,
+  "total": 11,
+  "results": [
+    {
+      "name": "canvas 点击 + 键盘键入",
+      "ok": true,
+      "detail": "hello"
+    },
+    {
+      "name": "Backspace / Ctrl+A 转发",
+      "ok": true
+    },
+    {
+      "name": "输入法组字（compositionend → Input.insertText）",
+      "ok": true,
+      "detail": "中文输入"
+    },
+    {
+      "name": "粘贴",
+      "ok": true,
+      "detail": "中文输入 粘贴的密码P@ss"
+    },
+    {
+      "name": "滚轮",
+      "ok": true,
+      "detail": {
+        "scrollY": 600
+      }
+    },
+    {
+      "name": "拖动滑块",
+      "ok": true,
+      "detail": {
+        "moves": 39,
+        "done": true,
+        "maxX": 360
+      }
+    },
+    {
+      "name": "弹框 #alertBtn（对话框显示「这是 alert：你好」）",
+      "ok": true,
+      "detail": "alert 已关闭"
+    },
+    {
+      "name": "弹框 #confirmBtn（对话框显示「确定要继续吗？」）",
+      "ok": true,
+      "detail": "confirm=true"
+    },
+    {
+      "name": "弹框 #promptBtn（对话框显示「请输入备注」）",
+      "ok": true,
+      "detail": "prompt=远程填写"
+    },
+    {
+      "name": "新标签页自动跟随",
+      "ok": true,
+      "detail": ["HeyAgent 远程画面测试页", "*新标签页"]
+    },
+    {
+      "name": "按键 → 新画面延迟（容器内回环）",
+      "ok": true,
+      "detail": {
+        "n": 30,
+        "p50": 37.1,
+        "p95": 37.6,
+        "max": 43.3
+      }
+    }
+  ]
+}

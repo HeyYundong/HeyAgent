@@ -1,0 +1,65 @@
+// HTTP 入口：/api/health、/api/auth/*（better-auth）、/api/trpc/*（tRPC，含 SSE 订阅）。
+import { fetchRequestHandler } from "@trpc/server/adapters/fetch"
+import { sql } from "drizzle-orm"
+import { Hono } from "hono"
+
+import type { Auth } from "./auth.js"
+import type { Db } from "./db/client.js"
+import type { ChangeHub } from "./live/hub.js"
+import type { Context } from "./trpc/init.js"
+import { appRouter } from "./trpc/router.js"
+
+export interface AppDeps {
+  db: Db
+  auth: Auth
+  hub: ChangeHub
+}
+
+export function createApp({ db, auth, hub }: AppDeps) {
+  const app = new Hono()
+
+  async function createContext(req: Request): Promise<Context> {
+    const session = await auth.api.getSession({ headers: req.headers })
+    const user = session?.user
+    return {
+      db,
+      hub,
+      user: user ? { id: user.id, name: user.name, email: user.email, isAdmin: user.role === "admin" } : null,
+    }
+  }
+
+  app.get("/api/health", async (c) => {
+    try {
+      await db.execute(sql`select 1`)
+      return c.json({ ok: true, db: "ok" })
+    } catch {
+      return c.json({ ok: false, db: "down" }, 503)
+    }
+  })
+
+  app.on(["GET", "POST"], "/api/auth/*", (c) => auth.handler(c.req.raw))
+
+  // SSE 订阅出错时 tRPC 是在流里发错误事件（HTTP 200）。没登录的订阅在这里直接回 401，和查询一致
+  app.use("/api/trpc/*", async (c, next) => {
+    if (!c.req.header("accept")?.includes("text/event-stream")) return next()
+    const session = await auth.api.getSession({ headers: c.req.raw.headers })
+    if (session) return next()
+    return c.json({ error: { message: "请先登录", code: -32001, data: { code: "UNAUTHORIZED", httpStatus: 401 } } }, 401)
+  })
+
+  app.all("/api/trpc/*", (c) =>
+    fetchRequestHandler({
+      endpoint: "/api/trpc",
+      req: c.req.raw,
+      router: appRouter,
+      createContext: () => createContext(c.req.raw),
+      onError: ({ error, path }) => {
+        if (error.code === "INTERNAL_SERVER_ERROR") console.error(`[trpc] ${path ?? "?"}`, error)
+      },
+    })
+  )
+
+  app.notFound((c) => c.json({ error: "not found" }, 404))
+
+  return app
+}

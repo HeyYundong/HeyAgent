@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>新标签页</title>
+<style>body { font-family: sans-serif; margin: 24px; background: #eef4ff; } h1 { font-size: 28px; }</style>
+</head>
+<body>
+<h1>这是新打开的标签页 ✅</h1>
+<p id="from"></p>
+<p><a href="/index.html">回到测试页</a></p>
+<script>document.getElementById("from").textContent = "来源：" + (new URLSearchParams(location.search).get("from") || "target=_blank 链接")</script>
+</body>
+</html>

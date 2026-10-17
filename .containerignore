@@ -1,0 +1,8 @@
+# podman build 的上下文里不要的东西（各个 Containerfile 共用）
+.git
+**/node_modules
+**/dist
+design
+.dev
+.env
+coverage

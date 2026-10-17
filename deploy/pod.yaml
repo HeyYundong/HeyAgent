@@ -1,0 +1,93 @@
+# HeyAgent 整套（M0）：postgres + api + web 三个容器放在一个 pod 里，入口是 web（Caddy）的 8080 端口。worker 在 M1 加。
+# 不要直接 play 这个文件，用 scripts/pod.sh up：它负责构建镜像、生成主密钥和配置（.dev/pod/config.yaml）、准备卷。
+# 开发机是 rootless Podman 3.4.4（podman play kube），服务器上是 4.4+（podman kube play / Quadlet），这份 YAML 两边都能用。
+#
+# 配置和密码：podman play kube --configmap .dev/pod/config.yaml（scripts/pod.sh 生成，权限 600，已 gitignore）。
+#   3.4.4 的 play kube 不支持 Kubernetes Secret，所以数据库密码、BETTER_AUTH_SECRET 也放在这个 configmap 里，
+#   注意它们会出现在 podman inspect 里。服务器上换成 Podman secret（部署阶段再做）。
+# 主密钥（KEK）：3.4.4 的 play kube 只支持 hostPath 和 PersistentVolumeClaim 两种卷（实测 secret 卷报
+#   「HostPath and PersistentVolumeClaim are currently the only supported VolumeSource」），也没有 --userns=keep-id 参数；
+#   直接 hostPath 挂 600 的 .dev/kek，容器里的 node 用户（uid 1000，映射到宿主机的子 uid）读不了。
+#   所以退回「只读挂载的文件」：scripts/pod.sh 每次 up 时把 .dev/kek 拷进卷 heyagent-pod-kek（属主 node、权限 0400），这里只读挂进 api。
+apiVersion: v1
+kind: Pod
+metadata:
+  name: heyagent
+  labels:
+    app: heyagent
+spec:
+  restartPolicy: Always
+  containers:
+    - name: postgres
+      image: docker.io/library/postgres:18
+      imagePullPolicy: IfNotPresent
+      # 只在 pod 里面用，不对外开端口；只听本机回环
+      args: ["-c", "listen_addresses=127.0.0.1"]
+      env:
+        - name: POSTGRES_USER
+          value: heyagent
+        - name: POSTGRES_DB
+          value: heyagent
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            configMapKeyRef:
+              name: heyagent-config
+              key: POSTGRES_PASSWORD
+        - name: TZ
+          value: Asia/Shanghai
+      volumeMounts:
+        # PostgreSQL 18 的镜像把数据放在 /var/lib/postgresql/18/docker，卷挂在上一层
+        - name: pgdata
+          mountPath: /var/lib/postgresql
+
+    - name: api
+      image: localhost/heyagent-api:m0
+      imagePullPolicy: IfNotPresent
+      # 先等 PostgreSQL 能连上（第一次初始化时要十几秒），再跑镜像自带的启动脚本（迁移 → 起 API）
+      command:
+        - sh
+        - -c
+        - >-
+          until node -e "require('net').connect(5432, '127.0.0.1').on('connect', () => process.exit(0)).on('error', () => process.exit(1))";
+          do echo '等 PostgreSQL 就绪…'; sleep 1; done;
+          exec ./entrypoint.sh
+      env:
+        - name: HOST
+          value: 127.0.0.1
+        - name: PORT
+          value: "3100"
+        - name: HEYAGENT_KEK_FILE
+          value: /run/heyagent-kek/kek
+        # 演示数据由 scripts/pod.sh 在 HEYAGENT_SEED_DEMO=1 时灌一次，容器重启时不重灌
+        - name: HEYAGENT_SEED_DEMO
+          value: "0"
+      envFrom:
+        - configMapRef:
+            name: heyagent-config
+      volumeMounts:
+        - name: kek
+          mountPath: /run/heyagent-kek
+          readOnly: true
+        # 文件存储（截图、比价表等产物），M1 起用
+        - name: files
+          mountPath: /data/files
+
+    - name: web
+      image: localhost/heyagent-web:m0
+      imagePullPolicy: IfNotPresent
+      ports:
+        # 内网入口：http://<本机 IP>:8080
+        - containerPort: 8080
+          hostPort: 8080
+          protocol: TCP
+
+  volumes:
+    - name: pgdata
+      persistentVolumeClaim:
+        claimName: heyagent-pod-pgdata
+    - name: files
+      persistentVolumeClaim:
+        claimName: heyagent-pod-files
+    - name: kek
+      persistentVolumeClaim:
+        claimName: heyagent-pod-kek

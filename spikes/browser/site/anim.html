@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>动画页（测帧率）</title>
+<style>
+  body { margin: 0; font-family: sans-serif; background: #fff; }
+  .box { position: absolute; top: 120px; width: 160px; height: 160px; background: #c33; animation: move 2s linear infinite alternate; }
+  @keyframes move { from { left: 0 } to { left: calc(100% - 160px) } }
+  p { margin: 24px; font-size: 20px; }
+</style></head>
+<body>
+<p>持续的 CSS 动画，用来测 screencast 的上限帧率。<span id="t"></span></p>
+<div class="box"></div>
+<script>setInterval(() => (document.getElementById("t").textContent = new Date().toISOString()), 100)</script>
+</body>
+</html>

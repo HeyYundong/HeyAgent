@@ -1,0 +1,18 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>WebRTC 候选地址</title></head>
+<body>
+<pre id="out">收集中…</pre>
+<script>
+  // 不连任何 STUN / TURN，只看本机会暴露哪些 ICE 候选（host / mDNS）。
+  window.__cands = []
+  window.__done = (async () => {
+    const pc = new RTCPeerConnection({ iceServers: [] })
+    pc.createDataChannel("x")
+    pc.onicecandidate = (e) => { if (e.candidate && e.candidate.candidate) window.__cands.push(e.candidate.candidate) }
+    await pc.setLocalDescription(await pc.createOffer())
+    await new Promise((r) => { pc.onicegatheringstatechange = () => pc.iceGatheringState === "complete" && r(); setTimeout(r, 4000) })
+    document.getElementById("out").textContent = JSON.stringify(window.__cands, null, 1)
+    return window.__cands
+  })()
+</script>
+</body></html>

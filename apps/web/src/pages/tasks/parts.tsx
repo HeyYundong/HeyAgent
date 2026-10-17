@@ -1,0 +1,122 @@
+// 任务页几处共用的小块：运行状态徽章、「现在在干什么 / 在等什么」、检查点卡片网格。Session 页也直接用这里的导出。
+import * as React from "react"
+import { CircleCheckIcon, CircleDashedIcon, CircleMinusIcon, CircleXIcon, HandIcon, HourglassIcon, ScanSearchIcon } from "lucide-react"
+
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { Badge } from "@/components/ui/badge"
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Progress } from "@/components/ui/progress"
+import { Spinner } from "@/components/ui/spinner"
+import { checkpointKindLabel, eventTimeText, runStatusLabel } from "@heyagent/shared"
+import type { RunCheckpoint, RunStatus, SessionRun } from "@heyagent/shared"
+
+import { useRunNow } from "@/lib/data"
+
+// 「一次运行此刻的一句话」「检查点完成几条」「预计下次运行」已经搬到 shared，这里转出去，页面照旧从这里拿
+export { checkpointSummary, nextRunText } from "@heyagent/shared"
+
+/** 分档：执行中 = 实心主色 + 转圈（全墙唯一红色实心、唯一会动的）；等人处理 = 实心灰；失败 = 浅红底；等待中 / 验收中 = 描边；已完成 = 无框 */
+export function RunStatusBadge({ status }: { status: RunStatus }) {
+  if (status === "running") return <Badge><Spinner data-icon="inline-start" />{runStatusLabel.running}</Badge>
+  if (status === "needs_human") return <Badge variant="secondary"><HandIcon data-icon="inline-start" />{runStatusLabel.needs_human}</Badge>
+  if (status === "waiting") return <Badge variant="outline"><HourglassIcon data-icon="inline-start" />{runStatusLabel.waiting}</Badge>
+  if (status === "verifying") return <Badge variant="outline"><ScanSearchIcon data-icon="inline-start" />{runStatusLabel.verifying}</Badge>
+  if (status === "done") return <Badge variant="ghost"><CircleCheckIcon data-icon="inline-start" />{runStatusLabel.done}</Badge>
+  return <Badge variant="destructive"><CircleXIcon data-icon="inline-start" />{runStatusLabel.failed}</Badge>
+}
+
+const pad = (n: number) => String(n).padStart(2, "0")
+
+/** 「已运行 20:05」：从开始到现在，每秒跳一下 */
+export function Elapsed({ since }: { since: string }) {
+  const [now, setNow] = React.useState(() => Date.now())
+  React.useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [])
+  const s = Math.max(0, Math.floor((now - Date.parse(since)) / 1000))
+  return <span className="tabular-nums">已运行 {s >= 3600 ? `${Math.floor(s / 3600)}:` : ""}{pad(Math.floor(s / 60) % 60)}:{pad(s % 60)}</span>
+}
+
+/** 「18.2 万」 */
+export const tokens = (n: number) => (n >= 10_000 ? `${(n / 10_000).toFixed(1)} 万` : n.toLocaleString("en-US"))
+export const money = (usd: number) => `$${usd.toFixed(2)}`
+
+const STATUS = { done: { icon: CircleCheckIcon, label: "完成", variant: "outline" }, open: { icon: CircleDashedIcon, label: "未完成", variant: "ghost" }, skipped: { icon: CircleMinusIcon, label: "已跳过", variant: "destructive" } } as const
+
+function CheckpointCard({ cp, run }: { cp: RunCheckpoint; run: SessionRun }) {
+  const status = STATUS[cp.status]
+  const progress = cp.target ? `${cp.progress ?? 0}/${cp.target}` : undefined
+  return (
+    <Card size="sm">
+      <CardHeader>
+        <CardTitle>{cp.title}</CardTitle>
+        <CardDescription>{checkpointKindLabel[cp.kind]}{cp.stepId ? "" : " · agent 自己加的"}</CardDescription>
+        <CardAction>
+          <Badge variant={status.variant}><status.icon data-icon="inline-start" />{status.label}</Badge>
+        </CardAction>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-2">
+        {progress && (
+          <Progress value={Math.min(100, ((cp.progress ?? 0) / cp.target!) * 100)} aria-label={`进度 ${progress}`}>
+            <span className="text-xs tabular-nums text-muted-foreground">进度 {progress}</span>
+          </Progress>
+        )}
+        {cp.records.length > 0 ? (
+          <ul className="flex flex-col gap-1.5 text-xs">
+            {cp.records.map((record, index) => (
+              <li key={index} className="flex items-start gap-2">
+                <span className="shrink-0 tabular-nums text-muted-foreground">{eventTimeText(record.at, run)}</span>
+                <span className="min-w-0 flex-1">{record.text}</span>
+                {record.synced && <Badge variant="secondary">自动</Badge>}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-xs text-muted-foreground">还没有记录</p>
+        )}
+        {cp.skipReason && <p className="border-t pt-2 text-xs">跳过理由：{cp.skipReason}</p>}
+      </CardContent>
+    </Card>
+  )
+}
+
+/** 检查点：每条一张小卡片，网格排列（记录的时间按这次运行显示：当天的只写时分，跨天的带日期） */
+export function CheckpointGrid({ run }: { run: SessionRun }) {
+  const { checkpoints } = run
+  if (checkpoints.length === 0) return <p className="text-muted-foreground">这次运行还没有检查点。没写步骤的任务，agent 会边做边加。</p>
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="grid gap-3 sm:grid-cols-2">
+        {checkpoints.map((cp) => <CheckpointCard key={cp.title} cp={cp} run={run} />)}
+      </div>
+      {checkpoints.some((cp) => cp.records.some((record) => record.synced)) && (
+        <p className="text-xs text-muted-foreground">标「自动」的记录是规则「同步检查点」在工具调用后自动写的，agent 改不了。</p>
+      )}
+    </div>
+  )
+}
+
+export interface TasksState {
+  runsOf: (taskId: string) => SessionRun[]
+}
+
+/** 运行挂起时的醒目提示：在等什么、什么时候继续 */
+export function WaitingAlert({ run, link }: { run: SessionRun; link?: string }) {
+  const now = useRunNow()(run)
+  if (now.label !== "在等") return null
+  return (
+    <Alert>
+      <HourglassIcon />
+      <AlertTitle>{link ? "最近一次运行" : "session 已挂起，"}在等：{now.text}</AlertTitle>
+      <AlertDescription>
+        {now.when ? `什么时候继续：${now.when}。` : ""}等到了继续同一个 session，前面的上下文都还在。
+        {link && <a href={link} className="ml-1 font-medium text-foreground underline underline-offset-4">看这次运行 →</a>}
+      </AlertDescription>
+    </Alert>
+  )
+}
+
+export const StepList = ({ steps }: { steps: string[] }) => (
+  <ol className="flex list-decimal flex-col gap-1 pl-5">{steps.map((text) => <li key={text}>{text}</li>)}</ol>
+)

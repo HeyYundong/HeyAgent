@@ -1,0 +1,11 @@
+PASS canvas 点击 + 键盘键入 "hello"
+PASS Backspace / Ctrl+A 转发 ""
+PASS 输入法组字（compositionend → Input.insertText） "中文输入"
+PASS 粘贴 "中文输入 粘贴的密码P@ss"
+PASS 滚轮 {"scrollY":600}
+PASS 拖动滑块 {"moves":39,"done":true,"maxX":360}
+PASS 弹框 #alertBtn（对话框显示「这是 alert：你好」） "alert 已关闭"
+PASS 弹框 #confirmBtn（对话框显示「确定要继续吗？」） "confirm=true"
+PASS 弹框 #promptBtn（对话框显示「请输入备注」） "prompt=远程填写"
+PASS 新标签页自动跟随 ["HeyAgent 远程画面测试页","*新标签页"]
+PASS 按键 → 新画面延迟（容器内回环） {"n":30,"p50":37.1,"p95":37.6,"max":43.3}
