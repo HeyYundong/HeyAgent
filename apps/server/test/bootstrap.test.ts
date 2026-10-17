@@ -83,7 +83,8 @@ describe("空白环境初始化", () => {
   it("没有任何演示数据：任务、记忆、技能、规则、工具（内置的除外）、MCP、浏览器、平台、待办、session 都是空的", async () => {
     // 内置工具由 bootstrap 同步进 tools 表（M1 P3）：worker 还没起时工具页也能看到
     const tools = await db.select({ id: t.tools.id, source: t.tools.source }).from(t.tools)
-    expect(tools.map((tool) => tool.id).sort()).toEqual(BUILTIN_TOOLS.map((tool) => tool.id).sort())
+    // 另加 M2 的「浏览器」（选了它就开放整组浏览器工具）
+    expect(tools.map((tool) => tool.id).sort()).toEqual([...BUILTIN_TOOLS.map((tool) => tool.id), "browser"].sort())
     expect(tools.every((tool) => tool.source === "builtin")).toBe(true)
     const tables = { tasks: t.tasks, memories: t.memories, skills: t.skills, rules: t.rules, mcpServers: t.mcpServers, browserProfiles: t.browserProfiles, platforms: t.platforms, humanTodos: t.humanTodos, humanItems: t.humanItems, sessions: t.sessions }
     for (const [name, table] of Object.entries(tables)) {
@@ -112,7 +113,7 @@ describe("空白环境初始化", () => {
     expect(await db.select().from(t.users)).toHaveLength(1)
     expect(await db.select().from(t.modelProviders)).toHaveLength(1)
     expect(calls).toHaveLength(1)
-    expect(await db.select().from(t.tools)).toHaveLength(BUILTIN_TOOLS.length)
+    expect(await db.select().from(t.tools)).toHaveLength(BUILTIN_TOOLS.length + 1)
   })
 
   it("连不上外网也不挡住启动：OpenRouter 下次再试", async () => {

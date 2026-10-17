@@ -27,7 +27,12 @@ export const meSchema = staffSchema.extend({
 })
 export type Me = z.infer<typeof meSchema>
 
-export const platformSchema = z.object({ id: z.string(), name: z.string() })
+export const platformSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  /** 这个平台的域名（M2）：打开这些域名（含子域名）下的网址时按「平台 × 账号」申请租约 */
+  domains: z.array(z.string()),
+})
 export type Platform = z.infer<typeof platformSchema>
 
 // ---------- 模型 ----------
@@ -313,6 +318,12 @@ export const taskSchema = z.object({
   skillIds: z.array(z.string()),
   toolIds: z.array(z.string()),
   ruleIds: z.array(z.string()),
+  /** M2：选了「浏览器」工具时允许用哪些 Chrome 配置；空 = 全部 */
+  browserProfileIds: z.array(z.string()),
+  /** M2：网址白名单（域名，子域名也算）；空 = 不限制 */
+  allowedDomains: z.array(z.string()),
+  /** M2：是否允许 agent 在网页里执行脚本 */
+  allowBrowserEvaluate: z.boolean(),
 })
 export type TaskDef = z.infer<typeof taskSchema>
 
@@ -428,6 +439,21 @@ export const humanDetailSchema = z.object({
   rejectHint: z.string().optional(),
   did: pairSchema.optional(),
   secondaryFinishes: z.boolean().optional(),
+  /**
+   * M2：遇到验证码或登录页时附上的浏览器信息。browserId 是当时保留着的 Chrome（远程画面用 GET /api/browser/view/:browserId）；
+   * Chrome 过了保留时间会关掉，这时用 browser.sessionBrowser 查不到，人可以用 browser.openForLogin(profileId, accountId) 新开一个处理
+   */
+  browser: z
+    .object({
+      browserId: z.string(),
+      sessionId: z.string(),
+      profileId: z.string(),
+      accountId: z.string().optional(),
+      url: z.string(),
+      reason: z.string(),
+      screenshotFileId: z.string().optional(),
+    })
+    .optional(),
 })
 export type HumanDetail = z.infer<typeof humanDetailSchema>
 

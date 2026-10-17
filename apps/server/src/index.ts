@@ -1,9 +1,12 @@
 // API 服务入口（端口 3100）。worker 在 M1 加，同一份代码另一个入口。
 import { serve } from "@hono/node-server"
 
+import type { Server } from "node:http"
+
 import { createApp } from "./app.js"
 import { createAuth } from "./auth.js"
 import { adminPasswordFileFromEnv, bootstrap } from "./bootstrap/index.js"
+import { attachBrowserViewRelay } from "./browser/view-relay.js"
 import { createDb } from "./db/client.js"
 import { initEngineClient } from "./engine/queue.js"
 import { env } from "./env.js"
@@ -23,6 +26,13 @@ await initEngineClient(db)
 const app = createApp({ db, auth, hub, keyring })
 const server = serve({ fetch: app.fetch, port: env.port, hostname: env.host }, (info) => {
   console.log(`HeyAgent API 已启动：http://${info.address}:${info.port}`)
+})
+// 远程画面（M2）：GET /api/browser/view/:browserId 的 WebSocket 升级，转到 worker 里的 Chrome
+attachBrowserViewRelay(server as Server, {
+  db,
+  auth,
+  keyring: () => keyring,
+  trustedOrigins: [...env.trustedOrigins, new URL(env.authUrl).origin],
 })
 
 async function shutdown(signal: string) {

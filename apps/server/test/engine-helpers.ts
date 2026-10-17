@@ -152,6 +152,7 @@ export async function setupEngine(
     superviseIntervalSeconds: options.superviseIntervalSeconds ?? 5,
     cronWorkerIntervalSeconds: options.cronWorkerIntervalSeconds,
     concurrency: 4,
+    browserControlPort: 0,
   })
   return {
     ...app,

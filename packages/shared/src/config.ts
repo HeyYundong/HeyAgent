@@ -4,6 +4,7 @@
 import { CronExpressionParser } from "cron-parser"
 import { z } from "zod"
 
+import { domainSchema } from "./browser-runtime.js"
 import { httpMethodSchema, httpSpecSchema, modelProviderKindSchema, riskSchema, skillStatusSchema, taskStepSchema } from "./schemas.js"
 import { TIME_ZONE } from "./time.js"
 
@@ -124,6 +125,12 @@ export const taskInputSchema = z.object({
   skillIds: ids.default([]),
   toolIds: ids.default([]),
   ruleIds: ids.default([]),
+  /** 选了「浏览器」工具时允许用哪些 Chrome 配置（M2）；空 = 全部 Chrome 配置都能用 */
+  browserProfileIds: ids.default([]),
+  /** 网址白名单（M2）：域名，子域名也算；空 = 不限制 */
+  allowedDomains: z.array(domainSchema).max(100).default([]),
+  /** 是否允许 agent 在网页里执行脚本（M2，Playwright MCP 的 browser_evaluate），默认不允许 */
+  allowBrowserEvaluate: z.boolean().default(false),
 })
 export type TaskInput = z.input<typeof taskInputSchema>
 export const taskUpdateSchema = taskInputSchema.extend({ id: z.string().min(1) })
@@ -297,6 +304,13 @@ export const platformInputSchema = z.object({
     .trim()
     .regex(/^[a-z0-9][a-z0-9-]{0,39}$/, "英文短名只能用小写字母、数字和 -")
     .optional(),
+  /** 这个平台的域名（M2）：session 打开这些域名下的网址时按「平台 × 账号」申请租约。子域名也算 */
+  domains: z.array(domainSchema).max(50).default([]),
+})
+export const platformUpdateSchema = z.object({
+  id: z.string().min(1),
+  name: text("填平台（网站）名，例如「示例商城」", 100),
+  domains: z.array(domainSchema).max(50).default([]),
 })
 
 export const browserAccountInputSchema = z.object({
@@ -402,9 +416,25 @@ export const SETTING_KEYS = {
   eventToken: "events.token",
   /** 通知渠道：webhook 地址存在 secrets（scope = http_tool，名字 = urlSecretName） */
   notifyChannels: "notify.channels",
+  /** 每个 worker 同时最多开几个 Chrome（M2），满了排队 */
+  browserMaxPerWorker: "browser.maxPerWorker",
+  /** 验证码 / 登录页规则拿不准时，交给便宜的视觉模型看截图（M2，默认关） */
+  browserVisionCheck: "browser.visionCheck",
+  /** 遇到验证码等人处理时，Chrome 最多保留多少分钟（M2） */
+  browserHumanHoldMinutes: "browser.humanHoldMinutes",
 } as const
 
-export const SETTINGS_DEFAULTS = { maxCostUsd: 2, maxSteps: 100, eventFallbackDays: 7 } as const
+export const SETTINGS_DEFAULTS = {
+  maxCostUsd: 2,
+  maxSteps: 100,
+  eventFallbackDays: 7,
+  browserMaxPerWorker: 4,
+  browserVisionCheck: false,
+  browserHumanHoldMinutes: 30,
+} as const
+
+/** 视觉判断用的模型（OpenRouter 上便宜的视觉模型；有显卡后换内网的） */
+export const BROWSER_VISION_MODEL = "openrouter/qwen/qwen3.8-flash"
 
 export const notifyChannelSchema = z.object({
   id: z.string(),
@@ -442,7 +472,15 @@ export const notifyChannelInputSchema = z.object({
 export type NotifyChannelInput = z.input<typeof notifyChannelInputSchema>
 
 /** 设置页读到的样子：令牌只给尾号，渠道地址只给掩码 */
+export const settingsBrowserInputSchema = z.object({
+  maxPerWorker: z.number().int().min(1, "至少 1 个").max(32, "最多 32 个"),
+  visionCheck: z.boolean(),
+  humanHoldMinutes: z.number().int().min(1, "至少 1 分钟").max(24 * 60, "最多 1440 分钟"),
+})
+export type SettingsBrowserInput = z.infer<typeof settingsBrowserInputSchema>
+
 export const settingsViewSchema = settingsLimitsInputSchema.extend({
+  browser: settingsBrowserInputSchema,
   eventToken: z.object({ hint: z.string(), createdAt: z.string() }).optional(),
   channels: z.array(notifyChannelSchema.extend({ urlMasked: z.string().optional() })),
 })

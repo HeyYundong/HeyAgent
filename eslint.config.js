@@ -21,7 +21,7 @@ export default defineConfig([
   },
   {
     // 测试里断言接口返回的 JSON，用 any 比处处写类型清楚
-    files: ["**/test/**/*.ts"],
+    files: ["**/test/**/*.ts", "**/test-browser/**/*.ts"],
     rules: { "@typescript-eslint/no-explicit-any": "off" },
   },
 ])

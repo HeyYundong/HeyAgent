@@ -35,6 +35,11 @@ async function checkTask(db: DbOrTx, input: TaskInput) {
   await exist(t.skills, input.skillIds, "技能")
   await exist(t.rules, input.ruleIds, "规则")
   await exist(t.tools, input.toolIds, "工具")
+  if (input.browserProfileIds.length) {
+    const rows = await db.select({ id: t.browserProfiles.id }).from(t.browserProfiles).where(inArray(t.browserProfiles.id, input.browserProfileIds))
+    const missing = input.browserProfileIds.filter((id) => !rows.some((row) => row.id === id))
+    if (missing.length) throw badRequest(`找不到 Chrome 配置：${missing.join("、")}`)
+  }
   // 每个任务都自带的工具不用存关联
   const alwaysOn = input.toolIds.length
     ? (await db.select({ id: t.tools.id }).from(t.tools).where(and(inArray(t.tools.id, input.toolIds), eq(t.tools.alwaysOn, true)))).map((row) => row.id)
@@ -65,6 +70,9 @@ function columns(input: TaskInput, modelId: string) {
     scheduleCron: schedule?.cron ?? null,
     scheduleText: schedule ? schedule.text || schedule.cron : null,
     nextRunAt: schedule && input.enabled ? new Date(nextCronRun(schedule.cron)!) : null,
+    browserProfileIds: [...new Set(input.browserProfileIds)],
+    allowedDomains: [...new Set(input.allowedDomains)],
+    allowBrowserEvaluate: input.allowBrowserEvaluate,
   }
 }
 

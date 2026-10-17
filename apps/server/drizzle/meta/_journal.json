@@ -43,6 +43,13 @@
       "when": 1792231101765,
       "tag": "0005_m2_browser_fields",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1792232261256,
+      "tag": "0006_m2_browser_runtime",
+      "breakpoints": true
     }
   ]
 }

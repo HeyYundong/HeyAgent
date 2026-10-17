@@ -54,7 +54,7 @@ export async function loadMe(db: Db, userId: string): Promise<Me | undefined> {
 }
 
 export async function listPlatforms(db: Db): Promise<Platform[]> {
-  return db.select({ id: t.platforms.id, name: t.platforms.name }).from(t.platforms).orderBy(asc(t.platforms.position))
+  return db.select({ id: t.platforms.id, name: t.platforms.name, domains: t.platforms.domains }).from(t.platforms).orderBy(asc(t.platforms.position))
 }
 
 // ---------- 任务 ----------
@@ -96,6 +96,9 @@ export async function listTasks(db: Db, ids?: string[]): Promise<TaskDef[]> {
       skillIds: skillIds.get(row.id) ?? [],
       toolIds: toolIds.get(row.id) ?? [],
       ruleIds: ruleIds.get(row.id) ?? [],
+      browserProfileIds: row.browserProfileIds,
+      allowedDomains: row.allowedDomains,
+      allowBrowserEvaluate: row.allowBrowserEvaluate,
     })
   )
 }

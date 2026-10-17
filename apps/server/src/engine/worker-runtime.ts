@@ -2,6 +2,8 @@
 import { PgBoss } from "pg-boss"
 import { and, eq, isNotNull } from "drizzle-orm"
 
+import { startControlServer, type ControlServer } from "../browser/control.js"
+import { BrowserManager, setBrowserManager } from "../browser/manager.js"
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
 import { runSession } from "./loop.js"
@@ -14,6 +16,7 @@ import {
 } from "./queue.js"
 import { onTaskCron, onTodoCron, onTodoFire, onTodoRemind } from "./schedule.js"
 import { syncBuiltinTools } from "./tools/builtin-defs.js"
+import { getKeyring } from "./runtime.js"
 import { onRemind, onWake } from "./waits.js"
 
 export interface EngineWorkerOptions {
@@ -28,10 +31,16 @@ export interface EngineWorkerOptions {
   /** cron 多久检查一次（秒） */
   cronWorkerIntervalSeconds?: number
   instanceName?: string
+  /**
+   * 浏览器（M2）：内部控制接口的端口（只绑 127.0.0.1，API 用它打开 Chrome 登录、转发远程画面）。
+   * 默认 HEYAGENT_BROWSER_CONTROL_PORT 或 3190；0 = 随机端口（测试用）；false = 不开浏览器管理
+   */
+  browserControlPort?: number | false
 }
 
 export interface EngineWorker {
   boss: PgBoss
+  browser?: BrowserManager
   stop(): Promise<void>
 }
 
@@ -60,6 +69,21 @@ export async function startEngineWorker(
   await ensureQueues(boss)
   registerBoss(db, boss)
   await syncBuiltinTools(db)
+
+  // 浏览器管理：登记 worker、开内部控制接口（远程画面、打开 Chrome 登录）
+  let browser: BrowserManager | undefined
+  let control: ControlServer | undefined
+  if (options.browserControlPort !== false) {
+    browser = new BrowserManager({ db, keyring: getKeyring })
+    const envPort = Number(process.env.HEYAGENT_BROWSER_CONTROL_PORT)
+    const port =
+      options.browserControlPort ??
+      (Number.isInteger(envPort) && envPort >= 0 ? envPort : 3190)
+    control = await startControlServer(browser, { port })
+    await browser.start(control.url)
+    setBrowserManager(browser)
+    log(`浏览器内部控制接口：${control.url}`)
+  }
 
   let stopping = false
   const controllers = new Set<AbortController>()
@@ -144,10 +168,15 @@ export async function startEngineWorker(
 
   return {
     boss,
+    browser,
     async stop() {
       stopping = true
       for (const controller of controllers) controller.abort()
       await boss.stop({ graceful: true, timeout: 20_000 })
+      // 运行都停了以后：剩下的 Chrome（等人处理保留着的、打开 Chrome 登录的）写回或直接关掉
+      await browser?.stop()
+      await control?.close()
+      setBrowserManager(undefined)
       unregisterBoss(db)
     },
   }

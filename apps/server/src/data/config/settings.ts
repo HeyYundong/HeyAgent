@@ -10,6 +10,7 @@ import {
   SETTINGS_DEFAULTS,
   snakeName,
   type NotifyChannel,
+  type SettingsBrowserInput,
   type SettingsLimitsInput,
   type SettingsView,
 } from "@heyagent/shared"
@@ -43,6 +44,18 @@ export async function readLimits(db: DbOrTx): Promise<SettingsLimitsInput> {
   }
 }
 
+/** 浏览器设置（M2）：每个 worker 最多几个 Chrome、拿不准时用视觉模型、等人时 Chrome 保留多久。worker 每次用到时重新读 */
+export async function readBrowserSettings(db: DbOrTx): Promise<SettingsBrowserInput> {
+  const values = await readKeys(db, [SETTING_KEYS.browserMaxPerWorker, SETTING_KEYS.browserVisionCheck, SETTING_KEYS.browserHumanHoldMinutes])
+  const positiveInt = (value: unknown, fallback: number) => (typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback)
+  const vision = values.get(SETTING_KEYS.browserVisionCheck)
+  return {
+    maxPerWorker: positiveInt(values.get(SETTING_KEYS.browserMaxPerWorker), SETTINGS_DEFAULTS.browserMaxPerWorker),
+    visionCheck: typeof vision === "boolean" ? vision : SETTINGS_DEFAULTS.browserVisionCheck,
+    humanHoldMinutes: positiveInt(values.get(SETTING_KEYS.browserHumanHoldMinutes), SETTINGS_DEFAULTS.browserHumanHoldMinutes),
+  }
+}
+
 async function readChannels(db: DbOrTx): Promise<NotifyChannel[]> {
   const values = await readKeys(db, [SETTING_KEYS.notifyChannels])
   return channelsSchema.safeParse(values.get(SETTING_KEYS.notifyChannels) ?? []).data ?? []
@@ -55,6 +68,9 @@ export async function ensureDefaultSettings(db: DbOrTx) {
     [SETTING_KEYS.maxSteps, SETTINGS_DEFAULTS.maxSteps],
     [SETTING_KEYS.eventFallbackDays, SETTINGS_DEFAULTS.eventFallbackDays],
     [SETTING_KEYS.notifyChannels, []],
+    [SETTING_KEYS.browserMaxPerWorker, SETTINGS_DEFAULTS.browserMaxPerWorker],
+    [SETTING_KEYS.browserVisionCheck, SETTINGS_DEFAULTS.browserVisionCheck],
+    [SETTING_KEYS.browserHumanHoldMinutes, SETTINGS_DEFAULTS.browserHumanHoldMinutes],
   ]
   for (const [key, value] of defaults) await db.insert(t.settings).values({ key, value }).onConflictDoNothing()
 }
@@ -71,7 +87,20 @@ export async function getSettings(ctx: WriteCtx): Promise<SettingsView> {
       return { ...channel, ...(secret ? { urlMasked: secret.masked } : {}) }
     })
   )
-  return { ...limits, ...(token ? { eventToken: { hint: token.hint, createdAt: token.createdAt } } : {}), channels: withMask }
+  const browser = await readBrowserSettings(ctx.db)
+  return { ...limits, browser, ...(token ? { eventToken: { hint: token.hint, createdAt: token.createdAt } } : {}), channels: withMask }
+}
+
+export async function updateBrowserSettings(ctx: WriteCtx, input: SettingsBrowserInput) {
+  assertCan(ctx.actor, "settings.manage", {}, "只有主管能改全局设置")
+  return ctx.db.transaction(async (tx) => {
+    const before = await readBrowserSettings(tx)
+    await writeKey(tx, SETTING_KEYS.browserMaxPerWorker, input.maxPerWorker, ctx.actor.id)
+    await writeKey(tx, SETTING_KEYS.browserVisionCheck, input.visionCheck, ctx.actor.id)
+    await writeKey(tx, SETTING_KEYS.browserHumanHoldMinutes, input.humanHoldMinutes, ctx.actor.id)
+    await audit(tx, ctx.actor.id, "settings.browser.update", "settings", "browser", { before, after: input })
+    return input
+  })
 }
 
 export async function updateLimits(ctx: WriteCtx, input: SettingsLimitsInput) {

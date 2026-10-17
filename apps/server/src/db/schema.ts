@@ -487,6 +487,8 @@ export const sessions = pgTable(
     /** session_events / session_messages 的序号计数器：API 和 worker 都会追加，用行锁发号 */
     eventSeq: integer("event_seq").notNull().default(0),
     msgSeq: integer("msg_seq").notNull().default(0),
+    /** M2：这次运行选用的 Chrome 配置（agent 调 browser.use 选的，或者任务只允许一个时自动选的）。挂起再继续时沿用 */
+    browserProfileId: text("browser_profile_id"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -638,6 +640,46 @@ export const accountLeases = pgTable(
     index("account_leases_active_idx").on(t.accountId).where(sql`${t.releasedAt} is null`),
     uniqueIndex("account_leases_one_active_idx").on(t.accountId, t.sessionId).where(sql`${t.releasedAt} is null`),
   ]
+)
+
+/** M2：带 Chrome 的 worker（每个进程一行，心跳）。API 按 control_url 找它：打开 Chrome 登录、远程画面转发 */
+export const browserWorkers = pgTable("browser_workers", {
+  id: text("id").primaryKey(),
+  /** worker 的内部控制地址（只绑 127.0.0.1，API 和 worker 在同一个 pod 里），例如 http://127.0.0.1:3190 */
+  controlUrl: text("control_url").notNull(),
+  /** 这个 worker 同时最多开几个 Chrome（启动时的设置，给页面看） */
+  maxBrowsers: integer("max_browsers").notNull(),
+  startedAt: ts("started_at").notNull().defaultNow(),
+  heartbeatAt: ts("heartbeat_at").notNull().defaultNow(),
+})
+
+/** M2：现在开着（或排队、保留着）的 Chrome。worker 起 Chrome 时写入，关掉时删除；worker 死掉后按心跳清理 */
+export const browserInstances = pgTable(
+  "browser_instances",
+  {
+    id: text("id").primaryKey(),
+    workerId: text("worker_id")
+      .notNull()
+      .references(() => browserWorkers.id, { onDelete: "cascade" }),
+    /** session = 某次运行在用；login = 人「打开 Chrome 登录」开的 */
+    kind: text("kind").$type<"session" | "login">().notNull(),
+    profileId: text("profile_id")
+      .notNull()
+      .references(() => browserProfiles.id, { onDelete: "cascade" }),
+    sessionId: text("session_id").references(() => sessions.id, { onDelete: "cascade" }),
+    accountId: text("account_id").references(() => browserAccounts.id, { onDelete: "set null" }),
+    openedById: text("opened_by_id").references(() => users.id, { onDelete: "set null" }),
+    /** queued / starting / running / held（等人处理，保留到 hold_until）/ closing */
+    state: text("state").$type<"queued" | "starting" | "running" | "held" | "closing">().notNull(),
+    url: text("url").notNull().default(""),
+    title: text("title").notNull().default(""),
+    /** 正在看远程画面的人 */
+    viewers: jsonb("viewers").$type<{ userId: string; canControl: boolean }[]>().notNull().default([]),
+    holdUntil: ts("hold_until"),
+    startedAt: ts("started_at").notNull().defaultNow(),
+    lastActiveAt: ts("last_active_at").notNull().defaultNow(),
+  },
+  (t) => [index("browser_instances_session_id_idx").on(t.sessionId), index("browser_instances_worker_id_idx").on(t.workerId)]
 )
 
 // ---------- 记忆、技能 ----------

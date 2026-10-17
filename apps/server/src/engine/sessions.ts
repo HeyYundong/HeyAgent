@@ -2,6 +2,7 @@
 import { and, asc, count, eq, inArray } from "drizzle-orm"
 import {
   ALWAYS_ON_BUILTIN_TOOLS,
+  BROWSER_TOOL_ID,
   cronSessionId,
   fmtDate,
   fmtDateTime,
@@ -16,7 +17,11 @@ import * as t from "../db/schema.js"
 import { listTaskAttachments } from "../files/service.js"
 import { QUEUES, runJobOptions, sendInTx, type Tx } from "./queue.js"
 import { appendEvent, appendMessage, writeAudit } from "./records.js"
-import { builtinSnapshotTool, isBuiltinTool } from "./tools/builtin-defs.js"
+import {
+  browserSnapshotTool,
+  builtinSnapshotTool,
+  isBuiltinTool,
+} from "./tools/builtin-defs.js"
 
 export type SessionSource = SessionSnapshot["source"]
 
@@ -101,7 +106,8 @@ export async function buildSnapshot(
   for (const { tool } of toolRows) {
     if (tools.some((each) => each.id === tool.id)) continue
     if (tool.source === "builtin") {
-      if (isBuiltinTool(tool.id)) tools.push(builtinSnapshotTool(tool.id))
+      if (tool.id === BROWSER_TOOL_ID) tools.push(browserSnapshotTool())
+      else if (isBuiltinTool(tool.id)) tools.push(builtinSnapshotTool(tool.id))
       continue
     }
     tools.push({
@@ -121,6 +127,29 @@ export async function buildSnapshot(
     if (!step.checkpoint?.trim()) continue
     for (const recognized of recognizeCheckpoints(step.checkpoint))
       checkpoints.push({ ...recognized, stepId: step.id })
+  }
+
+  // 浏览器（M2）：允许的 Chrome 配置（空 = 全部）连同给 agent 看的说明、网址白名单、是否允许执行脚本，都冻结进快照
+  let browser: SessionSnapshot["browser"]
+  if (tools.some((tool) => tool.id === BROWSER_TOOL_ID)) {
+    const profiles = await db
+      .select({
+        id: t.browserProfiles.id,
+        name: t.browserProfiles.name,
+        description: t.browserProfiles.description,
+      })
+      .from(t.browserProfiles)
+      .where(
+        task.browserProfileIds.length
+          ? inArray(t.browserProfiles.id, task.browserProfileIds)
+          : undefined
+      )
+      .orderBy(asc(t.browserProfiles.position), asc(t.browserProfiles.createdAt))
+    browser = {
+      profiles,
+      allowedDomains: task.allowedDomains,
+      allowEvaluate: task.allowBrowserEvaluate,
+    }
   }
 
   const taskAttachments = await listTaskAttachments(db, taskId)
@@ -170,6 +199,7 @@ export async function buildSnapshot(
     attachments,
     note: extra.note?.trim() || undefined,
     source: extra.source,
+    ...(browser ? { browser } : {}),
   }
 }
 

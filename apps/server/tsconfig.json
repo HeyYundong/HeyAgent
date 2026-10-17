@@ -13,7 +13,9 @@
   "include": [
     "src",
     "test",
+    "test-browser",
     "drizzle.config.ts",
-    "vitest.config.ts"
+    "vitest.config.ts",
+    "vitest.browser.config.ts"
   ]
 }

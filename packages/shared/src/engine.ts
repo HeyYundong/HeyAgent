@@ -84,8 +84,21 @@ export const sessionSnapshotSchema = z.object({
   /** 额外的一句话（例如人加的待办的标题） */
   note: z.string().optional(),
   source: z.enum(["manual", "cron", "todo", "event"]),
+  /** M2：任务选了「浏览器」工具时才有：允许的 Chrome 配置（含给 agent 看的说明）、网址白名单、是否允许执行脚本 */
+  browser: z
+    .object({
+      profiles: z.array(
+        z.object({ id: z.string(), name: z.string(), description: z.string() })
+      ),
+      allowedDomains: z.array(z.string()),
+      allowEvaluate: z.boolean(),
+    })
+    .optional(),
 })
 export type SessionSnapshot = z.infer<typeof sessionSnapshotSchema>
+
+/** 系统自带的「浏览器」工具（来源 builtin）：任务选了它，就开放整组浏览器工具（browser.use + Playwright MCP 的工具） */
+export const BROWSER_TOOL_ID = "browser"
 
 // ---------- 内置工具的输入（模型看到的 JSON Schema 由这些 zod schema 生成） ----------
 

@@ -3,12 +3,14 @@
 // 模型没有任何绕过的路径。
 import { jsonSchema, tool, type ToolSet } from "ai"
 import {
+  BROWSER_TOOL_ID,
   builtinToolInputs,
   type SessionSnapshot,
   type SnapshotTool,
 } from "@heyagent/shared"
 import { z } from "zod"
 
+import { BrowserTools } from "../browser/tools.js"
 import type { Db } from "../db/client.js"
 import { saveFile } from "../files/service.js"
 import {
@@ -78,6 +80,8 @@ function zodFromJsonSchema(schema: Record<string, unknown>): z.ZodType {
 export class ToolGateway {
   private readonly entries: ToolEntry[] = []
   private readonly mcp: McpPool
+  /** 任务选了「浏览器」时的整组浏览器工具（M2） */
+  private browser?: BrowserTools
   private readonly ctx: {
     db: Db
     session: SessionRow
@@ -107,6 +111,10 @@ export class ToolGateway {
     const { db } = this.ctx
     const taken = new Set<string>()
     for (const def of this.ctx.snapshot.tools) {
+      if (def.id === BROWSER_TOOL_ID && def.source === "builtin") {
+        await this.buildBrowser(taken)
+        continue
+      }
       const name = safeName(def.id, taken)
       if (def.source === "builtin") {
         if (!isBuiltinTool(def.id)) continue
@@ -176,6 +184,38 @@ export class ToolGateway {
         }
       }
     }
+  }
+
+  /** 「浏览器」展开成一组：browser.use + Playwright MCP 的工具（列不出工具时给一个说明原因的占位工具） */
+  private async buildBrowser(taken: Set<string>) {
+    try {
+      this.browser = await BrowserTools.create(this.ctx)
+      for (const entry of this.browser.entries())
+        this.entries.push({ ...entry, name: safeName(entry.id, taken) })
+    } catch (error) {
+      const reason = (error as Error).message
+      const def: SnapshotTool = {
+        id: "browser.use",
+        name: "浏览器",
+        summary: "浏览器（现在不可用）",
+        description: `（现在不可用：${reason}）`,
+        source: "builtin",
+        risk: "external",
+      }
+      this.entries.push({
+        id: def.id,
+        name: safeName(def.id, taken),
+        def,
+        jsonSchema: { type: "object", additionalProperties: true },
+        validator: z.record(z.string(), z.unknown()),
+        execute: async () => ({ output: `浏览器现在不可用：${reason}`, isError: true }),
+      })
+    }
+  }
+
+  /** 浏览器工具组（系统提示里写浏览器用法时用） */
+  hasBrowser() {
+    return Boolean(this.browser)
   }
 
   /** 给 AI SDK 的工具定义（不带 execute） */
@@ -299,5 +339,6 @@ export class ToolGateway {
 
   async close() {
     await this.mcp.closeAll()
+    await this.browser?.close()
   }
 }

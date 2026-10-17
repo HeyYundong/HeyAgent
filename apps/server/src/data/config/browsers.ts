@@ -104,7 +104,7 @@ export async function deleteBrowserProfile(ctx: WriteCtx, input: { id: string })
 
 // ---------- 平台（网站） ----------
 
-export async function createPlatform(ctx: WriteCtx, input: { name: string; id?: string }) {
+export async function createPlatform(ctx: WriteCtx, input: { name: string; id?: string; domains?: string[] }) {
   assertCan(ctx.actor, "config.manage", {}, "只有主管能加平台")
   return ctx.db.transaction(async (tx) => {
     const [sameName] = await tx.select({ id: t.platforms.id }).from(t.platforms).where(eq(t.platforms.name, input.name))
@@ -113,9 +113,25 @@ export async function createPlatform(ctx: WriteCtx, input: { name: string; id?: 
     if (input.id && (await exists(input.id))) throw conflict(`英文短名 ${input.id} 已经被用了`)
     const id = input.id ?? (await freeId(exists, slugOf(input.name) || "site"))
     const [last] = await tx.select({ n: count() }).from(t.platforms)
-    await tx.insert(t.platforms).values({ id, name: input.name, position: last?.n ?? 0 })
-    await audit(tx, ctx.actor.id, "platform.create", "platforms", id, { name: input.name })
+    const domains = [...new Set(input.domains ?? [])]
+    await tx.insert(t.platforms).values({ id, name: input.name, domains, position: last?.n ?? 0 })
+    await audit(tx, ctx.actor.id, "platform.create", "platforms", id, { name: input.name, domains })
     return { id }
+  })
+}
+
+/** 改平台的名字和域名（M2：域名决定 session 打开哪些网址时要申请账号租约） */
+export async function updatePlatform(ctx: WriteCtx, input: { id: string; name: string; domains: string[] }) {
+  assertCan(ctx.actor, "config.manage", {}, "只有主管能改平台")
+  return ctx.db.transaction(async (tx) => {
+    const [before] = await tx.select().from(t.platforms).where(eq(t.platforms.id, input.id))
+    if (!before) throw notFound("平台", input.id)
+    const [sameName] = await tx.select({ id: t.platforms.id }).from(t.platforms).where(eq(t.platforms.name, input.name))
+    if (sameName && sameName.id !== input.id) throw conflict(`已经有叫「${input.name}」的平台了`)
+    const domains = [...new Set(input.domains)]
+    await tx.update(t.platforms).set({ name: input.name, domains }).where(eq(t.platforms.id, input.id))
+    await audit(tx, ctx.actor.id, "platform.update", "platforms", input.id, { name: input.name, domains, before: { name: before.name, domains: before.domains } })
+    return { id: input.id }
   })
 }
 

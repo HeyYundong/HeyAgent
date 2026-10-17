@@ -1365,6 +1365,7 @@ describe("其他接口", () => {
       .where(eq(t.tools.source, "builtin"))
     expect(builtin.map((tool) => tool.id).sort()).toEqual([
       "ask.human",
+      "browser",
       "checkpoint.mark",
       "file.read",
       "file.save",

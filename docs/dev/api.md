@@ -593,3 +593,56 @@ curl -s -X POST http://localhost:3100/api/events \
 - 上传后一直没用上的文件不会被清理，也没有删除文件的接口。
 - `live.onChange` 的补发缓冲在内存里（1000 条，API 重启就没了），客户端必须能处理 `table: "*"`。
 - 事件名匹配是精确匹配；外部事件的 `data` 目前不参与匹配，只作为文字交给 agent。
+
+---
+
+## 10. 浏览器（M2-A，2026-10-17）
+
+> 本节是 M2-A 新增或改动的接口。设计见 `docs/dev/m2.md`；代码在 `apps/server/src/browser/`（worker 里的浏览器管理、API 侧转发）、`apps/server/src/trpc/browser-router.ts`。共享类型在 `packages/shared/src/browser-runtime.ts`。
+
+### 10.1 新字段（配置读写）
+
+| 位置 | 字段 | 说明 |
+|---|---|---|
+| `platforms.create` 输入 / `Platform` 输出 | `domains: string[]` | 平台域名（含子域名）。输入按 `domainSchema` 规整：去协议、路径、端口、开头的 `*.`，转小写（`https://Shop.Example.com/x` → `shop.example.com`），不合法 `BAD_REQUEST`。session 打开这些域名下的网址时，按「这个 Chrome 配置在该平台的账号」申请租约 |
+| 新接口 `platforms.update` | `{ id, name, domains }` | 主管。审计 `platform.update`；推 `platforms` |
+| 任务输入 / `TaskDef` 输出 | `browserProfileIds: string[]`（默认 `[]` = 全部 Chrome 配置）、`allowedDomains: string[]`（默认 `[]` = 不限制，同样规整）、`allowBrowserEvaluate: boolean`（默认 `false`） | 只在任务选了内置工具 `browser` 时起作用。`browserProfileIds` 里的 id 要存在，否则 `BAD_REQUEST`。三项都冻结进 session 快照（`snapshot.browser = { profiles: [{id,name,description}], allowedDomains, allowEvaluate }`） |
+| 内置工具 | `browser`（来源 `builtin`，「浏览器」） | 由 worker / bootstrap 同步进 `tools` 表，任务的 `toolIds` 里选它 |
+| `settings.get` 输出 | `browser: { maxPerWorker, visionCheck, humanHoldMinutes }` | 默认 4、false、30 |
+| 新接口 `settings.updateBrowser` | `{ maxPerWorker(1-32), visionCheck, humanHoldMinutes(1-1440) }` | 主管。审计 `settings.browser.update`；worker 每次用到时重新读 |
+| `HumanDetail` | `browser?: { browserId, sessionId, profileId, accountId?, url, reason, screenshotFileId? }`；`link: { page: "browsers", id: profileId }` | 遇到验证码 / 登录页时生成的「登录」类要人办的事（`kind = login`）带这个。主按钮「已处理好了」= `engine.resolveHumanItem(how: "done")` |
+| `sessions` 表 | `browser_profile_id` | 这次运行选用的 Chrome 配置（`browser.use` 选的，或只允许一个时自动选的） |
+
+### 10.2 `appRouter.browser`
+
+| 接口 | 类型 | 谁能调 | 输入 | 返回 | 主要错误 |
+|---|---|---|---|---|---|
+| `browser.openForLogin` | mutation | 登录即可（`browser.login`） | `{ profileId, accountId? }` | `{ browserId }` | `NOT_FOUND`（配置）；`BAD_REQUEST`（账号不属于这个配置）；`PRECONDITION_FAILED`（没有在线的带 Chrome 的 worker、worker 上起不了 Chrome）；`CONFLICT`（这台 worker 的 Chrome 已满）。审计 `browser.open_for_login` |
+| `browser.saveLogin` | mutation | 打开它的人、主管 | `{ browserId }` | `{ browserId, vaultVersion, cookieCount, accounts: [{ accountId, ok, detail }] }` | `NOT_FOUND`（已关）；`BAD_REQUEST`（不是登录 Chrome）；`FORBIDDEN`。整份导出替换保险箱、版本号 +1（CAS）；再探测账号（给了 `accountId` 只探测它，否则探测所有配了探测网址的），通过的标成 `ok`、记 `lastLoginAt` / `loggedInById`。审计 `browser.save_login`（只有版本号和 cookie 个数） |
+| `browser.close` | mutation | 打开它的人、主管 | `{ browserId }` | `{ ok: true }` | `BAD_REQUEST`（运行中的 Chrome 不能在这里关）；`FORBIDDEN`。不保存。已经关了也返回 ok。审计 `browser.close` |
+| `browser.live` | query | 登录即可 | 无 | `LiveBrowser[]`：`browserId kind(session/login) state(queued/starting/running/held/closing) profileId profileName sessionId? taskId? accountId? openedById? url title viewers[{userId,canControl}] startedAt lastActiveAt holdUntil?` | 只列心跳在 60 秒内的 worker 上的 |
+| `browser.sessionBrowser` | query | 登录即可 | `{ sessionId }` | `{ open, browserId?, state?, profileId?, canControl }` | `NOT_FOUND`。`canControl`：任务负责人、被分配处理这次运行里某件事的人、主管 |
+| `browser.accountStatus` | query | 登录即可 | 无 | `[{ accountId, profileId, platformId, account, status, used, max, sessionIds, waiting }]` | `used` = 没释放、没过期的租约数；`waiting` = 挂起等这个账号的 session 数 |
+
+「登录 Chrome」空闲 30 分钟（没人看、没操作）自动关闭，不保存。
+
+### 10.3 远程画面：`GET /api/browser/view/:browserId`（WebSocket）
+
+- 要登录（cookie）。带 `Origin` 头时必须在 `TRUSTED_ORIGINS` 里或是 `BETTER_AUTH_URL` 的来源，否则 403；没登录 401；找不到 404。
+- 任何登录用户都能看；能操作的：session 的 Chrome 是任务负责人、被分配处理的人、主管；登录 Chrome 是打开它的人、主管。没权限的连接，发来的输入一律丢弃（API 丢一次，worker 再挡一次）。
+- 只在有人看时开 screencast，画面最大 960×960（等比缩），JPEG q60；收到帧立刻 ack，跟不上的观看端丢帧（缓冲超过 1MB 不发）。
+- 消息格式（和 m2.md 第 8 条一致，另有两处补充，见下）：
+  - 服务端 → 浏览器：二进制 = 一帧 JPEG；`{ t: "meta", width, height, tabs: [{ id, title, url, active }], url, canControl }`（`width/height` 是页面视口的 CSS 像素，鼠标坐标按它换算，不是图片尺寸；**`canControl` 是补充**）；`{ t: "dialog", kind, message, defaultValue? }`；**`{ t: "dialogClosed" }`（补充：弹框被人或 agent 处理掉了）**；`{ t: "closed", reason }`。
+  - 浏览器 → 服务端：`mouse`（`type` 是 CDP 的 `mousePressed/mouseReleased/mouseMoved/mouseWheel`）、`key`（`keyDown/keyUp/rawKeyDown/char`）、`text`（`Input.insertText`）、`nav`（`back/forward/reload/goto`；goto 受任务白名单限制）、`tab`、`closeTab`（最后一个标签页不关）、`dialog`（`accept`、`promptText`）。按 `viewerClientMessageSchema` 校验，不认识的丢弃。
+
+### 10.4 agent 看到的浏览器工具
+
+任务选了 `browser`：`browser_use({ profileId })` + Playwright MCP 0.0.83 的工具（`browser_navigate`、`browser_snapshot`、`browser_click`……，过程记录里 `toolId` 是 `browser.navigate` 这样的形式）。屏蔽 `browser_run_code_unsafe`；`browser_evaluate` 只在 `allowBrowserEvaluate` 时给；`browser_file_upload` / `browser_drop` 的参数是 `fileIds`（session 文件 id），网关换成路径；其余工具去掉了 `filename` 参数（截图除外）。截图存成 session 文件（`kind = screenshot`），`browser_navigate` 之后自动截一张。
+
+### 10.5 worker 的内部控制接口
+
+只绑 `127.0.0.1:${HEYAGENT_BROWSER_CONTROL_PORT:-3190}`，带令牌头 `x-heyagent-internal`（由主密钥 HMAC 派生）。前端不直接用。登记在 `browser_workers`（心跳）和 `browser_instances`（开着的 Chrome，推 `browser_instances`）。
+
+### 10.6 实时推送
+
+新表 `browser_instances` → `browser.live`、`browser.sessionBrowser`；`account_leases`、`browser_accounts`、`session_waits` 另外让 `browser.accountStatus` 失效。租约心跳（每 30 秒续期）不推送。

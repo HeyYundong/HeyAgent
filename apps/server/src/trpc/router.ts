@@ -30,6 +30,7 @@ import {
   notifyChannelInputSchema,
   platformInputSchema,
   platformSchema,
+  platformUpdateSchema,
   providerCheckSchema,
   providerInputSchema,
   providerUpdateSchema,
@@ -42,6 +43,7 @@ import {
   secretInputSchema,
   secretNameSchema,
   sessionRunSchema,
+  settingsBrowserInputSchema,
   settingsLimitsInputSchema,
   settingsViewSchema,
   skillInputSchema,
@@ -119,6 +121,8 @@ export const appRouter = router({
   platforms: router({
     list: protectedProcedure.output(z.array(platformSchema)).query(({ ctx }) => load.listPlatforms(ctx.db)),
     create: protectedProcedure.input(platformInputSchema).mutation(({ ctx, input }) => browsers.createPlatform(w(ctx), input)),
+    /** M2：改名字和域名 */
+    update: protectedProcedure.input(platformUpdateSchema).mutation(({ ctx, input }) => browsers.updatePlatform(w(ctx), input)),
     delete: protectedProcedure.input(idInput).mutation(({ ctx, input }) => browsers.deletePlatform(w(ctx), input)),
   }),
 
@@ -251,6 +255,8 @@ export const appRouter = router({
     /** 全局设置（只有主管）：令牌只给尾号，渠道地址只给掩码 */
     get: protectedProcedure.output(settingsViewSchema).query(({ ctx }) => settings.getSettings(w(ctx))),
     updateLimits: protectedProcedure.input(settingsLimitsInputSchema).mutation(({ ctx, input }) => settings.updateLimits(w(ctx), input)),
+    /** M2：浏览器设置（每个 worker 最多几个 Chrome、视觉判断、等人时 Chrome 保留多久） */
+    updateBrowser: protectedProcedure.input(settingsBrowserInputSchema).mutation(({ ctx, input }) => settings.updateBrowserSettings(w(ctx), input)),
     /** 生成新的外部事件令牌：原文只在这次返回 */
     regenerateEventToken: protectedProcedure.mutation(({ ctx }) => settings.regenerateEventToken(w(ctx))),
     clearEventToken: protectedProcedure.mutation(({ ctx }) => settings.clearEventToken(w(ctx))),

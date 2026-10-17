@@ -2,6 +2,7 @@
 // 全部通用：代码里不出现任何业务。worker 启动时同步进 tools 表（source = builtin），不能删、不能改。
 import {
   ALWAYS_ON_BUILTIN_TOOLS,
+  BROWSER_TOOL_ID,
   builtinToolInputs,
   type BuiltinToolId,
   type Risk,
@@ -98,6 +99,30 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   },
 ]
 
+/**
+ * 「浏览器」（M2）：任务选了它，工具网关就开放整组浏览器工具（browser.use + Playwright MCP 的工具，见 browser/tools.ts）。
+ * 它本身不能直接调用，所以不在 builtinToolInputs 里。
+ */
+export const BROWSER_TOOL_DEF = {
+  id: BROWSER_TOOL_ID,
+  name: "浏览器",
+  summary: "用服务器上有界面的 Chrome 操作网页：打开、看结构、点击、输入、上传文件、截图存档",
+  description:
+    "开放整组浏览器工具：browser.use 选 Chrome 配置（代理、登录态、时区语言跟着配置走），以及打开网页、看页面结构、查找、点击、输入、选择、上传文件、截图等。遇到验证码或登录页会自动交给人处理。",
+  risk: "external" as Risk,
+}
+
+export function browserSnapshotTool(): SnapshotTool {
+  return {
+    id: BROWSER_TOOL_DEF.id,
+    name: BROWSER_TOOL_DEF.name,
+    summary: BROWSER_TOOL_DEF.summary,
+    description: BROWSER_TOOL_DEF.description,
+    source: "builtin",
+    risk: BROWSER_TOOL_DEF.risk,
+  }
+}
+
 export const builtinDef = (id: string) =>
   BUILTIN_TOOLS.find((tool) => tool.id === id)
 export const isBuiltinTool = (id: string): id is BuiltinToolId =>
@@ -127,7 +152,8 @@ export function builtinSnapshotTool(id: BuiltinToolId): SnapshotTool {
 
 /** 启动时把内置工具同步进 tools 表：有就更新，没有就插入；代码里已经没有的内置工具删掉 */
 export async function syncBuiltinTools(db: DbLike) {
-  for (const [position, def] of BUILTIN_TOOLS.entries()) {
+  const all: { id: string; name: string; summary: string; description: string; risk: Risk }[] = [...BUILTIN_TOOLS, BROWSER_TOOL_DEF]
+  for (const [position, def] of all.entries()) {
     const values = {
       id: def.id,
       name: def.name,
@@ -135,7 +161,7 @@ export async function syncBuiltinTools(db: DbLike) {
       description: def.description,
       source: "builtin" as const,
       risk: def.risk,
-      alwaysOn: ALWAYS_ON_BUILTIN_TOOLS.includes(def.id),
+      alwaysOn: (ALWAYS_ON_BUILTIN_TOOLS as readonly string[]).includes(def.id),
     }
     const [existing] = await db
       .select({ id: t.tools.id, source: t.tools.source })
@@ -152,7 +178,7 @@ export async function syncBuiltinTools(db: DbLike) {
     else
       await db.insert(t.tools).values({ ...values, position: 1000 + position })
   }
-  const ids = BUILTIN_TOOLS.map((def) => def.id)
+  const ids = all.map((def) => def.id)
   const stale = await db
     .select({ id: t.tools.id })
     .from(t.tools)

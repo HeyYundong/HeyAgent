@@ -103,6 +103,8 @@ function workerProcess(name: string): ChildProcess & { logs: string[] } {
         HEYAGENT_WORKER_SUPERVISE_SECONDS: "2",
         HEYAGENT_WORKER_POLL_SECONDS: "0.5",
         HEYAGENT_MODEL_RETRY_BASE_MS: "50",
+        // 两个 worker 同时跑：浏览器内部控制接口用随机端口
+        HEYAGENT_BROWSER_CONTROL_PORT: "0",
       },
       stdio: ["ignore", "pipe", "pipe"],
     }
