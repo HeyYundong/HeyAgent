@@ -4,16 +4,16 @@
 # 用法：scripts/restore.sh <备份目录>，例如 scripts/restore.sh ~/heyagent-backups/20261017-030000
 #
 # 前提：
-#   1. 目标环境已经装好、在运行（服务器上先跑 scripts/server-install.sh），而且是空的：只有安装时自动建的管理员，没有任务；
+#   1. 目标环境已经装好、在运行（服务器上先跑 scripts/server-install.sh），而且是空的：还没设置管理员（或者只有刚设置的那一个），没有任务；
 #      不是空的会拒绝（确实要覆盖，设 HEYAGENT_RESTORE_FORCE=1）。
 #   2. 目标环境用的是同一把主密钥：新服务器安装时用 HEYAGENT_KEK_IMPORT=<离线备份的主密钥文件> 导入（见 docs/ops.md）。
 #      脚本会先拿备份里的 kek-status.json 核对，对不上就停下，什么都不改。
 #
 # 做的事：校验备份文件 → 核对主密钥 → 停 api 和 worker → 删掉目标库重建、pg_restore → 清空文件卷、解包 → 起 api 和 worker
 #   （api 启动时自动迁移到当前代码的版本）→ 健康检查 → 逐行试解密 → 打印用户、任务、文件的数量。
-# 恢复之后用备份里原来的账号密码登录；新环境安装时生成的管理员初始密码作废（状态卷里那份会删掉）。
+# 恢复之后用备份里原来的账号密码登录；恢复前在新环境里设置的管理员会被备份覆盖掉。
 #
-# 配置（环境变量）：HEYAGENT_POD（默认 heyagent）、HEYAGENT_FILES_VOLUME（默认 <pod>-pod-files）、HEYAGENT_STATE_VOLUME（默认 <pod>-pod-state）、
+# 配置（环境变量）：HEYAGENT_POD（默认 heyagent）、HEYAGENT_FILES_VOLUME（默认 <pod>-pod-files）、
 #   HEYAGENT_PORT（健康检查的端口，默认读 ~/.config/heyagent/heyagent.env，再没有就是 8080）。
 set -euo pipefail
 
@@ -28,7 +28,6 @@ fi
 POD=${HEYAGENT_POD:-heyagent}
 PORT=${HEYAGENT_PORT:-8080}
 FILES_VOLUME=${HEYAGENT_FILES_VOLUME:-$POD-pod-files}
-STATE_VOLUME=${HEYAGENT_STATE_VOLUME:-$POD-pod-state}
 HELPER_IMAGE=docker.io/library/postgres:18
 
 log() { echo "[restore] $*"; }
@@ -115,10 +114,6 @@ log "恢复文件卷 $FILES_VOLUME（$(du -h "$BACKUP/files.tar.gz" | cut -f1)�
 api_image=$(podman container inspect -f '{{.ImageName}}' "$POD-api")
 podman run --rm --user 0 --network none --entrypoint sh -v "$FILES_VOLUME":/files -v "$BACKUP":/backup:ro "$api_image" \
   -c 'find /files -mindepth 1 -delete && tar -C /files -xzf /backup/files.tar.gz && chown -R 1000:1000 /files'
-# 新环境安装时生成的管理员初始密码已经没用了（账号来自备份），删掉免得误导
-if podman volume exists "$STATE_VOLUME"; then
-  podman run --rm --user 0 --network none --entrypoint rm -v "$STATE_VOLUME":/state "$HELPER_IMAGE" -f /state/admin-password
-fi
 
 # ---------- 8. 起 api 和 worker ----------
 log "起 api 和 worker（api 启动时会把数据库迁移到当前代码的版本）"
@@ -133,4 +128,4 @@ read -r n_users n_tasks n_files n_sessions <<< "$counts"
 n_disk=$(podman run --rm --user 0 --network none --entrypoint sh -v "$FILES_VOLUME":/files:ro "$HELPER_IMAGE" -c 'find /files -type f | wc -l')
 trap - EXIT
 log "完成：$n_users 个用户、$n_tasks 个任务、$n_sessions 次运行、$n_files 条文件记录（文件卷里 $n_disk 个文件）"
-log "用备份里原来的账号密码登录；安装时生成的管理员初始密码已作废"
+log "用备份里原来的账号密码登录；恢复前在新环境里设置的管理员已被覆盖"

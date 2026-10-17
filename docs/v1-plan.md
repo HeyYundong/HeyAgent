@@ -469,6 +469,7 @@ npm 包的版本号都在 2026-10-17 用 `npm view` 核对过。开工时锁进 
   - 冒烟 42 项。
 - **花费**：OpenRouter 累计约 0.93 美元，预算 20 美元。
 - **交付状态**：8080 是空白环境，管理员 `admin@heyagent.local`，密码在 `.dev/admin-password`。代码在 `m3-rules` 分支，`main` 没动。
+- **交付后改动（2026-10-17，用户要求）**：第一次启动改成引导页。不再自动建管理员、不再生成随机初始密码；空白环境第一次打开控制台是「设置管理员」页，由打开的人自己定名字、邮箱和密码（`apps/server/src/bootstrap/setup.ts`）。`.dev/admin-password` 以后只由测试脚本在空白环境上写（它们用 `admin@heyagent.local` 自己设置）；放初始密码的卷 `heyagent-pod-state` 去掉了。
 - **只能等到服务器上验证的**：Quadlet 开机自启、Podman 4.9 的 secret 卷、Ubuntu 24.04 下 Chrome 的沙箱、真实代理、WebRTC 防泄漏。
 
 **可以并行的事**：

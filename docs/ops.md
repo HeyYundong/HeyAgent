@@ -6,7 +6,7 @@
 
 1. 服务器要求
 2. 第一次安装
-3. 管理员初始密码
+3. 设置管理员
 4. 建同事的账号
 5. 配 OpenRouter、换 key
 6. 升级
@@ -72,19 +72,14 @@ sudo sysctl --system
 
 再把 `heyagent.env` 里的 `HEYAGENT_PORT` 改成 80，`HEYAGENT_PUBLIC_URL` 去掉端口（或留空让脚本自己算），重跑安装脚本。
 
-## 3. 管理员初始密码
+## 3. 设置管理员
 
-账号 `admin@heyagent.local`。初始密码是第一次启动时随机生成的，放在容器里，不会打在日志里：
+管理员不预先建，也没有默认账号和密码。装好后第一次打开控制台，看到的是「设置管理员」页：
 
-```bash
-podman exec heyagent-api cat /data/state/admin-password
-```
+1. 填管理员的名字、邮箱（登录用，建好后不能改）和密码（至少 8 位，输两次）。
+2. 点「建好并登录」，直接进控制台。之后再打开就是登录页，这一页不会再出现。
 
-登录后点左下角的用户菜单 →「修改密码」。改完删掉那个文件：
-
-```bash
-podman exec heyagent-api rm /data/state/admin-password
-```
+还没设置时，谁先打开控制台谁就能当管理员，所以**装好后马上设置**。要从备份恢复的，直接按第 8 节跑 `restore.sh`，不用先设置。
 
 忘了密码：让另一位主管在「用户」页给你「重置密码」。所有主管都忘了，见第 11 节。
 
@@ -129,6 +124,8 @@ git checkout <升级前的提交>            # 代码也退回去
 
 镜像多了占地方：`podman image prune` 清掉没有标签的旧层（会清掉构建缓存，下次升级慢一些）。
 
+从有「管理员初始密码」的旧版本升级上来的：卷 `heyagent-pod-state` 已经不用了，升级成功后可以 `podman volume rm heyagent-pod-state` 删掉。
+
 ## 7. 备份
 
 - **自动**：每天凌晨 3 点（上海时间），关机错过了开机后补一次。
@@ -159,9 +156,9 @@ ls -l ~/heyagent-backups
    ```bash
    scripts/restore.sh ~/heyagent-backups/20261017-030000
    ```
-3. 用**原来的**账号密码登录。新装时生成的管理员初始密码作废了。
+3. 用**原来的**账号密码登录。恢复前在新环境里设置的管理员会被备份覆盖掉。
 
-`restore.sh` 会先核对：备份文件没坏、主密钥能解开这次备份、目标环境是空的（只有安装时自动建的管理员、没有任务）。任何一样不对就停下，什么都不改。确实要覆盖一个有数据的环境（例如升级失败回退），加 `HEYAGENT_RESTORE_FORCE=1`。恢复完它会逐行试解密，并打印用户、任务、文件的数量。
+`restore.sh` 会先核对：备份文件没坏、主密钥能解开这次备份、目标环境是空的（还没设置管理员，或者只有刚设置的那一个；没有任务）。任何一样不对就停下，什么都不改。确实要覆盖一个有数据的环境（例如升级失败回退），加 `HEYAGENT_RESTORE_FORCE=1`。恢复完它会逐行试解密，并打印用户、任务、文件的数量。
 
 **定期演练**：每季度在一台别的机器上恢复一次最新的备份，确认备份和离线主密钥都是好的。
 
@@ -250,6 +247,7 @@ systemctl --user restart heyagent
 
 ## 12. 安全提醒
 
+- **装好后马上设置管理员**（第 3 节）：还没设置时，谁先打开控制台谁就是管理员。
 - **只在内网开放**。v1 用 HTTP（2026-10-17 定的），账号密码和页面内容在网络上是明文。不要做端口映射到外网，不要放到公网服务器上。推广到更多人或要从外网访问之前，先改成 HTTPS（改 Caddy 配置，代码不用动）。
 - **开发时用过的 OpenRouter key 在聊天记录里出现过**。正式用之前，在 OpenRouter 上建一个新 key、设花费上限，在「模型」页换上，旧 key 删掉。
 - **主密钥**离线两份、两个人保管，不放在服务器的普通文件里，不放进备份目录，不发聊天工具。
@@ -265,7 +263,7 @@ systemctl --user restart heyagent
 | 服务文件（Quadlet） | `~/.config/containers/systemd/heyagent.kube`、`heyagent.yaml`、`heyagent-config.yaml`，由安装脚本生成，不要手改 |
 | 备份定时器 | `~/.config/systemd/user/heyagent-backup.service`、`.timer` |
 | 密钥 | Podman secret：`heyagent-kek`（主密钥）、`heyagent-db`（数据库密码）、`heyagent-auth`（登录签名密钥）、`heyagent-openrouter`。`podman secret ls` 能看到名字，看不到内容 |
-| 数据 | Podman 卷：`heyagent-pod-pgdata`（数据库）、`heyagent-pod-files`（文件）、`heyagent-pod-state`（管理员初始密码）。`podman volume ls` |
+| 数据 | Podman 卷：`heyagent-pod-pgdata`（数据库）、`heyagent-pod-files`（文件）。`podman volume ls` |
 | 镜像 | `localhost/heyagent-{api,worker,web}:current`，上一版是 `:previous` |
 | 备份 | `~/heyagent-backups/` |
 

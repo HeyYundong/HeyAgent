@@ -1,9 +1,10 @@
-// HTTP 入口：/api/health、/api/auth/*（better-auth）、/api/trpc/*（tRPC，含 SSE 订阅）。
+// HTTP 入口：/api/health、/api/setup（首次设置管理员）、/api/auth/*（better-auth）、/api/trpc/*（tRPC，含 SSE 订阅）。
 import { fetchRequestHandler } from "@trpc/server/adapters/fetch"
 import { sql } from "drizzle-orm"
 import { Hono } from "hono"
 
 import type { Auth } from "./auth.js"
+import { registerSetupRoutes } from "./bootstrap/setup.js"
 import type { Db } from "./db/client.js"
 import { registerEngineRoutes } from "./engine/http.js"
 import { env } from "./env.js"
@@ -47,6 +48,7 @@ export function createApp({ db, auth, hub, keyring: givenKeyring }: AppDeps) {
     }
   })
 
+  registerSetupRoutes(app, { db, auth })
   app.on(["GET", "POST"], "/api/auth/*", (c) => auth.handler(c.req.raw))
 
   // SSE 订阅出错时 tRPC 是在流里发错误事件（HTTP 200）。没登录的订阅在这里直接回 401，和查询一致

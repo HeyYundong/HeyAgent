@@ -3,7 +3,7 @@
 // 前提：整套 pod（或 API + worker + 前端）开着；OpenRouter 已接入（空白环境初始化时按 key 自动接入）。
 // 跑之前先执行 scripts/or-usage.sh check 18。
 // 用法：node apps/web/scripts/e2e-engine.mjs [地址]      默认 http://127.0.0.1:8080/
-//   E2E_ADMIN_PASSWORD_FILE  管理员初始密码文件（默认仓库根目录的 .dev/admin-password）
+//   E2E_ADMIN_PASSWORD_FILE  管理员密码文件（默认仓库根目录的 .dev/admin-password）；全新环境会先设置管理员，随机密码写进这个文件
 //   E2E_MODEL                执行模型（OpenRouter 上的名字，默认 anthropic/claude-haiku-5.5）
 //   E2E_SHOTS                截图放哪（默认 .dev/shots/m1-p3）
 //   E2E_MCP_COMMAND          可选：一个 stdio MCP 服务器的启动命令，测「连接并读取工具」
@@ -23,10 +23,11 @@ import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { chromium } from "playwright-core"
 
+import { ensureAdmin } from "./admin-account.mjs"
+
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..")
 const BASE = (process.argv[2] ?? "http://127.0.0.1:8080/").replace(/\/?$/, "/")
 const PASSWORD_FILE = resolve(process.env.E2E_ADMIN_PASSWORD_FILE ?? join(repoRoot, ".dev/admin-password"))
-const ADMIN_PASSWORD = existsSync(PASSWORD_FILE) ? readFileSync(PASSWORD_FILE, "utf8").trim() : ""
 const MODEL = process.env.E2E_MODEL ?? "anthropic/claude-haiku-5.5"
 const SHOTS = resolve(process.env.E2E_SHOTS ?? join(repoRoot, ".dev/shots/m1-p3"))
 const CHROME = process.env.CHROME_PATH ?? join(homedir(), ".cache/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-linux64/chrome-headless-shell")
@@ -34,13 +35,8 @@ const SCRATCH = "/tmp/claude-1000/-mnt-toshiba-Projects-HeyAgent/f5a5874c-3877-4
 const LIBS = process.env.CHROME_LIBS ?? join(SCRATCH, "chromelibs/root/usr/lib/x86_64-linux-gnu")
 const FONTS = process.env.FONTCONFIG_FILE ?? join(SCRATCH, "fonts/fonts.conf")
 
-if (!ADMIN_PASSWORD) {
-  console.error(`没有管理员密码：找不到 ${PASSWORD_FILE}`)
-  process.exit(2)
-}
-
 const RUN = Date.now().toString(36).slice(-5)
-const ADMIN = { email: "admin@heyagent.local", password: ADMIN_PASSWORD }
+const ADMIN = await ensureAdmin(BASE, PASSWORD_FILE)
 const STAFF = { email: `e2e-${RUN}@heyagent.local`, password: `e2e-pass-${RUN}`, name: `验收员工${RUN}` }
 const SECRET = `暗号-${RUN}-青柠`
 

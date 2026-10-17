@@ -6,7 +6,7 @@
 #   HEYAGENT_SKIP_BUILD=1 scripts/pod.sh up  不重新构建镜像（镜像已经有了时省时间）
 #   HEYAGENT_PUBLIC_URL                      控制台对外的地址，默认 http://localhost:8080（better-auth 的 baseURL）
 # OpenRouter 的 key 从仓库根目录 .env 的 OPENROUTER_API_KEY 读，写进卷里 0400 的文件（不进 configmap、不打印）；
-# 管理员初始密码（空白环境第一次起来时生成）复制到 .dev/admin-password（权限 600）。
+# 管理员不预先建：空白环境第一次打开控制台时，在「设置管理员」页自己定账号和密码。
 # 兼容 Podman 3.4（podman play kube）和 4.x 以上（podman kube play）。数据卷 down 时保留；要清空用 reset。
 set -euo pipefail
 
@@ -21,10 +21,10 @@ API_IMAGE=localhost/heyagent-api:m1
 WEB_IMAGE=localhost/heyagent-web:m1
 WORKER_IMAGE=localhost/heyagent-worker:m1
 BROWSER_BASE_IMAGE=localhost/heyagent-browser-base:m0
-VOLUMES=(heyagent-pod-pgdata heyagent-pod-files heyagent-pod-secrets heyagent-pod-state)
-# M0 时主密钥放在 heyagent-pod-kek，M1 起和 OpenRouter key 一起放在 heyagent-pod-secrets；reset 时旧卷一起删
-OLD_VOLUMES=(heyagent-pod-kek)
-ADMIN_PASSWORD_OUT=$ROOT/.dev/admin-password
+VOLUMES=(heyagent-pod-pgdata heyagent-pod-files heyagent-pod-secrets)
+# M0 时主密钥放在 heyagent-pod-kek，M1 起和 OpenRouter key 一起放在 heyagent-pod-secrets；
+# heyagent-pod-state 以前放管理员初始密码，改成首次设置后不用了。reset 时旧卷一起删
+OLD_VOLUMES=(heyagent-pod-kek heyagent-pod-state)
 PORT=8080
 PUBLIC_URL=${HEYAGENT_PUBLIC_URL:-http://localhost:$PORT}
 # 允许登录的来源：本机和内网另一台电脑（192.168.31.100 是开发机的内网地址）
@@ -101,8 +101,8 @@ ensure_volumes() {
     podman volume exists "$volume" || podman volume create "$volume" >/dev/null
   done
   podman run --rm --user 0 --entrypoint sh \
-    -v heyagent-pod-secrets:/secrets -v heyagent-pod-files:/files -v heyagent-pod-state:/state -v "$KEK":/src/kek:ro \
-    "$API_IMAGE" -c 'install -o 1000 -g 1000 -m 0400 /src/kek /secrets/kek && chown 1000:1000 /files /state'
+    -v heyagent-pod-secrets:/secrets -v heyagent-pod-files:/files -v "$KEK":/src/kek:ro \
+    "$API_IMAGE" -c 'install -o 1000 -g 1000 -m 0400 /src/kek /secrets/kek && chown 1000:1000 /files'
   local key
   key=$(grep -E '^OPENROUTER_API_KEY=' "$ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2- || true)
   if [ -n "$key" ]; then
@@ -116,18 +116,10 @@ ensure_volumes() {
   unset key
 }
 
-# 管理员初始密码：api 第一次在空库上启动时生成，写在状态卷里；复制到 .dev/admin-password（600），不打印
-copy_admin_password() {
-  local tmp
-  tmp=$(mktemp "$ROOT/.dev/admin-password.XXXXXX")
-  chmod 600 "$tmp"
-  if podman exec "$POD-api" sh -c 'cat /data/state/admin-password 2>/dev/null' > "$tmp" && [ -s "$tmp" ]; then
-    mv -f "$tmp" "$ADMIN_PASSWORD_OUT"
-    chmod 600 "$ADMIN_PASSWORD_OUT"
-    echo "管理员初始密码在 .dev/admin-password（账号 admin@heyagent.local）"
-  else
-    rm -f "$tmp"
-    echo "状态卷里没有管理员初始密码（不是第一次起，或者已经有用户了）；.dev/admin-password 保持原样"
+# 空白环境（一个账号都没有）：提示去控制台设置管理员
+show_setup_hint() {
+  if curl -fsS "http://127.0.0.1:$PORT/api/setup" 2>/dev/null | grep -q '"needed":true'; then
+    echo "还没有任何账号：打开控制台，在「设置管理员」页填管理员的名字、邮箱和密码"
   fi
 }
 
@@ -161,7 +153,7 @@ up() {
     echo "== 灌演示数据"
     podman exec -e HEYAGENT_SEED_DEMO=1 "$POD-api" node dist/seed/cli.js
   fi
-  copy_admin_password
+  show_setup_hint
   wait_worker
   local ip
   ip=$(hostname -I 2>/dev/null | awk '{print $1}')
@@ -193,7 +185,7 @@ down() {
   fi
 }
 
-# 回到空白环境：停 pod、删全部数据卷（数据库、文件、主密钥副本、管理员密码）。.dev/kek 和 .dev/pod/secrets.env 保留
+# 回到空白环境：停 pod、删全部数据卷（数据库、文件、主密钥副本）。.dev/kek 和 .dev/pod/secrets.env 保留
 reset() {
   down
   local volume

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # HeyAgent 正式服务器的安装（Ubuntu 24.04 + Podman 4.4 以上，普通用户 rootless 运行，Quadlet 交给 systemd 管理）。
 # 可以重复执行：已经有的 secret、卷、配置都不动，只补缺的；镜像和单元文件每次按当前代码更新，最后重启服务。
-# 步骤：检查环境 → 构建镜像 → 创建 Podman secret → 建数据卷 → 装 Quadlet 和备份定时器 → 启动 → 等健康检查 → 告诉你管理员初始密码在哪。
+# 步骤：检查环境 → 构建镜像 → 创建 Podman secret → 建数据卷 → 装 Quadlet 和备份定时器 → 启动 → 等健康检查 → 提示打开控制台设置管理员。
 #
 # 用法：在仓库目录里（建议放在 ~/heyagent）运行 scripts/server-install.sh
 # 可选的环境变量：
@@ -26,7 +26,7 @@ POD=heyagent
 IMAGES=(api web worker)
 BROWSER_BASE_IMAGE=localhost/heyagent-browser-base:m0
 HELPER_IMAGE=docker.io/library/postgres:18
-VOLUMES=(heyagent-pod-pgdata heyagent-pod-files heyagent-pod-state)
+VOLUMES=(heyagent-pod-pgdata heyagent-pod-files)
 MIN_PODMAN=4.4.0
 
 log() { echo "== $*"; }
@@ -247,14 +247,14 @@ ensure_openrouter() {
 
 # ---------- 4. 数据卷 ----------
 
-# api（node）和 worker（browser）都是 uid 1000，文件卷和状态卷要归它；数据库卷由 postgres 镜像自己处理
+# api（node）和 worker（browser）都是 uid 1000，文件卷要归它；数据库卷由 postgres 镜像自己处理
 ensure_volumes() {
   local volume
   for volume in "${VOLUMES[@]}"; do
     podman volume exists "$volume" || { podman volume create "$volume" >/dev/null && echo "已建卷 $volume"; }
   done
   podman run --rm --user 0 --network none --entrypoint chown \
-    -v heyagent-pod-files:/files -v heyagent-pod-state:/state "$HELPER_IMAGE" 1000:1000 /files /state
+    -v heyagent-pod-files:/files "$HELPER_IMAGE" 1000:1000 /files
 }
 
 # ---------- 5. Quadlet 和备份定时器 ----------
@@ -332,15 +332,13 @@ restart_service() {
   systemctl --user restart "$SERVICE" || die "启动失败：systemctl --user status $SERVICE；journalctl --user -u $SERVICE -n 100"
 }
 
-show_admin_password() {
-  if podman exec "$POD-api" test -s /data/state/admin-password 2>/dev/null; then
+# 空白环境（一个账号都没有）：管理员不预先建，提示去控制台设置
+show_setup_hint() {
+  if curl -fsS "http://127.0.0.1:$PORT/api/setup" 2>/dev/null | grep -q '"needed":true'; then
     cat <<EOF
 
-管理员账号：admin@heyagent.local
-初始密码在 api 容器的状态卷里，看一眼（会打在屏幕上）：
-  podman exec $POD-api cat /data/state/admin-password
-登录后在右上角用户菜单里「修改密码」，然后删掉这个文件：
-  podman exec $POD-api rm /data/state/admin-password
+还没有任何账号：在浏览器打开 $PUBLIC_URL，在「设置管理员」页填管理员的名字、邮箱和密码。
+要从备份恢复的话，直接跑 scripts/restore.sh，不用先设置管理员。
 EOF
   fi
 }
@@ -363,7 +361,7 @@ main() {
   echo
   echo "HeyAgent 已启动：$PUBLIC_URL"
   echo "开机自启、挂了自动重启；每天 03:00 备份到 ${HEYAGENT_BACKUP_DIR:-$HOME/heyagent-backups}"
-  show_admin_password
+  show_setup_hint
 }
 
 # 被 source 时（scripts/deploy.sh）只定义函数

@@ -2,7 +2,7 @@
 // 浏览器端到端验收（M2-B）：照真人的路径在控制台里走一遍，用真模型（默认 anthropic/claude-haiku-5.5）。
 // 前提：整套 pod 开着（scripts/pod.sh up，空白环境即可），OpenRouter 已自动接入。跑之前先执行 scripts/or-usage.sh check 18。
 // 用法：node apps/web/scripts/e2e-browser.mjs [地址]      默认 http://127.0.0.1:8080/
-//   E2E_ADMIN_PASSWORD_FILE  管理员初始密码文件（默认仓库根目录的 .dev/admin-password）
+//   E2E_ADMIN_PASSWORD_FILE  管理员密码文件（默认仓库根目录的 .dev/admin-password）；全新环境会先设置管理员，随机密码写进这个文件
 //   E2E_MODEL                执行模型（OpenRouter 上的名字，默认 anthropic/claude-haiku-5.5）
 //   E2E_SHOTS                截图放哪（默认 .dev/shots/m2-b）
 //   E2E_POD                  pod 名（默认 heyagent），本地测试页用 podman 起在这个 pod 里
@@ -18,17 +18,18 @@
 //   5. 全程浏览器控制台没有报错。
 // 访问范围：只有本地测试页和 example.com。
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdirSync, readFileSync } from "node:fs"
+import { existsSync, mkdirSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { chromium } from "playwright-core"
 
+import { ensureAdmin } from "./admin-account.mjs"
+
 const here = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(here, "../../..")
 const BASE = (process.argv[2] ?? "http://127.0.0.1:8080/").replace(/\/?$/, "/")
 const PASSWORD_FILE = resolve(process.env.E2E_ADMIN_PASSWORD_FILE ?? join(repoRoot, ".dev/admin-password"))
-const ADMIN_PASSWORD = existsSync(PASSWORD_FILE) ? readFileSync(PASSWORD_FILE, "utf8").trim() : ""
 const MODEL = process.env.E2E_MODEL ?? "anthropic/claude-haiku-5.5"
 const SHOTS = resolve(process.env.E2E_SHOTS ?? join(repoRoot, ".dev/shots/m2-b"))
 const POD = process.env.E2E_POD ?? "heyagent"
@@ -37,13 +38,8 @@ const SCRATCH = "/tmp/claude-1000/-mnt-toshiba-Projects-HeyAgent/f5a5874c-3877-4
 const LIBS = process.env.CHROME_LIBS ?? join(SCRATCH, "chromelibs/root/usr/lib/x86_64-linux-gnu")
 const FONTS = process.env.FONTCONFIG_FILE ?? join(SCRATCH, "fonts/fonts.conf")
 
-if (!ADMIN_PASSWORD) {
-  console.error(`没有管理员密码：找不到 ${PASSWORD_FILE}`)
-  process.exit(2)
-}
-
 const RUN = Date.now().toString(36).slice(-5)
-const ADMIN = { email: "admin@heyagent.local", password: ADMIN_PASSWORD }
+const ADMIN = await ensureAdmin(BASE, PASSWORD_FILE)
 const STAFF = { email: `e2e-br-${RUN}@heyagent.local`, password: `e2e-pass-${RUN}`, name: `浏览器验收员工${RUN}` }
 const CODE = `暗号${RUN}紫藤`
 const SITE_PORT = 8099

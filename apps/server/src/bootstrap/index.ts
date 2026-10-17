@@ -1,65 +1,34 @@
 // 空白正式环境的初始化：API 启动时执行，可以重复执行（已经有的不动）。
-// 1. 一个用户都没有时，建管理员 admin@heyagent.local：随机初始密码写进 HEYAGENT_ADMIN_PASSWORD_FILE（权限 600），不打印到日志；
+// 1. 不建任何账号：一个用户都没有时，控制台显示「设置管理员」页，由第一个打开的人自己定账号和密码（见 setup.ts）；
 // 2. 写入全局设置的默认值；
 // 3. 环境变量里有 OpenRouter 的 key（OPENROUTER_API_KEY_FILE 指向的文件，或 OPENROUTER_API_KEY）、还没配过 OpenRouter 时：建 OpenRouter 服务（key 加密存）、刷新模型列表、设好三个默认模型。
 // 4. 把内置工具同步进 tools 表（worker 启动时也会同步一次）：worker 还没起时，空白环境的工具页也能看到它们。
 // 不灌任何演示数据（任务、记忆、技能、规则、平台都由用户自己加）。
-import { randomBytes } from "node:crypto"
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs"
-import { dirname, resolve } from "node:path"
-
 import { count, eq } from "drizzle-orm"
 import { OPENROUTER_DEFAULT_URL, sameFamily } from "@heyagent/shared"
 
-import type { Auth } from "../auth.js"
 import { addProvider, writeDefaults } from "../data/config/models.js"
 import { ensureDefaultSettings } from "../data/config/settings.js"
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
 import { syncBuiltinTools } from "../engine/tools/builtin-defs.js"
-import { repoRoot } from "../env.js"
 import type { Keyring } from "../lib/crypto.js"
-
-export const ADMIN_EMAIL = "admin@heyagent.local"
+import { setupNeeded } from "./setup.js"
 
 /** 初始化时选的默认模型（OpenRouter 上的名字）：执行、规划、验收（验收和执行不同家） */
 export const BOOTSTRAP_MODELS = { run: "anthropic/claude-sonnet-5.5", plan: "anthropic/claude-opus-5.5", verify: "google/gemini-3.8-flash" } as const
 
 export interface BootstrapOptions {
-  auth: Auth
   keyring: Keyring
-  /** 管理员初始密码写到哪个文件；相对路径按仓库根目录算 */
-  adminPasswordFile: string
   /** .env 里的 OpenRouter key（可以没有） */
   openrouterApiKey?: string
   log?: (message: string) => void
 }
 
 export interface BootstrapResult {
-  adminCreated: boolean
+  /** 还没有任何账号：等人打开控制台设置管理员 */
+  setupNeeded: boolean
   openrouter: "created" | "exists" | "skipped" | "failed"
-}
-
-export function adminPasswordFileFromEnv() {
-  return resolve(repoRoot, process.env.HEYAGENT_ADMIN_PASSWORD_FILE || ".dev/admin-password")
-}
-
-async function createAdmin(db: Db, options: BootstrapOptions) {
-  const [users] = await db.select({ n: count() }).from(t.users)
-  if ((users?.n ?? 0) > 0) return false
-  const password = randomBytes(18).toString("base64url")
-  const file = resolve(repoRoot, options.adminPasswordFile)
-  mkdirSync(dirname(file), { recursive: true })
-  // 先写文件再建账号：建好了却没存下密码，就没人能登录了
-  writeFileSync(file, `${password}\n`, { mode: 0o600 })
-  chmodSync(file, 0o600)
-  // 服务端直接调（不带请求头）：admin 插件允许系统自己建账号
-  await options.auth.api.createUser({ body: { email: ADMIN_EMAIL, password, name: "管理员", role: "admin", data: { title: "管理员", emailVerified: true } } })
-  await db.update(t.users).set({ title: "管理员" }).where(eq(t.users.email, ADMIN_EMAIL))
-  const [admin] = await db.select({ id: t.users.id }).from(t.users).where(eq(t.users.email, ADMIN_EMAIL))
-  await db.insert(t.auditEvents).values({ actorId: null, action: "user.create", targetTable: "users", targetId: admin!.id, detail: { email: ADMIN_EMAIL, role: "admin", by: "bootstrap" } })
-  options.log?.(`已建管理员 ${ADMIN_EMAIL}，初始密码写在 ${file}（权限 600），登录后请在用户菜单里「修改密码」`)
-  return true
 }
 
 async function setupOpenRouter(db: Db, options: BootstrapOptions): Promise<BootstrapResult["openrouter"]> {
@@ -121,9 +90,10 @@ export function retryOpenRouterInBackground(db: Db, options: BootstrapOptions, d
 }
 
 export async function bootstrap(db: Db, options: BootstrapOptions): Promise<BootstrapResult> {
-  const adminCreated = await createAdmin(db, options)
   await ensureDefaultSettings(db)
   await syncBuiltinTools(db)
   const openrouter = await setupOpenRouter(db, options)
-  return { adminCreated, openrouter }
+  const needed = await setupNeeded(db)
+  if (needed) options.log?.("还没有任何账号：打开控制台，按提示设置管理员的邮箱和密码")
+  return { setupNeeded: needed, openrouter }
 }

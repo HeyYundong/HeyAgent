@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query"
 import { RotateCwIcon, TriangleAlertIcon } from "lucide-react"
 
 import { LoginForm } from "@/components/login-form"
+import { SetupForm } from "@/components/setup-form"
 import { AppSidebar } from "@/components/shell/app-sidebar"
 import { LiveSync } from "@/components/shell/live-sync"
 import { SiteHeader, ThemeToggle } from "@/components/shell/site-header"
@@ -12,7 +13,7 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 import { Spinner } from "@/components/ui/spinner"
 import { Toaster } from "@/components/ui/toast"
 import { TooltipProvider } from "@/components/ui/tooltip"
-import { getSession, SESSION_QUERY_KEY, signOut } from "@/lib/auth"
+import { getSession, getSetupStatus, SESSION_QUERY_KEY, SETUP_QUERY_KEY, signOut } from "@/lib/auth"
 import { useRoute, type PageId } from "@/lib/router"
 import { SessionProvider } from "@/lib/session"
 import { isUnauthorized, queryClient, trpc } from "@/lib/trpc"
@@ -43,13 +44,27 @@ export function App() {
   )
 }
 
-/** 先问后端「登录了没有」：没登录就显示登录页，不管当前在哪个页面；登录后回到原来的页面 */
+/**
+ * 先问后端「登录了没有」：没登录就显示登录页，不管当前在哪个页面；登录后回到原来的页面。
+ * 没登录时再问一句「是不是全新环境」：一个账号都没有就显示「设置管理员」页（取不到时按已设置过处理，显示登录页）
+ */
 function AuthGate() {
   const session = useQuery({ queryKey: SESSION_QUERY_KEY, queryFn: getSession, staleTime: Infinity })
+  const setup = useQuery({ queryKey: SETUP_QUERY_KEY, queryFn: getSetupStatus, enabled: session.data === null, staleTime: Infinity })
   const me = useQuery({ ...trpc.me.get.queryOptions(), enabled: Boolean(session.data) })
 
-  if (session.data === null || (me.isError && isUnauthorized(me.error))) {
-    return <LoginPage onSignedIn={() => void queryClient.resetQueries()} />
+  const signedOut = session.data === null || (me.isError && isUnauthorized(me.error))
+  if (signedOut && !(session.data === null && setup.isPending)) {
+    const onSignedIn = () => void queryClient.resetQueries()
+    return (
+      <SignedOutPage>
+        {setup.data?.needed ? (
+          <SetupForm onSignedIn={onSignedIn} onNeedSignIn={() => queryClient.setQueryData(SETUP_QUERY_KEY, { needed: false })} />
+        ) : (
+          <LoginForm onSignedIn={onSignedIn} />
+        )}
+      </SignedOutPage>
+    )
   }
   if (session.data && me.data) {
     return (
@@ -109,16 +124,14 @@ function Shell() {
   )
 }
 
-/** 登录页（区块 login-01 的页面布局），右上角保留主题开关 */
-function LoginPage({ onSignedIn }: { onSignedIn: () => void }) {
+/** 登录页、设置管理员页（区块 login-01 的页面布局），右上角保留主题开关 */
+function SignedOutPage({ children }: { children: React.ReactNode }) {
   return (
     <div className="relative flex min-h-svh w-full items-center justify-center p-6 md:p-10">
       <div className="absolute top-3 right-4">
         <ThemeToggle />
       </div>
-      <div className="w-full max-w-sm">
-        <LoginForm onSignedIn={onSignedIn} />
-      </div>
+      <div className="w-full max-w-sm">{children}</div>
     </div>
   )
 }

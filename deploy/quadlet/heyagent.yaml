@@ -75,8 +75,6 @@ spec:
           value: /run/heyagent/openrouter/openrouter-key
         - name: HEYAGENT_FILES_DIR
           value: /data/files
-        - name: HEYAGENT_ADMIN_PASSWORD_FILE
-          value: /data/state/admin-password
         - name: HEYAGENT_SEED_DEMO
           value: "0"
       envFrom:
@@ -97,8 +95,6 @@ spec:
           readOnly: true
         - name: files
           mountPath: /data/files
-        - name: state
-          mountPath: /data/state
 
     - name: worker
       image: localhost/heyagent-worker:current
@@ -154,9 +150,6 @@ spec:
     - name: files
       persistentVolumeClaim:
         claimName: heyagent-pod-files
-    - name: state
-      persistentVolumeClaim:
-        claimName: heyagent-pod-state
     # Podman secret（内容是 Kubernetes Secret，键名就是文件名）
     - name: db-secret
       secret:

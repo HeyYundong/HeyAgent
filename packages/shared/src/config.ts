@@ -424,6 +424,18 @@ export const userSetDisabledSchema = z.object({ id: z.string().min(1), disabled:
 export const userResetPasswordSchema = z.object({ id: z.string().min(1), password: passwordSchema })
 export const changePasswordSchema = z.object({ currentPassword: z.string().min(1, "填现在的密码"), newPassword: passwordSchema })
 
+/** 首次设置（POST /api/setup）：还没有任何账号时，第一个打开控制台的人建管理员 */
+export const setupAdminSchema = z.object({
+  name: text("填名字", 50),
+  email: userCreateSchema.shape.email,
+  password: passwordSchema,
+})
+export type SetupAdminInput = z.input<typeof setupAdminSchema>
+/** GET /api/setup：needed = 还没有任何账号，要先建管理员 */
+export interface SetupStatus {
+  needed: boolean
+}
+
 /** 用户页的一行（只有管理员能看） */
 export const userAccountSchema = z.object({
   id: z.string(),
@@ -544,6 +556,12 @@ export const changePasswordFormSchema = changePasswordSchema
   .extend({ confirm: z.string() })
   .refine((value) => value.confirm === value.newPassword, { path: ["confirm"], message: "两次输入的新密码不一样" })
 export type ChangePasswordForm = z.input<typeof changePasswordFormSchema>
+
+/** 首次设置管理员：多一个「再输一次」 */
+export const setupAdminFormSchema = setupAdminSchema
+  .extend({ confirm: z.string() })
+  .refine((value) => value.confirm === value.password, { path: ["confirm"], message: "两次输入的密码不一样" })
+export type SetupAdminForm = z.input<typeof setupAdminFormSchema>
 
 /** HTTP 工具：请求头在表单里是多行文字「名字: 值」，提交时转成对象；secrets 是这次新填的值 */
 export const httpToolFormSchema = z.object({

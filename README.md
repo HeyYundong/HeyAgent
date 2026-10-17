@@ -20,10 +20,10 @@ scripts/pod.sh up        # 第一次要构建镜像、下载 Chrome，比较慢
 - 数据库密码、登录签名密钥也是自动生成的，记在 `.dev/pod/secrets.env`。
 - 正式服务器用 `scripts/server-install.sh` 安装，见 [docs/ops.md](docs/ops.md)。
 
-### 2. 登录
+### 2. 设置管理员、登录
 
-- 账号 `admin@heyagent.local`，初始密码在 `.dev/admin-password`。
-- 登录后在左下角用户菜单里点「修改密码」。
+- 第一次打开是「设置管理员」页：填管理员的名字、邮箱和密码，建好直接进控制台。没有默认账号和密码。
+- 以后用这个邮箱和密码登录；改密码在左下角用户菜单里点「修改密码」。
 - 同事的账号在「用户」页里点「新建用户」，选主管或员工。员工能看全部内容，只能操作自己负责的。
 
 ### 3. 看一眼模型
@@ -114,7 +114,7 @@ pnpm --filter @heyagent/server dev:worker   # worker（真正跑 agent 的进程
 pnpm --filter @heyagent/web dev             # 控制台，http://localhost:5180
 ```
 
-- API 第一次启动时会建管理员 `admin@heyagent.local`，初始密码写在 `.dev/admin-password`。
+- 空库上第一次打开控制台是「设置管理员」页，自己定管理员的邮箱和密码。
 - `.env` 里填了 `OPENROUTER_API_KEY` 的话，第一次启动会自动接入 OpenRouter、设好默认模型；没填就登录后在「模型」页加。
 - 开发机上直接跑的 worker 没有 Chrome，浏览器相关的功能要用下面的整套 pod。
 - `pnpm db:seed` 灌演示数据，只给开发用。
@@ -131,7 +131,8 @@ scripts/pod.sh reset     # 停掉并删掉全部数据，回到空白环境（�
 ```
 
 - 第一次构建要下载 Chrome 等，时间比较长。镜像已经有了可以加 `HEYAGENT_SKIP_BUILD=1` 跳过构建。
-- 管理员初始密码会复制到 `.dev/admin-password`。OpenRouter 的 key 从 `.env` 读。
+- 空白环境第一次打开是「设置管理员」页。OpenRouter 的 key 从 `.env` 读。
+- 测试脚本（`pnpm --filter @heyagent/web smoke` 等）在空白环境上会自己设置管理员 `admin@heyagent.local`，随机密码写进 `.dev/admin-password`。
 - 正式服务器的安装和升级见 [docs/ops.md](docs/ops.md)。
 
 ## 技术栈

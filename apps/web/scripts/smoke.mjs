@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 // 控制台冒烟测试（无头 Chromium，playwright-core），以「空白正式环境」为准（M1 P2）：
-//   API 在空库上启动时自动建好管理员 admin@heyagent.local，初始密码在 HEYAGENT_ADMIN_PASSWORD_FILE（开发时 .dev/admin-password）。
+//   全新环境一个账号都没有：先在「设置管理员」页建管理员 admin@heyagent.local，随机密码先写进密码文件（权限 600，不打印）；
+//   已经设置过的环境就读这个文件。
 // 用法：node apps/web/scripts/smoke.mjs [地址]       默认 http://127.0.0.1:8080/（整套 pod）；开发时传自己的前端地址，例如 http://127.0.0.1:5181/
-//   SMOKE_ADMIN_PASSWORD_FILE  管理员初始密码文件（默认仓库根目录的 .dev/admin-password）
-//   SMOKE_ADMIN_PASSWORD       直接给管理员密码（优先于文件）
+//   SMOKE_ADMIN_PASSWORD_FILE  管理员密码文件（默认仓库根目录的 .dev/admin-password）
+//   SMOKE_ADMIN_PASSWORD       直接给管理员密码（优先于文件；全新环境就用它设置管理员）
 //   SMOKE_SHOTS      截图放哪（默认仓库根目录的 .dev/shots/m1-p2）
 //   CHROME_PATH      Chromium 可执行文件（默认 ~/.cache/ms-playwright 里的 chrome-headless-shell）
 //   CHROME_LIBS      Chromium 缺的系统库所在目录（开发机没有 sudo 装不了系统包，放在用户目录里），会加进 LD_LIBRARY_PATH
 //   FONTCONFIG_FILE  中文字体配置（截图里中文要正常显示）
 // 检查：
+//   0. 全新环境：打开控制台是「设置管理员」页，两次密码不一样有提示；建好后直接进控制台；之后不能再设置（接口回 409）；
 //   1. 没登录是登录页，密码错有提示；
 //   2. 管理员登录，每个页面都能打开（空白环境下显示空状态，写清下一步），控制台没有报错；
 //   3. 新建一个员工账号；依次建工具（HTTP，含明文密钥被拦）、技能（发布）、记忆、规则、任务（含步骤和检查点）；
@@ -17,16 +19,20 @@
 //   6. 新员工登录：任务只读（「你只能查看」）、看不到用户和设置、不能新建任务；能改自己的密码；
 //   7. 全程浏览器控制台没有报错。
 // 每次运行用不同的名字，可以对同一个环境重复跑。
-import { existsSync, mkdirSync, readFileSync } from "node:fs"
+import { existsSync, mkdirSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { chromium } from "playwright-core"
 
+import { ADMIN_EMAIL, ADMIN_NAME, newAdminPassword, readAdminPassword, setupNeeded } from "./admin-account.mjs"
+
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..")
 const BASE = (process.argv[2] ?? "http://127.0.0.1:8080/").replace(/\/?$/, "/")
 const PASSWORD_FILE = resolve(process.env.SMOKE_ADMIN_PASSWORD_FILE ?? join(repoRoot, ".dev/admin-password"))
-const ADMIN_PASSWORD = process.env.SMOKE_ADMIN_PASSWORD ?? (existsSync(PASSWORD_FILE) ? readFileSync(PASSWORD_FILE, "utf8").trim() : "")
+/** 全新环境：要先设置管理员。密码先写进文件再去设置，免得建好了却没存下 */
+const FRESH = await setupNeeded(BASE)
+const ADMIN_PASSWORD = process.env.SMOKE_ADMIN_PASSWORD ?? (FRESH ? newAdminPassword(PASSWORD_FILE) : readAdminPassword(PASSWORD_FILE))
 const SHOTS = resolve(process.env.SMOKE_SHOTS ?? join(repoRoot, ".dev/shots/m1-p2"))
 const CHROME = process.env.CHROME_PATH ?? join(homedir(), ".cache/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-linux64/chrome-headless-shell")
 const SCRATCH = "/tmp/claude-1000/-mnt-toshiba-Projects-HeyAgent/f5a5874c-3877-4626-bd8a-cb20c17939f4/scratchpad"
@@ -39,7 +45,7 @@ if (!ADMIN_PASSWORD) {
 }
 
 const RUN = Date.now().toString(36).slice(-5)
-const ADMIN = { email: "admin@heyagent.local", password: ADMIN_PASSWORD, name: "管理员", admin: true }
+const ADMIN = { email: ADMIN_EMAIL, password: ADMIN_PASSWORD, name: ADMIN_NAME, admin: true }
 const STAFF = { email: `staff-${RUN}@heyagent.local`, password: `staff-pass-${RUN}`, name: `测试员工${RUN}`, admin: false }
 const NAMES = {
   tool: `查天气 ${RUN}`,
@@ -179,14 +185,53 @@ async function pick(page, inputSelector, text, optionName = text) {
   if (await page.getByRole("listbox").first().isVisible().catch(() => false)) await page.keyboard.press("Escape")
 }
 
-// ---------- 0. 没登录 ----------
+// ---------- 首次设置（全新环境才有） ----------
 
 console.log(`冒烟测试（空白环境）：${BASE}`)
+if (FRESH) {
+  console.log(`\n== 全新环境：先设置管理员（${ADMIN.email}），密码写在 ${PASSWORD_FILE}`)
+  const { context, page, errors } = await newPage()
+  await step("打开 #/tasks 是「设置管理员」页（不是登录页）；两次密码不一样有提示", async () => {
+    await page.goto(`${BASE}#/tasks`, { waitUntil: "load" })
+    await page.locator("#setup-email").waitFor({ timeout: 15_000 })
+    if (await page.locator("#email").count()) throw new Error("同时出现了登录表单")
+    await page.screenshot({ path: join(SHOTS, "setup-dark.png") })
+    await page.fill("#setup-name", ADMIN.name)
+    await page.fill("#setup-email", ADMIN.email)
+    await page.fill("#setup-password", ADMIN.password)
+    await page.fill("#setup-confirm", `${ADMIN.password}-x`)
+    await page.click('button[type="submit"]')
+    await page.getByText("两次输入的密码不一样").waitFor({ timeout: 5_000 })
+  })
+  await step("建好管理员后直接进控制台（不用再登录），能打开「用户」页", async () => {
+    await page.fill("#setup-confirm", ADMIN.password)
+    await page.click('button[type="submit"]')
+    await page.getByRole("button", { name: "账号菜单" }).waitFor({ timeout: 15_000 })
+    await waitLoaded(page, "任务")
+    await open(page, "users", "用户")
+    await page.getByText(ADMIN.email).first().waitFor({ timeout: 10_000 })
+  })
+  await step("设置过以后不能再设置：GET /api/setup 说不用，POST 回 409", async () => {
+    if (await setupNeeded(BASE)) throw new Error("GET /api/setup 还说要设置")
+    const response = await fetch(new URL("api/setup", BASE), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "后来的人", email: `late-${RUN}@heyagent.local`, password: `late-pass-${RUN}` }),
+    })
+    if (response.status !== 409) throw new Error(`POST /api/setup 回了 HTTP ${response.status}`)
+  })
+  if (errors.length) fail(`设置页控制台报错：${errors.join(" | ")}`)
+  await context.close()
+}
+
+// ---------- 0. 没登录 ----------
+
 {
   const { context, page, errors } = await newPage()
   await step("没登录打开 #/tasks 显示登录页；密码错提示「邮箱或密码不对」", async () => {
     await page.goto(`${BASE}#/tasks`, { waitUntil: "load" })
     await page.locator("#email").waitFor({ timeout: 15_000 })
+    if (await page.locator("#setup-email").count()) throw new Error("设置过管理员了，还显示「设置管理员」页")
     await page.screenshot({ path: join(SHOTS, "login-dark.png") })
     await page.fill("#email", ADMIN.email)
     await page.fill("#password", "wrong-password")
@@ -205,7 +250,7 @@ console.log(`\n== 管理员（${ADMIN.email}）`)
 {
   const { context, page, errors } = await newPage()
   try {
-    await step("管理员用初始密码登录", () => login(page, ADMIN))
+    await step("管理员登录", () => login(page, ADMIN))
 
     for (const each of PAGES) {
       const before = errors.length

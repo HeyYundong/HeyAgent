@@ -5,7 +5,7 @@ import type { Server } from "node:http"
 
 import { createApp } from "./app.js"
 import { createAuth } from "./auth.js"
-import { adminPasswordFileFromEnv, bootstrap, retryOpenRouterInBackground, type BootstrapOptions } from "./bootstrap/index.js"
+import { bootstrap, retryOpenRouterInBackground, type BootstrapOptions } from "./bootstrap/index.js"
 import { attachBrowserViewRelay } from "./browser/view-relay.js"
 import { createDb } from "./db/client.js"
 import { initEngineClient } from "./engine/queue.js"
@@ -16,8 +16,8 @@ import { ChangeHub } from "./live/hub.js"
 const { db, pool } = createDb(env.databaseUrl)
 const auth = createAuth(db, { secret: env.authSecret, baseURL: env.authUrl, trustedOrigins: env.trustedOrigins })
 const keyring = loadKeyring(env.kekFile)
-// 空白环境初始化（M1 P2）：建管理员、写默认设置、按 .env 接入 OpenRouter。可以重复执行
-const bootstrapOptions: BootstrapOptions = { auth, keyring, adminPasswordFile: adminPasswordFileFromEnv(), openrouterApiKey: env.openrouterApiKey, log: (message) => console.log(`[bootstrap] ${message}`) }
+// 空白环境初始化（M1 P2）：写默认设置、按 .env 接入 OpenRouter。可以重复执行。管理员不在这里建，由第一个打开控制台的人设置（bootstrap/setup.ts）
+const bootstrapOptions: BootstrapOptions = { keyring, openrouterApiKey: env.openrouterApiKey, log: (message) => console.log(`[bootstrap] ${message}`) }
 const booted = await bootstrap(db, bootstrapOptions)
 // 接入 OpenRouter 失败（例如开机时还没网）就在后台重试，不用等下次重启
 const stopOpenRouterRetry = booted.openrouter === "failed" ? retryOpenRouterInBackground(db, bootstrapOptions) : () => {}

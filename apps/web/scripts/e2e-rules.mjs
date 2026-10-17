@@ -4,7 +4,7 @@
 // 验收模型判不通过；验收只给 1 轮，直接交给负责人。（跳过理由站得住的，验收模型会判通过，所以不能让 agent 自己标跳过）
 // 前提：整套 pod 开着（scripts/pod.sh up，空白环境即可），OpenRouter 已自动接入。跑之前先执行 scripts/or-usage.sh check 18。
 // 用法：node apps/web/scripts/e2e-rules.mjs [地址]      默认 http://127.0.0.1:8080/
-//   E2E_ADMIN_PASSWORD_FILE  管理员初始密码文件（默认仓库根目录的 .dev/admin-password）
+//   E2E_ADMIN_PASSWORD_FILE  管理员密码文件（默认仓库根目录的 .dev/admin-password）；全新环境会先设置管理员，随机密码写进这个文件
 //   E2E_MODEL                执行模型 id 里要有的字（默认 claude-haiku）
 //   E2E_VERIFY_MODEL         验收模型 id 里要有的字（默认 gemini 加 flash）
 //   E2E_SHOTS                截图放哪（默认 .dev/shots/m3-b）
@@ -20,17 +20,18 @@
 //   7. 员工能看，但操作不了别人负责的；
 //   8. 「验收争议」：故意写和步骤矛盾、做不到的检查点，验收只给 1 轮 → 争议 → 补充说明后继续 → 再争议 → 算通过；再跑一次 → 算失败；
 //   9. 两个账号全程浏览器控制台没有报错。
-import { existsSync, mkdirSync, readFileSync } from "node:fs"
+import { existsSync, mkdirSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { chromium } from "playwright-core"
 
+import { ensureAdmin } from "./admin-account.mjs"
+
 const here = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(here, "../../..")
 const BASE = (process.argv[2] ?? "http://127.0.0.1:8080/").replace(/\/?$/, "/")
 const PASSWORD_FILE = resolve(process.env.E2E_ADMIN_PASSWORD_FILE ?? join(repoRoot, ".dev/admin-password"))
-const ADMIN_PASSWORD = existsSync(PASSWORD_FILE) ? readFileSync(PASSWORD_FILE, "utf8").trim() : ""
 const MODEL_HINT = process.env.E2E_MODEL ?? "claude-haiku"
 const VERIFY_HINT = process.env.E2E_VERIFY_MODEL ?? "gemini"
 const SHOTS = resolve(process.env.E2E_SHOTS ?? join(repoRoot, ".dev/shots/m3-b"))
@@ -39,13 +40,8 @@ const SCRATCH = "/tmp/claude-1000/-mnt-toshiba-Projects-HeyAgent/f5a5874c-3877-4
 const LIBS = process.env.CHROME_LIBS ?? join(SCRATCH, "chromelibs/root/usr/lib/x86_64-linux-gnu")
 const FONTS = process.env.FONTCONFIG_FILE ?? join(SCRATCH, "fonts/fonts.conf")
 
-if (!ADMIN_PASSWORD) {
-  console.error(`没有管理员密码：找不到 ${PASSWORD_FILE}`)
-  process.exit(2)
-}
-
 const RUN = Date.now().toString(36).slice(-5)
-const ADMIN = { email: "admin@heyagent.local", password: ADMIN_PASSWORD }
+const ADMIN = await ensureAdmin(BASE, PASSWORD_FILE)
 const STAFF = { email: `e2e-rules-${RUN}@heyagent.local`, password: `e2e-pass-${RUN}`, name: `规则验收员工${RUN}` }
 const RULES = {
   approval: { name: `通知前要负责人批准 ${RUN}`, trigger: "agent 要调用「通知员工」工具之前", action: "先拦下，交给任务负责人审批，批准了才执行", tools: ["通知员工"] },
