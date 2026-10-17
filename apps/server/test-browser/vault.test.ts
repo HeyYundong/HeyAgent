@@ -45,7 +45,7 @@ afterAll(async () => {
 })
 
 describe("登录和保险箱", () => {
-  it("打开 Chrome 登录 → 人登录 → 保存登录状态：整份写进保险箱，账号变成正常", async () => {
+  it("打开 Chrome 登录 → 人登录 → 关闭：登录态合并进保险箱，账号变成正常", async () => {
     const opened = await mutate(ctx.app, "browser.openForLogin", wang, { profileId, accountId })
     expect(opened.error).toBeUndefined()
     const browserId = opened.data.browserId as string
@@ -56,17 +56,16 @@ describe("登录和保险箱", () => {
     // 人在页面上登录（这里直接用编排器的连接代替远程画面里的操作）
     await page.fill("#pw", "secret")
     await Promise.all([page.waitForURL(/\/me/), page.click("#go")])
-    const saved = await mutate(ctx.app, "browser.saveLogin", wang, { browserId })
-    expect(saved.error).toBeUndefined()
-    expect(saved.data).toMatchObject({ vaultVersion: 1, accounts: [{ accountId, ok: true }] })
-    expect(saved.data.cookieCount).toBeGreaterThanOrEqual(1)
+    // 别人不能关
+    const li = await login(ctx.app, "lijing@heyagent.local")
+    expect((await mutate(ctx.app, "browser.close", li, { browserId })).error?.data?.code).toBe("FORBIDDEN")
+    const closed = await mutate(ctx.app, "browser.close", wang, { browserId })
+    expect(closed.error).toBeUndefined()
+    expect(closed.data.saved).toMatchObject({ vaultVersion: 1, accounts: [{ accountId, ok: true }] })
+    expect(closed.data.saved.cookieCount).toBeGreaterThanOrEqual(1)
     expect((await account()).status).toBe("ok")
     const vault = await loadVault(ctx.db, ctx.keyring, profileId)
     expect(vault.state.cookies.find((cookie) => cookie.name === "sid")).toBeTruthy()
-    // 别人不能保存、不能关
-    const li = await login(ctx.app, "lijing@heyagent.local")
-    expect((await mutate(ctx.app, "browser.saveLogin", li, { browserId })).error?.data?.code).toBe("FORBIDDEN")
-    expect((await mutate(ctx.app, "browser.close", wang, { browserId })).error).toBeUndefined()
     expect(manager.get(browserId)).toBeUndefined()
     const rows = await ctx.db.select().from(t.browserInstances).where(eq(t.browserInstances.id, browserId))
     expect(rows).toEqual([])

@@ -354,7 +354,7 @@ export const humanDetails: Record<string, HumanDetail> = {
   "ap-03": {
     sections: [
       { title: "卡在哪里", block: { title: "亚马逊买家账号（美国站）· 美国 Chrome", text: "https://www.amazon.com/s?k=silicone+collapsible+basket" } },
-      { title: "怎么处理", text: "打开美国 Chrome，在亚马逊页面上完成验证码，再点「保存登录状态」。登录态存进保险箱后，所有 agent 下次都会带上。" },
+      { title: "怎么处理", text: "打开美国 Chrome，在亚马逊页面上完成验证码，再关掉画面（关就保存）。登录态存进保险箱后，所有 agent 下次都会带上。" },
     ],
     primary: "去浏览器里登录 →",
     link: { page: "browsers", id: "br-us" },

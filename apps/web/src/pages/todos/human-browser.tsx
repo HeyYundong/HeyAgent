@@ -1,6 +1,6 @@
 // 「登录」类要人办的事（遇到验证码或登录页，M2）：截图 + 去浏览器里处理。
 // - 运行的 Chrome 还保留着（browser.sessionBrowser 的 open）：打开它的远程画面处理，好了点「已处理好了」，同一个 Chrome 接着跑；
-// - 过了保留时间已经关了：用 browser.openForLogin(profileId, accountId) 新开一个，处理好、保存登录状态，再点「已处理好了」。
+// - 过了保留时间已经关了：用 browser.openForLogin(profileId, accountId) 新开一个，处理好、关掉（关就保存），再点「已处理好了」。
 import * as React from "react"
 import { MonitorIcon } from "lucide-react"
 import type { HumanItem } from "@heyagent/shared"
@@ -54,7 +54,7 @@ export function HumanBrowserSection({ item, info, canAct, onResolved }: { item: 
         ) : (
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-muted-foreground">
-              运行的 Chrome 过了保留时间，已经写回登录态关掉了。{canAct ? "点「新开 Chrome 处理」，在里面处理好、点「保存登录状态」，再回来点「已处理好了」；agent 继续时会新起一个 Chrome。" : ""}
+              运行的 Chrome 过了保留时间，已经写回登录态关掉了。{canAct ? "点「新开 Chrome 处理」，在里面处理好、关掉（会保存），再回来点「已处理好了」；agent 继续时会新起一个 Chrome。" : ""}
             </p>
             {canAct && <OpenLoginButton label="新开 Chrome 处理" pending={login.pending} onClick={() => void login.start({ profileId: info.profileId, accountId: info.accountId })} />}
           </div>
@@ -68,7 +68,7 @@ export function HumanBrowserSection({ item, info, canAct, onResolved }: { item: 
           key={login.opened.browserId}
           browserId={login.opened.browserId}
           title={`${profile?.name ?? info.profileId} · 处理「${item.title}」`}
-          description={`打开的是 ${info.url} 所在 Chrome 配置的登录态。处理好验证码或登录后点「保存登录状态」，关掉再点「已处理好了」。`}
+          description="处理好验证码或登录后关掉（会保存），再点「已处理好了」。"
           accountName={accountName}
           onClose={login.clear}
         />

@@ -1,7 +1,7 @@
 // 登录态保险箱（m2.md 第 4 条）：每个 Chrome 配置一份加密的 storageState（cookie + localStorage，可选 IndexedDB），带版本号。
 // - session 开始时整份装进 Chrome（记下当时的版本作为 base）；
 // - 写回时做三方合并：只写本 session 改过的项（新增、修改、删除），别的 session 在这期间写进去的保留；再用版本号 CAS，冲突重读重试；
-// - 人在远程画面里登录后「保存登录状态」：整份替换，版本号加一（同样 CAS）。
+// - 人在远程画面里登录：关 Chrome 时同样三方合并写回，人改过的覆盖库里的（谁最后写谁的算）。
 // 密文的 AAD 绑定「browser_vaults:Chrome id:版本号」，挪到别的配置或版本号对不上都解不开。
 import { and, eq, sql } from "drizzle-orm"
 
@@ -151,15 +151,6 @@ export async function writeBackMerged(
   throw new Error(`保险箱一直在被别人改，写回 Chrome ${profileId} 的登录态失败`)
 }
 
-/** 人手动登录后「保存登录状态」：整份替换，版本号加一（CAS，冲突重试） */
-export async function replaceVault(db: DbLike, keyring: Keyring, profileId: string, state: StorageState, userId: string): Promise<number> {
-  for (let attempt = 0; attempt < 10; attempt++) {
-    const [row] = await db.select({ version: t.browserVaults.version }).from(t.browserVaults).where(eq(t.browserVaults.profileId, profileId))
-    const written = await casWrite(db, keyring, profileId, row?.version ?? 0, state, { userId })
-    if (written !== false) return written
-  }
-  throw new Error(`保险箱一直在被别人改，保存 Chrome ${profileId} 的登录态失败`)
-}
 
 /** 测试和排查用：当前版本号 */
 export async function vaultVersion(db: DbLike, profileId: string) {

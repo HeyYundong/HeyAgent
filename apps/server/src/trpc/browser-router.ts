@@ -1,5 +1,5 @@
-// 浏览器相关的接口（M2，见 docs/dev/m2.md 第 9 条）：打开 Chrome 登录、保存登录状态、关闭、开着的 Chrome、session 的 Chrome、账号使用情况。
-// 已经挂在 appRouter 的 browser 下。Chrome 跑在 worker 里：打开 / 保存 / 关闭经 worker 的内部控制接口（browser/access.ts），
+// 浏览器相关的接口（M2，见 docs/dev/m2.md 第 9 条）：打开 Chrome 登录、关闭（关就是保存登录状态）、开着的 Chrome、session 的 Chrome、账号使用情况。
+// 已经挂在 appRouter 的 browser 下。Chrome 跑在 worker 里：打开 / 关闭经 worker 的内部控制接口（browser/access.ts），
 // 列表类直接读 browser_instances、account_leases（worker 起关 Chrome、申请释放租约时写）。
 // 远程画面不是 tRPC：GET /api/browser/view/:browserId（WebSocket，browser/view-relay.ts）。
 import { TRPCError } from "@trpc/server"
@@ -58,42 +58,29 @@ export const browserRouter = router({
       return { browserId: result.browserId }
     }),
 
-  /** 「保存登录状态」：整份导出，替换保险箱内容，版本号加一（CAS）；再探测账号，通过的标成「正常」 */
-  saveLogin: protectedProcedure
-    .input(browserIdInputSchema)
-    .output(saveLoginResultSchema)
-    .mutation(async ({ ctx, input }) => {
-      const row = await instanceRow(ctx.db, input.browserId)
-      if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "这个 Chrome 已经关了" })
-      if (row.kind !== "login") throw new TRPCError({ code: "BAD_REQUEST", message: "只有「打开 Chrome 登录」开的 Chrome 能保存登录状态" })
-      if (!(await canControlBrowser(ctx.db, ctx.user, row))) throw forbidden("只有打开这个 Chrome 的人和主管能保存登录状态")
-      const url = await workerUrl(ctx.db, row.workerId)
-      if (!url) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "这个 Chrome 所在的 worker 不在线了" })
-      const result = await callWorker<z.infer<typeof saveLoginResultSchema>>(ctx.keyring(), url, `/browsers/${encodeURIComponent(row.id)}/save`, { userId: ctx.user.id }).catch(fromWorker)
-      // 审计里不放登录态内容，只有版本号和 cookie 个数
-      await writeAudit(ctx.db, {
-        actorId: ctx.user.id,
-        action: "browser.save_login",
-        targetTable: "browser_vaults",
-        targetId: row.profileId,
-        detail: { browserId: row.id, vaultVersion: result.vaultVersion, cookieCount: result.cookieCount, accounts: result.accounts.map(({ accountId, ok }) => ({ accountId, ok })) },
-      })
-      return result
-    }),
-
-  /** 关掉「打开 Chrome 登录」的 Chrome，不保存（运行中的 Chrome 由运行自己关） */
+  /** 关掉「打开 Chrome 登录」的 Chrome：关就是保存——登录态合并进保险箱（谁最后写谁的算），再探测账号。已经关了返回 saved 为空 */
   close: protectedProcedure
     .input(browserIdInputSchema)
-    .output(z.object({ ok: z.literal(true) }))
+    .output(z.object({ saved: saveLoginResultSchema.optional() }))
     .mutation(async ({ ctx, input }) => {
       const row = await instanceRow(ctx.db, input.browserId)
-      if (!row) return { ok: true as const }
+      if (!row) return {}
       if (row.kind !== "login") throw new TRPCError({ code: "BAD_REQUEST", message: "运行中的 Chrome 由运行自己关，要停就取消这次运行" })
       if (!(await canControlBrowser(ctx.db, ctx.user, row))) throw forbidden("只有打开这个 Chrome 的人和主管能关")
       const url = await workerUrl(ctx.db, row.workerId)
-      if (url) await callWorker(ctx.keyring(), url, `/browsers/${encodeURIComponent(row.id)}/close`, {}).catch((error) => (error instanceof WorkerCallError && error.status === 404 ? undefined : fromWorker(error)))
-      await writeAudit(ctx.db, { actorId: ctx.user.id, action: "browser.close", targetTable: "browser_profiles", targetId: row.profileId, detail: { browserId: row.id } })
-      return { ok: true as const }
+      if (!url) return {}
+      const saved = await callWorker<z.infer<typeof saveLoginResultSchema>>(ctx.keyring(), url, `/browsers/${encodeURIComponent(row.id)}/close`, {}).catch((error) =>
+        error instanceof WorkerCallError && error.status === 404 ? undefined : fromWorker(error)
+      )
+      // 审计里不放登录态内容，只有版本号和 cookie 个数
+      await writeAudit(ctx.db, {
+        actorId: ctx.user.id,
+        action: "browser.close",
+        targetTable: "browser_vaults",
+        targetId: row.profileId,
+        detail: { browserId: row.id, ...(saved ? { vaultVersion: saved.vaultVersion, cookieCount: saved.cookieCount, accounts: saved.accounts.map(({ accountId, ok }) => ({ accountId, ok })) } : {}) },
+      })
+      return saved ? { saved } : {}
     }),
 
   /** 现在开着的 Chrome：哪个配置、哪个 session、谁在看 */

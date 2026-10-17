@@ -14,7 +14,7 @@ import { gostConfig } from "../src/browser/gost.js"
 import { accountForHost, acquireLease, releaseLeases, sweepLeases, wakeLeaseWaiters } from "../src/browser/leases.js"
 import { listBrowserMcpTools } from "../src/browser/mcp.js"
 import { attachBrowserViewRelay } from "../src/browser/view-relay.js"
-import { casWrite, loadVault, mergeStates, replaceVault, writeBackMerged, type StorageState, type StoredCookie } from "../src/browser/vault.js"
+import { casWrite, loadVault, mergeStates, writeBackMerged, type StorageState, type StoredCookie } from "../src/browser/vault.js"
 import * as t from "../src/db/schema.js"
 import { buildSnapshot } from "../src/engine/sessions.js"
 import { suspendInTx } from "../src/engine/waits.js"
@@ -188,7 +188,8 @@ describe("保险箱", () => {
     const now = await loadVault(ctx.db, keyring, profileId)
     expect(now.version).toBe(3)
     expect(Object.fromEntries(now.state.cookies.map((each) => [each.name, each.value]))).toEqual({ sid: "s2", other: "o" })
-    expect(await replaceVault(ctx.db, keyring, profileId, state([cookie("fresh", "f")]), "u-lin")).toBe(4)
+    // 人在登录 Chrome 里退出重登（删了 sid、other，加了 fresh）：同样合并写回
+    expect(await writeBackMerged(ctx.db, keyring, profileId, now.state, state([cookie("fresh", "f")]), { userId: "u-lin" })).toBe(4)
     expect((await loadVault(ctx.db, keyring, profileId)).state.cookies.map((each) => each.name)).toEqual(["fresh"])
     // 密文绑定 Chrome id 和版本号：库里看不到原文
     const [row] = await ctx.db.select().from(t.browserVaults).where(eq(t.browserVaults.profileId, profileId))
@@ -239,7 +240,7 @@ describe("browser-router（没有 Chrome 时）", () => {
     const opened = await mutate(ctx.app, "browser.openForLogin", wang, { profileId: "br-us" })
     expect(opened.error?.message).toMatch(/Chrome|Xvfb/)
     expect((await mutate(ctx.app, "browser.openForLogin", wang, { profileId: "br-nope" })).error?.data?.code).toBe("NOT_FOUND")
-    expect((await mutate(ctx.app, "browser.saveLogin", wang, { browserId: "bw-nope" })).error?.data?.code).toBe("NOT_FOUND")
+    expect((await mutate(ctx.app, "browser.close", wang, { browserId: "bw-nope" })).data).toEqual({})
     expect((await query(ctx.app, "browser.live")).status).toBe(401)
   })
 

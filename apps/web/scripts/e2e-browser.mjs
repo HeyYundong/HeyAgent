@@ -9,12 +9,12 @@
 //   CHROME_PATH / CHROME_LIBS / FONTCONFIG_FILE  同 smoke.mjs
 // 检查（docs/dev/m2.md 验收）：
 //   0. 设置页改浏览器设置；浏览器页新建 Chrome 配置、加账号（新平台带域名）；
-//   1. 「打开 Chrome 登录」：远程画面出帧，地址栏打开 example.com，保存登录状态（保险箱版本 +1、账号探测通过），关闭；
+//   1. 「打开 Chrome 登录」：远程画面出帧，地址栏打开 example.com，关闭就保存（保险箱版本 +1、账号探测通过）；
 //   2. 任务「打开 https://example.com，读出页面标题，用存文件工具保存」：任务表单选「浏览器」、Chrome 配置、白名单 → 完成，产物正确，过程里有截图；
 //   3. 本地验证码测试页 → session 等人 → 员工打开远程画面是只读 → 负责人在待办里「去浏览器里处理」，
 //      在远程画面里输入（输入法组字的中文 + 按键的英文）、点按钮、在网页弹框（confirm）里点确定 → 过了验证
 //      → 「已处理好了」→ 同一个 session 继续 → 产物里是过了验证才看得到的暗号；
-//   4. Chrome 过了保留时间（设成 1 分钟）：待办里「新开 Chrome 处理」→ 登录 Chrome 里过验证、保存登录状态 →「已处理好了」→ 继续；
+//   4. Chrome 过了保留时间（设成 1 分钟）：待办里「新开 Chrome 处理」→ 登录 Chrome 里过验证、关闭（保存）→「已处理好了」→ 继续；
 //   5. 全程浏览器控制台没有报错。
 // 访问范围：只有本地测试页和 example.com。
 import { execFileSync } from "node:child_process"
@@ -295,7 +295,7 @@ try {
     if (!state.accountId) throw new Error("accountStatus 里没有新账号")
   })
 
-  console.log("\n== 1. 打开 Chrome 登录 → 远程画面 → 保存登录状态")
+  console.log("\n== 1. 打开 Chrome 登录 → 远程画面 → 关闭就保存")
   await step("账号行点「去登录」：远程画面出帧，可以操作", async () => {
     const { page } = admin
     await page.getByRole("button", { name: "去登录" }).first().click()
@@ -315,19 +315,18 @@ try {
     await page.waitForTimeout(1500)
     await page.screenshot({ path: join(SHOTS, "login-browser-dark.png") })
   })
-  await step("「保存登录状态」：保险箱版本 +1，账号探测通过（状态变成已登录）", async () => {
+  await step("关掉弹窗：保险箱版本 +1，账号探测通过（状态变成已登录），登录 Chrome 关掉", async () => {
     const { page } = admin
     const before = (await api(page, "browsers.list")).find((each) => each.id === state.profileId).vaultVersion
-    await dialog(page).getByRole("button", { name: "保存登录状态" }).click()
+    await page.keyboard.press("Escape")
     await toast(page, "登录状态已保存", 30_000)
     const after = (await api(page, "browsers.list")).find((each) => each.id === state.profileId)
     if (!(after.vaultVersion > before)) throw new Error(`保险箱版本没变：${before} → ${after.vaultVersion}`)
     const site = after.sites.find((each) => each.accountId === state.accountId)
     if (site?.status !== "ok") throw new Error(`账号状态是 ${site?.status}`)
   })
-  await step("「关闭」：登录 Chrome 关掉", async () => {
+  await step("登录 Chrome 关掉", async () => {
     const { page } = admin
-    await dialog(page).getByRole("button", { name: "关闭", exact: true }).click()
     await until(async () => !(await api(page, "browser.live")).some((each) => each.kind === "login" && each.profileId === state.profileId), 20_000, "登录 Chrome 关掉")
     await page.screenshot({ path: join(SHOTS, "browsers-page-dark.png") })
   })
@@ -474,7 +473,7 @@ try {
     await page.screenshot({ path: join(SHOTS, "captcha-done-dark.png") })
     console.log(`    产物 ${artifact.name}：${text.trim().slice(0, 80)}；花费 $${run.costUsd.toFixed(4)}`)
   })
-  console.log("\n== 4. Chrome 过了保留时间：新开 Chrome 处理 → 保存登录状态 → 已处理好了 → 继续")
+  console.log("\n== 4. Chrome 过了保留时间：新开 Chrome 处理 → 关闭就保存 → 已处理好了 → 继续")
   await step("保留时间改成 1 分钟，再跑一次验证码任务（第二轮 ?k=r2）→ 等人处理", async () => {
     const { page } = admin
     const settings = await api(page, "settings.get")
@@ -502,7 +501,7 @@ try {
     await sheet(page).getByText("过了保留时间").waitFor({ timeout: 15_000 })
     await page.screenshot({ path: join(SHOTS, "expired-human-item-dark.png") })
   })
-  await step("「新开 Chrome 处理」：登录 Chrome 里打开测试页、过验证、保存登录状态、关闭", async () => {
+  await step("「新开 Chrome 处理」：登录 Chrome 里打开测试页、过验证、关闭（保存）", async () => {
     const { page } = admin
     await sheet(page).getByRole("button", { name: "新开 Chrome 处理" }).click()
     const canvas = await waitScreen(page)
@@ -521,10 +520,9 @@ try {
     await confirmDialog.getByRole("button", { name: "确定" }).click()
     await until(async () => (await addressBar(page).inputValue()).includes("/secret"), 15_000, "跳到 /secret")
     await page.screenshot({ path: join(SHOTS, "expired-login-browser-dark.png") })
-    await dialog(page).getByRole("button", { name: "保存登录状态" }).click()
-    await toast(page, "登录状态已保存", 30_000)
-    await dialog(page).getByRole("button", { name: "关闭", exact: true }).click()
+    await page.keyboard.press("Escape")
     await page.locator('[data-slot="dialog-content"]').waitFor({ state: "detached", timeout: 15_000 })
+    await toast(page, "登录状态已保存", 30_000)
   })
   await step("点「已处理好了」：同一个 session 继续，新起的 Chrome 带着刚保存的登录态读到暗号", async () => {
     const { page } = admin

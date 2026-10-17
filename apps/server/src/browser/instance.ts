@@ -19,7 +19,7 @@ import { judgePage, probeLooksLoggedIn, type PageFacts } from "./detect.js"
 import type { GostPool } from "./gost.js"
 import { accountForHost, acquireLease, profileAccounts, releaseLeases, type PlatformAccount } from "./leases.js"
 import { startBrowserMcp, type BrowserMcp } from "./mcp.js"
-import { emptyState, loadVault, replaceVault, writeBackMerged, type StorageState } from "./vault.js"
+import { emptyState, loadVault, writeBackMerged, type StorageState } from "./vault.js"
 import { ViewerHub } from "./viewer.js"
 
 export type InstanceKind = "session" | "login"
@@ -57,6 +57,8 @@ export interface ProbeResult {
 export interface CloseSummary {
   /** 写回后的保险箱版本；没写回为空 */
   vaultVersion?: number
+  /** 写回时的 cookie 个数（登录 Chrome 关闭时给人看） */
+  cookieCount?: number
   probes: ProbeResult[]
   /** 没写回的原因 */
   skipped?: string
@@ -448,29 +450,13 @@ export class BrowserInstance {
       .where(inArray(t.browserAccounts.id, accountIds))
   }
 
-  /** 人在远程画面里登录后「保存登录状态」：整份导出，替换保险箱（版本号加一），再探测账号、更新状态 */
-  async saveLogin(userId: string) {
-    this.touch()
-    const state = await this.exportState()
-    const version = await replaceVault(this.db, this.deps.keyring(), this.profileId, state, userId)
-    this.base = state
-    const targets = this.accountId ? this.accounts.filter((account) => account.accountId === this.accountId) : this.accounts.filter((account) => account.probeUrl)
-    const probes: ProbeResult[] = []
-    for (const account of targets) probes.push(await this.probe(account))
-    await this.setAccountStatus(
-      probes.filter((probe) => probe.ok).map((probe) => probe.accountId),
-      "ok",
-      { loggedInById: userId }
-    )
-    return { vaultVersion: version, cookieCount: state.cookies.length, accounts: probes }
-  }
-
   onClosed(listener: (summary: CloseSummary) => void) {
     this.closedListeners.push(listener)
   }
 
   /**
-   * 关掉：（要写回时）先探测用过的账号，都还在登录状态才三方合并写回；探测失败就不写回，把账号标成「要登录」。
+   * 关掉。登录 Chrome（人开的）：关的时候总是写回——三方合并，人改过的覆盖库里的（谁最后写谁的算），再探测账号、更新状态。
+   * 运行的 Chrome：（要写回时）先探测用过的账号，都还在登录状态才三方合并写回；探测失败就不写回，把账号标成「要登录」。
    * 然后关 MCP、断开编排器连接、按进程组杀 Chrome 和 Xvfb、删临时目录、释放租约、删登记。
    */
   close(options: { writeBack: boolean; reason: string }): Promise<CloseSummary> {
@@ -483,7 +469,22 @@ export class BrowserInstance {
     this.state = "closing"
     await this.db.update(t.browserInstances).set({ state: "closing" }).where(eq(t.browserInstances.id, this.id)).catch(() => {})
     const summary: CloseSummary = { probes: [] }
-    if (options.writeBack && this.context && this.browser?.isConnected() && previous !== "queued") {
+    if (options.writeBack && this.kind === "login" && this.context && this.browser?.isConnected() && previous !== "queued") {
+      try {
+        const mine = await this.exportState()
+        summary.vaultVersion = await writeBackMerged(this.db, this.deps.keyring(), this.profileId, this.base, mine, { userId: this.openedById ?? null })
+        summary.cookieCount = mine.cookies.length
+        const targets = this.accountId ? this.accounts.filter((account) => account.accountId === this.accountId) : this.accounts.filter((account) => account.probeUrl)
+        for (const account of targets) summary.probes.push(await this.probe(account))
+        await this.setAccountStatus(
+          summary.probes.filter((probe) => probe.ok).map((probe) => probe.accountId),
+          "ok",
+          this.openedById ? { loggedInById: this.openedById } : {}
+        )
+      } catch (error) {
+        summary.skipped = `写回登录态出错：${(error as Error).message}`
+      }
+    } else if (options.writeBack && this.context && this.browser?.isConnected() && previous !== "queued") {
       try {
         const used = this.accounts.filter((account) => this.touched.has(account.accountId) && account.probeUrl)
         for (const account of used) summary.probes.push(await this.probe(account))

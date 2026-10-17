@@ -234,7 +234,7 @@ export class BrowserManager {
             }).catch(() => {})
           }
         } else if (instance.kind === "login" && instance.viewer.clients.size === 0 && Date.now() - instance.lastActiveAt > LOGIN_IDLE_MS) {
-          await instance.close({ writeBack: false, reason: "空闲 30 分钟，自动关闭（没有保存）" })
+          await instance.close({ writeBack: true, reason: "空闲 30 分钟，自动关闭（登录态已保存）" })
         }
       }
       await sweepLeases(this.db)
@@ -252,7 +252,7 @@ export class BrowserManager {
     this.timers = []
     for (const waiter of this.slotWaiters.splice(0)) waiter()
     await Promise.all(
-      [...this.instances.values()].map((instance) => instance.close({ writeBack: instance.kind === "session", reason: "worker 正在退出" }).catch(() => undefined))
+      [...this.instances.values()].map((instance) => instance.close({ writeBack: true, reason: "worker 正在退出" }).catch(() => undefined))
     )
     await this.gost.stopAll()
     if (this.registered) await this.db.delete(t.browserWorkers).where(eq(t.browserWorkers.id, this.workerId)).catch(() => {})

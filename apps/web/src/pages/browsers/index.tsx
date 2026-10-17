@@ -198,8 +198,8 @@ export default function BrowsersPage() {
           title={`${openedProfile ? openedProfile.name : login.opened.target.profileId} · 打开 Chrome 登录`}
           description={
             login.opened.target.accountId
-              ? `在画面里登录「${accountName(login.opened.target.accountId)}」，验证码、短信码也在这里完成，好了点「保存登录状态」。`
-              : "已经装上这个配置保险箱里的登录态。在画面里登录要用的网站，好了点「保存登录状态」。"
+              ? `在画面里登录「${accountName(login.opened.target.accountId)}」，关掉就保存。`
+              : "在画面里登录要用的网站，关掉就保存。"
           }
           accountName={accountName}
           onClose={login.clear}

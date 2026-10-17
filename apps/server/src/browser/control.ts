@@ -1,7 +1,6 @@
 // worker 的内部控制接口（m2.md 第 8 条）：只绑 127.0.0.1，API 和 worker 在同一个 pod 里，API 能连到。每个请求都要带令牌头。
 //   POST /browsers/login          { profileId, accountId?, userId } → { browserId }
-//   POST /browsers/:id/save       { userId } → SaveLoginResult
-//   POST /browsers/:id/close      → { ok }
+//   POST /browsers/:id/close      → SaveLoginResult（登录 Chrome 关就是保存）
 //   GET  /health
 //   WebSocket /browsers/:id/view?userId=…&canControl=0|1   远程画面（API 鉴权、判断能不能操作后转过来）
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http"
@@ -55,21 +54,15 @@ export async function startControlServer(manager: BrowserManager, options: { hos
           const instance = await manager.openForLogin({ profileId, accountId: str(body.accountId), userId })
           return reply(res, 200, { browserId: instance.id })
         }
-        const match = /^\/browsers\/([^/]+)\/(save|close)$/.exec(url.pathname)
+        const match = /^\/browsers\/([^/]+)\/close$/.exec(url.pathname)
         if (req.method === "POST" && match) {
           const instance = manager.get(match[1]!)
           if (!instance) return reply(res, 404, { error: "这个 Chrome 已经关了" })
-          if (match[2] === "save") {
-            const body = await readJson(req)
-            const userId = str(body.userId)
-            if (!userId) return reply(res, 400, { error: "要 userId" })
-            if (instance.kind !== "login") return reply(res, 400, { error: "只有「打开 Chrome 登录」开的 Chrome 能保存登录状态" })
-            const result = await instance.saveLogin(userId)
-            return reply(res, 200, { browserId: instance.id, ...result })
-          }
           if (instance.kind !== "login") return reply(res, 400, { error: "运行中的 Chrome 由运行自己关，不能在这里关" })
-          await instance.close({ writeBack: false, reason: "已关闭（没有保存）" })
-          return reply(res, 200, { ok: true })
+          // 关就是保存：登录态合并进保险箱，再探测账号
+          const summary = await instance.close({ writeBack: true, reason: "已关闭，登录态已保存" })
+          if (summary.vaultVersion === undefined) return reply(res, 500, { error: summary.skipped ?? "登录态没保存上" })
+          return reply(res, 200, { browserId: instance.id, vaultVersion: summary.vaultVersion, cookieCount: summary.cookieCount ?? 0, accounts: summary.probes })
         }
         return reply(res, 404, { error: "not found" })
       } catch (error) {
