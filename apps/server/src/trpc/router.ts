@@ -12,6 +12,8 @@ import {
   browserProfileUpdateSchema,
   changeEventSchema,
   changePasswordSchema,
+  digestReviewInputSchema,
+  digestSessionInputSchema,
   httpToolInputSchema,
   httpToolRestoreSchema,
   httpToolUpdateSchema,
@@ -46,6 +48,7 @@ import {
   secretInputSchema,
   secretNameSchema,
   saveStepsFromSessionInputSchema,
+  sessionDigestSchema,
   sessionRunSchema,
   settingsAgentInputSchema,
   settingsBrowserInputSchema,
@@ -57,6 +60,11 @@ import {
   skillUpdateSchema,
   staffSchema,
   taskInputSchema,
+  taskMemoryAddSchema,
+  taskMemoryDeleteSchema,
+  taskMemoryEntrySchema,
+  taskMemoryListSchema,
+  taskMemoryUpdateSchema,
   taskSchema,
   taskSetEnabledSchema,
   taskStepSchema,
@@ -78,6 +86,7 @@ import * as models from "../data/config/models.js"
 import * as rules from "../data/config/rules.js"
 import * as settings from "../data/config/settings.js"
 import * as skills from "../data/config/skills.js"
+import * as taskMemory from "../data/config/task-memory.js"
 import * as tasks from "../data/config/tasks.js"
 import * as todos from "../data/config/todos.js"
 import * as tools from "../data/config/tools.js"
@@ -152,6 +161,23 @@ export const appRouter = router({
       .input(saveStepsFromSessionInputSchema)
       .output(z.object({ id: z.string(), steps: z.array(taskStepSchema) }))
       .mutation(({ ctx, input }) => tasks.saveStepsFromSession(w(ctx), input)),
+  }),
+
+  /**
+   * 任务记忆：每个任务自己的经验，每次运行开始时全部放进系统提示。负责人和主管能写、改、删；
+   * 运行结束后可以让三方 AI 总结那次运行、提取候选（summarize），审核通过的记进来（review）
+   */
+  taskMemory: router({
+    list: protectedProcedure.input(taskMemoryListSchema).output(z.array(taskMemoryEntrySchema)).query(({ ctx, input }) => load.listTaskMemory(ctx.db, input.taskId)),
+    add: protectedProcedure.input(taskMemoryAddSchema).mutation(({ ctx, input }) => taskMemory.addTaskMemory(w(ctx), input)),
+    update: protectedProcedure.input(taskMemoryUpdateSchema).mutation(({ ctx, input }) => taskMemory.updateTaskMemory(w(ctx), input)),
+    delete: protectedProcedure.input(taskMemoryDeleteSchema).mutation(({ ctx, input }) => taskMemory.deleteTaskMemory(w(ctx), input)),
+    /** 调三方模型（任务的验收模型或默认验收模型），只对已结束（完成或失败）的运行 */
+    summarize: protectedProcedure.input(digestSessionInputSchema).output(sessionDigestSchema).mutation(({ ctx, input }) => taskMemory.summarizeSession(w(ctx), input)),
+    review: protectedProcedure
+      .input(digestReviewInputSchema)
+      .output(z.object({ accepted: z.number().int(), rejected: z.number().int() }))
+      .mutation(({ ctx, input }) => taskMemory.reviewDigest(w(ctx), input)),
   }),
 
   sessions: router({

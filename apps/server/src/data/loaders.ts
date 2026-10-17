@@ -21,6 +21,7 @@ import {
   type Skill,
   type Staff,
   type TaskDef,
+  type TaskMemoryEntry,
   type Tool,
   type Trigger,
 } from "@heyagent/shared"
@@ -205,8 +206,26 @@ export async function listSessions(db: Db, filter: { ids?: string[]; taskId?: st
       ),
       waiting: wait ? { what: wait.what, trigger: toTrigger({ ...wait, at: wait.resumeAt }), since: iso(wait.createdAt) } : undefined,
       verification: opt(row.verification),
+      digest: opt(row.digest),
     })
   })
+}
+
+// ---------- 任务记忆 ----------
+
+export async function listTaskMemory(db: Db, taskId: string): Promise<TaskMemoryEntry[]> {
+  const rows = await db.select().from(t.taskMemoryEntries).where(eq(t.taskMemoryEntries.taskId, taskId)).orderBy(asc(t.taskMemoryEntries.id))
+  return rows.map((row) =>
+    compact({
+      id: row.id,
+      taskId: row.taskId,
+      content: row.content,
+      sourceSessionId: opt(row.sourceSessionId),
+      createdById: opt(row.createdById),
+      createdAt: iso(row.createdAt),
+      updatedAt: iso(row.updatedAt),
+    })
+  )
 }
 
 // ---------- 待办 ----------

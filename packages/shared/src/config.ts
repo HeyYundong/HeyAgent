@@ -139,6 +139,31 @@ export type TaskInput = z.input<typeof taskInputSchema>
 export const taskUpdateSchema = taskInputSchema.extend({ id: z.string().min(1) })
 export const taskSetEnabledSchema = z.object({ id: z.string().min(1), enabled: z.boolean() })
 
+// ---------- 任务记忆 ----------
+
+/** 一个任务最多记多少条（全部放进系统提示，太多了 agent 抓不住重点） */
+export const TASK_MEMORY_MAX = 100
+const taskMemoryText = text("写一条这个任务要记住的经验", 1000)
+export const taskMemoryAddSchema = z.object({ taskId: z.string().min(1), content: taskMemoryText })
+export const taskMemoryUpdateSchema = z.object({ id: z.number().int(), content: taskMemoryText })
+export const taskMemoryDeleteSchema = z.object({ id: z.number().int() })
+export const taskMemoryListSchema = z.object({ taskId: z.string().min(1) })
+/** 让三方 AI 总结一次已结束的运行、提取任务记忆候选 */
+export const digestSessionInputSchema = z.object({ sessionId: z.string().min(1) })
+/** 审核候选：index 是候选的序号（从 0 开始）；采用的可以改过文字再记 */
+export const digestReviewInputSchema = z.object({
+  sessionId: z.string().min(1),
+  items: z
+    .array(
+      z
+        .object({ index: z.number().int().min(0), accept: z.boolean(), text: optionalText(1000) })
+        .refine((item) => !item.accept || item.text.length > 0, { message: "要记的那条不能是空的", path: ["text"] })
+    )
+    .min(1)
+    .max(50),
+})
+export type DigestReviewInput = z.infer<typeof digestReviewInputSchema>
+
 // ---------- 记忆 ----------
 
 export const memoryInputSchema = z.object({

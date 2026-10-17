@@ -413,6 +413,55 @@ export const verificationSchema = z.object({
 })
 export type Verification = z.infer<typeof verificationSchema>
 
+// ---------- 任务记忆 ----------
+// 每个任务自己的经验，一条一条的，负责人和主管能直接写、改、删。
+// 运行结束后可以让三方 AI 总结这次运行、提取候选（SessionDigest），人审核通过的才记进任务记忆。每次运行开始时全部放进系统提示。
+
+export const taskMemoryEntrySchema = z.object({
+  id: z.number().int(),
+  taskId: z.string(),
+  content: z.string(),
+  /** 从哪次运行总结来的；人直接写的没有 */
+  sourceSessionId: z.string().optional(),
+  /** 人写的：谁写的；总结来的：谁审核通过的 */
+  createdById: z.string().optional(),
+  createdAt: isoTime,
+  updatedAt: isoTime,
+})
+export type TaskMemoryEntry = z.infer<typeof taskMemoryEntrySchema>
+
+export const digestCandidateStatusSchema = z.enum(["pending", "accepted", "rejected"])
+export type DigestCandidateStatus = z.infer<typeof digestCandidateStatusSchema>
+
+/** 三方 AI 对一次已结束运行的总结，和从中提取的任务记忆候选（人审核后才记进任务记忆） */
+export const sessionDigestSchema = z.object({
+  at: isoTime,
+  /** 用的哪个模型（任务的验收模型或默认验收模型，和执行模型不是同一家） */
+  modelId: z.string(),
+  /** 谁点的「总结」 */
+  byId: z.string(),
+  /** 这次运行做了什么、结果如何、遇到了什么问题（Markdown） */
+  summary: z.string(),
+  candidates: z.array(
+    z.object({
+      /** 一条记忆；记进去的是人审核时改过的版本 */
+      text: z.string(),
+      /** 依据：在这次运行的哪里看到的 */
+      reason: z.string(),
+      status: digestCandidateStatusSchema,
+      /** 记进去以后对应的任务记忆 id */
+      entryId: z.number().int().optional(),
+    })
+  ),
+  /** 候选全部处理完的时间和人 */
+  reviewedAt: isoTime.optional(),
+  reviewedById: z.string().optional(),
+  tokensIn: z.number().int(),
+  tokensOut: z.number().int(),
+  costUsd: z.number(),
+})
+export type SessionDigest = z.infer<typeof sessionDigestSchema>
+
 /** 一次运行 = 一个 session */
 export const sessionRunSchema = z.object({
   id: z.string(),
@@ -434,6 +483,8 @@ export const sessionRunSchema = z.object({
   /** 挂起时：在等什么、什么时候继续（来自 session_waits 里状态为 waiting 的那条） */
   waiting: z.object({ what: z.string(), trigger: triggerSchema, since: isoTime }).optional(),
   verification: verificationSchema.optional(),
+  /** 运行结束后三方 AI 的总结和任务记忆候选（有人点过「总结」才有） */
+  digest: sessionDigestSchema.optional(),
 })
 export type SessionRun = z.infer<typeof sessionRunSchema>
 

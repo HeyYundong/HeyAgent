@@ -51,6 +51,12 @@ export function buildSystemPrompt(
     )
   }
 
+  if (snapshot.taskMemory?.length) {
+    sections.push(
+      `## 任务记忆（这个任务以前的运行里总结出来、人审核过的经验，照着做能少走弯路）\n${snapshot.taskMemory.map((entry) => `- ${entry}`).join("\n")}`
+    )
+  }
+
   if (snapshot.skills.length) {
     sections.push(
       `## 技能目录\n要按某个技能做事前，先用 skill.load 读出全文。\n${snapshot.skills.map((skill) => `- ${skill.id}「${skill.name}」：${skill.description}`).join("\n")}`

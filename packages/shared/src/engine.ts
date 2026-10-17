@@ -46,6 +46,8 @@ export const sessionSnapshotSchema = z.object({
   memories: z.array(
     z.object({ id: z.string(), content: z.string(), appliesTo: z.string() })
   ),
+  /** 任务记忆：这个任务自己积累的经验（加这个字段之前开始的运行没有） */
+  taskMemory: z.array(z.string()).optional(),
   skills: z.array(
     z.object({
       id: z.string(),

@@ -91,6 +91,11 @@ export async function buildSnapshot(
     .innerJoin(t.rules, eq(t.rules.id, t.taskRules.refId))
     .where(eq(t.taskRules.taskId, taskId))
     .orderBy(asc(t.taskRules.position))
+  const taskMemory = await db
+    .select({ content: t.taskMemoryEntries.content })
+    .from(t.taskMemoryEntries)
+    .where(eq(t.taskMemoryEntries.taskId, taskId))
+    .orderBy(asc(t.taskMemoryEntries.id))
   const ruleIds = rules.map(({ rule }) => rule.id)
   const ruleTools = ruleIds.length
     ? await db
@@ -187,6 +192,7 @@ export async function buildSnapshot(
     memories: memories
       .filter((memory) => memory.status === "active")
       .map(({ id, content, appliesTo }) => ({ id, content, appliesTo })),
+    taskMemory: taskMemory.map((entry) => entry.content),
     skills: publishedSkills.map(({ id, name, description, version, body }) => ({
       id,
       name,

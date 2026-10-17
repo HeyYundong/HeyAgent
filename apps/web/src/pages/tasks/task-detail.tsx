@@ -22,6 +22,7 @@ import { compileOf, ruleSelectable } from "@/pages/rules/compile"
 import { CheckpointGrid, RunStatusBadge, StepList, WaitingAlert, checkpointSummary, money, tokens, type TasksState } from "./parts"
 import { CancelRunDialog, isActive, ResumeButton, RunWithFilesDialog, TaskAttachments, useStartRun } from "./run-actions"
 import { TaskDialog } from "./task-dialog"
+import { TaskMemorySection } from "./task-memory"
 
 /** 抽屉底部的操作（负责人和主管）：启动开关 + 编辑 / 带附件运行 / 取消 / 删除 + 主按钮。
  * 主按钮按最近一次运行的状态变：挂起等待 → 立即继续；等人处理 → 去待办处理；执行中 → 正在运行；其他 → 立即运行 */
@@ -101,7 +102,7 @@ export function TaskActions({ task, state }: { task: TaskDef; state: TasksState 
   )
 }
 
-/** 抽屉里的任务详情：分区卡（目标和步骤 / 检查点 / 运行记录 / 附件 / 用到的配置）。标题和操作在抽屉的头和底。 */
+/** 抽屉里的任务详情：分区卡（目标和步骤 / 任务记忆 / 检查点 / 运行记录 / 附件 / 用到的配置）。标题和操作在抽屉的头和底。 */
 export function TaskDetail({ task, state, canEdit }: { task: TaskDef; state: TasksState; canEdit: boolean }) {
   const taskRuns = state.runsOf(task.id)
   const latest = taskRuns[0]
@@ -109,6 +110,7 @@ export function TaskDetail({ task, state, canEdit }: { task: TaskDef; state: Tas
     <>
       {latest && <WaitingAlert run={latest} link={href("tasks", { id: task.id, run: latest.id })} />}
       <GoalAndSteps task={task} latest={latest} />
+      <TaskMemorySection task={task} runs={taskRuns} canEdit={canEdit} />
       <DetailSection title={latest ? `检查点 · ${checkpointSummary(latest.checkpoints)}` : "检查点"} description={latest && `最近一次运行 ${latest.id} 的检查点，每条一张卡`}>
         {latest ? <CheckpointGrid run={latest} /> : <p className="text-muted-foreground">还没运行过。运行后，每个检查点的进度和记录会显示在这里。</p>}
       </DetailSection>

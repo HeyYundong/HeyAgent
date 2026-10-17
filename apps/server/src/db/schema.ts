@@ -37,6 +37,7 @@ import {
   type HttpSpec,
   type HumanDetail,
   type RuleCompileResult,
+  type SessionDigest,
   type SessionSnapshot,
   type TaskStep,
   type Verification,
@@ -490,6 +491,28 @@ export const taskSkills = taskLink("task_skills", "skill_id", (): AnyPgColumn =>
 export const taskTools = taskLink("task_tools", "tool_id", () => tools.id)
 export const taskRules = taskLink("task_rules", "rule_id", () => rules.id)
 
+/**
+ * 任务记忆：每个任务自己的经验，一条一行，按 id 排序。负责人和主管能直接写、改、删；
+ * 运行结束后三方 AI 总结出的候选，人审核通过后也记进来（source_session_id 指向那次运行）。每次运行开始时全部放进系统提示
+ */
+export const taskMemoryEntries = pgTable(
+  "task_memory_entries",
+  {
+    id: identity(),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    content: text("content").notNull(),
+    /** 从哪次运行总结来的；人直接写的为空 */
+    sourceSessionId: text("source_session_id").references((): AnyPgColumn => sessions.id, { onDelete: "set null" }),
+    /** 人写的：谁写的；总结来的：谁审核通过的 */
+    createdById: text("created_by_id").references(() => users.id, { onDelete: "set null" }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("task_memory_entries_task_id_idx").on(t.taskId, t.id)]
+)
+
 // ---------- 运行（session） ----------
 
 export const sessions = pgTable(
@@ -535,6 +558,8 @@ export const sessions = pgTable(
     browserProfileId: text("browser_profile_id"),
     /** M3：规则执行的状态（例如「花费超过 X」已经触发过的规则，不再重复触发） */
     ruleState: jsonb("rule_state").$type<SessionRuleState>().notNull().default({}),
+    /** 运行结束后三方 AI 的总结和任务记忆候选（人点「总结」才有；审核通过的记进 task_memory_entries） */
+    digest: jsonb("digest").$type<SessionDigest>(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

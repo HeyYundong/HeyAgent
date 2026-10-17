@@ -17,6 +17,7 @@
 9. 附录：审计 action 一览、已知限制
 10. 浏览器（M2-A）
 11. 规则、检查点、三方验收、压缩、探索出的步骤（M3-A）
+12. 任务记忆和运行总结
 
 ---
 
@@ -548,6 +549,7 @@ curl -s -X POST http://localhost:3100/api/events \
 |---|---|
 | `users` | `me.get` `staff.list` `users.list` |
 | `tasks` `task_memories` `task_skills` `task_tools` `task_rules` | `tasks.list` |
+| `task_memory_entries`（推任务 id） | `taskMemory.list` |
 | `sessions` `session_events` `checkpoints` `checkpoint_records` `session_waits` | `sessions.list` `sessions.get` |
 | `human_items` | `todos.board` `me.get` `memories.list` `skills.list` |
 | `human_todos` | `todos.board` |
@@ -576,7 +578,7 @@ curl -s -X POST http://localhost:3100/api/events \
 | 范围 | action |
 |---|---|
 | 账号 | `user.create` `user.update` `user.disable` `user.enable` `user.reset_password` `user.change_password` |
-| 任务 | `task.create` `task.update` `task.enable` `task.disable` `task.delete` `task.attach` `task.detach` `task.save_steps`（M3） |
+| 任务 | `task.create` `task.update` `task.enable` `task.disable` `task.delete` `task.attach` `task.detach` `task.save_steps`（M3） `task_memory.add` `task_memory.update` `task_memory.delete` `task_memory.review`（第 12 节） |
 | 待办 | `todo.create` `todo.update` `todo.delete` `todo.run` |
 | 记忆 | `memory.create` `memory.update` `memory.approve` `memory.reject` `memory.archive` `memory.delete` |
 | 技能 | `skill.create` `skill.update` `skill.publish` `skill.draft` `skill.disable` `skill.suggestion.accept` `skill.suggestion.reject` |
@@ -585,7 +587,7 @@ curl -s -X POST http://localhost:3100/api/events \
 | 浏览器 | `browser_profile.create` `browser_profile.update` `browser_profile.delete` `platform.create` `platform.delete` `browser_account.create` `browser_account.update` `browser_account.delete` |
 | 模型 | `model_provider.create` `model_provider.update` `model_provider.test` `model_provider.refresh` `model_provider.delete` `model_defaults.update` |
 | 设置 | `settings.update` `settings.event_token.regenerate` `settings.event_token.clear` `settings.channel.create` `settings.channel.update` `settings.channel.delete` `settings.browser.update`（M2） `settings.agent.update`（M3） |
-| 运行 | `session.start`（`runNow`）`session.cancel` `session.resume.resume_now` `session.resume.human` `session.resume.event`（控制台触发，webhook 没有操作人所以不记）`human_item.resolve` `event.fire` |
+| 运行 | `session.digest`（第 12 节）`session.start`（`runNow`）`session.cancel` `session.resume.resume_now` `session.resume.human` `session.resume.event`（控制台触发，webhook 没有操作人所以不记）`human_item.resolve` `event.fire` |
 
 ### 9.2 已知限制（写代码时要知道）
 
@@ -793,3 +795,52 @@ session 开始时把规则（含 `compiledTrigger`）冻结进快照，引擎只
 | 数据库（迁移 0007） | `rules.compiled_text / compile_draft / confirmed_by_id / confirmed_at`、`tasks.verify_model_id`、`sessions.rule_state`、`session_messages.summary`、`session_waits.pending`、`checkpoints.focused_at`。都是加列，没有新表 |
 | 审计 action | 新增 `rule.compile` `rule.confirm` `task.save_steps` `settings.agent.update` |
 | 记忆和技能的提议 | 和 M1 一样：生成 `kind = memory / skill` 的事，给任务负责人（技能给技能负责人），主管也能处理；用 `memories.approve/reject`、`skills.acceptSuggestion/rejectSuggestion` 处理。待办里点进去用 `memoryId` / `skillId` 跳到记忆页、技能页 |
+
+---
+
+## 12. 任务记忆和运行总结（2026-10-17）
+
+每个任务自己的经验（任务记忆），和「记忆」页的公共记忆是两回事：公共记忆要在任务里选用，任务记忆只属于一个任务，不用选。运行结束后可以让三方模型总结那次运行、提取任务记忆的候选，人审核通过的才记进去。代码：`apps/server/src/data/config/task-memory.ts`、`apps/server/src/engine/digest.ts`；前端 `apps/web/src/pages/tasks/task-memory.tsx`、`run-digest.tsx`。
+
+### 12.1 数据
+
+- 新表 `task_memory_entries`：`id`（自增）、`task_id`（任务删了一起删）、`content`、`source_session_id`（从哪次运行总结来的；人直接写的为空）、`created_by_id`（人写的是谁写的，总结来的是谁审核通过的）、`created_at`、`updated_at`。按 `id` 排序。每个任务最多 `TASK_MEMORY_MAX` = 100 条。
+- `sessions.digest`（jsonb，可空），`SessionRun.digest?` 原样给出（`SessionDigest`）：
+
+  | 字段 | 说明 |
+  |---|---|
+  | `at` `modelId` `byId` | 什么时候、用哪个模型、谁点的总结 |
+  | `summary` | 这次运行的总结（Markdown） |
+  | `candidates[]` | `{ text, reason, status: "pending" \| "accepted" \| "rejected", entryId? }`。`text` 是审核时改过的版本；`entryId` 是记进去的那条任务记忆 |
+  | `reviewedAt?` `reviewedById?` | 候选全部处理完的时间和人 |
+  | `tokensIn` `tokensOut` `costUsd` | 这次总结的用量；也加进了这次运行的 `tokensIn/tokensOut/costUsd` |
+
+- 快照多了 `taskMemory?: string[]`（运行开始时冻结；加这个字段之前开始的运行没有）。系统提示里在「记忆」之后加一节「任务记忆」，没有就不加。
+- 迁移 0013：新表、`sessions.digest` 列、`task_memory_entries` 的推送触发器（推任务 id）。
+
+### 12.2 接口（`appRouter.taskMemory`）
+
+| 接口 | 类型 | 谁能用 | 输入 → 输出 |
+|---|---|---|---|
+| `list` | query | 登录即可 | `{ taskId }` → `TaskMemoryEntry[]`（`{ id, taskId, content, sourceSessionId?, createdById?, createdAt, updatedAt }`） |
+| `add` | mutation | 任务负责人、主管（`task.manage`） | `{ taskId, content（1-1000 字）}` → `{ id }`。满 100 条 `BAD_REQUEST` |
+| `update` | mutation | 同上 | `{ id, content }` → `{ id }` |
+| `delete` | mutation | 同上 | `{ id }` → `{ id }` |
+| `summarize` | mutation | 同上 | `{ sessionId }` → `SessionDigest`。见 12.3 |
+| `review` | mutation | 同上 | `{ sessionId, items: [{ index（候选序号，从 0 开始）, accept, text（采用时必填，≤1000 字）}]（1-50 条）}` → `{ accepted, rejected }`。见 12.4 |
+
+错误：`NOT_FOUND`（任务、运行、任务记忆不存在）、`FORBIDDEN`、`BAD_REQUEST`（内容为空、满 100 条、运行没结束、没有可用的三方模型、和执行模型同一家、模型出错、候选序号不对或重复、还没总结过）、`CONFLICT`（候选已经审核过）。
+
+### 12.3 总结（`summarize`）
+
+- 只对已结束的运行（`done` / `failed`）。调模型、要等十几秒到一分钟（同步返回，和 `rules.compile` 一样）。
+- 模型：任务**现在**选的验收模型（`tasks.verify_model_id`），没有就用默认验收模型；和**这次运行**的执行模型同一家时 `BAD_REQUEST`。
+- 给模型的材料：任务、目标、步骤（运行时的快照）、现有任务记忆（让它别重复）、结果（状态、失败原因、验收结论、附加说明）、检查点和记录、agent 写下的步骤、全部过程记录（每条截断；总长超过 6 万字时留开头 1/5、结尾 4/5，中间写明省略几条）。
+- 输出（结构化）：`summary` + 最多 8 条 `{ text, reason }`。程序再去掉空的、重复的、和现有任务记忆一样的（忽略空白、大小写）。
+- 结果存进 `sessions.digest`（再总结一次整体覆盖，没审核的旧候选作废，已经记进去的不受影响），用量加到这次运行上。审计 `session.digest`（`target_table = sessions`，detail 有 `modelId`、`candidates` 条数、`costUsd`）。
+
+### 12.4 审核（`review`）
+
+- 锁住这次运行那一行（`for update`），先检查全部 `items`：序号要存在、不能重复、候选必须还是 `pending`，再检查条数上限，然后逐条处理：`accept = true` 的按 `text` 插入 `task_memory_entries`（`source_session_id` = 这次运行，`created_by_id` = 审核人），候选标 `accepted` 并写上 `entryId`；`false` 的标 `rejected`。
+- 没提到的候选保持 `pending`；全部处理完才写 `reviewedAt` / `reviewedById`。
+- 审计 `task_memory.review`（`target_table = tasks`，detail 有 `sessionId`、`accepted: [{ entryId, edited }]`、`rejected` 条数）。

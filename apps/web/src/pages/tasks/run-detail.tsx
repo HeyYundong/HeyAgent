@@ -1,4 +1,4 @@
-// 某次运行的 session 详情：标题卡 + 检查点 / 过程 / 验收 / agent 的步骤。
+// 某次运行的 session 详情：标题卡 + 检查点 / 验收 / 总结和记忆（结束后）/ agent 的步骤 / 附件和产物 / 过程。
 // M3：过程里标出规则命中、agent 写下步骤（plan.set）、上下文压缩；验收逐条显示结论和理由；agent 的步骤可以「存为任务步骤」（tasks.saveStepsFromSession）。
 // 不带页面级布局和返回链接，放进任何 768px 宽的抽屉都能用（任务页、Session 页的抽屉都直接放它）。
 import * as React from "react"
@@ -27,6 +27,7 @@ import { VerificationReport } from "./verification"
 import { CheckpointGrid, Elapsed, RunStatusBadge, StepList, WaitingAlert, checkpointSummary, money } from "./parts"
 import { CancelRunDialog, isActive, ResumeButton, SessionFiles } from "./run-actions"
 import { RunBrowserButton } from "./run-browser"
+import { RunDigestSection } from "./run-digest"
 
 const EVENT_ICON: Record<RunEventKind, LucideIcon> = { plan: ListTreeIcon, think: BrainIcon, tool: WrenchIcon, checkpoint: FlagIcon, rule: ShieldIcon, wait: PauseIcon, resume: PlayIcon, human: UserIcon, verify: ScanSearchIcon, done: CircleCheckIcon, error: TriangleAlertIcon }
 
@@ -72,6 +73,7 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionRun }) {
         <CheckpointGrid run={run} />
       </DetailSection>
       {run.verification && <VerificationSection run={run} verification={run.verification} />}
+      {(run.status === "done" || run.status === "failed") && <RunDigestSection task={task} run={run} canEdit={can(user, "task.manage", { ownerId: task.ownerId })} />}
       {run.exploredSteps && run.exploredSteps.length > 0 && (
         <AgentSteps task={task} run={run} steps={run.exploredSteps} canSave={can(user, "task.manage", { ownerId: task.ownerId })} />
       )}

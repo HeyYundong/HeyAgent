@@ -10,6 +10,7 @@ export const liveQueriesByTable: Record<string, string[]> = {
   task_skills: ["tasks.list"],
   task_tools: ["tasks.list"],
   task_rules: ["tasks.list"],
+  task_memory_entries: ["taskMemory.list"],
   sessions: ["sessions.list", "sessions.get"],
   session_events: ["sessions.list", "sessions.get"],
   checkpoints: ["sessions.list", "sessions.get"],
