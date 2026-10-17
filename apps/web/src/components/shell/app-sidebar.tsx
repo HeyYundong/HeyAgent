@@ -8,10 +8,13 @@ import {
   GlobeIcon,
   HistoryIcon,
   KanbanIcon,
+  KeyRoundIcon,
   LayoutGridIcon,
   LightbulbIcon,
   LogOutIcon,
+  SettingsIcon,
   ShieldCheckIcon,
+  UsersIcon,
   WrenchIcon,
   type LucideIcon,
 } from "lucide-react"
@@ -39,13 +42,19 @@ import {
   SidebarMenuItem,
   SidebarRail,
 } from "@/components/ui/sidebar"
+import { can } from "@heyagent/shared"
+
 import { href, useRoute, type PageId } from "@/lib/router"
 import { useMe } from "@/lib/session"
+
+import { ChangePasswordDialog } from "./change-password-dialog"
 
 interface NavItem {
   id: PageId
   title: string
   icon: LucideIcon
+  /** 只有主管看得见 */
+  adminOnly?: boolean
 }
 
 export const NAV_WORK: NavItem[] = [
@@ -61,6 +70,8 @@ export const NAV_CONFIG: NavItem[] = [
   { id: "tools", title: "工具", icon: WrenchIcon },
   { id: "browsers", title: "浏览器", icon: GlobeIcon },
   { id: "models", title: "模型", icon: CpuIcon },
+  { id: "users", title: "用户", icon: UsersIcon, adminOnly: true },
+  { id: "settings", title: "设置", icon: SettingsIcon, adminOnly: true },
 ]
 
 export const NAV_LEARN: NavItem = { id: "learn", title: "看懂架构", icon: LightbulbIcon }
@@ -72,6 +83,8 @@ export function AppSidebar({ onSignOut }: { onSignOut: () => void }) {
   const { user } = useMe()
   // 等我处理的事（侧边栏「待办」上的数字）：后端按登录的人算好，有变化时实时推送会让它重新拉
   const needsMe = user.needsMeCount
+  const isAdmin = can(user, "user.manage", {})
+  const [changingPassword, setChangingPassword] = React.useState(false)
 
   const renderItem = (item: NavItem, badge?: number) => (
     <SidebarMenuItem key={item.id}>
@@ -106,7 +119,7 @@ export function AppSidebar({ onSignOut }: { onSignOut: () => void }) {
         </SidebarGroup>
         <SidebarGroup>
           <SidebarGroupLabel>配置</SidebarGroupLabel>
-          <SidebarMenu>{NAV_CONFIG.map((item) => renderItem(item))}</SidebarMenu>
+          <SidebarMenu>{NAV_CONFIG.filter((item) => !item.adminOnly || isAdmin).map((item) => renderItem(item))}</SidebarMenu>
         </SidebarGroup>
         <SidebarGroup>
           <SidebarGroupLabel>帮助</SidebarGroupLabel>
@@ -136,6 +149,10 @@ export function AppSidebar({ onSignOut }: { onSignOut: () => void }) {
                   </DropdownMenuLabel>
                 </DropdownMenuGroup>
                 <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => setChangingPassword(true)}>
+                  <KeyRoundIcon />
+                  修改密码
+                </DropdownMenuItem>
                 <DropdownMenuItem onClick={onSignOut}>
                   <LogOutIcon />
                   退出
@@ -146,6 +163,7 @@ export function AppSidebar({ onSignOut }: { onSignOut: () => void }) {
         </SidebarMenu>
       </SidebarFooter>
       <SidebarRail />
+      <ChangePasswordDialog key={changingPassword ? "open" : "closed"} open={changingPassword} onOpenChange={setChangingPassword} />
     </Sidebar>
   )
 }

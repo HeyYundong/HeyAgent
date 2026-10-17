@@ -1,8 +1,8 @@
 // 技能页（v3）：左边按岗位分组，右边一个技能的详情（标题卡 + 分区卡：什么时候用、用到的工具、哪些任务选用了、操作手册）。
-// 只负责「看」和主管的「新建 / 编辑 / 发布 / 停用」；agent 提的修改建议在「待办」里审核。
-// M0 只读：新建、编辑、发布、停用照原型显示，真正提交时弹「只读阶段」提示。
+// 只负责「看」和主管的「新建 / 编辑 / 发布 / 停用」；agent 提的修改建议在「待办」里审核（审核人也可以在这里直接批）。
+// 每次保存记一个新版本；被任务选用的技能不能停用（后端拦）。
 import * as React from "react"
-import { BookOpenIcon, EllipsisIcon, FileTextIcon, InboxIcon, ListChecksIcon, PencilIcon, PlusIcon, WrenchIcon } from "lucide-react"
+import { BookOpenIcon, CheckIcon, EllipsisIcon, FileTextIcon, InboxIcon, ListChecksIcon, PencilIcon, PlusIcon, WrenchIcon, XIcon } from "lucide-react"
 
 import { DetailPanel, DetailSection, EmptyState, MasterDetail } from "@/components/shell/simple-page"
 import { PageFrame, PickGroup, PickItem, SimpleHeader } from "@/components/shell/simple-page"
@@ -12,13 +12,16 @@ import { CodeBlock, CodeBlockActions, CodeBlockContent, CodeBlockCopyButton } fr
 import { CodeBlockHeader, CodeBlockLine, CodeBlockTitle } from "@/components/ui/code-block"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "@/components/ui/item"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import { MarkdownView } from "@/components/markdown"
 import { useHighlightedCode } from "@/hooks/use-highlighted-code"
-import { can, findById, fmtDate, fmtDateTime, riskLabel, skillStatusLabel, tasksUsing, type Skill, type TaskDef, type Tool } from "@heyagent/shared"
+import { can, findById, fmtDate, fmtDateTime, riskLabel, skillStatusLabel, tasksUsing, type Skill, type SkillStatus, type TaskDef, type Tool } from "@heyagent/shared"
 
 import { useSkillsQuery, useStaffName, useStaffQuery, useTasksQuery, useToolsQuery } from "@/lib/data"
-import { readOnlyToast } from "@/lib/readonly"
+import { useAction } from "@/lib/mutations"
 import { href, useRoute } from "@/lib/router"
 import { useMe } from "@/lib/session"
+import { trpc } from "@/lib/trpc"
 
 import { BODY_TEMPLATE } from "./data"
 import { SkillDialog } from "./skill-dialog"
@@ -50,7 +53,7 @@ export default function SkillsPage() {
       description="agent 的操作手册：遇到什么情况、按什么步骤做。建任务时选用哪些，agent 就能用哪些。"
       learnId="skills"
       action={
-        isAdmin && (
+        isAdmin && items.length > 0 && (
           <Button onClick={() => setEditing("new")}>
             <PlusIcon data-icon="inline-start" />
             新建技能
@@ -61,52 +64,67 @@ export default function SkillsPage() {
   )
 
   return (
-    <PageFrame
-      header={header}
-      queries={queries}
-      isEmpty={items.length === 0}
-      empty={<EmptyState icon={<BookOpenIcon />} title="还没有技能" description="把员工做事的步骤写成技能，agent 就能照着做。" />}
-    >
-      <MasterDetail
-        hasSelection={!!selected}
-        list={depts.map((dept) => {
-          const group = items.filter((s) => s.dept === dept)
-          if (group.length === 0) return null
-          return (
-            <PickGroup key={dept} label={`${dept} · ${group.length}`}>
-              {group.map((s) => (
-                <PickItem
-                  key={s.id}
-                  to={href("skills", { id: s.id })}
-                  selected={s.id === selected?.id}
-                  title={s.name}
-                  description={s.description}
-                  badge={
-                    s.suggestion ? (
-                      <Badge>有修改建议</Badge>
-                    ) : (
-                      s.status !== "published" && <Badge variant={statusVariant[s.status]}>{skillStatusLabel[s.status]}</Badge>
-                    )
-                  }
-                />
-              ))}
-            </PickGroup>
-          )
-        })}
-        detail={
-          selected ? (
-            <SkillDetail
-              skill={selected}
-              tasks={tasksQuery.data ?? []}
-              tools={toolsQuery.data?.tools ?? []}
-              isAdmin={isAdmin}
-              canReview={!!selected.suggestion && can(user, "humanItem.resolve", { assigneeId: selected.suggestion.reviewerId })}
-              onEdit={() => setEditing(selected)}
-              onSetStatus={readOnlyToast}
-            />
-          ) : null
+    <>
+      <PageFrame
+        header={header}
+        queries={queries}
+        isEmpty={items.length === 0}
+        empty={
+          <EmptyState
+            icon={<BookOpenIcon />}
+            title="还没有技能"
+            description={isAdmin ? "把员工做事的步骤写成技能（SKILL.md），发布后建任务时选上，agent 就能照着做。点下面新建第一个。" : "还没有技能。技能由主管新建并发布。"}
+            action={
+              isAdmin && (
+                <Button onClick={() => setEditing("new")}>
+                  <PlusIcon data-icon="inline-start" />
+                  新建技能
+                </Button>
+              )
+            }
+          />
         }
-      />
+      >
+        <MasterDetail
+          hasSelection={!!selected}
+          list={depts.map((dept) => {
+            const group = items.filter((s) => s.dept === dept)
+            if (group.length === 0) return null
+            return (
+              <PickGroup key={dept} label={`${dept} · ${group.length}`}>
+                {group.map((s) => (
+                  <PickItem
+                    key={s.id}
+                    to={href("skills", { id: s.id })}
+                    selected={s.id === selected?.id}
+                    title={s.name}
+                    description={s.description}
+                    badge={
+                      s.suggestion ? (
+                        <Badge>有修改建议</Badge>
+                      ) : (
+                        s.status !== "published" && <Badge variant={statusVariant[s.status]}>{skillStatusLabel[s.status]}</Badge>
+                      )
+                    }
+                  />
+                ))}
+              </PickGroup>
+            )
+          })}
+          detail={
+            selected ? (
+              <SkillDetail
+                skill={selected}
+                tasks={tasksQuery.data ?? []}
+                tools={toolsQuery.data?.tools ?? []}
+                isAdmin={isAdmin}
+                canReview={!!selected.suggestion && can(user, "humanItem.resolve", { assigneeId: selected.suggestion.reviewerId })}
+                onEdit={() => setEditing(selected)}
+              />
+            ) : null
+          }
+        />
+      </PageFrame>
       <SkillDialog
         key={editing === "new" ? "new" : (editing?.id ?? "closed")}
         open={editing !== null}
@@ -115,24 +133,27 @@ export default function SkillsPage() {
         template={BODY_TEMPLATE}
         deptOptions={depts}
         onCreateDept={(value) => setCreatedDepts((list) => [...list, value])}
-        onSubmit={readOnlyToast}
       />
-    </PageFrame>
+    </>
   )
 }
 
 // ---------- 详情 ----------
 
-function SkillDetail({ skill, tasks, tools, isAdmin, canReview, onEdit, onSetStatus }: {
+function SkillDetail({ skill, tasks, tools, isAdmin, canReview, onEdit }: {
   skill: Skill
   tasks: TaskDef[]
   tools: Tool[]
   isAdmin: boolean
   canReview: boolean
   onEdit: () => void
-  /** 发布 / 停用（M0 只读：弹提示） */
-  onSetStatus: () => void
 }) {
+  const setStatus = useAction(trpc.skills.setStatus.mutationOptions(), {
+    success: (_data, vars) => ({ published: "已发布，建任务时可以选用了", disabled: "已停用", draft: "已改回草稿" })[vars.status as SkillStatus],
+  })
+  const accept = useAction(trpc.skills.acceptSuggestion.mutationOptions(), { success: (data) => `已合并，记为第 ${data.version} 版` })
+  const reject = useAction(trpc.skills.rejectSuggestion.mutationOptions(), { success: "已拒绝，技能保持原样" })
+  const onSetStatus = (status: SkillStatus) => setStatus.mutate({ id: skill.id, status })
   const staffName = useStaffName()
   const skillTools = skill.toolIds.map((id) => findById(tools, id)).filter((t) => t !== undefined)
   const usedBy = tasksUsing(tasks, "skillIds", skill.id)
@@ -150,9 +171,9 @@ function SkillDetail({ skill, tasks, tools, isAdmin, canReview, onEdit, onSetSta
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           {skill.status === "published" ? (
-            <DropdownMenuItem onClick={onSetStatus}>停用</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onSetStatus("disabled")}>停用</DropdownMenuItem>
           ) : (
-            <DropdownMenuItem onClick={onSetStatus}>发布</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onSetStatus("published")}>发布</DropdownMenuItem>
           )}
         </DropdownMenuContent>
       </DropdownMenu>
@@ -184,8 +205,18 @@ function SkillDetail({ skill, tasks, tools, isAdmin, canReview, onEdit, onSetSta
           </ItemContent>
           {canReview && (
             <ItemActions>
-              <Button size="sm" nativeButton={false} render={<a href={href("todos", { id: suggestion.itemId ?? skill.id })} />}>
-                去待办处理 →
+              {suggestion.itemId && (
+                <Button size="sm" variant="ghost" nativeButton={false} render={<a href={href("todos", { id: suggestion.itemId })} />}>
+                  看改动
+                </Button>
+              )}
+              <Button size="sm" disabled={accept.isPending} onClick={() => accept.mutate({ id: skill.id })}>
+                <CheckIcon data-icon="inline-start" />
+                通过并合并
+              </Button>
+              <Button size="sm" variant="outline" disabled={reject.isPending} onClick={() => reject.mutate({ id: skill.id })}>
+                <XIcon data-icon="inline-start" />
+                拒绝
               </Button>
             </ItemActions>
           )}
@@ -226,9 +257,7 @@ function SkillDetail({ skill, tasks, tools, isAdmin, canReview, onEdit, onSetSta
           )}
         </DetailSection>
       </div>
-      <DetailSection title="操作手册" description="agent 调「读取技能」拿到的就是这段文字。">
-        <SkillMarkdown skill={skill} />
-      </DetailSection>
+      <SkillManual skill={skill} />
     </DetailPanel>
   )
 }
@@ -247,6 +276,25 @@ function LinkList({ rows }: { rows: { key: string; to: string; icon: React.React
         </Item>
       ))}
     </ItemGroup>
+  )
+}
+
+/** 操作手册：默认按 Markdown 显示正文，可以切到 SKILL.md 源码（头部 + 正文，带复制） */
+function SkillManual({ skill }: { skill: Skill }) {
+  const [view, setView] = React.useState<"preview" | "source">("preview")
+  return (
+    <DetailSection
+      title="操作手册"
+      description="agent 调「读取技能」拿到的就是这段文字。"
+      action={
+        <ToggleGroup variant="outline" size="sm" spacing={0} value={[view]} onValueChange={(next) => next[0] && setView(next[0] as "preview" | "source")}>
+          <ToggleGroupItem value="preview">预览</ToggleGroupItem>
+          <ToggleGroupItem value="source">SKILL.md</ToggleGroupItem>
+        </ToggleGroup>
+      }
+    >
+      {view === "preview" ? (skill.body.trim() ? <MarkdownView>{skill.body}</MarkdownView> : <p className="text-muted-foreground">还没写操作手册。</p>) : <SkillMarkdown skill={skill} />}
+    </DetailSection>
   )
 }
 

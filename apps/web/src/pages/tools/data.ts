@@ -1,47 +1,5 @@
-// 工具页留在前端的东西：模拟「连接 MCP 后发现的工具」（M1 接真实的「连接并读取工具」后去掉）、弹窗里的说明和示例文字。
+// 工具页留在前端的东西：弹窗里的说明和示例文字。（原型里模拟「连接 MCP 后发现的工具」的假数据已经去掉，P3 接真实的「连接并读取工具」）
 // 给模型看的完整说明、风险说明、已存的密钥都来自接口（Tool.description、shared 的 riskNotes、tools.list 的 savedSecrets）。
-
-import type { Risk } from "@heyagent/shared"
-
-/** 模拟「连接并读取工具」后发现的工具 */
-export interface Discovered {
-  id: string
-  name: string
-  summary: string
-  risk: Risk
-}
-
-/** 已有服务器上还没加入的工具（编辑时重新读取会多出来） */
-export const MORE_ON_SERVER: Record<string, Discovered[]> = {
-  "mcp-playwright": [
-    { id: "browser.pdf", name: "网页存 PDF", summary: "把当前页面存成 PDF", risk: "read" },
-    { id: "browser.tabs", name: "切换标签页", summary: "列出、打开或关闭浏览器标签页", risk: "read" },
-  ],
-  "mcp-erp": [
-    { id: "erp.stock", name: "查库存", summary: "按 SKU 查仓库库存和在途数量", risk: "read" },
-  ],
-}
-
-/** 新服务器：按命令或地址里的关键词挑一组模拟结果，认不出就用第一组 */
-export const DISCOVER_SAMPLES: { keyword: string; tools: Discovered[] }[] = [
-  {
-    keyword: "feishu",
-    tools: [
-      { id: "bitable.search", name: "查多维表格", summary: "按条件查询飞书多维表格里的记录", risk: "read" },
-      { id: "bitable.create", name: "新增记录", summary: "往飞书多维表格里新增一行", risk: "write" },
-      { id: "bitable.update", name: "更新记录", summary: "修改飞书多维表格里的一行", risk: "write" },
-      { id: "im.send", name: "发飞书消息", summary: "给同事或群发一条飞书消息", risk: "write" },
-    ],
-  },
-  {
-    keyword: "filesystem",
-    tools: [
-      { id: "fs.read", name: "读文件", summary: "读取共享盘里的一个文件", risk: "read" },
-      { id: "fs.list", name: "列目录", summary: "列出共享盘某个目录下的文件", risk: "read" },
-      { id: "fs.write", name: "写文件", summary: "在共享盘里新建或覆盖一个文件", risk: "write" },
-    ],
-  },
-]
 
 /** 新建 / 编辑工具弹窗里的说明和示例文字 */
 export const DIALOG_TEXT = {

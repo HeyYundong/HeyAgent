@@ -1,32 +1,82 @@
 // 任务详情（放在右侧抽屉里）：分区卡 + 抽屉底部的操作。
-import { ChevronRightIcon, FlagIcon, HourglassIcon, PlayIcon } from "lucide-react"
+import * as React from "react"
+import { ChevronRightIcon, EllipsisIcon, FlagIcon, HourglassIcon, PencilIcon, PlayIcon, Trash2Icon } from "lucide-react"
 
 import { DetailSection } from "@/components/shell/simple-page"
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Button } from "@/components/ui/button"
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "@/components/ui/item"
 import { Switch } from "@/components/ui/switch"
 import { alwaysOnToolIds, findById, fmtDateTime, fmtShort, toolIdsOfTask, type SessionRun, type TaskDef } from "@heyagent/shared"
 
 import { useMemoriesQuery, useModels, useRulesQuery, useRunNow, useSkillsQuery, useToolName, useToolsQuery } from "@/lib/data"
+import { useAction } from "@/lib/mutations"
 import { readOnlyToast } from "@/lib/readonly"
-import { href, type PageId } from "@/lib/router"
+import { href, setParams, type PageId } from "@/lib/router"
+import { trpc } from "@/lib/trpc"
 
 import { CheckpointGrid, RunStatusBadge, StepList, WaitingAlert, checkpointSummary, money, tokens, type TasksState } from "./parts"
+import { TaskDialog } from "./task-dialog"
 
-/** 抽屉底部的操作（主管）：启动开关 + 立即运行 / 立即继续 */
+/** 抽屉底部的操作（负责人和主管）：启动开关 + 编辑 / 删除 + 立即运行 / 立即继续（运行由 P3 接引擎） */
 export function TaskActions({ task, state }: { task: TaskDef; state: TasksState }) {
-  const latest = state.runsOf(task.id)[0]
+  const runs = state.runsOf(task.id)
+  const latest = runs[0]
   const suspended = latest && (latest.status === "waiting" || latest.status === "needs_human")
+  const [editing, setEditing] = React.useState(false)
+  const [deleting, setDeleting] = React.useState(false)
+  const setEnabled = useAction(trpc.tasks.setEnabled.mutationOptions(), { success: (_data, vars) => (vars.enabled ? "任务已启动" : "任务已停用，不会再运行") })
+  const remove = useAction(trpc.tasks.delete.mutationOptions({ onSuccess: () => setParams({ id: null, run: null }) }), { success: `任务 ${task.id} 已删除` })
   return (
     <>
       <label className="flex items-center gap-2">
-        <Switch checked={task.enabled} onCheckedChange={readOnlyToast} aria-label="启动这个任务" />
+        <Switch checked={task.enabled} disabled={setEnabled.isPending} onCheckedChange={(on) => setEnabled.mutate({ id: task.id, enabled: Boolean(on) })} aria-label="启动这个任务" />
         {task.enabled ? "已启动" : "已停用"}
       </label>
-      <Button disabled={!task.enabled || latest?.status === "running"} onClick={readOnlyToast}>
-        <PlayIcon data-icon="inline-start" />{suspended ? "立即继续" : latest?.status === "running" ? "正在运行" : "立即运行"}
-      </Button>
+      <div className="flex items-center gap-2">
+        <DropdownMenu>
+          <DropdownMenuTrigger render={<Button variant="ghost" size="icon" aria-label="任务的更多操作" />}>
+            <EllipsisIcon />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => setEditing(true)}><PencilIcon />编辑</DropdownMenuItem>
+            <DropdownMenuItem variant="destructive" onClick={() => setDeleting(true)}><Trash2Icon />删除</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <Button disabled={!task.enabled || latest?.status === "running"} onClick={readOnlyToast}>
+          <PlayIcon data-icon="inline-start" />{suspended ? "立即继续" : latest?.status === "running" ? "正在运行" : "立即运行"}
+        </Button>
+      </div>
+      <TaskDialog key={editing ? "edit" : "closed"} open={editing} onOpenChange={setEditing} task={task} />
+      <AlertDialog open={deleting} onOpenChange={setDeleting}>
+        <AlertDialogContent>
+          {runs.length > 0 ? (
+            <>
+              <AlertDialogHeader>
+                <AlertDialogTitle>这个任务不能删除</AlertDialogTitle>
+                <AlertDialogDescription>它已经有 {runs.length} 次运行记录，运行记录要留着查。不想让它再运行，就把它停用。</AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>知道了</AlertDialogCancel>
+                {task.enabled && <AlertDialogAction onClick={() => setEnabled.mutate({ id: task.id, enabled: false })}>停用这个任务</AlertDialogAction>}
+              </AlertDialogFooter>
+            </>
+          ) : (
+            <>
+              <AlertDialogHeader>
+                <AlertDialogTitle>删除任务 {task.id}「{task.title}」？</AlertDialogTitle>
+                <AlertDialogDescription>它还没运行过。删除后步骤、检查点和选用的配置都会清掉，不能恢复；挂在它上面的待办也会一起删除。</AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>先不删</AlertDialogCancel>
+                <AlertDialogAction variant="destructive" onClick={() => remove.mutate({ id: task.id })}>删除任务</AlertDialogAction>
+              </AlertDialogFooter>
+            </>
+          )}
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   )
 }

@@ -2,6 +2,7 @@
 // 规则：库里为空的字段直接省略；时间都转成 ISO；密钥只给掩码，登录态只给状态和个数，绝不读出原文。
 import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm"
 import {
+  NOTIFY_SECRET_PREFIX,
   relativeDayText,
   type BrowserProfile,
   type HumanItem,
@@ -353,7 +354,8 @@ export async function listTools(db: Db): Promise<{ tools: Tool[]; mcpServers: Mc
         env: row.envKeys.length ? row.envKeys.map((key) => `${key}=••••`).join("\n") : undefined,
       })
     ),
-    savedSecrets: Object.fromEntries(secretRows.map((row) => [row.name, { by: row.by ?? "—", byId: row.byId ?? "", at: iso(row.at) }])),
+    // 通知渠道的 webhook 地址也存在这个范围，但不是给工具用的，不显示
+    savedSecrets: Object.fromEntries(secretRows.filter((row) => !row.name.startsWith(NOTIFY_SECRET_PREFIX)).map((row) => [row.name, { by: row.by ?? "—", byId: row.byId ?? "", at: iso(row.at) }])),
   }
 }
 

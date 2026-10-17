@@ -1,6 +1,6 @@
 // 模型页留在前端的东西：添加服务时的默认地址、详情「连接」卡的几行（docs/dev/m0-api.md 2.6）。
 // 模型服务和默认设置来自 models.overview；contextText、priceText、defaultsAfterRemove 等纯函数在 shared。
-import { fmtDateTime, providerStatusLabel, type ModelDefaults, type ModelProvider, type ModelProviderKind, type TaskDef } from "@heyagent/shared"
+import { fmtDateTime, OPENROUTER_DEFAULT_URL, providerStatusLabel, type ModelDefaults, type ModelProvider, type ModelProviderKind, type TaskDef } from "@heyagent/shared"
 
 export { contextText, defaultsAfterRemove, modelRoles as ROLES, priceText, providerKindLabel as KIND_LABEL } from "@heyagent/shared"
 
@@ -8,9 +8,10 @@ export { contextText, defaultsAfterRemove, modelRoles as ROLES, priceText, provi
 export type Provider = ModelProvider
 export type Defaults = ModelDefaults
 
+/** 添加服务时预填的地址 */
 export const DEFAULT_URL: Record<ModelProviderKind, string> = {
   ollama: "http://192.168.31.101:11434",
-  openrouter: "https://openrouter.ai/api/v1",
+  openrouter: OPENROUTER_DEFAULT_URL,
 }
 
 export function tasksOnProvider(provider: Provider, tasks: TaskDef[]) {

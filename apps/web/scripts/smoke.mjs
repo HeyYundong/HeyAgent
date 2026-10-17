@@ -1,14 +1,23 @@
 #!/usr/bin/env node
-// 控制台冒烟测试（无头 Chromium，playwright-core）。由 design/tools/linkcheck.mjs、shot.mjs 改造。
-// 用法：node apps/web/scripts/smoke.mjs [地址]       默认 http://127.0.0.1:8080/（整套 pod）；开发时可以传 http://127.0.0.1:5180/
-//   SMOKE_PASSWORD   演示账号的密码（默认 heyagent-dev，和 .env.example 的 SEED_PASSWORD 一致）
-//   SMOKE_SHOTS      截图放哪（默认仓库根目录的 .dev/shots/m0）
+// 控制台冒烟测试（无头 Chromium，playwright-core），以「空白正式环境」为准（M1 P2）：
+//   API 在空库上启动时自动建好管理员 admin@heyagent.local，初始密码在 HEYAGENT_ADMIN_PASSWORD_FILE（开发时 .dev/admin-password）。
+// 用法：node apps/web/scripts/smoke.mjs [地址]       默认 http://127.0.0.1:8080/（整套 pod）；开发时传自己的前端地址，例如 http://127.0.0.1:5181/
+//   SMOKE_ADMIN_PASSWORD_FILE  管理员初始密码文件（默认仓库根目录的 .dev/admin-password）
+//   SMOKE_ADMIN_PASSWORD       直接给管理员密码（优先于文件）
+//   SMOKE_SHOTS      截图放哪（默认仓库根目录的 .dev/shots/m1-p2）
 //   CHROME_PATH      Chromium 可执行文件（默认 ~/.cache/ms-playwright 里的 chrome-headless-shell）
 //   CHROME_LIBS      Chromium 缺的系统库所在目录（开发机没有 sudo 装不了系统包，放在用户目录里），会加进 LD_LIBRARY_PATH
 //   FONTCONFIG_FILE  中文字体配置（截图里中文要正常显示）
-// 检查：林舟（主管）、王悦（员工）分别登录；每个页面都打开，并打开一个详情；浏览器控制台没有报错；
-// 员工看别人负责的事显示「你只能查看」；主题默认暗色、按钮可见、D 键能切换；亮暗各截一张图；退出后回到登录页。
-import { existsSync, mkdirSync } from "node:fs"
+// 检查：
+//   1. 没登录是登录页，密码错有提示；
+//   2. 管理员登录，每个页面都能打开（空白环境下显示空状态，写清下一步），控制台没有报错；
+//   3. 新建一个员工账号；依次建工具（HTTP，含明文密钥被拦）、技能（发布）、记忆、规则、任务（含步骤和检查点）；
+//   4. 修改（规则改名、任务停用）、删除（没人用的规则删了能撤销；被任务用着的记忆删不了）；
+//   5. 亮暗两套主题各截一张图；
+//   6. 新员工登录：任务只读（「你只能查看」）、看不到用户和设置、不能新建任务；能改自己的密码；
+//   7. 全程浏览器控制台没有报错。
+// 每次运行用不同的名字，可以对同一个环境重复跑。
+import { existsSync, mkdirSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -16,30 +25,45 @@ import { chromium } from "playwright-core"
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..")
 const BASE = (process.argv[2] ?? "http://127.0.0.1:8080/").replace(/\/?$/, "/")
-const PASSWORD = process.env.SMOKE_PASSWORD ?? "heyagent-dev"
-const SHOTS = resolve(process.env.SMOKE_SHOTS ?? join(repoRoot, ".dev/shots/m0"))
+const PASSWORD_FILE = resolve(process.env.SMOKE_ADMIN_PASSWORD_FILE ?? join(repoRoot, ".dev/admin-password"))
+const ADMIN_PASSWORD = process.env.SMOKE_ADMIN_PASSWORD ?? (existsSync(PASSWORD_FILE) ? readFileSync(PASSWORD_FILE, "utf8").trim() : "")
+const SHOTS = resolve(process.env.SMOKE_SHOTS ?? join(repoRoot, ".dev/shots/m1-p2"))
 const CHROME = process.env.CHROME_PATH ?? join(homedir(), ".cache/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-linux64/chrome-headless-shell")
 const SCRATCH = "/tmp/claude-1000/-mnt-toshiba-Projects-HeyAgent/f5a5874c-3877-4626-bd8a-cb20c17939f4/scratchpad"
 const LIBS = process.env.CHROME_LIBS ?? join(SCRATCH, "chromelibs/root/usr/lib/x86_64-linux-gnu")
 const FONTS = process.env.FONTCONFIG_FILE ?? join(SCRATCH, "fonts/fonts.conf")
 
-const USERS = [
-  { email: "linzhou@heyagent.local", name: "林舟", admin: true },
-  { email: "wangyue@heyagent.local", name: "王悦", admin: false },
-]
+if (!ADMIN_PASSWORD) {
+  console.error(`没有管理员密码：找不到 ${PASSWORD_FILE}，也没设置 SMOKE_ADMIN_PASSWORD`)
+  process.exit(2)
+}
 
-/** 每个页面：怎么打开一个详情。抽屉类（Sheet）等 role=dialog；左右分栏的等右边详情的标题 h2 */
+const RUN = Date.now().toString(36).slice(-5)
+const ADMIN = { email: "admin@heyagent.local", password: ADMIN_PASSWORD, name: "管理员", admin: true }
+const STAFF = { email: `staff-${RUN}@heyagent.local`, password: `staff-pass-${RUN}`, name: `测试员工${RUN}`, admin: false }
+const NAMES = {
+  tool: `查天气 ${RUN}`,
+  skill: `周报整理 ${RUN}`,
+  memory: `周报用表格写，按周排 ${RUN}`,
+  rule: `对外发送前确认 ${RUN}`,
+  spareRule: `临时规则 ${RUN}`,
+  task: `整理每周报表 ${RUN}`,
+}
+
+/** 每个页面：空白环境下的标题（管理员 / 员工可能不同） */
 const PAGES = [
-  { id: "tasks", title: "任务", open: 'a[href^="#/tasks?id="]', expect: "dialog" },
-  { id: "todos", title: "待办", open: "a[data-board-card]", expect: "dialog" },
-  { id: "sessions", title: "Session", open: 'table a[href^="#/sessions?id="]', expect: "dialog" },
-  { id: "memory", title: "记忆", open: 'a[href^="#/memory?id="]', expect: "h2" },
-  { id: "skills", title: "技能", open: 'a[href^="#/skills?id="]', expect: "h2" },
-  { id: "rules", title: "规则", open: 'a[href^="#/rules?id="]', expect: "h2" },
-  { id: "tools", title: "工具", open: 'a[href^="#/tools?id="]', expect: "h2" },
-  { id: "browsers", title: "浏览器", open: 'a[href^="#/browsers?id="]', expect: "h2" },
-  { id: "models", title: "模型", open: 'a[href^="#/models?id="]', expect: "h2" },
-  { id: "learn", title: "看懂架构", open: 'a[href^="#/learn?id="]', expect: "h2" },
+  { id: "tasks", title: "任务" },
+  { id: "todos", title: "待办" },
+  { id: "sessions", title: "Session" },
+  { id: "memory", title: "记忆" },
+  { id: "skills", title: "技能" },
+  { id: "rules", title: "规则" },
+  { id: "tools", title: "工具" },
+  { id: "browsers", title: "浏览器" },
+  { id: "models", title: "模型" },
+  { id: "users", title: "用户" },
+  { id: "settings", title: "设置" },
+  { id: "learn", title: "看懂架构" },
 ]
 
 const failures = []
@@ -72,6 +96,16 @@ async function newPage() {
   return { context, page, errors }
 }
 
+/** 一步检查：出错记一条失败，接着做下一步 */
+async function step(name, run) {
+  try {
+    await run()
+    ok(name)
+  } catch (error) {
+    fail(`${name}：${String(error.message ?? error).split("\n")[0]}`)
+  }
+}
+
 /** 等页面数据加载完：标题出来、骨架屏消失；出错提示出现算失败 */
 async function waitLoaded(page, title) {
   await page.locator("h1", { hasText: title }).first().waitFor({ timeout: 15_000 })
@@ -79,159 +113,384 @@ async function waitLoaded(page, title) {
   if (await page.getByText("加载失败").count()) throw new Error("页面显示「加载失败」")
 }
 
+async function open(page, hash, title) {
+  await page.goto(`${BASE}#/${hash}`, { waitUntil: "load" })
+  await waitLoaded(page, title)
+}
+
 async function login(page, user) {
   await page.goto(BASE, { waitUntil: "load" })
   await page.locator("#email").waitFor({ timeout: 15_000 })
   await page.fill("#email", user.email)
-  await page.fill("#password", PASSWORD)
+  await page.fill("#password", user.password)
   await page.click('button[type="submit"]')
   await page.getByRole("button", { name: "账号菜单" }).waitFor({ timeout: 15_000 })
 }
 
-async function checkPages(page, errors, user) {
-  for (const each of PAGES) {
-    const before = errors.length
-    try {
-      await page.goto(`${BASE}#/${each.id}`, { waitUntil: "load" })
-      await waitLoaded(page, each.title)
-      const link = page.locator(each.open).first()
-      await link.click()
-      if (each.expect === "dialog") await page.getByRole("dialog").first().waitFor({ timeout: 10_000 })
-      else await page.locator("main h2").first().waitFor({ timeout: 10_000 })
-      await page.waitForTimeout(400)
-      if (errors.length > before) fail(`${user.name} · ${each.title}：控制台报错 ${errors.slice(before).join(" | ")}`)
-      else ok(`${user.name} · ${each.title}：打开了详情（${each.expect === "dialog" ? "抽屉" : "右侧详情"}），没有报错`)
-    } catch (error) {
-      fail(`${user.name} · ${each.title}：${error.message.split("\n")[0]}`)
-    }
-  }
-}
-
-/** 员工看别人负责的任务、分给别人的事：显示「你只能查看」，没有操作按钮；主管看同一个任务有开关 */
-async function checkReadOnly(page, user) {
-  await page.goto(`${BASE}#/tasks?id=T-1031`, { waitUntil: "load" })
-  const sheet = page.getByRole("dialog").first()
-  await sheet.waitFor({ timeout: 10_000 })
-  const readOnly = await sheet.getByText("你只能查看").count()
-  const toggle = await sheet.getByRole("switch", { name: "启动这个任务" }).count()
-  if (user.admin) {
-    if (toggle && !readOnly) ok(`${user.name}：T-1031（陈强负责）的抽屉有开关和「立即运行」`)
-    else fail(`${user.name}：主管看 T-1031 应该能操作`)
-  } else if (readOnly && !toggle) {
-    ok(`${user.name}：T-1031（陈强负责）显示「负责人是 陈强，你只能查看」`)
-  } else {
-    fail(`${user.name}：员工看 T-1031 应该显示「你只能查看」`)
-  }
-  if (user.admin) return
-  await page.goto(`${BASE}#/todos?id=ap-02`, { waitUntil: "load" })
-  const human = page.getByRole("dialog").first()
-  await human.waitFor({ timeout: 10_000 })
-  if (await human.getByText("你只能查看").count()) ok(`${user.name}：待办 ap-02（分给林舟）显示「这件事分给了 林舟，你只能查看」`)
-  else fail(`${user.name}：待办 ap-02 应该显示「你只能查看」`)
-}
-
-/** 写操作统一弹只读提示：主管在 T-1024 的抽屉里点「立即运行」/「立即继续」 */
-async function checkReadOnlyToast(page) {
-  await page.goto(`${BASE}#/tasks?id=T-1024`, { waitUntil: "load" })
-  const sheet = page.getByRole("dialog").first()
-  await sheet.waitFor({ timeout: 10_000 })
-  await sheet.getByRole("switch", { name: "启动这个任务" }).click()
-  if (await page.getByText("只读阶段：这个操作下一个里程碑接通").first().isVisible({ timeout: 5_000 }).catch(() => false)) ok("写操作弹「只读阶段：这个操作下一个里程碑接通」")
-  else fail("点开关没有弹只读提示")
-}
-
-/** 主题：默认暗色、顶栏按钮可见、D 键切换；亮暗各截一张图 */
-async function checkTheme(page, user) {
-  // 先离开再进来：免得截到上一个抽屉的关闭动画和提示
-  await page.goto("about:blank")
-  await page.goto(`${BASE}#/tasks`, { waitUntil: "load" })
-  await waitLoaded(page, "任务")
-  const isDark = () => page.evaluate(() => document.documentElement.classList.contains("dark"))
-  if (await isDark()) ok("默认暗色")
-  else fail("默认应该是暗色")
-  const toggle = page.getByRole("button", { name: /切换到(浅色|暗色)/ })
-  if (await toggle.isVisible()) ok("顶栏主题按钮可见")
-  else fail("顶栏主题按钮不可见")
-  await page.screenshot({ path: join(SHOTS, `${user.admin ? "admin" : "staff"}-tasks-dark.png`) })
-  // D 键在输入框里不生效，先把焦点挪开
-  await page.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur())
-  await page.keyboard.press("d")
-  await page.waitForTimeout(300)
-  if (!(await isDark())) ok("按 D 切换到浅色")
-  else fail("按 D 没有切换主题")
-  await page.screenshot({ path: join(SHOTS, `${user.admin ? "admin" : "staff"}-tasks-light.png`) })
-  // 详情页也各截一张浅色，再切回暗色截一张
-  await page.goto(`${BASE}#/todos?id=ap-03`, { waitUntil: "load" })
-  await waitLoaded(page, "待办")
-  await page.getByRole("dialog").first().waitFor({ timeout: 10_000 })
-  await page.waitForTimeout(600)
-  await page.screenshot({ path: join(SHOTS, `${user.admin ? "admin" : "staff"}-todos-light.png`) })
-  await page.keyboard.press("Escape")
-  await page.getByRole("dialog").first().waitFor({ state: "hidden", timeout: 10_000 })
-  await toggle.click()
-  await page.waitForTimeout(300)
-  if (await isDark()) ok("点主题按钮切回暗色")
-  else fail("点主题按钮没有切回暗色")
-  await page.goto(`${BASE}#/todos?id=ap-03`, { waitUntil: "load" })
-  await page.getByRole("dialog").first().waitFor({ timeout: 10_000 })
-  await page.waitForTimeout(600)
-  await page.screenshot({ path: join(SHOTS, `${user.admin ? "admin" : "staff"}-todos-dark.png`) })
-}
-
-async function checkSignOut(page) {
-  // 抽屉开着时遮罩会挡住侧边栏，先回到没有抽屉的页面
+async function signOut(page) {
   await page.goto("about:blank")
   await page.goto(`${BASE}#/tasks`, { waitUntil: "load" })
   await waitLoaded(page, "任务")
   await page.getByRole("button", { name: "账号菜单" }).click()
   await page.getByRole("menuitem", { name: "退出" }).click()
   await page.locator("#email").waitFor({ timeout: 10_000 })
-  ok("侧边栏用户菜单「退出」后回到登录页")
-  await page.goto(`${BASE}#/memory?id=m-003`, { waitUntil: "load" })
-  await page.locator("#email").waitFor({ timeout: 10_000 })
-  ok("退出后直接打开 #/memory?id=m-003 也是登录页")
 }
 
-console.log(`冒烟测试：${BASE}`)
+/** 等一个 toast 出现（成功或出错的提示文字） */
+async function toast(page, text, timeout = 15_000) {
+  await page.locator('[data-slot="toast-title"], [data-slot="toast-description"]').filter({ hasText: text }).first().waitFor({ timeout })
+}
 
-// 没登录：任何页面都是登录页；截一张登录页
+const dialog = (page) => page.getByRole("dialog").last()
+
+/** Base UI 的下拉：点输入框，打字过滤，点选项 */
+async function pick(page, inputSelector, text, optionName = text) {
+  const input = page.locator(inputSelector)
+  await input.click()
+  await input.fill(text)
+  await page.getByRole("option", { name: optionName }).first().click()
+  // 多选的下拉选完还开着：按 Esc 只关下拉；单选的已经关了，再按 Esc 会把整个弹窗关掉，所以先看一眼
+  await page.waitForTimeout(200)
+  if (await page.getByRole("listbox").first().isVisible().catch(() => false)) await page.keyboard.press("Escape")
+}
+
+// ---------- 0. 没登录 ----------
+
+console.log(`冒烟测试（空白环境）：${BASE}`)
 {
   const { context, page, errors } = await newPage()
-  await page.goto(`${BASE}#/sessions?id=R-1024-1`, { waitUntil: "load" })
-  try {
+  await step("没登录打开 #/tasks 显示登录页；密码错提示「邮箱或密码不对」", async () => {
+    await page.goto(`${BASE}#/tasks`, { waitUntil: "load" })
     await page.locator("#email").waitFor({ timeout: 15_000 })
-    ok("没登录打开 #/sessions?id=R-1024-1 显示登录页")
     await page.screenshot({ path: join(SHOTS, "login-dark.png") })
-    await page.fill("#email", "linzhou@heyagent.local")
+    await page.fill("#email", ADMIN.email)
     await page.fill("#password", "wrong-password")
     await page.click('button[type="submit"]')
     await page.getByText("邮箱或密码不对").waitFor({ timeout: 10_000 })
-    ok("密码错时提示「邮箱或密码不对」")
-  } catch (error) {
-    fail(`登录页：${error.message.split("\n")[0]}`)
-  }
+  })
   // 密码错时 better-auth 回 401，浏览器会把这个请求记成控制台报错，这是预期的，不算
   const unexpected = errors.filter((text) => !/status of 401/.test(text))
   if (unexpected.length) fail(`登录页控制台报错：${unexpected.join(" | ")}`)
   await context.close()
 }
 
-for (const user of USERS) {
-  console.log(`\n== ${user.name}（${user.admin ? "主管" : "员工"}）`)
+// ---------- 1. 管理员 ----------
+
+console.log(`\n== 管理员（${ADMIN.email}）`)
+{
   const { context, page, errors } = await newPage()
   try {
-    await login(page, user)
-    ok(`${user.name} 登录成功`)
-    await checkPages(page, errors, user)
-    await checkReadOnly(page, user)
-    if (user.admin) await checkReadOnlyToast(page)
-    await checkTheme(page, user)
-    await checkSignOut(page)
+    await step("管理员用初始密码登录", () => login(page, ADMIN))
+
+    for (const each of PAGES) {
+      const before = errors.length
+      await step(`页面「${each.title}」能打开`, async () => {
+        await open(page, each.id, each.title)
+        await page.waitForTimeout(300)
+        if (errors.length > before) throw new Error(`控制台报错 ${errors.slice(before).join(" | ")}`)
+      })
+    }
+
+    await step("侧边栏有「用户」「设置」，用户菜单有「修改密码」", async () => {
+      await page.getByRole("link", { name: "用户" }).first().waitFor({ timeout: 5_000 })
+      await page.getByRole("link", { name: "设置" }).first().waitFor({ timeout: 5_000 })
+      await page.getByRole("button", { name: "账号菜单" }).click()
+      await page.getByRole("menuitem", { name: "修改密码" }).waitFor({ timeout: 5_000 })
+      await page.keyboard.press("Escape")
+    })
+
+    await step("空白环境的任务页写清下一步（空状态 + 新建按钮）", async () => {
+      await open(page, "tasks", "任务")
+      if (await page.locator('main a[href^="#/tasks?id="]').count()) {
+        console.log("    （不是空白环境：已经有任务了，跳过这一项）")
+        return
+      }
+      const empty = page.locator('[data-slot="empty"]').first()
+      await empty.getByText("还没有任务").waitFor({ timeout: 5_000 })
+      await empty.getByRole("button", { name: "新建任务" }).waitFor({ timeout: 5_000 })
+    })
+
+    // ---------- 新建员工 ----------
+    await step(`新建员工账号 ${STAFF.email}`, async () => {
+      await open(page, "users", "用户")
+      await page.getByRole("button", { name: "新建用户" }).first().click()
+      const d = dialog(page)
+      await d.locator("#user-email").fill(STAFF.email)
+      await d.locator("#user-name").fill(STAFF.name)
+      await d.locator("#user-title").fill("专员")
+      await d.locator("#user-password").fill(STAFF.password)
+      await d.getByRole("button", { name: "新建用户" }).click()
+      await d.waitFor({ state: "hidden", timeout: 15_000 })
+      await page.locator("main").getByText(STAFF.email).first().waitFor({ timeout: 10_000 })
+    })
+
+    // ---------- 工具 ----------
+    await step("新建 HTTP 工具：模板里写明文密钥被拦下", async () => {
+      await open(page, "tools", "工具")
+      await page.getByRole("button", { name: "新建工具" }).first().click()
+      const d = dialog(page)
+      await d.locator("#tool-name").fill(NAMES.tool)
+      await d.locator("#tool-description").fill("传入城市名，返回天气。只在要查天气时用。")
+      await d.locator("#tool-url").fill("https://api.weather.example/v1/now?city={city}")
+      await d.locator("#tool-headers").fill("Authorization: Bearer sk_live_abcdefgh12345678")
+      await d.getByText("有明文密钥").first().waitFor({ timeout: 5_000 })
+      await d.getByRole("button", { name: "接入这个接口" }).click()
+      await page.waitForTimeout(500)
+      if (!(await d.isVisible())) throw new Error("有明文密钥还是提交了")
+    })
+    await step("把明文挪进「密钥」后保存成功，密钥不出现在页面上", async () => {
+      const d = dialog(page)
+      await d.getByRole("button", { name: /明文密钥挪到这里/ }).click()
+      await d.getByRole("button", { name: "接入这个接口" }).click()
+      await d.waitFor({ state: "hidden", timeout: 15_000 })
+      await page.locator("main h2", { hasText: NAMES.tool }).waitFor({ timeout: 10_000 })
+      if (await page.getByText("sk_live_abcdefgh12345678").count()) throw new Error("页面上出现了密钥原文")
+      await page.getByText("已保存在服务器").first().waitFor({ timeout: 5_000 })
+    })
+
+    // ---------- 技能 ----------
+    await step("新建技能（草稿）并发布；操作手册按 Markdown 显示", async () => {
+      await open(page, "skills", "技能")
+      await page.getByRole("button", { name: "新建技能" }).first().click()
+      const d = dialog(page)
+      await d.locator("#skill-name").fill(NAMES.skill)
+      // 第一次跑是「新建「通用」」，重复跑时已经有「通用」了
+      await pick(page, "#skill-dept", "通用", /^(新建「)?通用(」)?$/)
+      await d.locator("#skill-description").fill("每周五整理周报时使用")
+      await d.locator("#skill-body").fill("## 步骤\n1. 汇总本周数据\n2. 写成表格\n\n| 项目 | 进度 |\n| --- | --- |\n| 示例 | 50% |")
+      await d.getByRole("button", { name: "保存" }).click()
+      await d.waitFor({ state: "hidden", timeout: 15_000 })
+      await page.locator("main h2", { hasText: NAMES.skill }).waitFor({ timeout: 10_000 })
+      await page.locator("main .typeset table").first().waitFor({ timeout: 5_000 })
+      await page.locator("main").getByRole("button", { name: "更多操作" }).click()
+      await page.getByRole("menuitem", { name: "发布" }).click()
+      await toast(page, "已发布")
+    })
+
+    // ---------- 记忆 ----------
+    await step("新建记忆", async () => {
+      await open(page, "memory", "记忆")
+      await page.getByRole("button", { name: "新建记忆" }).first().click()
+      const d = dialog(page)
+      await d.locator("#memory-content").fill(NAMES.memory)
+      await pick(page, "#memory-applies-to", "公司经验", /^(新建「)?公司经验(」)?$/)
+      await d.getByRole("button", { name: "保存" }).click()
+      await d.waitFor({ state: "hidden", timeout: 15_000 })
+      await page.locator("main h2", { hasText: NAMES.memory }).waitFor({ timeout: 10_000 })
+    })
+
+    // ---------- 规则 ----------
+    for (const name of [NAMES.rule, NAMES.spareRule]) {
+      await step(`新建规则「${name}」`, async () => {
+        await open(page, "rules", "规则")
+        await page.getByRole("button", { name: "新建规则" }).first().click()
+        const d = dialog(page)
+        await d.locator("#rule-name").fill(name)
+        await d.locator("#rule-trigger").fill("要对外发送消息时")
+        await d.locator("#rule-action").fill("先拦下，让负责人确认")
+        await d.getByRole("button", { name: "新建规则" }).click()
+        await d.waitFor({ state: "hidden", timeout: 15_000 })
+        await page.locator("main h2", { hasText: name }).waitFor({ timeout: 10_000 })
+      })
+    }
+
+    // ---------- 任务 ----------
+    await step("新建任务：两步（一步带检查点）+ 目标 + 选用记忆、技能、工具、规则", async () => {
+      await open(page, "tasks", "任务")
+      await page.getByRole("button", { name: "新建任务" }).first().click()
+      // 建好以后会打开任务抽屉（也是 dialog），所以按标题认这个弹窗
+      const d = page.getByRole("dialog", { name: "新建任务" })
+      await d.locator("#task-title").fill(NAMES.task)
+      await d.getByLabel("步骤 1", { exact: true }).fill("汇总本周的数据")
+      await d.getByRole("button", { name: "添加步骤" }).click()
+      await d.getByLabel("步骤 2", { exact: true }).fill("发到群里并等确认")
+      // Base UI 的复选框：点它的 label
+      await d.locator('label[for="step-1-wait"]').click()
+      await d.locator('label[for="step-1-cp"]').click()
+      await d.getByLabel("步骤 2 的检查点").fill("发出 1 条消息")
+      await d.locator("#task-goal").fill("周报发到群里，负责人确认")
+      await pick(page, "#task-memoryIds", NAMES.memory.slice(0, 6))
+      await pick(page, "#task-skillIds", NAMES.skill)
+      await pick(page, "#task-toolIds", NAMES.tool)
+      await pick(page, "#task-ruleIds", NAMES.rule)
+      await d.getByRole("button", { name: "创建任务" }).click()
+      await d.waitFor({ state: "hidden", timeout: 15_000 })
+      const sheet = dialog(page)
+      await sheet.getByText(NAMES.task).first().waitFor({ timeout: 10_000 })
+      await sheet.getByText("发出 1 条消息").first().waitFor({ timeout: 5_000 })
+      await sheet.getByText(NAMES.rule).first().waitFor({ timeout: 5_000 })
+    })
+    await step("任务停用（抽屉里的开关）", async () => {
+      const sheet = dialog(page)
+      await sheet.getByRole("switch", { name: "启动这个任务" }).click()
+      await toast(page, "任务已停用")
+      await sheet.getByText("已停用").first().waitFor({ timeout: 5_000 })
+    })
+
+    // ---------- 浏览器、模型 ----------
+    await step("新建 Chrome（SOCKS5 代理，密码只存密文），再加一个新平台的账号", async () => {
+      await open(page, "browsers", "浏览器")
+      await page.getByRole("button", { name: "新建 Chrome" }).first().click()
+      const d = page.getByRole("dialog", { name: "新建 Chrome" })
+      await d.locator("#br-name").fill(`Office ${RUN}`)
+      await d.locator("#br-desc").fill("办公室出口，用于测试")
+      await d.getByRole("button", { name: "SOCKS5" }).click()
+      await d.locator("#br-host").fill("10.0.0.8")
+      await d.locator("#br-port").fill("1080")
+      await d.locator("#br-password").fill(`proxy-pass-${RUN}`)
+      await d.getByRole("button", { name: "创建" }).click()
+      await d.waitFor({ state: "hidden", timeout: 15_000 })
+      await page.locator("main h2", { hasText: `Office ${RUN}` }).waitFor({ timeout: 10_000 })
+      if (await page.getByText(`proxy-pass-${RUN}`).count()) throw new Error("页面上出现了代理密码")
+      await page.locator("main").getByRole("button", { name: "加账号" }).click()
+      const a = page.getByRole("dialog", { name: /加账号/ })
+      await pick(page, "#acc-platform", `Shop ${RUN}`, new RegExp(`Shop ${RUN}`))
+      await a.locator("#acc-account").fill("ops@example.com")
+      await a.getByRole("button", { name: "加账号" }).click()
+      await a.waitFor({ state: "hidden", timeout: 15_000 })
+      await page.locator("main").getByText("ops@example.com").first().waitFor({ timeout: 10_000 })
+    })
+    await step("模型页：OpenRouter 的几百个模型能搜索；默认设置能打开", async () => {
+      await open(page, "models", "模型")
+      await page.locator("main").getByRole("link", { name: /OpenRouter/ }).first().click()
+      await page.getByLabel("搜模型").fill("sonnet-5.5")
+      await page.locator("main table").getByText("Claude Sonnet 5.5").first().waitFor({ timeout: 10_000 })
+      await page.locator("main").getByRole("link", { name: /默认设置/ }).first().click()
+      await page.locator("main h2", { hasText: "默认设置" }).waitFor({ timeout: 10_000 })
+    })
+
+    // ---------- 修改、删除 ----------
+    await step("规则改名", async () => {
+      await open(page, "rules", "规则")
+      await page.locator("main").getByRole("link", { name: new RegExp(NAMES.spareRule) }).first().click()
+      await page.locator("main").getByRole("button", { name: "编辑" }).click()
+      const d = dialog(page)
+      await d.locator("#rule-name").fill(`${NAMES.spareRule}（改）`)
+      await d.getByRole("button", { name: "保存" }).click()
+      await d.waitFor({ state: "hidden", timeout: 15_000 })
+      await page.locator("main h2", { hasText: `${NAMES.spareRule}（改）` }).waitFor({ timeout: 10_000 })
+    })
+    await step("没人用的规则：删除不弹确认，toast 里撤销能恢复", async () => {
+      await page.locator("main").getByRole("button", { name: "更多操作" }).click()
+      await page.getByRole("menuitem", { name: "删除" }).click()
+      await toast(page, "已删除规则")
+      await page.getByRole("button", { name: "撤销" }).click()
+      await toast(page, "已恢复规则")
+      await page.locator("main").getByRole("link", { name: new RegExp(NAMES.spareRule) }).first().waitFor({ timeout: 10_000 })
+    })
+    await step("再删一次（不撤销）", async () => {
+      await page.locator("main").getByRole("link", { name: new RegExp(NAMES.spareRule) }).first().click()
+      await page.locator("main").getByRole("button", { name: "更多操作" }).click()
+      await page.getByRole("menuitem", { name: "删除" }).click()
+      await toast(page, "已删除规则")
+      await page.waitForTimeout(500)
+      if (await page.locator("main").getByRole("link", { name: new RegExp(NAMES.spareRule) }).count()) throw new Error("删了还在列表里")
+    })
+    await step("被任务选用的规则删不了，说清楚被哪个任务用着", async () => {
+      await page.locator("main").getByRole("link", { name: new RegExp(NAMES.rule) }).first().click()
+      await page.locator("main").getByRole("button", { name: "更多操作" }).click()
+      await page.getByRole("menuitem", { name: "删除" }).click()
+      const alert = page.getByRole("alertdialog")
+      await alert.getByText("正在被使用，不能删除").waitFor({ timeout: 5_000 })
+      await alert.getByText(NAMES.task).waitFor({ timeout: 5_000 })
+      await alert.getByRole("button", { name: "知道了" }).click()
+    })
+    await step("被任务选用的记忆删不了", async () => {
+      await open(page, "memory", "记忆")
+      await page.locator("main").getByRole("link", { name: new RegExp(NAMES.memory.slice(0, 8)) }).first().click()
+      await page.locator("main").getByRole("button", { name: "更多操作" }).click()
+      await page.getByRole("menuitem", { name: "删除" }).click()
+      await page.getByRole("alertdialog").getByText("正在被使用，不能删除").waitFor({ timeout: 5_000 })
+      await page.getByRole("alertdialog").getByRole("button", { name: "知道了" }).click()
+    })
+
+    // ---------- 主题截图 ----------
+    await step("默认暗色；亮暗两套主题各截一张图", async () => {
+      await page.goto("about:blank")
+      await open(page, "tasks", "任务")
+      const isDark = () => page.evaluate(() => document.documentElement.classList.contains("dark"))
+      if (!(await isDark())) throw new Error("默认应该是暗色")
+      await page.locator("main a", { hasText: NAMES.task }).first().waitFor({ timeout: 10_000 })
+      await page.screenshot({ path: join(SHOTS, "admin-tasks-dark.png") })
+      await page.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur())
+      await page.keyboard.press("d")
+      await page.waitForTimeout(300)
+      if (await isDark()) throw new Error("按 D 没有切到浅色")
+      await page.screenshot({ path: join(SHOTS, "admin-tasks-light.png") })
+      await open(page, "skills", "技能")
+      await page.locator("main").getByRole("link", { name: new RegExp(NAMES.skill) }).first().click()
+      await page.locator("main .typeset").first().waitFor({ timeout: 5_000 })
+      await page.screenshot({ path: join(SHOTS, "admin-skill-light.png"), fullPage: true })
+      await page.getByRole("button", { name: /切换到(浅色|暗色)/ }).click()
+      await page.waitForTimeout(300)
+      if (!(await isDark())) throw new Error("点主题按钮没有切回暗色")
+      await page.screenshot({ path: join(SHOTS, "admin-skill-dark.png"), fullPage: true })
+      await open(page, "settings", "设置")
+      await page.screenshot({ path: join(SHOTS, "admin-settings-dark.png"), fullPage: true })
+      await open(page, "users", "用户")
+      await page.screenshot({ path: join(SHOTS, "admin-users-dark.png") })
+    })
+
+    await step("退出后回到登录页", () => signOut(page))
   } catch (error) {
-    fail(`${user.name}：${error.message.split("\n")[0]}`)
+    fail(`管理员：${error.message.split("\n")[0]}`)
   }
-  if (errors.length) fail(`${user.name}：控制台共有 ${errors.length} 条报错：${errors.join(" | ")}`)
-  else ok(`${user.name}：全程控制台没有报错`)
+  if (errors.length) fail(`管理员：控制台共有 ${errors.length} 条报错：${errors.join(" | ")}`)
+  else ok("管理员：全程控制台没有报错")
+  await context.close()
+}
+
+// ---------- 2. 新员工 ----------
+
+console.log(`\n== 新员工（${STAFF.email}）`)
+{
+  const { context, page, errors } = await newPage()
+  try {
+    await step("新员工用初始密码登录", () => login(page, STAFF))
+    await step("侧边栏看不到「用户」「设置」；任务页没有「新建任务」", async () => {
+      if (await page.getByRole("link", { name: "用户" }).count()) throw new Error("员工看到了「用户」")
+      if (await page.getByRole("link", { name: "设置" }).count()) throw new Error("员工看到了「设置」")
+      await open(page, "tasks", "任务")
+      if (await page.getByRole("button", { name: "新建任务" }).count()) throw new Error("员工看到了「新建任务」")
+    })
+    await step("员工打开别人负责的任务：显示「你只能查看」，没有开关", async () => {
+      await page.locator("main a", { hasText: NAMES.task }).first().click()
+      const sheet = dialog(page)
+      await sheet.getByText("你只能查看").waitFor({ timeout: 10_000 })
+      if (await sheet.getByRole("switch", { name: "启动这个任务" }).count()) throw new Error("员工看到了开关")
+      await page.keyboard.press("Escape")
+    })
+    await step("员工直接打开 #/users 和 #/settings：提示只有主管能用", async () => {
+      await open(page, "users", "用户")
+      await page.getByText("只有主管能管理用户").waitFor({ timeout: 5_000 })
+      await open(page, "settings", "设置")
+      await page.getByText("只有主管").first().waitFor({ timeout: 5_000 })
+    })
+    await step("员工看配置页没有新建按钮", async () => {
+      for (const each of [["rules", "规则", "新建规则"], ["tools", "工具", "新建工具"], ["skills", "技能", "新建技能"], ["memory", "记忆", "新建记忆"]]) {
+        await open(page, each[0], each[1])
+        if (await page.getByRole("button", { name: each[2] }).count()) throw new Error(`员工在「${each[1]}」看到了「${each[2]}」`)
+      }
+    })
+    await step("员工在用户菜单里改自己的密码，用新密码能登录", async () => {
+      await open(page, "tasks", "任务")
+      await page.getByRole("button", { name: "账号菜单" }).click()
+      await page.getByRole("menuitem", { name: "修改密码" }).click()
+      const d = dialog(page)
+      await d.locator("#pw-current").fill(STAFF.password)
+      await d.locator("#pw-new").fill(`${STAFF.password}-new`)
+      await d.locator("#pw-confirm").fill(`${STAFF.password}-new`)
+      await d.getByRole("button", { name: "保存" }).click()
+      await toast(page, "密码改好了")
+      await signOut(page)
+      await login(page, { ...STAFF, password: `${STAFF.password}-new` })
+      await page.screenshot({ path: join(SHOTS, "staff-tasks-dark.png") })
+    })
+  } catch (error) {
+    fail(`新员工：${error.message.split("\n")[0]}`)
+  }
+  if (errors.length) fail(`新员工：控制台共有 ${errors.length} 条报错：${errors.join(" | ")}`)
+  else ok("新员工：全程控制台没有报错")
   await context.close()
 }
 

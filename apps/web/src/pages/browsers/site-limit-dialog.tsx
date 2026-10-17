@@ -1,19 +1,29 @@
 import * as React from "react"
 
 import { Button } from "@/components/ui/button"
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field"
+import { Spinner } from "@/components/ui/spinner"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import type { BrowserSite } from "@heyagent/shared"
 
+import { useAction } from "@/lib/mutations"
+import { trpc } from "@/lib/trpc"
+
 import { MAX_ITEMS, usePlatformName } from "./data"
 
-type SiteLimitDialogProps = { site: BrowserSite; onSave: (max: number) => void; onClose: () => void }
+type SiteLimitDialogProps = { site: BrowserSite; onClose: () => void }
 
-/** 主管改某个「平台 × 账号」同时最多几个 session */
-export function SiteLimitDialog({ site, onSave, onClose }: SiteLimitDialogProps) {
+/** 主管改某个「平台 × 账号」同时最多几个 session（只有一个选项，不用表单库） */
+export function SiteLimitDialog({ site, onClose }: SiteLimitDialogProps) {
   const platformName = usePlatformName()
   const [max, setMax] = React.useState(String(site.maxConcurrent))
+  const update = useAction(trpc.browsers.updateAccount.mutationOptions(), { success: (_data, vars) => `并发上限改成 ${vars.maxConcurrent} 个了` })
+
+  async function save() {
+    if (await update.submit({ id: site.accountId, maxConcurrent: Number(max) })) onClose()
+  }
+
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="sm:max-w-md">
@@ -32,8 +42,11 @@ export function SiteLimitDialog({ site, onSave, onClose }: SiteLimitDialogProps)
           {Number(max) < site.running && <FieldDescription>正在用的 session 不会被打断，用完后按新上限来。</FieldDescription>}
         </Field>
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>取消</Button>
-          <Button onClick={() => onSave(Number(max))}>保存</Button>
+          <DialogClose render={<Button variant="outline" />}>取消</DialogClose>
+          <Button disabled={update.isPending || Number(max) === site.maxConcurrent} onClick={save}>
+            {update.isPending && <Spinner data-icon="inline-start" />}
+            保存
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

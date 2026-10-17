@@ -108,7 +108,7 @@ export function BrowserViewDialog({ profile, site, onSave, onClose }: BrowserVie
           <div className="grid gap-3 sm:grid-cols-2">
             <Field>
               <FieldLabel htmlFor="view-site">登录了哪个网站（可选）</FieldLabel>
-              <CreatableCombobox id="view-site" value={login.name} options={names} placeholder="选或输入网站，例如 Shopify"
+              <CreatableCombobox id="view-site" value={login.name} options={names} placeholder="选或输入网站，例如「示例商城」"
                 onValueChange={(name) => setLogin({ ...login, name })} onCreate={(name) => setNames([...names, name])} />
               <FieldDescription>新网站保存后出现在「登录过的网站」里，默认同时最多 1 个 session。</FieldDescription>
             </Field>

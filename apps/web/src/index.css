@@ -2,6 +2,8 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/inter";
+/* Markdown 显示（技能 SKILL.md、记忆、agent 输出）：shadcn 官方 Typeset，见 components/markdown/ */
+@import "./components/markdown/typeset.css";
 
 @custom-variant dark (&:is(.dark *));
 

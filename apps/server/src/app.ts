@@ -5,6 +5,8 @@ import { Hono } from "hono"
 
 import type { Auth } from "./auth.js"
 import type { Db } from "./db/client.js"
+import { env } from "./env.js"
+import { loadKeyring, type Keyring } from "./lib/crypto.js"
 import type { ChangeHub } from "./live/hub.js"
 import type { Context } from "./trpc/init.js"
 import { appRouter } from "./trpc/router.js"
@@ -13,10 +15,14 @@ export interface AppDeps {
   db: Db
   auth: Auth
   hub: ChangeHub
+  /** 主密钥；不传就在第一次用到时从 HEYAGENT_KEK_FILE 读 */
+  keyring?: Keyring
 }
 
-export function createApp({ db, auth, hub }: AppDeps) {
+export function createApp({ db, auth, hub, keyring: givenKeyring }: AppDeps) {
   const app = new Hono()
+  let cachedKeyring = givenKeyring
+  const keyring = () => (cachedKeyring ??= loadKeyring(env.kekFile))
 
   async function createContext(req: Request): Promise<Context> {
     const session = await auth.api.getSession({ headers: req.headers })
@@ -25,6 +31,9 @@ export function createApp({ db, auth, hub }: AppDeps) {
       db,
       hub,
       user: user ? { id: user.id, name: user.name, email: user.email, isAdmin: user.role === "admin" } : null,
+      auth,
+      headers: req.headers,
+      keyring,
     }
   }
 

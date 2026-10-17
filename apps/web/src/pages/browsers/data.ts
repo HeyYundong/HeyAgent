@@ -1,4 +1,4 @@
-// 浏览器页留在前端的东西：远程画面默认打开的网址、新建时的空白 Chrome、详情里几张卡的行（docs/dev/m0-api.md 2.6）。
+// 浏览器页留在前端的东西：远程画面默认打开的网址、并发上限选项、详情里几张卡的行（docs/dev/m0-api.md 2.6）。
 // Chrome 本身来自 browsers.list，平台名来自 platforms.list；siteKey、limitText 等纯函数在 shared。
 import { findById, fmtDateTime, type BrowserProfile, type Platform } from "@heyagent/shared"
 
@@ -21,22 +21,6 @@ export function usePlatformName() {
 /** 员工在远程画面里登录新网站时填的网站名 → platformId（不在平台表里的，直接用名字当 id） */
 export function platformIdOf(platforms: Platform[], name: string) {
   return platforms.find((platform) => platform.name === name)?.id ?? name
-}
-
-/** 新建时的空白 Chrome */
-export function blankProfile(): Chrome {
-  return {
-    id: `br-new-${Date.now()}`,
-    name: "",
-    description: "",
-    proxy: { kind: "none" },
-    exitIp: "第一次打开时检测",
-    running: 0,
-    sites: [],
-    cookieCount: 0,
-    vaultVersion: 1,
-    updatedAt: new Date().toISOString(),
-  }
 }
 
 /** 「这个账号同时最多几个 session」的选项 */

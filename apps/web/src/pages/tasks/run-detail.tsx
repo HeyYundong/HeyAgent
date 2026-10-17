@@ -14,10 +14,12 @@ import { Trace, TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigg
 import { can, eventTimeText, fmtDateTime } from "@heyagent/shared"
 import type { RunEvent, RunEventKind, SessionRun, TaskDef, Verification } from "@heyagent/shared"
 
+import { MarkdownView } from "@/components/markdown"
 import { useHumanItems, useModels, useToolName } from "@/lib/data"
-import { readOnlyToast } from "@/lib/readonly"
+import { useAction } from "@/lib/mutations"
 import { href } from "@/lib/router"
 import { useMe } from "@/lib/session"
+import { trpc } from "@/lib/trpc"
 
 import { CheckpointGrid, Elapsed, RunStatusBadge, StepList, WaitingAlert, checkpointSummary, money } from "./parts"
 
@@ -34,6 +36,7 @@ const eventMeta = ({ ms, tokensIn, tokensOut }: RunEvent) => [
 export function RunDetail({ task, run }: { task: TaskDef; run?: SessionRun }) {
   const { user } = useMe()
   const { modelName } = useModels()
+  const saveSteps = useAction(trpc.tasks.update.mutationOptions(), { success: "已存为任务步骤，下一次运行照这些步骤做" })
   if (!run) return <EmptyState icon={<SearchXIcon />} title="找不到这次运行" description="可能是网址里的运行编号写错了。" />
   const toolCalls = run.events.filter((event) => event.kind === "tool").length
   const error = run.status === "failed" ? run.events.findLast((event) => event.kind === "error") : undefined
@@ -62,7 +65,27 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionRun }) {
       {run.verification && <VerificationSection run={run} verification={run.verification} />}
       {run.exploredSteps && (
         <DetailSection title="agent 自己探索的步骤" description="任务没写步骤，这是 agent 这次自己定的做法。" action={can(user, "task.manage", { ownerId: task.ownerId }) && (
-            <Button variant="outline" size="sm" onClick={readOnlyToast}>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={saveSteps.isPending}
+              onClick={() =>
+                saveSteps.mutate({
+                  id: task.id,
+                  title: task.title,
+                  goal: task.goal,
+                  steps: (run.exploredSteps ?? []).map((text) => ({ text, wait: false })),
+                  modelId: task.modelId,
+                  ownerId: task.ownerId,
+                  schedule: task.schedule ?? null,
+                  enabled: task.enabled,
+                  memoryIds: task.memoryIds,
+                  skillIds: task.skillIds,
+                  toolIds: task.toolIds,
+                  ruleIds: task.ruleIds,
+                })
+              }
+            >
               <SaveIcon data-icon="inline-start" />存为任务步骤
             </Button>
           )}>
@@ -99,7 +122,16 @@ function EventRow({ event, run, running }: { event: RunEvent; run: SessionRun; r
       {meta && <TraceDescription className="hidden sm:inline">· {meta}</TraceDescription>}
     </TraceLine>
   )
-  if (event.kind !== "tool") return <div className="flex flex-col gap-0.5">{line}{event.detail && <p className="pl-5.5 text-xs text-muted-foreground">{event.detail}</p>}</div>
+  // agent 的答复、思考可能是 Markdown（列表、表格），按 Markdown 显示
+  const prose = event.kind === "done" || event.kind === "think"
+  if (event.kind !== "tool") {
+    return (
+      <div className="flex flex-col gap-0.5">
+        {line}
+        {event.detail && (prose ? <MarkdownView className="pl-5.5 text-xs">{event.detail}</MarkdownView> : <p className="pl-5.5 text-xs text-muted-foreground">{event.detail}</p>)}
+      </div>
+    )
+  }
   return (
     <TraceCollapsible>
       <TraceCollapsibleTrigger>{line}</TraceCollapsibleTrigger>

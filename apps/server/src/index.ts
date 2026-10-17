@@ -3,16 +3,21 @@ import { serve } from "@hono/node-server"
 
 import { createApp } from "./app.js"
 import { createAuth } from "./auth.js"
+import { adminPasswordFileFromEnv, bootstrap } from "./bootstrap/index.js"
 import { createDb } from "./db/client.js"
 import { env } from "./env.js"
+import { loadKeyring } from "./lib/crypto.js"
 import { ChangeHub } from "./live/hub.js"
 
 const { db, pool } = createDb(env.databaseUrl)
 const auth = createAuth(db, { secret: env.authSecret, baseURL: env.authUrl, trustedOrigins: env.trustedOrigins })
+const keyring = loadKeyring(env.kekFile)
+// 空白环境初始化（M1 P2）：建管理员、写默认设置、按 .env 接入 OpenRouter。可以重复执行
+await bootstrap(db, { auth, keyring, adminPasswordFile: adminPasswordFileFromEnv(), openrouterApiKey: process.env.OPENROUTER_API_KEY, log: (message) => console.log(`[bootstrap] ${message}`) })
 const hub = new ChangeHub(env.databaseUrl)
 await hub.start()
 
-const app = createApp({ db, auth, hub })
+const app = createApp({ db, auth, hub, keyring })
 const server = serve({ fetch: app.fetch, port: env.port, hostname: env.host }, (info) => {
   console.log(`HeyAgent API 已启动：http://${info.address}:${info.port}`)
 })
