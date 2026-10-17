@@ -24,7 +24,10 @@
     "kek:rotate": "tsx --conditions=@heyagent/source src/scripts/kek-rotate.ts"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "4.0.81",
+    "@ai-sdk/deepseek": "3.0.66",
     "@ai-sdk/mcp": "2.0.77",
+    "@ai-sdk/openai": "4.0.95",
     "@heyagent/shared": "workspace:*",
     "@hono/node-server": "2.1.5",
     "@openrouter/ai-sdk-provider": "3.1.0",

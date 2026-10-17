@@ -1,9 +1,13 @@
-// 模型层：一层很薄的接口包住 AI SDK 7 + OpenRouter provider，以后换线路或直连厂商只改这里。
+// 模型层：一层很薄的接口包住 AI SDK 7 的各家 provider，换线路或直连厂商只改这里。
+// - 线路：OpenRouter；直连 Anthropic（Messages API）、OpenAI（Responses API）、DeepSeek；
 // - key 从 model_providers.api_key_secret_id 指向的 secrets 解密（包 P2 的模型页写入）；
-// - 每次调用记下 token 和花费（OpenRouter 返回的 usage.cost；没有就按模型单价估）；
-// - Anthropic 的模型开 prompt caching（OpenRouter 的顶层 cache_control）；
+// - 每次调用记下 token 和花费（OpenRouter 返回的 usage.cost；直连厂商不返回，按模型单价估，缓存命中按折扣算）；
+// - Anthropic 的模型开 prompt caching（OpenRouter 和直连都用顶层 cache_control）；
 // - 不传 temperature、top_p；
 // - Ollama 先不接：provider 种类保留，调用时报「未配置」。
+import { createAnthropic, type AnthropicLanguageModelOptions } from "@ai-sdk/anthropic"
+import { createDeepSeek } from "@ai-sdk/deepseek"
+import { createOpenAI } from "@ai-sdk/openai"
 import { createOpenRouter } from "@openrouter/ai-sdk-provider"
 import {
   APICallError,
@@ -18,6 +22,12 @@ import {
 } from "ai"
 import type { z } from "zod"
 import { eq } from "drizzle-orm"
+import {
+  ANTHROPIC_DEFAULT_URL,
+  DEEPSEEK_DEFAULT_URL,
+  OPENAI_DEFAULT_URL,
+  type ModelProviderKind,
+} from "@heyagent/shared"
 
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
@@ -32,11 +42,15 @@ export class ModelConfigError extends Error {}
 export interface ResolvedModel {
   model: LanguageModel
   modelId: string
-  /** 每百万 token 的价格（美元），OpenRouter 没返回花费时用来估算 */
+  /** 哪种服务（决定每次调用带什么选项、缓存怎么算钱）；测试的假模型没有 */
+  kind?: ModelProviderKind
+  /** 每百万 token 的价格（美元），没返回花费时（直连厂商）用来估算 */
   priceIn: number
   priceOut: number
   vision: boolean
 }
+
+type ProviderOptions = Parameters<typeof generateText>[0]["providerOptions"]
 
 export async function resolveModel(
   db: Db,
@@ -78,25 +92,88 @@ export async function resolveModel(
   const slug = modelId.startsWith(`${provider.id}/`)
     ? modelId.slice(provider.id.length + 1)
     : modelId
-  const openrouter = createOpenRouter({
-    apiKey,
-    baseURL: provider.baseUrl || DEFAULT_OPENROUTER_URL,
-    compatibility: "strict",
-    appName: "HeyAgent",
-  })
-  const model = openrouter.chat(slug, {
-    usage: { include: true },
-    ...(slug.startsWith("anthropic/")
-      ? { cache_control: { type: "ephemeral" as const } }
-      : {}),
-  })
   return {
-    model,
+    model: languageModel(provider.kind, slug, apiKey, provider.baseUrl),
     modelId,
+    kind: provider.kind,
     priceIn: info?.priceIn ?? 0,
     priceOut: info?.priceOut ?? 0,
     vision: info?.vision ?? false,
   }
+}
+
+export function languageModel(
+  kind: Exclude<ModelProviderKind, "ollama">,
+  slug: string,
+  apiKey: string,
+  baseUrl: string
+): LanguageModel {
+  switch (kind) {
+    case "openrouter": {
+      const openrouter = createOpenRouter({
+        apiKey,
+        baseURL: baseUrl || DEFAULT_OPENROUTER_URL,
+        compatibility: "strict",
+        appName: "HeyAgent",
+      })
+      return openrouter.chat(slug, {
+        usage: { include: true },
+        ...(slug.startsWith("anthropic/")
+          ? { cache_control: { type: "ephemeral" as const } }
+          : {}),
+      })
+    }
+    case "anthropic":
+      return createAnthropic({ apiKey, baseURL: baseUrl || ANTHROPIC_DEFAULT_URL })(slug)
+    // 默认就是 Responses API（OpenAI 现在主推的接口，新模型有的只在这里有）
+    case "openai":
+      return createOpenAI({ apiKey, baseURL: baseUrl || OPENAI_DEFAULT_URL })(slug)
+    case "deepseek":
+      return createDeepSeek({ apiKey, baseURL: baseUrl || DEEPSEEK_DEFAULT_URL })(slug)
+  }
+}
+
+/** 遇到安全分类器拒答时，服务端自动换模型重答：只给文档写明支持的这几代 Claude 带（Haiku 没有服务端兜底） */
+const CLAUDE_FALLBACK = /^claude-(fable-5-1|opus-5|sonnet-5-5)/
+
+/** 历史里有没有 Claude 的 thinking 块（直连 Anthropic 时 reasoning 部分带签名） */
+function hasClaudeThinking(messages: ModelMessage[]) {
+  return messages.some(
+    (message) =>
+      message.role === "assistant" &&
+      Array.isArray(message.content) &&
+      message.content.some(
+        (part) =>
+          part.type === "reasoning" &&
+          (part.providerOptions?.anthropic as { signature?: unknown } | undefined)?.signature != null
+      )
+  )
+}
+
+/**
+ * 每次调用按服务带的选项：
+ * - 直连 Anthropic：顶层 cache_control 自动缓存最长的前文；新一代 Claude 开服务端拒答兜底；
+ *   历史里有 thinking 块时设 drop_block：压缩上下文会改写较早的工具输出、继续时系统提示和工具会重新生成，
+ *   前文变了，原样回放的 thinking 块在 2026-08-31 以后开的账号上会直接 400，drop_block 让 API 丢掉对不上的块（不计费）接着跑；
+ * - 直连 OpenAI：store 设 false，对话不存在 OpenAI 那边，推理内容加密后随消息带回（session 挂起几天再继续也不依赖对方保存的记录）。
+ */
+export function providerOptionsFor(
+  resolved: Pick<ResolvedModel, "kind" | "modelId">,
+  messages: ModelMessage[]
+): ProviderOptions {
+  if (resolved.kind === "anthropic") {
+    const slug = resolved.modelId.split("/").slice(1).join("/")
+    const anthropic = {
+      cacheControl: { type: "ephemeral" },
+      ...(CLAUDE_FALLBACK.test(slug) ? { fallbacks: "default" } : {}),
+      ...(hasClaudeThinking(messages)
+        ? { thinking: { blockBinding: { prefixMismatchBehavior: "drop_block" } } }
+        : {}),
+    } satisfies AnthropicLanguageModelOptions
+    return { anthropic }
+  }
+  if (resolved.kind === "openai") return { openai: { store: false } }
+  return undefined
 }
 
 export interface ModelCallInput {
@@ -136,6 +213,7 @@ export async function callModel(
     instructions: input.system,
     messages: input.messages,
     tools: input.tools,
+    providerOptions: providerOptionsFor(resolved, input.messages),
     maxRetries: 0,
     abortSignal: input.abortSignal,
   })
@@ -143,16 +221,11 @@ export async function callModel(
     (message) => message.role === "assistant"
   ) as ModelMessage | undefined
   const usage = result.usage
-  const tokensIn = usage.inputTokens ?? 0
-  const tokensOut = usage.outputTokens ?? 0
-  const metadata = result.providerMetadata?.openrouter as
-    { usage?: { cost?: number } } | undefined
-  const reported = metadata?.usage?.cost
-  const costUsd =
-    typeof reported === "number"
-      ? reported
-      : (tokensIn * resolved.priceIn + tokensOut * resolved.priceOut) /
-        1_000_000
+  const { tokensIn, tokensOut, costUsd } = costOf(
+    resolved,
+    usage,
+    result.providerMetadata
+  )
   return {
     assistant,
     toolCalls: result.toolCalls.map((call) => {
@@ -176,8 +249,19 @@ export async function callModel(
   }
 }
 
-function costOf(
-  resolved: ResolvedModel,
+/**
+ * 缓存的 token 按输入单价的几倍算（各家公开的价格结构）：Anthropic 读 0.1 倍、写 1.25 倍（5 分钟缓存）；
+ * OpenAI、DeepSeek 自动缓存，读约 0.1 倍，写不加价。只是估算：长 session 大部分输入都命中缓存，
+ * 按原价算会高估好几倍，提前撞上花费上限
+ */
+const CACHE_PRICE: Partial<Record<ModelProviderKind, { read: number; write: number }>> = {
+  anthropic: { read: 0.1, write: 1.25 },
+  openai: { read: 0.1, write: 1 },
+  deepseek: { read: 0.1, write: 1 },
+}
+
+export function costOf(
+  resolved: Pick<ResolvedModel, "kind" | "priceIn" | "priceOut">,
   usage: LanguageModelUsage | undefined,
   providerMetadata: unknown
 ) {
@@ -188,11 +272,13 @@ function costOf(
       { openrouter?: { usage?: { cost?: number } } } | undefined
   )?.openrouter
   const reported = metadata?.usage?.cost
-  const costUsd =
-    typeof reported === "number"
-      ? reported
-      : (tokensIn * resolved.priceIn + tokensOut * resolved.priceOut) /
-        1_000_000
+  if (typeof reported === "number") return { tokensIn, tokensOut, costUsd: reported }
+  const cache = (resolved.kind && CACHE_PRICE[resolved.kind]) ?? { read: 1, write: 1 }
+  const read = usage?.inputTokenDetails?.cacheReadTokens ?? 0
+  const write = usage?.inputTokenDetails?.cacheWriteTokens ?? 0
+  const plain = Math.max(0, tokensIn - read - write)
+  const input = plain + read * cache.read + write * cache.write
+  const costUsd = (input * resolved.priceIn + tokensOut * resolved.priceOut) / 1_000_000
   return { tokensIn, tokensOut, costUsd }
 }
 
@@ -240,6 +326,7 @@ export async function callStructured<T>(
         schema: zodSchema(input.schema),
         name: input.name,
       }),
+      providerOptions: providerOptionsFor(resolved, input.messages),
       maxRetries: 1,
       abortSignal: input.abortSignal,
     })

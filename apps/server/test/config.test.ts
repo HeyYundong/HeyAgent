@@ -24,9 +24,30 @@ const FAKE_MODELS = {
     { id: "acme/no-tools", name: "Acme: No Tools", context_length: 8_000, pricing: { prompt: "0", completion: "0" }, supported_parameters: ["temperature"] },
   ],
 }
+/** 直连 Claude 的假接口：GET /models 要对的 key；还有一个 OpenRouter 公开目录里查不到价格的模型 */
+const FAKE_CLAUDE_KEY = "sk-ant-good-2222222222222"
+const FAKE_CLAUDE_MODELS = {
+  data: [
+    { type: "model", id: "claude-sonnet-5-5", display_name: "Claude Sonnet 5.5", created_at: "2026-09-28T00:00:00Z", max_input_tokens: 1_000_000, max_tokens: 128_000, capabilities: { image_input: { supported: true } } },
+    { type: "model", id: "claude-nova-9", display_name: "Claude Nova 9", created_at: "2026-09-01T00:00:00Z", max_input_tokens: 2_000_000, max_tokens: 128_000, capabilities: { image_input: { supported: false } } },
+  ],
+  has_more: false,
+  first_id: "claude-sonnet-5-5",
+  last_id: "claude-nova-9",
+}
+/** OpenRouter 公开目录（直连时查价格用） */
+const FAKE_REFERENCE = {
+  data: [{ id: "anthropic/claude-sonnet-5.5", name: "Anthropic: Claude Sonnet 5.5", context_length: 1_000_000, pricing: { prompt: "0.000002", completion: "0.00001" }, architecture: { input_modalities: ["text", "image"] }, supported_parameters: ["tools"] }],
+}
 const realFetch = globalThis.fetch
 function fakeFetch(input: string | URL | Request, init?: RequestInit) {
   const url = String(input instanceof Request ? input.url : input)
+  if (url === "https://openrouter.ai/api/v1/models") return Promise.resolve(Response.json(FAKE_REFERENCE))
+  if (url.startsWith("https://claude.example/v1/models?")) {
+    const headers = new Headers(init?.headers)
+    const good = headers.get("x-api-key") === FAKE_CLAUDE_KEY && headers.get("anthropic-version") === "2023-06-01"
+    return Promise.resolve(good ? Response.json(FAKE_CLAUDE_MODELS) : new Response("no", { status: 401 }))
+  }
   if (url.startsWith("https://models.example/")) {
     if (url.endsWith("/models")) return Promise.resolve(Response.json(FAKE_MODELS))
     if (url.endsWith("/key")) {
@@ -441,6 +462,34 @@ describe("模型", () => {
     expect(removed.error).toBeUndefined()
     const after = (await query(ctx.app, "models.overview", lin)).data.defaults
     expect(after.run.startsWith(`${id}/`)).toBe(false)
+  })
+
+  it("直连 Claude：列模型要带 key（不对就不存），价格到 OpenRouter 公开目录查，查不到的给提醒；刷新也带 key", async () => {
+    const noKey = await mutate(ctx.app, "models.createProvider", lin, { kind: "anthropic", baseUrl: "https://claude.example/v1" })
+    expect(noKey.error?.message).toContain("填 Claude 的 API Key")
+    const bad = await mutate(ctx.app, "models.createProvider", lin, { kind: "anthropic", baseUrl: "https://claude.example/v1", apiKey: "sk-ant-wrong-0000000000" })
+    expect(bad.error?.message).toContain("API Key 不对（Claude 返回 401）")
+    const created = await mutate(ctx.app, "models.createProvider", lin, { kind: "anthropic", baseUrl: "https://claude.example/v1/", apiKey: FAKE_CLAUDE_KEY })
+    expect(created.error).toBeUndefined()
+    expect(created.data).toMatchObject({ id: "anthropic", check: { ok: true, models: 2, note: expect.stringContaining("1 个模型") } })
+
+    const overview = (await query(ctx.app, "models.overview", lin)).data
+    const provider = overview.providers.find((p: { id: string }) => p.id === "anthropic")
+    expect(provider).toMatchObject({ kind: "anthropic", name: "Claude", baseUrl: "https://claude.example/v1", status: "ok" })
+    expect(provider.models).toMatchObject([
+      { id: "anthropic/claude-sonnet-5-5", name: "Claude Sonnet 5.5", contextK: 1000, priceIn: 2, priceOut: 10, vision: true },
+      { id: "anthropic/claude-nova-9", name: "Claude Nova 9", contextK: 2000, priceIn: 0, priceOut: 0, vision: false },
+    ])
+    expect(JSON.stringify(overview)).not.toContain(FAKE_CLAUDE_KEY)
+
+    // 刷新、测试连接都用存着的 key（假接口没 key 会回 401）
+    expect((await mutate(ctx.app, "models.refreshProvider", lin, { id: "anthropic" })).data).toMatchObject({ ok: true, models: 2 })
+    expect((await mutate(ctx.app, "models.testProvider", lin, { id: "anthropic" })).data).toMatchObject({ ok: true })
+
+    // 直连的 Claude 和 OpenRouter 上的 Claude 是同一家：不能一个执行一个验收
+    const same = await mutate(ctx.app, "models.setDefaults", lin, { run: "anthropic/claude-sonnet-5-5", plan: "anthropic/claude-sonnet-5-5", verify: "openrouter/anthropic/claude-haiku-5.5" })
+    expect(same.error?.message).toContain("同一家（Anthropic）")
+    expect((await mutate(ctx.app, "models.deleteProvider", lin, { id: "anthropic" })).error).toBeUndefined()
   })
 
   it("有任务在用它的模型：服务删不了", async () => {

@@ -155,7 +155,8 @@ export async function maybeCompact(
     .from(t.models)
     .where(eq(t.models.id, input.modelId))
   const byModel = Math.floor(
-    (model?.contextK ?? DEFAULT_CONTEXT_K) * 1000 * 0.6
+    // 0 = 不知道上下文多长（Ollama、直连厂商时公开目录里查不到的模型），按默认值算，不然每一步都会压缩
+    (model?.contextK || DEFAULT_CONTEXT_K) * 1000 * 0.6
   )
   const limit =
     settings.compactMaxTokens > 0

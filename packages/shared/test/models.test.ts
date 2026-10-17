@@ -21,6 +21,17 @@ describe("modelFamily", () => {
   it("只有服务前缀时归为「其他」", () => {
     expect(modelFamily("ollama")).toBe("其他")
   })
+  it("直连厂商：按模型名认，认不出就是这家（openai/o3）", () => {
+    expect(modelFamily("anthropic/claude-sonnet-5-5")).toBe("Anthropic")
+    expect(modelFamily("openai/gpt-6-sol")).toBe("OpenAI")
+    expect(modelFamily("openai-2/o3")).toBe("OpenAI")
+    expect(modelFamily("deepseek/deepseek-flash")).toBe("DeepSeek")
+    expect(sameFamily("anthropic/claude-opus-5-5", "openrouter/anthropic/claude-haiku-5.5")).toBe(true)
+  })
+  it("OpenRouter 不算直连：openrouter/openai/o3 里的「openai」照样认成 OpenAI，但服务 id 本身不当厂商", () => {
+    expect(modelFamily("openrouter/openai/o3")).toBe("OpenAI")
+    expect(modelFamily("openrouter/acme/o3")).toBe("Acme")
+  })
 })
 
 describe("sameFamily", () => {
@@ -43,7 +54,10 @@ describe("模型展示", () => {
     expect(contextText(model)).toBe("1M")
     expect(contextText({ ...model, contextK: 128 })).toBe("128K")
     expect(priceText(model)).toBe("$4 / $20")
-    expect(priceText({ ...model, priceIn: 0, priceOut: 0 })).toBe("免费（本地）")
+    expect(priceText({ ...model, id: "ollama/qwen3:32b", priceIn: 0, priceOut: 0 })).toBe("免费（本地）")
+    // 云端的单价 0 = 没查到价格
+    expect(priceText({ ...model, id: "deepseek/deepseek-flash", priceIn: 0, priceOut: 0 })).toBe("未知")
+    expect(contextText({ ...model, contextK: 0 })).toBe("未知")
   })
 })
 

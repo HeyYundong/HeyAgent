@@ -39,7 +39,8 @@ export type Platform = z.infer<typeof platformSchema>
 
 // ---------- 模型 ----------
 
-export const modelProviderKindSchema = z.enum(["ollama", "openrouter"])
+/** ollama：内网；openrouter：一个 key 用各家；anthropic / openai / deepseek：直连厂商自己的接口 */
+export const modelProviderKindSchema = z.enum(["ollama", "openrouter", "anthropic", "openai", "deepseek"])
 export type ModelProviderKind = z.infer<typeof modelProviderKindSchema>
 
 export const modelInfoSchema = z.object({
@@ -68,7 +69,7 @@ export const modelProviderSchema = z.object({
   name: z.string(),
   /** 未配置时是空字符串 */
   baseUrl: z.string(),
-  /** 只给掩码，例如 sk-or-v1-••••••••3f2a；Ollama 没有 */
+  /** 只给掩码，例如 sk-or-v1-••••••••3f2a；只有 Ollama 没有 */
   apiKeyMasked: z.string().optional(),
   status: providerStatusSchema,
   /** 上次检查连接的时间；未配置时没有 */

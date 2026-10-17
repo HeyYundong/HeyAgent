@@ -86,7 +86,7 @@ export default function ModelsPage() {
         empty={
           isAdmin ? (
             <EmptyState icon={<CpuIcon />} title="还没接入模型服务" action={addButton}
-              description="点「添加模型服务」，填 OpenRouter 的 API Key；连上后会读出能用的模型，再到「默认设置」选执行、规划、验收模型。" />
+              description="点「添加模型服务」，选 OpenRouter 或直连 Claude、OpenAI、DeepSeek，填 API Key；连上后会读出能用的模型，再到「默认设置」选执行、规划、验收模型。" />
           ) : (
             <EmptyState icon={<CpuIcon />} title="还没接入模型服务" description="还没有模型服务，由主管来接。接好以后 agent 才能干活。" />
           )
@@ -189,9 +189,10 @@ const STATUS_BADGE = {
   unconfigured: { variant: "outline", icon: CircleDashedIcon, label: "未配置" },
 } as const
 
-/** 测试连接、刷新列表的结果：接口不报错，ok 为 false 时 message 里是原因 */
+/** 测试连接、刷新列表的结果：接口不报错，ok 为 false 时 message 里是原因；连上了但有要提醒的事（note）用 warning */
 function checkToast(title: { ok: string; fail: string }, check: ProviderCheck) {
-  toast.add({ title: check.ok ? title.ok : title.fail, description: check.message, type: check.ok ? "success" : "error" })
+  const type = !check.ok ? "error" : check.note ? "warning" : "success"
+  toast.add({ title: check.ok ? title.ok : title.fail, description: [check.message, check.note].filter(Boolean).join("。"), type })
 }
 
 function ProviderDetail({ provider, tasks, defaults, isAdmin, actions }: {

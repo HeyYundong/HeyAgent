@@ -85,6 +85,13 @@
       "when": 1792256372547,
       "tag": "0011_browser_account_password",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1792268239894,
+      "tag": "0012_native_model_providers",
+      "breakpoints": true
     }
   ]
 }

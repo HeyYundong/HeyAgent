@@ -82,7 +82,7 @@ scripts/pod.sh up        # 第一次要构建镜像、下载 Chrome，比较慢
 
 - 桌面软件自动化（推迟到有具体要操作的软件时）。
 - 一个任务拆给多个 agent 并行。
-- Ollama 等内网模型：还没接，现在只用 OpenRouter。
+- Ollama 等内网模型：还没接，现在用 OpenRouter 或直连 Claude、OpenAI、DeepSeek。
 - HTTPS：v1 只用 HTTP，只能在内网用。
 - 其他限制见 [使用手册第 8 节](docs/guide.md#8-现在还做不到的)。
 
@@ -136,7 +136,7 @@ scripts/pod.sh reset     # 停掉并删掉全部数据，回到空白环境（�
 
 ## 技术栈
 
-TypeScript 全栈：前端 Vite + React + shadcn（预设 `buKEvLs`），后端 Hono + tRPC，PostgreSQL 18 + Drizzle + pg-boss，模型层 Vercel AI SDK + OpenRouter，浏览器用有界面的 Chrome + Playwright MCP。全部跑在 rootless Podman 里。
+TypeScript 全栈：前端 Vite + React + shadcn（预设 `buKEvLs`），后端 Hono + tRPC，PostgreSQL 18 + Drizzle + pg-boss，模型层 Vercel AI SDK（OpenRouter，或直连 Anthropic、OpenAI、DeepSeek），浏览器用有界面的 Chrome + Playwright MCP。全部跑在 rootless Podman 里。
 
 ## 仓库结构
 

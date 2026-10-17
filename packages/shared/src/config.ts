@@ -6,7 +6,7 @@ import { z } from "zod"
 
 import { domainSchema } from "./browser-runtime.js"
 import { canonicalLocale, canonicalTimeZone } from "./browsers.js"
-import { httpMethodSchema, httpSpecSchema, modelProviderKindSchema, riskSchema, skillStatusSchema, taskStepSchema } from "./schemas.js"
+import { httpMethodSchema, httpSpecSchema, modelProviderKindSchema, riskSchema, skillStatusSchema, taskStepSchema, type ModelProviderKind } from "./schemas.js"
 import { TIME_ZONE } from "./time.js"
 
 const text = (message: string, max = 2000) => z.string().trim().min(1, message).max(max, `太长了，最多 ${max} 个字`)
@@ -359,6 +359,13 @@ export const browserAccountUpdateSchema = z.object({
 // ---------- 模型 ----------
 
 export const OPENROUTER_DEFAULT_URL = "https://openrouter.ai/api/v1"
+/** 直连厂商的官方地址（AI SDK 各 provider 的默认值；列模型是 地址 + /models） */
+export const ANTHROPIC_DEFAULT_URL = "https://api.anthropic.com/v1"
+export const OPENAI_DEFAULT_URL = "https://api.openai.com/v1"
+export const DEEPSEEK_DEFAULT_URL = "https://api.deepseek.com"
+
+/** 除了内网的 Ollama，都要 API Key */
+export const providerNeedsKey = (kind: ModelProviderKind) => kind !== "ollama"
 
 export const providerInputSchema = z.object({
   kind: modelProviderKindSchema,
@@ -372,7 +379,14 @@ export const providerUpdateSchema = providerInputSchema.omit({ kind: true }).ext
 export const modelDefaultsInputSchema = z.object({ run: z.string().min(1), plan: z.string().min(1), verify: z.string().min(1) })
 
 /** 测试连接、刷新模型列表的结果 */
-export const providerCheckSchema = z.object({ ok: z.boolean(), latencyMs: z.number().optional(), models: z.number().int().optional(), message: z.string() })
+export const providerCheckSchema = z.object({
+  ok: z.boolean(),
+  latencyMs: z.number().optional(),
+  models: z.number().int().optional(),
+  message: z.string(),
+  /** 连上了但要提醒的事，例如直连厂商时有模型查不到价格 */
+  note: z.string().optional(),
+})
 export type ProviderCheck = z.infer<typeof providerCheckSchema>
 
 // ---------- 人加的待办 ----------

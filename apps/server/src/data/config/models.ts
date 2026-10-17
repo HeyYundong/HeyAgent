@@ -1,7 +1,8 @@
-// 模型的写操作：模型服务（OpenRouter / Ollama；key 进 secrets）、刷新模型列表、测试连接、三个角色的默认模型。
+// 模型的写操作：模型服务（OpenRouter / Ollama / 直连 Claude、OpenAI、DeepSeek；key 进 secrets）、刷新模型列表、测试连接、三个角色的默认模型。
 // 不调模型：OpenRouter 的模型列表用公开的 GET /models（不需要 key、不花钱）；测试连接另外用 GET /key 核对 key 有效（也不花钱）。
+// 直连厂商时列模型要带 key（同时就核对了 key）；厂商的列表不给价格，按模型名到 OpenRouter 的公开目录查。
 import { desc, eq, inArray, notInArray, sql } from "drizzle-orm"
-import { defaultsAfterRemove, modelFamily, providerKindLabel, sameFamily, type ModelDefaults, type ModelProviderKind, type ProviderCheck } from "@heyagent/shared"
+import { defaultsAfterRemove, modelFamily, OPENROUTER_DEFAULT_URL, providerKindLabel, providerNeedsKey, sameFamily, type ModelDefaults, type ModelProviderKind, type ProviderCheck } from "@heyagent/shared"
 
 import type { Db } from "../../db/client.js"
 import * as t from "../../db/schema.js"
@@ -33,6 +34,9 @@ async function getJson(url: string, headers: Record<string, string> = {}) {
 
 const trimUrl = (url: string) => url.trim().replace(/\/+$/, "")
 const perMillion = (value: unknown) => Math.round(Number(value ?? 0) * 1_000_000 * 10_000) / 10_000
+// 「Anthropic: Claude Sonnet 5.5」→「Claude Sonnet 5.5」
+const withoutVendor = (name: string) => name.replace(/^[^:]{1,40}:\s*/, "")
+const firstSentence = (text: string | undefined) => (text ?? "").split(/(?<=[.。])\s/)[0]!.slice(0, 120)
 
 interface OpenRouterModel {
   id: string
@@ -56,9 +60,8 @@ export function parseOpenRouterModels(body: unknown): CatalogModel[] {
     .filter((model) => Number(model.pricing?.prompt ?? 0) >= 0 && Number(model.pricing?.completion ?? 0) >= 0)
     .map((model) => ({
       name: model.id,
-      // 「Anthropic: Claude Sonnet 5.5」→「Claude Sonnet 5.5」
-      displayName: (model.name ?? model.id).replace(/^[^:]{1,40}:\s*/, ""),
-      note: (model.description ?? "").split(/(?<=[.。])\s/)[0]!.slice(0, 120),
+      displayName: withoutVendor(model.name ?? model.id),
+      note: firstSentence(model.description),
       contextK: Math.max(1, Math.round((model.context_length ?? 0) / 1000)),
       priceIn: perMillion(model.pricing?.prompt),
       priceOut: perMillion(model.pricing?.completion),
@@ -81,10 +84,145 @@ function parseOllamaModels(body: unknown): CatalogModel[] {
   }))
 }
 
-/** 连一次服务：拿到模型目录；OpenRouter 有 key 时再核对一次 key（GET /key，不花钱） */
+type NativeKind = "anthropic" | "openai" | "deepseek"
+const isNative = (kind: ModelProviderKind): kind is NativeKind => kind === "anthropic" || kind === "openai" || kind === "deepseek"
+
+/** 厂商自己列出的模型：Anthropic 还给显示名、上下文长度、能不能看图；OpenAI、DeepSeek 只有 id 和发布时间 */
+export interface NativeModel {
+  id: string
+  /** 发布时间（毫秒），新的排前面 */
+  created: number
+  displayName?: string
+  contextK?: number
+  vision?: boolean
+}
+
+interface NativeListItem {
+  id?: unknown
+  created?: number
+  created_at?: string
+  display_name?: string
+  max_input_tokens?: number
+  capabilities?: { image_input?: { supported?: boolean } }
+}
+
+/** 列模型：GET /models（要 key，不花钱）。Anthropic 分页（每页最多 1000 个），OpenAI、DeepSeek 一次给全 */
+async function listNativeModels(kind: NativeKind, base: string, apiKey: string) {
+  const headers: Record<string, string> = kind === "anthropic" ? { "x-api-key": apiKey, "anthropic-version": "2023-06-01" } : { authorization: `Bearer ${apiKey}` }
+  const models: NativeModel[] = []
+  let latencyMs: number | undefined
+  let afterId: string | undefined
+  // 翻页上限只是防死循环
+  for (let page = 0; page < 10; page++) {
+    const query = kind === "anthropic" ? `?limit=1000${afterId ? `&after_id=${encodeURIComponent(afterId)}` : ""}` : ""
+    const res = await getJson(`${base}/models${query}`, headers)
+    latencyMs ??= res.latencyMs
+    if (!res.ok) return { status: res.status, latencyMs, models }
+    const body = res.body as { data?: NativeListItem[]; has_more?: boolean; last_id?: string } | undefined
+    if (!Array.isArray(body?.data)) throw new Error(`${providerKindLabel[kind]} 返回的模型列表格式不对`)
+    for (const item of body.data) {
+      if (typeof item.id !== "string") continue
+      const created = item.created_at ? Date.parse(item.created_at) : (item.created ?? 0) * 1000
+      models.push({
+        id: item.id,
+        created: Number.isFinite(created) ? created : 0,
+        displayName: item.display_name,
+        contextK: item.max_input_tokens ? Math.round(item.max_input_tokens / 1000) : undefined,
+        vision: item.capabilities?.image_input?.supported,
+      })
+    }
+    if (!body.has_more || !body.last_id) break
+    afterId = body.last_id
+  }
+  return { status: 200, latencyMs, models }
+}
+
+/** 比模型名时忽略版本号里的点和日期后缀：claude-haiku-4-5-20251001 ≈ claude-haiku-4.5，gpt-5-2025-08-07 ≈ gpt-5 */
+const looseName = (name: string) => name.toLowerCase().replace(/\./g, "-").replace(/-(\d{8}|\d{4}-\d{2}-\d{2})$/, "")
+
+/** OpenRouter 公开目录里这家厂商的模型，按名字查：先原样，再宽松 */
+function referenceLookup(reference: OpenRouterModel[], vendor: NativeKind) {
+  const exact = new Map<string, OpenRouterModel>()
+  const loose = new Map<string, OpenRouterModel>()
+  for (const model of reference) {
+    const slash = model.id.indexOf("/")
+    if (slash < 0 || model.id.slice(0, slash) !== vendor) continue
+    const name = model.id.slice(slash + 1)
+    // :batch、:free 这类是 OpenRouter 自己的线路，价格不是厂商的
+    if (name.includes(":")) continue
+    exact.set(name, model)
+    if (!loose.has(looseName(name))) loose.set(looseName(name), model)
+  }
+  return (id: string) => {
+    const hit = exact.get(id)
+    if (hit) return { model: hit, exact: true }
+    const near = loose.get(looseName(id))
+    return near ? { model: near, exact: false } : undefined
+  }
+}
+
+/** OpenAI 的 /models 里还有向量、语音、画图、审核等模型。目录里查得到的看「能不能调工具」，查不到的按名字猜 */
+const OPENAI_CHAT = /^(gpt-|o\d|chatgpt-)/
+const OPENAI_NOT_CHAT = /(audio|realtime|tts|transcribe|image|search|embedding|instruct|moderation|diariz)/
+
+/**
+ * 直连厂商的模型目录：厂商列出的模型 + OpenRouter 公开目录里的价格、上下文长度、能不能看图（Anthropic 自己给的优先）。
+ * 查不到价格的单价记 0（页面显示「未知」，花费按 0 算）；reference 为空 = 公开目录没连上。
+ */
+export function nativeCatalog(kind: NativeKind, listed: NativeModel[], reference: OpenRouterModel[] | undefined): CatalogModel[] {
+  const lookup = referenceLookup(reference ?? [], kind)
+  const out: CatalogModel[] = []
+  for (const model of [...listed].sort((a, b) => b.created - a.created)) {
+    const found = lookup(model.id)
+    const ref = found?.model
+    if (kind === "openai" && !(ref ? ref.supported_parameters?.includes("tools") : OPENAI_CHAT.test(model.id) && !OPENAI_NOT_CHAT.test(model.id))) continue
+    out.push({
+      name: model.id,
+      // 宽松匹配到的是同名的别的版本：名字用 id，免得两行显示一样
+      displayName: model.displayName ?? (ref && found.exact ? withoutVendor(ref.name ?? model.id) : model.id),
+      note: firstSentence(ref?.description),
+      contextK: model.contextK ?? (ref?.context_length ? Math.max(1, Math.round(ref.context_length / 1000)) : 0),
+      // 负数是 OpenRouter 按路由浮动的价格，当作没查到
+      priceIn: Math.max(0, perMillion(ref?.pricing?.prompt)),
+      priceOut: Math.max(0, perMillion(ref?.pricing?.completion)),
+      vision: model.vision ?? ref?.architecture?.input_modalities?.includes("image") ?? false,
+    })
+  }
+  return out
+}
+
+/** OpenRouter 的公开目录（不用 key）：只用来查价格，连不上不影响添加服务 */
+async function loadReference(): Promise<OpenRouterModel[] | undefined> {
+  try {
+    const res = await getJson(`${OPENROUTER_DEFAULT_URL}/models`)
+    const list = (res.body as { data?: OpenRouterModel[] } | undefined)?.data
+    return Array.isArray(list) ? list.filter((model) => typeof model.id === "string") : undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function probeNative(kind: NativeKind, base: string, apiKey: string | undefined): Promise<{ check: ProviderCheck; models: CatalogModel[] }> {
+  const label = providerKindLabel[kind]
+  if (!apiKey) return { check: { ok: false, message: `还没填 ${label} 的 API Key：先编辑这个服务` }, models: [] }
+  const [listed, reference] = await Promise.all([listNativeModels(kind, base, apiKey), loadReference()])
+  if (listed.status === 401 || listed.status === 403) return { check: { ok: false, latencyMs: listed.latencyMs, message: `API Key 不对（${label} 返回 ${listed.status}），请检查后重新填` }, models: [] }
+  if (listed.status !== 200) return { check: { ok: false, latencyMs: listed.latencyMs, message: `连不上 ${label}：GET /models 返回 HTTP ${listed.status}` }, models: [] }
+  const models = nativeCatalog(kind, listed.models, reference)
+  const unpriced = models.filter((model) => model.priceIn === 0 && model.priceOut === 0).length
+  const note = !reference
+    ? "OpenRouter 的公开价格目录没连上，价格都是「未知」：花费按 0 算，花费上限管不住。稍后点「刷新模型列表」再查"
+    : unpriced
+      ? `${unpriced} 个模型在 OpenRouter 的公开目录里查不到价格，显示「未知」：用它们时花费按 0 算，花费上限管不住`
+      : undefined
+  return { check: { ok: true, latencyMs: listed.latencyMs, models: models.length, message: `连上了，读到 ${models.length} 个能调工具的模型`, note }, models }
+}
+
+/** 连一次服务：拿到模型目录；OpenRouter 有 key 时再核对一次 key（GET /key，不花钱）；直连厂商列模型本身就要 key */
 export async function probeProvider(kind: ModelProviderKind, baseUrl: string, apiKey?: string, verifyKey = true): Promise<{ check: ProviderCheck; models: CatalogModel[] }> {
   const base = trimUrl(baseUrl)
   try {
+    if (isNative(kind)) return await probeNative(kind, base, apiKey)
     if (kind === "openrouter") {
       const list = await getJson(`${base}/models`)
       if (!list.ok) return { check: { ok: false, message: `连不上 OpenRouter：GET /models 返回 HTTP ${list.status}` }, models: [] }
@@ -160,7 +298,7 @@ export async function addProvider(
   input: { kind: ModelProviderKind; name?: string; baseUrl: string; apiKey?: string },
   options: { verifyKey?: boolean } = {}
 ) {
-  if (input.kind === "openrouter" && !input.apiKey) throw badRequest("填 OpenRouter 的 API Key")
+  if (providerNeedsKey(input.kind) && !input.apiKey) throw badRequest(`填 ${providerKindLabel[input.kind]} 的 API Key`)
   const { check, models } = await probeProvider(input.kind, input.baseUrl, input.apiKey, options.verifyKey ?? true)
   if (!check.ok) throw badRequest(check.message)
   const id = await db.transaction(async (tx) => {
@@ -203,7 +341,7 @@ export async function updateProvider(ctx: WriteCtx, input: { id: string; name?: 
   assertCan(ctx.actor, "config.manage", {}, "只有主管能改模型服务")
   const before = await loadProvider(ctx.db, input.id)
   const apiKey = input.apiKey || (await providerKey(ctx.db, ctx.keyring(), before.apiKeySecretId))
-  if (before.kind === "openrouter" && !apiKey) throw badRequest("填 OpenRouter 的 API Key")
+  if (providerNeedsKey(before.kind) && !apiKey) throw badRequest(`填 ${providerKindLabel[before.kind]} 的 API Key`)
   const { check, models } = await probeProvider(before.kind, input.baseUrl, apiKey)
   if (!check.ok) throw badRequest(check.message)
   await ctx.db.transaction(async (tx) => {
@@ -234,11 +372,12 @@ export async function testProvider(ctx: WriteCtx, input: { id: string }): Promis
 }
 
 /** 刷新模型列表 */
-export async function refreshProvider(db: Db, actorId: string | null, id: string): Promise<ProviderCheck> {
+export async function refreshProvider(db: Db, keyring: Keyring, actorId: string | null, id: string): Promise<ProviderCheck> {
   const before = await loadProvider(db, id)
   if (!before.baseUrl) return { ok: false, message: "还没填地址：先编辑这个服务" }
-  // 刷新列表只用公开接口，不带 key
-  const { check, models } = await probeProvider(before.kind, before.baseUrl)
+  // OpenRouter 刷新列表只用公开接口，不带 key；直连厂商列模型要 key
+  const apiKey = before.kind === "openrouter" ? undefined : await providerKey(db, keyring, before.apiKeySecretId)
+  const { check, models } = await probeProvider(before.kind, before.baseUrl, apiKey)
   await db.transaction(async (tx) => {
     await tx.update(t.modelProviders).set({ status: check.ok ? "ok" : "error", checkedAt: new Date(), latencyMs: check.latencyMs ?? null }).where(eq(t.modelProviders.id, id))
     if (check.ok) await writeModels(tx, id, models)
@@ -249,7 +388,7 @@ export async function refreshProvider(db: Db, actorId: string | null, id: string
 
 export async function refreshProviderAsActor(ctx: WriteCtx, input: { id: string }) {
   assertCan(ctx.actor, "config.manage", {}, "只有主管能刷新模型列表")
-  return refreshProvider(ctx.db, ctx.actor.id, input.id)
+  return refreshProvider(ctx.db, ctx.keyring(), ctx.actor.id, input.id)
 }
 
 /** 删除模型服务：有任务在用它的模型就不能删；默认设置里用到的换成别家的 */
