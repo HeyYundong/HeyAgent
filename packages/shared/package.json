@@ -6,7 +6,7 @@
   "description": "前后端共享：领域类型（zod schema + 推导出的 TS 类型）、中文标签、纯函数",
   "exports": {
     ".": {
-      "source": "./src/index.ts",
+      "@heyagent/source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }

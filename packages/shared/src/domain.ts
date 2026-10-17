@@ -96,7 +96,8 @@ export function runNow(run: SessionRun, humanItems: readonly HumanItem[], staff:
   }
   if (run.status === "running") return { label: "正在", text: run.events.at(-1)?.title ?? "刚开始" }
   if (run.status === "verifying") return { label: "验收中", text: run.verification?.headline ?? "三方 AI 在核对检查点" }
-  if (run.status === "done") return { label: "结果", text: `验收通过 · ${run.endedAt ? fmtDateTime(run.endedAt) : ""}` }
+  // M1 还没有三方验收（M3 做），没验收过的只写「完成」，不说「验收通过」
+  if (run.status === "done") return { label: "结果", text: `${run.verification?.status === "passed" ? "验收通过" : "完成"} · ${run.endedAt ? fmtDateTime(run.endedAt) : ""}` }
   return { label: "结果", text: `失败 · ${run.events.findLast((event) => event.kind === "error")?.title ?? "运行失败"}` }
 }
 

@@ -2,7 +2,7 @@
 // 吸收了原来的「待我处理」：在「等人处理」列点开就能批 / 拒 / 审。
 // 要等的时候 session 挂起，等到了继续同一个 session，不新开。卡住运行的事全处理完，这次运行以运行卡回到看板。
 // 人加的待办：新建、编辑、删除接通后端（M1 P2）；记忆审核、技能修改在这里也能批。
-// 立即继续、立即执行、处理审批 / 验收 / 登录这些引擎相关的操作由 P3 接，现在还弹「只读阶段」提示。
+// 立即继续、立即执行、处理审批 / 验收 / 登录、主管手动触发事件接引擎（M1 P3）。
 import * as React from "react"
 import { KanbanIcon, PlusIcon } from "lucide-react"
 
@@ -13,7 +13,6 @@ import { boardCards, can, findById, type HumanTodo, type TaskDef } from "@heyage
 
 import { useBoardQuery, useModelsQuery, useRulesQuery, useSessionsQuery, useStaffQuery, useTasksQuery } from "@/lib/data"
 import { useAction } from "@/lib/mutations"
-import { readOnlyToast } from "@/lib/readonly"
 import { setParams, useRoute } from "@/lib/router"
 import { useMe } from "@/lib/session"
 import { trpc } from "@/lib/trpc"
@@ -74,15 +73,15 @@ export default function TodosPage() {
     <>
       <PageFrame header={header} queries={queries} isEmpty={cards.length === 0} empty={empty} skeleton="board"><Board cards={cards} userId={user.id} /></PageFrame>
       {card?.kind === "run" && (
-        <RunSheet run={card.run} task={card.task} column={card.column} note={card.note} canAct={can(user, "session.resume", { taskOwnerId: card.task.ownerId })} open={open} onClose={close} onResume={readOnlyToast} />
+        <RunSheet run={card.run} task={card.task} column={card.column} note={card.note} canAct={can(user, "session.resume", { taskOwnerId: card.task.ownerId })} isAdmin={user.isAdmin} open={open} onClose={close} />
       )}
       {card?.kind === "human" && (
-        <HumanSheet key={card.id} item={card.item} runs={runs} open={open} userId={user.id} canAct={can(user, "humanItem.resolve", { assigneeId: card.item.assigneeId })} onClose={close} onDone={readOnlyToast} />
+        <HumanSheet key={card.id} item={card.item} runs={runs} open={open} userId={user.id} canAct={can(user, "humanItem.resolve", { assigneeId: card.item.assigneeId })} onClose={close} />
       )}
       {card?.kind === "todo" && (
         <TodoSheet todo={card.todo} runs={runs} tasks={tasks} open={open} canRun={can(user, "todo.run", { createdById: card.todo.createdById, taskOwnerId: ownerOf(card.todo.taskId) })}
-          canManage={can(user, "todo.manage", { createdById: card.todo.createdById })} onClose={close}
-          onEdit={() => setEditing(card.todo)} onDelete={() => setDeleting(card.todo)} onRun={readOnlyToast} />
+          canManage={can(user, "todo.manage", { createdById: card.todo.createdById })} isAdmin={user.isAdmin} onClose={close}
+          onEdit={() => setEditing(card.todo)} onDelete={() => setDeleting(card.todo)} />
       )}
       <TodoDialog key={editing === "new" ? "new" : (editing?.id ?? "closed")} open={editing !== null} onOpenChange={(next) => !next && setEditing(null)}
         todo={editing === "new" ? undefined : (editing ?? undefined)} taskOptions={editing && editing !== "new" ? [...taskOptions, ...tasks.filter((task) => task.id === editing.taskId && !taskOptions.includes(task))] : taskOptions} eventOptions={eventOptions} />

@@ -284,7 +284,7 @@ export async function createMcpServer(ctx: WriteCtx, input: McpServerFields) {
       transport: input.transport,
       command: input.transport === "stdio" ? target : null,
       url: input.transport === "http" ? target : null,
-      // 还没连过：等「连接并读取工具」（P3 接引擎接口）连上以后改成 connected
+      // 还没连过：等「连接并读取工具」连上以后改成 connected
       status: "error",
       note: input.note,
       envKeys: input.env.map((each) => each.name),

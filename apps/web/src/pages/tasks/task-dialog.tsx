@@ -1,8 +1,9 @@
 // 新建 / 编辑任务（按用户草图）：一行任务 → 步骤（每步可勾「等待」「检查点」，可以一步都不写）→ 目标 → 用哪些 → 模型 → 定时运行。
 // 表单：React Hook Form + shared 的 taskInputSchema；执行模型和三方验收模型不许同一家（前端先拦，后端也拦）。
+import * as React from "react"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { Controller, useFieldArray, useForm, useWatch, type Control, type UseFormRegister } from "react-hook-form"
-import { PlusIcon, XIcon } from "lucide-react"
+import { PlayIcon, PlusIcon, XIcon } from "lucide-react"
 import {
   alwaysOnToolIds,
   can,
@@ -13,8 +14,10 @@ import {
   taskInputSchema,
   type TaskDef,
   type TaskInput,
+  type UploadedFile,
 } from "@heyagent/shared"
 
+import { FileList, UploadButton } from "@/components/files"
 import { ModelCombobox } from "@/components/shell/model-combobox"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -35,6 +38,7 @@ import { trpc } from "@/lib/trpc"
 
 import { cronText } from "./cron"
 import { PLACEHOLDER } from "./data"
+import { TaskAttachments } from "./run-actions"
 
 type Option = { value: string; label: string; hint?: string }
 type PickKey = "memoryIds" | "skillIds" | "toolIds" | "ruleIds"
@@ -186,7 +190,12 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
   const options = usePickOptions({ memoryIds: memoryIds ?? [], skillIds: skillIds ?? [] })
   const create = useAction(trpc.tasks.create.mutationOptions(), { success: (data) => `任务 ${data.id} 建好了` })
   const update = useAction(trpc.tasks.update.mutationOptions(), { success: "任务已保存" })
-  const pending = create.isPending || update.isPending
+  const attach = useAction(trpc.engine.attachToTask.mutationOptions(), { errorTitle: "附件没加上" })
+  const runNow = useAction(trpc.engine.runNow.mutationOptions(), { success: ({ sessionId }) => `已开始运行 ${sessionId}`, errorTitle: "任务建好了，但没能开始运行" })
+  // 新建时先上传的附件：任务建好以后再挂上去（编辑时直接用 TaskAttachments，改动马上生效）
+  const [files, setFiles] = React.useState<UploadedFile[]>([])
+  const [starting, setStarting] = React.useState(false)
+  const pending = create.isPending || update.isPending || starting
   const canAssign = can(user, "task.create", {})
 
   const cronValue = schedule?.cron ?? ""
@@ -197,7 +206,7 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
     ? `执行和三方验收（${modelName(defaults.verify)}）是同一家（${modelFamily(effectiveModel)}），验收就不算第三方了。换一个执行模型，或去「模型」页换验收模型。`
     : undefined
 
-  const submit = form.handleSubmit(async (values) => {
+  const submitWith = (startAfter: boolean) => form.handleSubmit(async (values) => {
     // 勾了「检查点」就要写内容
     const emptyCheckpoint = values.steps.findIndex((step) => step.checkpoint !== undefined && !step.checkpoint.trim())
     if (emptyCheckpoint >= 0) {
@@ -214,12 +223,19 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
       if (await update.submit({ ...input, id: task.id })) onOpenChange(false)
       return
     }
-    const created = await create.submit(input)
-    if (created) {
+    setStarting(true)
+    try {
+      const created = await create.submit(input)
+      if (!created) return
+      for (const file of files) await attach.submit({ taskId: created.id, fileId: file.id })
+      const started = startAfter ? await runNow.submit({ taskId: created.id }) : undefined
       onOpenChange(false)
-      navigate("tasks", { id: created.id })
+      navigate("tasks", { id: created.id, run: started?.sessionId })
+    } finally {
+      setStarting(false)
     }
   })
+  const submit = submitWith(!task)
 
   const ownerItems = staff.map((person) => ({ value: person.id, label: `${person.name}${person.title ? ` · ${person.title}` : ""}` }))
 
@@ -322,6 +338,19 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
                 </div>
               </FieldSet>
               <FieldSeparator />
+              <Field>
+                <FieldLabel>附件（可以不加）</FieldLabel>
+                {task ? (
+                  <TaskAttachments task={task} canEdit />
+                ) : (
+                  <>
+                    <FileList files={files} onRemove={(file) => setFiles((list) => list.filter((each) => each.id !== file.id))} />
+                    <div><UploadButton onUploaded={(file) => setFiles((list) => [...list, file])} /></div>
+                  </>
+                )}
+                <FieldDescription>每次运行都会带上，agent 用「读附件」工具读。{task ? "上传、移除马上生效，不用点保存。" : ""}</FieldDescription>
+              </Field>
+              <FieldSeparator />
               <FieldSet>
                 <Controller
                   control={form.control}
@@ -351,10 +380,18 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
           </div>
           <DialogFooter>
             <DialogClose render={<Button type="button" variant="outline" />}>取消</DialogClose>
-            <Button type="submit" disabled={pending}>
-              {pending && <Spinner data-icon="inline-start" />}
-              {task ? "保存" : "创建任务"}
-            </Button>
+            {task ? (
+              <Button type="submit" disabled={pending}>
+                {pending && <Spinner data-icon="inline-start" />}保存
+              </Button>
+            ) : (
+              <>
+                <Button type="button" variant="outline" disabled={pending} onClick={() => void submitWith(false)()}>只创建</Button>
+                <Button type="submit" disabled={pending}>
+                  {pending ? <Spinner data-icon="inline-start" /> : <PlayIcon data-icon="inline-start" />}创建并启动
+                </Button>
+              </>
+            )}
           </DialogFooter>
         </form>
       </DialogContent>

@@ -1,6 +1,6 @@
 // 任务详情（放在右侧抽屉里）：分区卡 + 抽屉底部的操作。
 import * as React from "react"
-import { ChevronRightIcon, EllipsisIcon, FlagIcon, HourglassIcon, PencilIcon, PlayIcon, Trash2Icon } from "lucide-react"
+import { ChevronRightIcon, CircleStopIcon, EllipsisIcon, FlagIcon, HandIcon, HourglassIcon, PaperclipIcon, PencilIcon, PlayIcon, Trash2Icon } from "lucide-react"
 
 import { DetailSection } from "@/components/shell/simple-page"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
@@ -8,27 +8,43 @@ import { Badge } from "@/components/ui/badge"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Button } from "@/components/ui/button"
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "@/components/ui/item"
+import { Spinner } from "@/components/ui/spinner"
 import { Switch } from "@/components/ui/switch"
 import { alwaysOnToolIds, findById, fmtDateTime, fmtShort, toolIdsOfTask, type SessionRun, type TaskDef } from "@heyagent/shared"
 
-import { useMemoriesQuery, useModels, useRulesQuery, useRunNow, useSkillsQuery, useToolName, useToolsQuery } from "@/lib/data"
+import { useHumanItems, useMemoriesQuery, useModels, useRulesQuery, useRunNow, useSkillsQuery, useToolName, useToolsQuery } from "@/lib/data"
 import { useAction } from "@/lib/mutations"
-import { readOnlyToast } from "@/lib/readonly"
 import { href, setParams, type PageId } from "@/lib/router"
 import { trpc } from "@/lib/trpc"
 
 import { CheckpointGrid, RunStatusBadge, StepList, WaitingAlert, checkpointSummary, money, tokens, type TasksState } from "./parts"
+import { CancelRunDialog, isActive, ResumeButton, RunWithFilesDialog, TaskAttachments, useStartRun } from "./run-actions"
 import { TaskDialog } from "./task-dialog"
 
-/** 抽屉底部的操作（负责人和主管）：启动开关 + 编辑 / 删除 + 立即运行 / 立即继续（运行由 P3 接引擎） */
+/** 抽屉底部的操作（负责人和主管）：启动开关 + 编辑 / 带附件运行 / 取消 / 删除 + 主按钮。
+ * 主按钮按最近一次运行的状态变：挂起等待 → 立即继续；等人处理 → 去待办处理；执行中 → 正在运行；其他 → 立即运行 */
 export function TaskActions({ task, state }: { task: TaskDef; state: TasksState }) {
   const runs = state.runsOf(task.id)
   const latest = runs[0]
-  const suspended = latest && (latest.status === "waiting" || latest.status === "needs_human")
+  const blocker = useHumanItems().find((item) => latest && item.runId === latest.id && ["approval", "verify", "login"].includes(item.kind))
   const [editing, setEditing] = React.useState(false)
   const [deleting, setDeleting] = React.useState(false)
+  const [withFiles, setWithFiles] = React.useState(false)
+  const [cancelling, setCancelling] = React.useState(false)
   const setEnabled = useAction(trpc.tasks.setEnabled.mutationOptions(), { success: (_data, vars) => (vars.enabled ? "任务已启动" : "任务已停用，不会再运行") })
   const remove = useAction(trpc.tasks.delete.mutationOptions({ onSuccess: () => setParams({ id: null, run: null }) }), { success: `任务 ${task.id} 已删除` })
+  const start = useStartRun(task)
+  let primary: React.ReactNode
+  if (latest?.status === "waiting") primary = <ResumeButton run={latest} />
+  else if (latest?.status === "needs_human")
+    primary = <Button nativeButton={false} render={<a href={href("todos", { id: blocker?.id ?? latest.id })} />}><HandIcon data-icon="inline-start" />去待办处理</Button>
+  else if (latest?.status === "running" || latest?.status === "verifying") primary = <Button disabled><Spinner data-icon="inline-start" />正在运行</Button>
+  else
+    primary = (
+      <Button disabled={!task.enabled || start.isPending} onClick={() => start.mutate({ taskId: task.id })}>
+        {start.isPending ? <Spinner data-icon="inline-start" /> : <PlayIcon data-icon="inline-start" />}立即运行
+      </Button>
+    )
   return (
     <>
       <label className="flex items-center gap-2">
@@ -40,15 +56,17 @@ export function TaskActions({ task, state }: { task: TaskDef; state: TasksState 
           <DropdownMenuTrigger render={<Button variant="ghost" size="icon" aria-label="任务的更多操作" />}>
             <EllipsisIcon />
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
+          <DropdownMenuContent align="end" className="w-44">
             <DropdownMenuItem onClick={() => setEditing(true)}><PencilIcon />编辑</DropdownMenuItem>
+            <DropdownMenuItem disabled={!task.enabled || isActive(latest)} onClick={() => setWithFiles(true)}><PaperclipIcon />带附件运行…</DropdownMenuItem>
+            {latest && isActive(latest) && <DropdownMenuItem variant="destructive" onClick={() => setCancelling(true)}><CircleStopIcon />取消运行 {latest.id}</DropdownMenuItem>}
             <DropdownMenuItem variant="destructive" onClick={() => setDeleting(true)}><Trash2Icon />删除</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-        <Button disabled={!task.enabled || latest?.status === "running"} onClick={readOnlyToast}>
-          <PlayIcon data-icon="inline-start" />{suspended ? "立即继续" : latest?.status === "running" ? "正在运行" : "立即运行"}
-        </Button>
+        {primary}
       </div>
+      <RunWithFilesDialog key={withFiles ? "files-open" : "files-closed"} task={task} open={withFiles} onOpenChange={setWithFiles} />
+      {latest && <CancelRunDialog key={`${latest.id}-${cancelling}`} run={latest} open={cancelling} onOpenChange={setCancelling} />}
       <TaskDialog key={editing ? "edit" : "closed"} open={editing} onOpenChange={setEditing} task={task} />
       <AlertDialog open={deleting} onOpenChange={setDeleting}>
         <AlertDialogContent>
@@ -81,8 +99,8 @@ export function TaskActions({ task, state }: { task: TaskDef; state: TasksState 
   )
 }
 
-/** 抽屉里的任务详情：四张分区卡（目标和步骤 / 检查点 / 运行记录 / 用到的配置）。标题和操作在抽屉的头和底。 */
-export function TaskDetail({ task, state }: { task: TaskDef; state: TasksState }) {
+/** 抽屉里的任务详情：分区卡（目标和步骤 / 检查点 / 运行记录 / 附件 / 用到的配置）。标题和操作在抽屉的头和底。 */
+export function TaskDetail({ task, state, canEdit }: { task: TaskDef; state: TasksState; canEdit: boolean }) {
   const taskRuns = state.runsOf(task.id)
   const latest = taskRuns[0]
   return (
@@ -94,6 +112,9 @@ export function TaskDetail({ task, state }: { task: TaskDef; state: TasksState }
       </DetailSection>
       <DetailSection title={`运行记录（${taskRuns.length}）`} description="一次运行 = 一个 session：要等时挂起，等到了继续同一个 session；定时任务每次触发是一次新的运行。点一行看完整过程。">
         {taskRuns.length ? <RunList task={task} taskRuns={taskRuns} /> : <p className="text-muted-foreground">还没运行过。</p>}
+      </DetailSection>
+      <DetailSection title="附件" description="任务附件每次运行都会带上，agent 用「读附件」工具读。只想这一次带的，用「⋯ → 带附件运行」。">
+        <TaskAttachments task={task} canEdit={canEdit} />
       </DetailSection>
       <UsedConfig task={task} />
     </>

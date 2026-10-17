@@ -25,6 +25,7 @@ import {
 } from "../engine/control.js"
 import { resolveHumanItemImpl } from "../engine/humans.js"
 import { writeAudit } from "../engine/records.js"
+import { fireTodo } from "../engine/schedule.js"
 import { EngineError, startSessionImpl } from "../engine/sessions.js"
 import { listMcpServerToolsImpl } from "../engine/tools/mcp.js"
 import {
@@ -94,6 +95,65 @@ export const engineRouter = router({
           note: input.note,
         })
       )
+    }),
+
+  /**
+   * 待办的「立即执行」（M1 P3 加）：和待办到点一样走 fireTodo——任务有挂起等待的 session 就用待办标题继续它，
+   * 没有就新开一次运行；非 cron 的待办执行后就结束，不会到点再触发一次。
+   * 权限照 shared 的 todo.run：加这条的人、任务负责人、主管。
+   */
+  runTodoNow: protectedProcedure
+    .input(z.object({ todoId: z.string().min(1) }))
+    .output(
+      z.object({
+        resumedSessionId: z.string().optional(),
+        startedSessionId: z.string().optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const [todo] = await ctx.db
+        .select({
+          id: t.humanTodos.id,
+          taskId: t.humanTodos.taskId,
+          createdById: t.humanTodos.createdById,
+        })
+        .from(t.humanTodos)
+        .where(eq(t.humanTodos.id, input.todoId))
+      if (!todo) throw notFound(`找不到待办 ${input.todoId}`)
+      const task = await taskOf(ctx.db, todo.taskId)
+      if (
+        !can(ctx.user, "todo.run", {
+          createdById: todo.createdById,
+          taskOwnerId: task.ownerId,
+        })
+      )
+        throw forbidden("只有加这条待办的人、任务负责人和主管能立即执行")
+      // fireTodo 会先把一次性待办标成已执行再开始运行；任务停用时先拦下，免得待办白白结束
+      const [{ enabled } = { enabled: false }] = await ctx.db
+        .select({ enabled: t.tasks.enabled })
+        .from(t.tasks)
+        .where(eq(t.tasks.id, task.id))
+      if (!enabled)
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "任务已停用，先启用再执行",
+        })
+      const result = await engineCall(() =>
+        fireTodo(ctx.db, todo.id, "manual")
+      )
+      if (!result)
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "这条待办已经执行过或已经删除",
+        })
+      await writeAudit(ctx.db, {
+        actorId: ctx.user.id,
+        action: "todo.run",
+        targetTable: "human_todos",
+        targetId: todo.id,
+        detail: result,
+      })
+      return result
     }),
 
   /** 取消一次运行（标失败，写清是谁取消的） */

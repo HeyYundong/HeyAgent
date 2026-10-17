@@ -1,8 +1,9 @@
 // 空白正式环境的初始化：API 启动时执行，可以重复执行（已经有的不动）。
 // 1. 一个用户都没有时，建管理员 admin@heyagent.local：随机初始密码写进 HEYAGENT_ADMIN_PASSWORD_FILE（权限 600），不打印到日志；
 // 2. 写入全局设置的默认值；
-// 3. 环境变量里有 OPENROUTER_API_KEY、还没配过 OpenRouter 时：建 OpenRouter 服务（key 加密存）、刷新模型列表、设好三个默认模型。
-// 不灌任何演示数据（任务、记忆、技能、规则、平台都由用户自己加）；内置工具的表行由引擎启动时同步。
+// 3. 环境变量里有 OpenRouter 的 key（OPENROUTER_API_KEY_FILE 指向的文件，或 OPENROUTER_API_KEY）、还没配过 OpenRouter 时：建 OpenRouter 服务（key 加密存）、刷新模型列表、设好三个默认模型。
+// 4. 把内置工具同步进 tools 表（worker 启动时也会同步一次）：worker 还没起时，空白环境的工具页也能看到它们。
+// 不灌任何演示数据（任务、记忆、技能、规则、平台都由用户自己加）。
 import { randomBytes } from "node:crypto"
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
@@ -15,6 +16,7 @@ import { addProvider, writeDefaults } from "../data/config/models.js"
 import { ensureDefaultSettings } from "../data/config/settings.js"
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
+import { syncBuiltinTools } from "../engine/tools/builtin-defs.js"
 import { repoRoot } from "../env.js"
 import type { Keyring } from "../lib/crypto.js"
 
@@ -89,6 +91,7 @@ async function setupOpenRouter(db: Db, options: BootstrapOptions): Promise<Boots
 export async function bootstrap(db: Db, options: BootstrapOptions): Promise<BootstrapResult> {
   const adminCreated = await createAdmin(db, options)
   await ensureDefaultSettings(db)
+  await syncBuiltinTools(db)
   const openrouter = await setupOpenRouter(db, options)
   return { adminCreated, openrouter }
 }

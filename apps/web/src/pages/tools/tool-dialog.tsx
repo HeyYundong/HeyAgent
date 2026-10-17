@@ -22,6 +22,7 @@ import {
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldSeparator } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
@@ -30,7 +31,6 @@ import { Item, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "@/comp
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Spinner } from "@/components/ui/spinner"
 import { Textarea } from "@/components/ui/textarea"
-import { toast } from "@/components/ui/toast"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 
 import { useAction } from "@/lib/mutations"
@@ -79,7 +79,7 @@ export function ToolDialog({ tool, server, serverTools, saved, onClose }: ToolDi
   )
 }
 
-// ---------- MCP 服务器：命令或地址 + 环境变量 / 请求头（值加密存）。「连接并读取工具」由 P3 接引擎后可用 ----------
+// ---------- MCP 服务器：命令或地址 + 环境变量 / 请求头（值加密存）。存好以后「连接并读取工具」（engine.listMcpServerTools），勾选的存进 tools 表 ----------
 
 /** 「名字=值」多行文字 → 接口的 env；值是 •••• 表示保留已存的 */
 function parseEnv(text: string) {
@@ -168,35 +168,98 @@ function McpForm({ server, serverTools, onDone }: { server?: Server; serverTools
           <FieldLabel htmlFor="mcp-note">备注（可选）</FieldLabel>
           <Input id="mcp-note" placeholder="例如：只读权限" {...form.register("note")} />
         </Field>
-        <Field>
-          <FieldLabel>服务器提供的工具</FieldLabel>
-          <Button
-            type="button"
-            variant="outline"
-            className="self-start"
-            onClick={() => toast.add({ title: "连接并读取工具：下一步接通", description: "接上引擎后，这里会真的连到服务器，列出它提供的工具让你勾选。现在先把服务器存好。", type: "info" })}
-          >
-            <PlugZapIcon data-icon="inline-start" />
-            连接并读取工具
-          </Button>
-          {serverTools.length > 0 ? (
-            <ItemGroup className="gap-1">
-              {serverTools.map((t) => (
-                <Item key={t.id} size="xs" variant="muted">
-                  <ItemContent>
-                    <ItemTitle>{t.name} <span className="font-mono text-muted-foreground">{t.id}</span> {t.risk !== "read" && <Badge variant="outline">{riskLabel[t.risk]}</Badge>}</ItemTitle>
-                    <ItemDescription>{t.summary}</ItemDescription>
-                  </ItemContent>
-                </Item>
-              ))}
-            </ItemGroup>
-          ) : (
-            <FieldDescription>还没读取过工具。存好服务器后，连上就能读出它提供的工具。</FieldDescription>
-          )}
-        </Field>
+        {server ? <McpToolPicker server={server} serverTools={serverTools} /> : (
+          <Field>
+            <FieldLabel>服务器提供的工具</FieldLabel>
+            <FieldDescription>先存好服务器，再在编辑里「连接并读取工具」，勾选要加入的。</FieldDescription>
+          </Field>
+        )}
       </FieldGroup>
       <Footer submit={server ? "保存" : "存好服务器"} pending={pending} />
     </form>
+  )
+}
+
+/** 本地工具 id：「服务器名.工具名」，和 HTTP 工具、别的服务器的同名工具区分开；引擎调用时去掉前缀找服务器上的工具 */
+const TOOL_NAME = /^[A-Za-z0-9_.-]+$/
+const localToolId = (server: Server, name: string) => `${server.id.replace(/^mcp-/, "")}.${name}`
+const validLocalId = (id: string) => /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(id)
+
+/** 「连接并读取工具」：连到服务器读出它提供的工具，勾选要加入的（可以给每个工具定风险），保存时随服务器一起存（tools.updateMcpServer） */
+function McpToolPicker({ server, serverTools }: { server: Server; serverTools: Tool[] }) {
+  const [found, setFound] = React.useState<{ id: string; name: string; description: string; ok: boolean }[] | null>(null)
+  const [error, setError] = React.useState<string>()
+  const [picked, setPicked] = React.useState<Record<string, Risk>>(() => Object.fromEntries(serverTools.map((tool) => [tool.id, tool.risk])))
+  const read = useAction(trpc.engine.listMcpServerTools.mutationOptions(), { errorTitle: "没连上" })
+  const save = useAction(trpc.tools.updateMcpServer.mutationOptions(), { success: (_data, vars) => `已保存，加入了 ${vars.tools?.length ?? 0} 个工具`, errorTitle: "工具没保存" })
+
+  const connect = async () => {
+    setError(undefined)
+    const result = await read.submit({ serverId: server.id })
+    if (!result) return
+    if (!result.ok) {
+      setFound(null)
+      setError(result.error ?? "连不上服务器")
+      return
+    }
+    const list = result.tools.map((tool) => {
+      const id = localToolId(server, tool.name)
+      return { id, name: tool.name, description: tool.description, ok: TOOL_NAME.test(tool.name) && validLocalId(id) }
+    })
+    setFound(list)
+    // 第一次读：默认全勾上（风险先按「写入」算，自己改）；已经加入过的保留原来的选择
+    if (serverTools.length === 0) setPicked(Object.fromEntries(list.filter((tool) => tool.ok).map((tool) => [tool.id, "write" as Risk])))
+  }
+
+  const submit = () => {
+    if (!found) return
+    const tools = found
+      .filter((tool) => tool.ok && picked[tool.id])
+      .map((tool) => ({ id: tool.id, name: tool.name, summary: tool.description.split("\n")[0]!.slice(0, 300), description: tool.description.slice(0, 4000), risk: picked[tool.id]! }))
+    const target = server.transport === "http" ? { url: server.url } : { command: server.command }
+    save.mutate({ id: server.id, name: server.name, transport: server.transport, ...target, note: server.note, env: parseEnv(server.env ?? ""), tools })
+  }
+
+  const shown = found ?? serverTools.map((tool) => ({ id: tool.id, name: tool.name, description: tool.summary, ok: true }))
+  const count = shown.filter((tool) => tool.ok && picked[tool.id]).length
+  return (
+    <Field data-invalid={!!error}>
+      <FieldLabel>服务器提供的工具</FieldLabel>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button type="button" variant="outline" disabled={read.isPending} onClick={() => void connect()}>
+          {read.isPending ? <Spinner data-icon="inline-start" /> : <PlugZapIcon data-icon="inline-start" />}
+          {read.isPending ? "正在连接…" : found ? "重新读取工具" : "连接并读取工具"}
+        </Button>
+        {found && (
+          <Button type="button" disabled={save.isPending} onClick={submit}>
+            {save.isPending && <Spinner data-icon="inline-start" />}保存勾选的 {count} 个工具
+          </Button>
+        )}
+      </div>
+      {error && <FieldError>连不上：{error}。检查启动命令或地址、环境变量，改完先保存再连。</FieldError>}
+      {shown.length > 0 ? (
+        <ItemGroup className="gap-1">
+          {shown.map((tool) => (
+            <Item key={tool.id} size="xs" variant="muted">
+              {found && <Checkbox id={`mcp-pick-${tool.id}`} disabled={!tool.ok} checked={Boolean(picked[tool.id])} onCheckedChange={(on) => setPicked((current) => { const next = { ...current }; if (on) next[tool.id] = current[tool.id] ?? "write"; else delete next[tool.id]; return next })} aria-label={`加入 ${tool.name}`} />}
+              <ItemContent className="min-w-0">
+                <ItemTitle>{tool.name} <span className="font-mono text-muted-foreground">{tool.id}</span></ItemTitle>
+                <ItemDescription className="line-clamp-2">{tool.ok ? tool.description || "（服务器没写说明）" : "工具名里有特殊字符，暂时不能加入"}</ItemDescription>
+              </ItemContent>
+              {found && picked[tool.id] ? (
+                <Select items={RISKS} value={picked[tool.id]} onValueChange={(value) => value && setPicked((current) => ({ ...current, [tool.id]: value as Risk }))}>
+                  <SelectTrigger size="sm" className="w-24" aria-label={`${tool.name} 的风险`}><SelectValue /></SelectTrigger>
+                  <SelectContent>{RISKS.map((risk) => <SelectItem key={risk.value} value={risk.value}>{risk.label}</SelectItem>)}</SelectContent>
+                </Select>
+              ) : !found && picked[tool.id] && picked[tool.id] !== "read" ? <Badge variant="outline">{riskLabel[picked[tool.id]!]}</Badge> : null}
+            </Item>
+          ))}
+        </ItemGroup>
+      ) : (
+        !error && <FieldDescription>还没读取过工具。点上面的按钮连到服务器，读出它提供的工具，勾选要加入的。</FieldDescription>
+      )}
+      {found && <FieldDescription>连上了，发现 {found.length} 个工具。勾选的才会加入，任务里选用后 agent 才能用；没勾的 agent 看不到。</FieldDescription>}
+    </Field>
   )
 }
 

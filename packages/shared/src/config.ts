@@ -253,7 +253,7 @@ const mcpServerBaseSchema = z.object({
   note: optionalText(300).default(""),
   /** stdio 是环境变量，http 是请求头；值只加密存，可以写 {{名字}} 引用已存的密钥 */
   env: z.array(keyValueSchema).max(50).default([]),
-  /** 连接后读到并勾选的工具（P3 接「连接并读取工具」后传）；不传表示不改工具 */
+  /** 连接后读到并勾选的工具（工具页「连接并读取工具」读到后勾选的）；不传表示不改工具 */
   tools: z.array(mcpToolSchema).max(200).optional(),
 })
 function checkMcpTarget(value: { transport: "stdio" | "http"; command?: string; url?: string }, ctx: z.RefinementCtx) {

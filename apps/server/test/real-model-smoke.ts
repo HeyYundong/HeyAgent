@@ -1,7 +1,7 @@
 // 真模型端到端冒烟（花钱，不在 pnpm test 里跑）：建任务 → 立即运行 → 调一个内置工具 → session.wait 1 分钟 → 继续 → 完成。
 // 前提：开发库已经 pnpm db:seed（要演示账号），API（PORT）和 worker 都开着；.env 里有 OPENROUTER_API_KEY。
 // 跑之前先执行主目录的 scripts/or-usage.sh check 18。
-// 用法：pnpm --filter @heyagent/server exec tsx --conditions=source test/real-model-smoke.ts [模型 id]
+// 用法：pnpm --filter @heyagent/server exec tsx --conditions=@heyagent/source test/real-model-smoke.ts [模型 id]
 import { setTimeout as sleep } from "node:timers/promises"
 
 import { eq, sql } from "drizzle-orm"

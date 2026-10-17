@@ -1,6 +1,7 @@
 // 某次运行的 session 详情：标题卡 + 检查点 / 过程 / 验收 / agent 自己探索的步骤。
 // 不带页面级布局和返回链接，放进任何 768px 宽的抽屉都能用（任务页、Session 页的抽屉都直接放它）。
-import { BrainIcon, CircleCheckIcon, FlagIcon, ListTreeIcon, PauseIcon, PlayIcon, SaveIcon, ScanSearchIcon, SearchXIcon, ShieldIcon, TriangleAlertIcon, UserIcon, WrenchIcon, type LucideIcon } from "lucide-react"
+import * as React from "react"
+import { BrainIcon, CircleCheckIcon, CircleStopIcon, FlagIcon, ListTreeIcon, PauseIcon, PlayIcon, SaveIcon, ScanSearchIcon, SearchXIcon, ShieldIcon, TriangleAlertIcon, UserIcon, WrenchIcon, type LucideIcon } from "lucide-react"
 
 import { DetailPanel, DetailSection, EmptyState } from "@/components/shell/simple-page"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -22,6 +23,7 @@ import { useMe } from "@/lib/session"
 import { trpc } from "@/lib/trpc"
 
 import { CheckpointGrid, Elapsed, RunStatusBadge, StepList, WaitingAlert, checkpointSummary, money } from "./parts"
+import { CancelRunDialog, isActive, ResumeButton, SessionFiles } from "./run-actions"
 
 const EVENT_ICON: Record<RunEventKind, LucideIcon> = { plan: ListTreeIcon, think: BrainIcon, tool: WrenchIcon, checkpoint: FlagIcon, rule: ShieldIcon, wait: PauseIcon, resume: PlayIcon, human: UserIcon, verify: ScanSearchIcon, done: CircleCheckIcon, error: TriangleAlertIcon }
 
@@ -37,6 +39,7 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionRun }) {
   const { user } = useMe()
   const { modelName } = useModels()
   const saveSteps = useAction(trpc.tasks.update.mutationOptions(), { success: "已存为任务步骤，下一次运行照这些步骤做" })
+  const [cancelling, setCancelling] = React.useState(false)
   if (!run) return <EmptyState icon={<SearchXIcon />} title="找不到这次运行" description="可能是网址里的运行编号写错了。" />
   const toolCalls = run.events.filter((event) => event.kind === "tool").length
   const error = run.status === "failed" ? run.events.findLast((event) => event.kind === "error") : undefined
@@ -45,7 +48,14 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionRun }) {
       title={`${run.id} · ${task.title}`}
       badges={<><RunStatusBadge status={run.status} />{run.status === "running" && <span className="text-xs text-muted-foreground"><Elapsed since={run.startedAt} /></span>}</>}
       meta={`模型 ${modelName(run.modelId)} · 输入 ${num(run.tokensIn)} / 输出 ${num(run.tokensOut)} token · 花费 ${money(run.costUsd)} · 开始 ${fmtDateTime(run.startedAt)} · ${run.endedAt ? `结束 ${fmtDateTime(run.endedAt)}` : "还没结束"}`}
+      actions={<>
+        {run.status === "waiting" && can(user, "session.resume", { taskOwnerId: task.ownerId }) && <ResumeButton run={run} size="sm" />}
+        {isActive(run) && can(user, "task.manage", { ownerId: task.ownerId }) && (
+          <Button variant="outline" size="sm" onClick={() => setCancelling(true)}><CircleStopIcon data-icon="inline-start" />取消运行</Button>
+        )}
+      </>}
     >
+      <CancelRunDialog key={`${run.id}-${cancelling}`} run={run} open={cancelling} onOpenChange={setCancelling} />
       <WaitingAlert run={run} />
       {error && (
         <Alert variant="destructive">
@@ -57,7 +67,10 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionRun }) {
       <DetailSection title={`检查点 · ${checkpointSummary(run.checkpoints)}`}>
         <CheckpointGrid run={run} />
       </DetailSection>
-      <DetailSection title="过程" description={`${run.events.length} 条记录 · 工具调用 ${toolCalls} 次。点工具调用看输入和输出。`}>
+      <DetailSection title="附件和产物" description="点下载。agent 存下的文件、这次运行带的附件都在这里，新产物会自动出现。">
+        <SessionFiles run={run} />
+      </DetailSection>
+      <DetailSection title="过程" description={`${run.events.length} 条记录 · 工具调用 ${toolCalls} 次${run.status === "running" ? " · 实时更新" : ""}。点工具调用看输入和输出。`}>
         <Trace className="gap-3">
           {run.events.map((event, index) => <EventRow key={event.seq} event={event} run={run} running={run.status === "running" && index === run.events.length - 1} />)}
         </Trace>

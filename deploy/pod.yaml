@@ -1,14 +1,18 @@
-# HeyAgent 整套（M0）：postgres + api + web 三个容器放在一个 pod 里，入口是 web（Caddy）的 8080 端口。worker 在 M1 加。
-# 不要直接 play 这个文件，用 scripts/pod.sh up：它负责构建镜像、生成主密钥和配置（.dev/pod/config.yaml）、准备卷。
+# HeyAgent 整套（M1）：postgres + api + worker + web 四个容器放在一个 pod 里，入口是 web（Caddy）的 8080 端口。
+# 不要直接 play 这个文件，用 scripts/pod.sh up：它负责构建镜像、生成配置（.dev/pod/config.yaml）、准备卷（主密钥、OpenRouter key、权限）。
 # 开发机是 rootless Podman 3.4.4（podman play kube），服务器上是 4.4+（podman kube play / Quadlet），这份 YAML 两边都能用。
 #
 # 配置和密码：podman play kube --configmap .dev/pod/config.yaml（scripts/pod.sh 生成，权限 600，已 gitignore）。
-#   3.4.4 的 play kube 不支持 Kubernetes Secret，所以数据库密码、BETTER_AUTH_SECRET 也放在这个 configmap 里，
+#   3.4.4 的 play kube 不支持 Kubernetes Secret，所以数据库密码、BETTER_AUTH_SECRET 放在这个 configmap 里，
 #   注意它们会出现在 podman inspect 里。服务器上换成 Podman secret（部署阶段再做）。
+#   OpenRouter 的 key 不进 configmap：pod.sh 从仓库根目录 .env 读出来写进卷 heyagent-pod-secrets（0400），api 用 OPENROUTER_API_KEY_FILE 读。
 # 主密钥（KEK）：3.4.4 的 play kube 只支持 hostPath 和 PersistentVolumeClaim 两种卷（实测 secret 卷报
 #   「HostPath and PersistentVolumeClaim are currently the only supported VolumeSource」），也没有 --userns=keep-id 参数；
-#   直接 hostPath 挂 600 的 .dev/kek，容器里的 node 用户（uid 1000，映射到宿主机的子 uid）读不了。
-#   所以退回「只读挂载的文件」：scripts/pod.sh 每次 up 时把 .dev/kek 拷进卷 heyagent-pod-kek（属主 node、权限 0400），这里只读挂进 api。
+#   直接 hostPath 挂 600 的 .dev/kek，容器里的用户（uid 1000，映射到宿主机的子 uid）读不了。
+#   所以照 M0 的做法用「只读挂载的文件」：pod.sh 每次 up 时把 .dev/kek 拷进卷 heyagent-pod-secrets（属主 uid 1000、权限 0400），
+#   api（node 用户）和 worker（browser 用户）都是 uid 1000，都能读。
+# 文件卷 heyagent-pod-files：api（上传、下载）和 worker（agent 存产物、读附件）挂同一个，HEYAGENT_FILES_DIR 一样。
+# 状态卷 heyagent-pod-state：只挂给 api，放管理员初始密码（HEYAGENT_ADMIN_PASSWORD_FILE），pod.sh up 结束后复制到 .dev/admin-password。
 apiVersion: v1
 kind: Pod
 metadata:
@@ -17,6 +21,9 @@ metadata:
     app: heyagent
 spec:
   restartPolicy: Always
+  # 共享 PID 命名空间：pod 的 infra（pause）进程当 PID 1，负责回收僵尸进程。
+  # 这是 worker 的 --init 在 kube YAML 里的替代（kube 没有 init 字段；Podman 4 的 io.podman.annotations.init 注解 3.4.4 不认）
+  shareProcessNamespace: true
   containers:
     - name: postgres
       image: docker.io/library/postgres:18
@@ -41,9 +48,9 @@ spec:
           mountPath: /var/lib/postgresql
 
     - name: api
-      image: localhost/heyagent-api:m0
+      image: localhost/heyagent-api:m1
       imagePullPolicy: IfNotPresent
-      # 先等 PostgreSQL 能连上（第一次初始化时要十几秒），再跑镜像自带的启动脚本（迁移 → 起 API）
+      # 先等 PostgreSQL 能连上（第一次初始化时要十几秒），再跑镜像自带的启动脚本：迁移 → 起 API（启动时执行空白环境初始化 bootstrap）
       command:
         - sh
         - -c
@@ -57,23 +64,66 @@ spec:
         - name: PORT
           value: "3100"
         - name: HEYAGENT_KEK_FILE
-          value: /run/heyagent-kek/kek
-        # 演示数据由 scripts/pod.sh 在 HEYAGENT_SEED_DEMO=1 时灌一次，容器重启时不重灌
+          value: /run/heyagent-secrets/kek
+        # 有这个文件就用里面的 key 接入 OpenRouter（只在还没配过时）；pod.sh 在 .env 里没有 key 时不写这个文件
+        - name: OPENROUTER_API_KEY_FILE
+          value: /run/heyagent-secrets/openrouter-key
+        - name: HEYAGENT_FILES_DIR
+          value: /data/files
+        - name: HEYAGENT_ADMIN_PASSWORD_FILE
+          value: /data/state/admin-password
+        # 演示数据默认不灌；开发时可以 HEYAGENT_SEED_DEMO=1 scripts/pod.sh up（由 pod.sh 灌一次，容器重启时不重灌）
         - name: HEYAGENT_SEED_DEMO
           value: "0"
       envFrom:
         - configMapRef:
             name: heyagent-config
       volumeMounts:
-        - name: kek
-          mountPath: /run/heyagent-kek
+        - name: secrets
+          mountPath: /run/heyagent-secrets
           readOnly: true
-        # 文件存储（截图、比价表等产物），M1 起用
+        - name: files
+          mountPath: /data/files
+        - name: state
+          mountPath: /data/state
+
+    - name: worker
+      image: localhost/heyagent-worker:m1
+      imagePullPolicy: IfNotPresent
+      # 等 api 健康了再起（api 负责迁移和初始化，worker 不跑迁移）。api 一直起不来就一直等；worker 自己出错退出时由 restartPolicy 拉起
+      command:
+        - sh
+        - -c
+        - >-
+          until node -e "fetch('http://127.0.0.1:3100/api/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))";
+          do echo '等 api 就绪…'; sleep 2; done;
+          exec node dist/worker.js
+      env:
+        - name: HEYAGENT_KEK_FILE
+          value: /run/heyagent-secrets/kek
+        - name: HEYAGENT_FILES_DIR
+          value: /data/files
+      envFrom:
+        - configMapRef:
+            name: heyagent-config
+      # docs/research/m0-browser-spike.md 第 4 节推荐的 Chrome 沙箱参数（M2 起 worker 里跑 Chrome）：
+      #   --cap-drop=all --cap-add=SYS_CHROOT → capabilities；--security-opt no-new-privileges → allowPrivilegeEscalation: false；
+      #   seccomp 用 Podman 默认的；--init → 上面的 shareProcessNamespace；--shm-size=2g 在 3.4.4 的 play kube 里写不了
+      #   （emptyDir 卷不支持），Chrome 155 用 memfd，不给也能开（实测 64MB 能开 5 个）
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+          add: ["SYS_CHROOT"]
+      volumeMounts:
+        - name: secrets
+          mountPath: /run/heyagent-secrets
+          readOnly: true
         - name: files
           mountPath: /data/files
 
     - name: web
-      image: localhost/heyagent-web:m0
+      image: localhost/heyagent-web:m1
       imagePullPolicy: IfNotPresent
       ports:
         # 内网入口：http://<本机 IP>:8080
@@ -88,6 +138,9 @@ spec:
     - name: files
       persistentVolumeClaim:
         claimName: heyagent-pod-files
-    - name: kek
+    - name: secrets
       persistentVolumeClaim:
-        claimName: heyagent-pod-kek
+        claimName: heyagent-pod-secrets
+    - name: state
+      persistentVolumeClaim:
+        claimName: heyagent-pod-state

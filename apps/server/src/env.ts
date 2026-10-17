@@ -1,5 +1,5 @@
 // 配置：从环境变量读。开发时先读仓库根目录的 .env（不存在就跳过），容器里直接用环境变量。
-import { existsSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -48,5 +48,22 @@ export const env = {
   },
   get seedPassword() {
     return required("SEED_PASSWORD")
+  },
+  /**
+   * OpenRouter 的 key（可以没有）：先看 OPENROUTER_API_KEY_FILE（整套 pod 里用，卷里 0400 的文件，不进 configmap），
+   * 再看 OPENROUTER_API_KEY（开发时在 .env 里）。文件配了却读不到时给一句警告，不挡住启动
+   */
+  get openrouterApiKey(): string | undefined {
+    const file = process.env.OPENROUTER_API_KEY_FILE
+    if (file) {
+      try {
+        const value = readFileSync(resolve(repoRoot, file), "utf8").trim()
+        if (value) return value
+        console.warn(`OPENROUTER_API_KEY_FILE 指向的文件是空的：${file}`)
+      } catch (error) {
+        console.warn(`读不了 OPENROUTER_API_KEY_FILE（${file}）：${(error as Error).message}`)
+      }
+    }
+    return process.env.OPENROUTER_API_KEY || undefined
   },
 }

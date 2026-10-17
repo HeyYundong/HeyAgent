@@ -1003,6 +1003,44 @@ describe("场景 11：人加的待办触发", () => {
   })
 })
 
+describe("待办的立即执行（engine.runTodoNow，M1 P3）", () => {
+  it("有挂起的 session 就继续它；一次性待办执行后结束；别人加的、别人负责的任务不能执行", async () => {
+    const script = useScript(
+      "test/todo-now",
+      new Script([
+        step([call("session.wait", { what: "等资料", afterMinutes: 600 })]),
+        step([text("资料到了，完成")]),
+      ])
+    )
+    const taskId = await createTask(ctx.db, { modelId: "test/todo-now" })
+    const sessionId = await runNow(taskId)
+    await waitStatus(ctx.db, sessionId, "waiting")
+    await ctx.db.insert(t.humanTodos).values({
+      id: "td-950",
+      taskId,
+      title: "资料已经放进共享盘",
+      triggerKind: "time",
+      at: new Date(Date.now() + 3_600_000),
+      createdById: "u-wang",
+    })
+    await syncTodo(ctx.db, "td-950")
+    // 李静既不是加这条的人，也不是任务负责人
+    const denied = await mutate(ctx.app, "engine.runTodoNow", li, { todoId: "td-950" })
+    expect(denied.error?.data?.code).toBe("FORBIDDEN")
+    const ran = await mutate(ctx.app, "engine.runTodoNow", wang, { todoId: "td-950" })
+    expect(ran.data).toEqual({ resumedSessionId: sessionId })
+    await waitStatus(ctx.db, sessionId, "done")
+    expect(script.promptText(1)).toContain("资料已经放进共享盘")
+    const [todo] = await ctx.db.select().from(t.humanTodos).where(eq(t.humanTodos.id, "td-950"))
+    expect(todo!.status).toBe("done")
+    // 已经执行过的不能再执行
+    const again = await mutate(ctx.app, "engine.runTodoNow", wang, { todoId: "td-950" })
+    expect(again.error?.data?.code).toBe("CONFLICT")
+    const audits = await ctx.db.select().from(t.auditEvents).where(and(eq(t.auditEvents.action, "todo.run"), eq(t.auditEvents.targetId, "td-950")))
+    expect(audits).toHaveLength(1)
+  })
+})
+
 describe("场景 12：file.save 和 file.read", () => {
   it("上传附件 → 立即运行带附件 → 读文本和图片 → 存产物；能列出、能下载", async () => {
     type Uploaded = { id: string; name: string; mime: string; url: string }

@@ -11,43 +11,9 @@ import {
   toolSourceSchema,
 } from "./schemas.js"
 
-// ---------- 设置（settings 表的键；和包 P2 的 config.ts 里 SETTING_KEYS 是同一组字符串） ----------
-
-/** 引擎读的 settings 键。值的格式见注释；读不到就用 ENGINE_SETTING_DEFAULTS */
-export const ENGINE_SETTING_KEYS = {
-  /** 单个 session 的花费上限（美元，数字） */
-  maxCostUsd: "session.maxCostUsd",
-  /** 单个 session 最多步数（模型调用次数，整数） */
-  maxSteps: "session.maxSteps",
-  /** 只等事件时的兜底天数（整数） */
-  eventFallbackDays: "wait.eventFallbackDays",
-  /** 外部事件令牌：{ sha256, hint, createdAt }，只存哈希 */
-  eventToken: "events.token",
-  /** 通知渠道：NotifyChannelConfig[] */
-  notifyChannels: "notify.channels",
-} as const
-
-export const ENGINE_SETTING_DEFAULTS = {
-  maxCostUsd: 2,
-  maxSteps: 100,
-  eventFallbackDays: 7,
-} as const
-
-export const notifyChannelConfigSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  kind: z.enum(["feishu", "wecom", "webhook"]),
-  /** webhook 地址存在 secrets 里（scope = http_tool，ref_id 为空）的名字 */
-  urlSecretName: z.string(),
-  enabled: z.boolean(),
-})
-export type NotifyChannelConfig = z.infer<typeof notifyChannelConfigSchema>
-
-export const engineEventTokenSchema = z.object({
-  sha256: z.string(),
-  hint: z.string().optional(),
-  createdAt: z.string().optional(),
-})
+// ---------- 设置 ----------
+// settings 表的键（SETTING_KEYS）、默认值（SETTINGS_DEFAULTS）、通知渠道（notifyChannelSchema）、
+// 外部事件令牌（eventTokenRecordSchema）只有一份，定义在 config.ts，引擎和设置页都引用那里。
 
 // ---------- session 快照：开始运行时把任务当时的配置冻结下来，任务以后再改不影响这次运行 ----------
 

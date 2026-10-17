@@ -4,15 +4,17 @@
     "target": "es2023",
     "lib": ["ES2023", "DOM"],
     "module": "esnext",
-    // node：路由类型来自 apps/server 的源码（用 source 条件直接引用），那边用到了 Node 的类型
+    // node：路由类型来自 apps/server 的源码（用 @heyagent/source 条件直接引用），那边用到了 Node 的类型
     "types": ["vite/client", "node"],
     "allowArbitraryExtensions": true,
     "skipLibCheck": true,
 
     /* Bundler mode */
     "moduleResolution": "bundler",
-    // @heyagent/shared 的 exports 里 source 条件指向 src/index.ts：直接用源码，不用先构建 shared
-    "customConditions": ["source"],
+    // @heyagent/shared 的 exports 里 @heyagent/source 条件指向 src/index.ts：直接用源码，不用先构建 shared。
+    // 条件名带作用域，不会解析到第三方包自己的 source 条件（它们指向各自的 .ts 源码）
+    "customConditions": ["@heyagent/source"],
+    // Vite 模板自带：main.tsx 里 import "./App.tsx" 带扩展名
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "moduleDetection": "force",

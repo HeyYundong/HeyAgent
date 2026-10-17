@@ -10,9 +10,9 @@ export default defineConfig({
     alias: {
       "@": resolve(import.meta.dirname, "./src"),
     },
-    // @heyagent/shared 用 source 条件直接引用源码（和 tsconfig.app.json 的 customConditions 对应）。
+    // @heyagent/shared 用 @heyagent/source 条件直接引用源码（和 tsconfig.app.json 的 customConditions 对应）。
     // 写了 conditions 会替换掉 Vite 的默认值，所以要把默认的条件接在后面
-    conditions: ["source", ...defaultClientConditions],
+    conditions: ["@heyagent/source", ...defaultClientConditions],
   },
   // 开发服务器：监听所有网卡，内网其他电脑可以用 http://<本机IP>:5180 访问；/api 交给本机 3100 的 API。
   // 并行开发时各包用自己的端口（docs/dev/m1.md）：WEB_PORT=5181 API_PORT=3102 pnpm --filter @heyagent/web dev

@@ -13,7 +13,11 @@ import { Separator } from "@/components/ui/separator"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Spinner } from "@/components/ui/spinner"
 import { Trace, TraceDescription, TraceIcon, TraceLine, TraceTitle } from "@/components/ui/trace"
+import { useAction } from "@/lib/mutations"
 import { href } from "@/lib/router"
+import { trpc } from "@/lib/trpc"
+import { money } from "@/pages/tasks/parts"
+import { ResumeButton } from "@/pages/tasks/run-actions"
 import { addDaysIso, boardColumns, eventTimeText, findById, fmtDateTime, fmtShort, suspendedRun, triggerText } from "@heyagent/shared"
 import type { BoardColumn, HumanTodo, RunEventKind, SessionRun, TaskDef, Trigger } from "@heyagent/shared"
 
@@ -63,10 +67,27 @@ const EVENT_ICON: Record<RunEventKind, LucideIcon> = { plan: ListTodoIcon, think
   wait: PauseIcon, resume: PlayIcon, human: UserIcon, verify: ShieldQuestionIcon, done: CircleCheckIcon, error: TriangleAlertIcon }
 const CHECK_ICON = { done: CircleCheckIcon, open: CircleDashedIcon, skipped: CircleSlashIcon }
 
-type RunProps = { run: SessionRun; task: TaskDef; column: BoardColumn; note?: string; canAct: boolean; open: boolean; onClose: () => void; onResume: () => void }
+/** 等的事件：只等事件、或时间和事件先到先继续 */
+const eventOf = (trigger: Trigger) => ("event" in trigger ? trigger.event : undefined)
 
-/** 员工看别人的任务只读：canAct 为 false 时没有「立即继续」。「等人处理」的运行（?id= 直接打开）也不能手动继续 */
-export function RunSheet({ run, task, column, note, canAct, open, onClose, onResume }: RunProps) {
+/** 主管手动触发一个事件（engine.fireEvent，和外部系统 POST /api/events 一样）：在等它的 session 继续、等它的待办触发 */
+export function FireEventButton({ event }: { event: string }) {
+  const fire = useAction(trpc.engine.fireEvent.mutationOptions(), {
+    success: (result) => `已触发「${event}」：继续了 ${result.resumedSessionIds.length} 个 session，触发了 ${result.firedTodoIds.length} 条待办`,
+    errorTitle: "没能触发事件",
+  })
+  return (
+    <Button variant="outline" disabled={fire.isPending} onClick={() => fire.mutate({ event })}>
+      {fire.isPending ? <Spinner data-icon="inline-start" /> : <ZapIcon data-icon="inline-start" />}手动触发事件
+    </Button>
+  )
+}
+
+type RunProps = { run: SessionRun; task: TaskDef; column: BoardColumn; note?: string; canAct: boolean; isAdmin: boolean; open: boolean; onClose: () => void }
+
+/** 员工看别人的任务只读：canAct 为 false 时没有「立即继续」。「等人处理」的运行（?id= 直接打开）也不能手动继续。
+ * 在等事件的，主管可以手动触发这个事件 */
+export function RunSheet({ run, task, column, note, canAct, isAdmin, open, onClose }: RunProps) {
   const { modelName } = useModels()
   const waiting = note ? undefined : run.waiting
   const doneCount = run.checkpoints.filter((checkpoint) => checkpoint.status === "done").length
@@ -76,9 +97,10 @@ export function RunSheet({ run, task, column, note, canAct, open, onClose, onRes
     <DetailSheet
       open={open} onClose={onClose} title={task.title}
       badges={<Badge variant={column === "done" ? "outline" : "secondary"}>{findById(boardColumns, column)?.name}</Badge>}
-      meta={dots(run.id, modelName(run.modelId), `开始 ${fmtShort(run.startedAt)}`, `${k(run.tokensIn)} / ${k(run.tokensOut)} token`, `$${run.costUsd.toFixed(2)}`)}
+      meta={dots(run.id, modelName(run.modelId), `开始 ${fmtShort(run.startedAt)}`, `${k(run.tokensIn)} / ${k(run.tokensOut)} token`, money(run.costUsd))}
       footer={<>
-        {waiting && column === "waiting" && canAct && <Button onClick={onResume}><PlayIcon data-icon="inline-start" />立即继续</Button>}
+        {waiting && column === "waiting" && run.status === "waiting" && canAct && <ResumeButton run={run} />}
+        {waiting && run.status === "waiting" && isAdmin && eventOf(waiting.trigger) && <FireEventButton event={eventOf(waiting.trigger)!} />}
         <Button variant="outline" nativeButton={false} render={<a href={href("tasks", { id: task.id, run: run.id })} />}>看完整运行记录 →</Button>
       </>}
     >
@@ -135,11 +157,16 @@ export const triggerHeadline = (trigger: Trigger, since: string) => trigger.kind
 export const waitText = (trigger: Trigger, since: string) => trigger.kind !== "event" ? triggerText(trigger)
   : `等到「${trigger.event}」；最多等到 ${isoShortTime(addDaysIso(since, trigger.fallbackDays))}，到期提醒负责人`
 
-type TodoProps = { todo: HumanTodo; runs: SessionRun[]; tasks: TaskDef[]; open: boolean; canRun: boolean; canManage: boolean; onClose: () => void; onRun: () => void; onEdit: () => void; onDelete: () => void }
+type TodoProps = { todo: HumanTodo; runs: SessionRun[]; tasks: TaskDef[]; open: boolean; canRun: boolean; canManage: boolean; isAdmin: boolean; onClose: () => void; onEdit: () => void; onDelete: () => void }
 
-/** canRun：主管、加这条的人、任务负责人能「立即执行」；canManage：只有主管和加这条的人能编辑、删除 */
-export function TodoSheet({ todo, runs, tasks, open, canRun, canManage, onClose, onRun, onEdit, onDelete }: TodoProps) {
+/** canRun：主管、加这条的人、任务负责人能「立即执行」；canManage：只有主管和加这条的人能编辑、删除。
+ * 立即执行和到点一样（engine.runTodoNow）：任务有挂起的 session 就继续它，没有就新开一次运行；一次性的待办执行后就结束 */
+export function TodoSheet({ todo, runs, tasks, open, canRun, canManage, isAdmin, onClose, onEdit, onDelete }: TodoProps) {
   const staffName = useStaffName()
+  const run = useAction(trpc.engine.runTodoNow.mutationOptions({ onSuccess: () => onClose() }), {
+    success: (result) => (result.resumedSessionId ? `已继续挂起的 ${result.resumedSessionId}` : `已开始运行 ${result.startedSessionId}`),
+    errorTitle: "没能执行",
+  })
   const task = findById(tasks, todo.taskId)
   const suspended = suspendedRun(runs, todo.taskId)
   const { trigger } = todo
@@ -148,8 +175,9 @@ export function TodoSheet({ todo, runs, tasks, open, canRun, canManage, onClose,
       open={open} onClose={onClose} title={todo.title}
       badges={<Badge variant="outline"><UserPenIcon data-icon="inline-start" />人加的</Badge>}
       meta={dots(`${staffName(todo.createdById)} 加的`, fmtShort(todo.createdAt))}
-      footer={canRun && <>
-        <Button onClick={onRun}><ZapIcon data-icon="inline-start" />立即执行</Button>
+      footer={(canRun || (isAdmin && eventOf(trigger))) && <>
+        {canRun && <Button disabled={run.isPending} onClick={() => run.mutate({ todoId: todo.id })}>{run.isPending ? <Spinner data-icon="inline-start" /> : <PlayIcon data-icon="inline-start" />}立即执行</Button>}
+        {isAdmin && eventOf(trigger) && <FireEventButton event={eventOf(trigger)!} />}
         {canManage && <DropdownMenu>
           <DropdownMenuTrigger render={<Button variant="ghost" size="icon" aria-label="更多操作" />}><EllipsisIcon /></DropdownMenuTrigger>
           <DropdownMenuContent align="end"><DropdownMenuItem onClick={onEdit}>编辑</DropdownMenuItem><DropdownMenuItem variant="destructive" onClick={onDelete}>删除</DropdownMenuItem></DropdownMenuContent>

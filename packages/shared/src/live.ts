@@ -4,7 +4,7 @@
 export const LIVE_CHANNEL = "heyagent_changes"
 
 export const liveQueriesByTable: Record<string, string[]> = {
-  users: ["me.get", "staff.list"],
+  users: ["me.get", "staff.list", "users.list"],
   tasks: ["tasks.list"],
   task_memories: ["tasks.list"],
   task_skills: ["tasks.list"],
@@ -34,6 +34,10 @@ export const liveQueriesByTable: Record<string, string[]> = {
   model_providers: ["models.overview"],
   models: ["models.overview"],
   model_defaults: ["models.overview"],
+  // 引擎（M1）：新通知、新产物 / 附件、设置
+  notifications: ["engine.notifications.list"],
+  files: ["engine.sessionFiles", "engine.taskAttachments"],
+  settings: ["settings.get"],
 }
 
 /** 某张表变了要重新拉的查询；不认识的表（或 "*"）返回 null，表示全部重新拉 */

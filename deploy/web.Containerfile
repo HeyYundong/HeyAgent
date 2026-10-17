@@ -7,7 +7,7 @@ WORKDIR /repo
 RUN npm install -g pnpm@11.23.0 && pnpm --version
 
 # 先只拷依赖清单，依赖没变时这一层可以复用。
-# web 的 tsc 会顺带检查 shared 和 server 的源码（用 source 条件直接引用，路由类型来自 server），所以它们的依赖也要装
+# web 的 tsc 会顺带检查 shared 和 server 的源码（用 @heyagent/source 条件直接引用，路由类型来自 server），所以它们的依赖也要装
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY packages/shared/package.json packages/shared/
 COPY apps/server/package.json apps/server/

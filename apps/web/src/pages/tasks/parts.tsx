@@ -40,7 +40,8 @@ export function Elapsed({ since }: { since: string }) {
 
 /** 「18.2 万」 */
 export const tokens = (n: number) => (n >= 10_000 ? `${(n / 10_000).toFixed(1)} 万` : n.toLocaleString("en-US"))
-export const money = (usd: number) => `$${usd.toFixed(2)}`
+/** 「$0.12」；不到一分钱的（便宜模型跑一次常常这样）多给两位，免得显示成 $0.00 */
+export const money = (usd: number) => `$${usd > 0 && usd < 0.01 ? usd.toFixed(4) : usd.toFixed(2)}`
 
 const STATUS = { done: { icon: CircleCheckIcon, label: "完成", variant: "outline" }, open: { icon: CircleDashedIcon, label: "未完成", variant: "ghost" }, skipped: { icon: CircleMinusIcon, label: "已跳过", variant: "destructive" } } as const
 

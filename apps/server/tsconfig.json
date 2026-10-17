@@ -5,9 +5,8 @@
       "node"
     ],
     "noEmit": true,
-    "allowImportingTsExtensions": true,
     "customConditions": [
-      "source"
+      "@heyagent/source"
     ],
     "declaration": false
   },

@@ -23,11 +23,11 @@ export function testDatabaseUrl() {
   return url
 }
 
-/** 清空测试库再从头跑一遍迁移 */
+/** 清空测试库再从头跑一遍迁移。pg-boss 的 pgboss schema 一起删，免得留下上一轮的任务 */
 export async function resetTestDatabase(url = testDatabaseUrl()) {
   const client = new pg.Client({ connectionString: url })
   await client.connect()
-  await client.query("drop schema if exists public cascade; drop schema if exists drizzle cascade; create schema public;")
+  await client.query("drop schema if exists pgboss cascade; drop schema if exists public cascade; drop schema if exists drizzle cascade; create schema public;")
   await client.end()
   await runMigrations(url)
 }

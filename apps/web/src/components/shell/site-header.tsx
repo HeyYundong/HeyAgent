@@ -1,6 +1,7 @@
 import { MoonIcon, SunIcon } from "lucide-react"
 
 import { NAV_ALL } from "@/components/shell/app-sidebar"
+import { NotificationsButton } from "@/components/shell/notifications"
 import { useTheme } from "@/components/theme-provider"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
@@ -18,6 +19,7 @@ export function SiteHeader() {
       <Separator orientation="vertical" className="my-3" />
       <span className="text-sm font-medium">{current?.title}</span>
       <div className="ml-auto flex items-center gap-1">
+        <NotificationsButton />
         <ThemeToggle />
       </div>
     </header>

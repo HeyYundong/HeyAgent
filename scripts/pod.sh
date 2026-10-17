@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# 整套 pod（postgres + api + web，入口 8080）：构建镜像、准备主密钥和配置、起停。描述在 deploy/pod.yaml。
-# 用法：scripts/pod.sh up | down | logs [postgres|api|web] | status
-#   HEYAGENT_SEED_DEMO=1 scripts/pod.sh up   起来后灌演示数据（会先清掉库里的演示数据再灌）
+# 整套 pod（postgres + api + worker + web，入口 8080）：构建镜像、准备主密钥 / OpenRouter key / 配置、起停。描述在 deploy/pod.yaml。
+# 用法：scripts/pod.sh up | down | reset | logs [postgres|api|worker|web] | status
+#   reset                                    停掉 pod、删掉全部数据卷，回到空白环境（不会自动再起，接着 up）
+#   HEYAGENT_SEED_DEMO=1 scripts/pod.sh up   起来后灌演示数据（只给开发用，默认不灌）
 #   HEYAGENT_SKIP_BUILD=1 scripts/pod.sh up  不重新构建镜像（镜像已经有了时省时间）
 #   HEYAGENT_PUBLIC_URL                      控制台对外的地址，默认 http://localhost:8080（better-auth 的 baseURL）
-# 兼容 Podman 3.4（podman play kube）和 4.x 以上（podman kube play）。数据卷 down 时保留；要清空：
-#   scripts/pod.sh down && podman volume rm heyagent-pod-pgdata heyagent-pod-files heyagent-pod-kek
+# OpenRouter 的 key 从仓库根目录 .env 的 OPENROUTER_API_KEY 读，写进卷里 0400 的文件（不进 configmap、不打印）；
+# 管理员初始密码（空白环境第一次起来时生成）复制到 .dev/admin-password（权限 600）。
+# 兼容 Podman 3.4（podman play kube）和 4.x 以上（podman kube play）。数据卷 down 时保留；要清空用 reset。
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -15,9 +17,14 @@ STATE=$ROOT/.dev/pod
 CONFIG=$STATE/config.yaml
 SECRETS=$STATE/secrets.env
 KEK=${HEYAGENT_KEK_FILE:-$ROOT/.dev/kek}
-API_IMAGE=localhost/heyagent-api:m0
-WEB_IMAGE=localhost/heyagent-web:m0
-VOLUMES=(heyagent-pod-pgdata heyagent-pod-files heyagent-pod-kek)
+API_IMAGE=localhost/heyagent-api:m1
+WEB_IMAGE=localhost/heyagent-web:m1
+WORKER_IMAGE=localhost/heyagent-worker:m1
+BROWSER_BASE_IMAGE=localhost/heyagent-browser-base:m0
+VOLUMES=(heyagent-pod-pgdata heyagent-pod-files heyagent-pod-secrets heyagent-pod-state)
+# M0 时主密钥放在 heyagent-pod-kek，M1 起和 OpenRouter key 一起放在 heyagent-pod-secrets；reset 时旧卷一起删
+OLD_VOLUMES=(heyagent-pod-kek)
+ADMIN_PASSWORD_OUT=$ROOT/.dev/admin-password
 PORT=8080
 PUBLIC_URL=${HEYAGENT_PUBLIC_URL:-http://localhost:$PORT}
 # 允许登录的来源：本机和内网另一台电脑（192.168.31.100 是开发机的内网地址）
@@ -32,13 +39,20 @@ pod_exists() { podman pod exists "$POD"; }
 
 build() {
   if [ "${HEYAGENT_SKIP_BUILD:-0}" = "1" ]; then
-    podman image exists "$API_IMAGE" && podman image exists "$WEB_IMAGE" && return 0
+    podman image exists "$API_IMAGE" && podman image exists "$WEB_IMAGE" && podman image exists "$WORKER_IMAGE" && return 0
     echo "镜像不全，还是要构建" >&2
   fi
   echo "== 构建 $API_IMAGE"
   podman build -f "$ROOT/deploy/api.Containerfile" -t "$API_IMAGE" "$ROOT"
   echo "== 构建 $WEB_IMAGE"
   podman build -f "$ROOT/deploy/web.Containerfile" -t "$WEB_IMAGE" "$ROOT"
+  # worker 以浏览器基础镜像为底（M2 要用里面的 Chrome）；基础镜像下载 Chrome 等要很久，已经有了就不重建
+  if ! podman image exists "$BROWSER_BASE_IMAGE"; then
+    echo "== 构建 $BROWSER_BASE_IMAGE（第一次要下载 Chrome、Node、gost）"
+    podman build -f "$ROOT/deploy/browser-base.Containerfile" -t "$BROWSER_BASE_IMAGE" "$ROOT/deploy"
+  fi
+  echo "== 构建 $WORKER_IMAGE"
+  podman build -f "$ROOT/deploy/worker.Containerfile" -t "$WORKER_IMAGE" "$ROOT"
 }
 
 random_secret() { head -c 32 /dev/urandom | base64 | tr -d '\n/+=' ; }
@@ -77,16 +91,44 @@ data:
 YAML
 }
 
-# 主密钥：没有就用 dev-kek.sh 生成；每次 up 都拷进卷，属主是 api 容器里的 node 用户（uid 1000），权限 0400。
-# 拷的时候用容器里的 root（rootless 下就是宿主机上的你），所以读得到 600 的 .dev/kek
-ensure_kek() {
+# 卷：没有就建。主密钥和 OpenRouter key 每次 up 都重新拷进 heyagent-pod-secrets（属主 uid 1000，权限 0400）：
+# api 容器的 node 用户、worker 容器的 browser 用户都是 uid 1000。文件卷、状态卷的属主也改成 uid 1000，api 和 worker 才写得进去。
+# 拷的时候用容器里的 root（rootless 下就是宿主机上的你），所以读得到 600 的 .dev/kek。
+# OpenRouter key 经标准输入传进容器，不出现在命令行参数和日志里；.env 里没有 key 就删掉卷里的旧文件（api 启动时跳过接入）
+ensure_volumes() {
   [ -f "$KEK" ] || HEYAGENT_KEK_FILE="$KEK" "$ROOT/scripts/dev-kek.sh"
   for volume in "${VOLUMES[@]}"; do
     podman volume exists "$volume" || podman volume create "$volume" >/dev/null
   done
   podman run --rm --user 0 --entrypoint sh \
-    -v heyagent-pod-kek:/dst -v "$KEK":/src/kek:ro \
-    "$API_IMAGE" -c 'install -o node -g node -m 0400 /src/kek /dst/kek'
+    -v heyagent-pod-secrets:/secrets -v heyagent-pod-files:/files -v heyagent-pod-state:/state -v "$KEK":/src/kek:ro \
+    "$API_IMAGE" -c 'install -o 1000 -g 1000 -m 0400 /src/kek /secrets/kek && chown 1000:1000 /files /state'
+  local key
+  key=$(grep -E '^OPENROUTER_API_KEY=' "$ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2- || true)
+  if [ -n "$key" ]; then
+    printf '%s' "$key" | podman run --rm -i --user 0 --entrypoint sh -v heyagent-pod-secrets:/secrets "$API_IMAGE" \
+      -c 'umask 077; cat > /secrets/openrouter-key.tmp && chown 1000:1000 /secrets/openrouter-key.tmp && chmod 0400 /secrets/openrouter-key.tmp && mv -f /secrets/openrouter-key.tmp /secrets/openrouter-key'
+    echo "OpenRouter key 已写进卷 heyagent-pod-secrets（0400，没有打印）"
+  else
+    podman run --rm --user 0 --entrypoint sh -v heyagent-pod-secrets:/secrets "$API_IMAGE" -c 'rm -f /secrets/openrouter-key'
+    echo ".env 里没有 OPENROUTER_API_KEY：不自动接入 OpenRouter，登录后在「模型」页手动加"
+  fi
+  unset key
+}
+
+# 管理员初始密码：api 第一次在空库上启动时生成，写在状态卷里；复制到 .dev/admin-password（600），不打印
+copy_admin_password() {
+  local tmp
+  tmp=$(mktemp "$ROOT/.dev/admin-password.XXXXXX")
+  chmod 600 "$tmp"
+  if podman exec "$POD-api" sh -c 'cat /data/state/admin-password 2>/dev/null' > "$tmp" && [ -s "$tmp" ]; then
+    mv -f "$tmp" "$ADMIN_PASSWORD_OUT"
+    chmod 600 "$ADMIN_PASSWORD_OUT"
+    echo "管理员初始密码在 .dev/admin-password（账号 admin@heyagent.local）"
+  else
+    rm -f "$tmp"
+    echo "状态卷里没有管理员初始密码（不是第一次起，或者已经有用户了）；.dev/admin-password 保持原样"
+  fi
 }
 
 wait_healthy() {
@@ -107,7 +149,7 @@ wait_healthy() {
 up() {
   build
   ensure_config
-  ensure_kek
+  ensure_volumes
   if pod_exists; then
     echo "== pod $POD 已经在了，先停掉重建（数据卷保留）"
     "${PLAY[@]}" --down "$YAML" >/dev/null
@@ -119,9 +161,27 @@ up() {
     echo "== 灌演示数据"
     podman exec -e HEYAGENT_SEED_DEMO=1 "$POD-api" node dist/seed/cli.js
   fi
+  copy_admin_password
+  wait_worker
   local ip
   ip=$(hostname -I 2>/dev/null | awk '{print $1}')
   echo "整套已启动：http://localhost:$PORT${ip:+ ，内网 http://$ip:$PORT}"
+}
+
+# worker 等 api 健康后才起；看它的日志确认已经开始干活
+wait_worker() {
+  echo -n "等 worker 启动 "
+  for _ in $(seq 1 60); do
+    if podman logs "$POD-worker" 2>&1 | grep -q "HeyAgent worker 已启动"; then
+      echo " 就绪"
+      return 0
+    fi
+    echo -n "."
+    sleep 1
+  done
+  echo
+  echo "60 秒内 worker 没有启动，看日志：scripts/pod.sh logs worker" >&2
+  exit 1
 }
 
 down() {
@@ -133,11 +193,23 @@ down() {
   fi
 }
 
+# 回到空白环境：停 pod、删全部数据卷（数据库、文件、主密钥副本、管理员密码）。.dev/kek 和 .dev/pod/secrets.env 保留
+reset() {
+  down
+  local volume
+  for volume in "${VOLUMES[@]}" "${OLD_VOLUMES[@]}"; do
+    if podman volume exists "$volume"; then
+      podman volume rm "$volume" >/dev/null
+      echo "已删除卷 $volume"
+    fi
+  done
+}
+
 logs() {
   if [ -n "${1:-}" ]; then
     exec podman logs -f "$POD-$1"
   fi
-  for name in postgres api web; do
+  for name in postgres api worker web; do
     echo "== $POD-$name"
     podman logs --tail 30 "$POD-$name" 2>&1 || true
   done
@@ -156,7 +228,8 @@ status() {
 case "${1:-}" in
   up) up ;;
   down) down ;;
+  reset) reset ;;
   logs) logs "${2:-}" ;;
   status) status ;;
-  *) echo "用法：$0 up | down | logs [postgres|api|web] | status" >&2; exit 2 ;;
+  *) echo "用法：$0 up | down | reset | logs [postgres|api|worker|web] | status" >&2; exit 2 ;;
 esac

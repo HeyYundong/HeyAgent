@@ -215,7 +215,7 @@ export const appRouter = router({
     createSecret: protectedProcedure.input(secretInputSchema).mutation(({ ctx, input }) => tools.createSecret(w(ctx), input)),
     updateSecret: protectedProcedure.input(secretInputSchema).mutation(({ ctx, input }) => tools.updateSecretValue(w(ctx), input)),
     deleteSecret: protectedProcedure.input(z.object({ name: secretNameSchema })).mutation(({ ctx, input }) => tools.removeSecret(w(ctx), input)),
-    // MCP 服务器：「连接并读取工具」由 P3 接引擎的接口，读到的工具通过 tools 字段传进来
+    // MCP 服务器：「连接并读取工具」走 engine.listMcpServerTools，勾选的工具通过 tools 字段传进来
     createMcpServer: protectedProcedure.input(mcpServerInputSchema).mutation(({ ctx, input }) => tools.createMcpServer(w(ctx), input)),
     updateMcpServer: protectedProcedure.input(mcpServerUpdateSchema).mutation(({ ctx, input }) => tools.updateMcpServer(w(ctx), input)),
     deleteMcpServer: protectedProcedure.input(idInput).mutation(({ ctx, input }) => tools.deleteMcpServer(w(ctx), input)),

@@ -9,8 +9,8 @@
     "drizzle"
   ],
   "scripts": {
-    "dev": "tsx watch --conditions=source src/index.ts",
-    "dev:worker": "tsx watch --conditions=source src/worker.ts",
+    "dev": "tsx watch --conditions=@heyagent/source src/index.ts",
+    "dev:worker": "tsx watch --conditions=@heyagent/source src/worker.ts",
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
     "start:worker": "node dist/worker.js",
@@ -18,9 +18,9 @@
     "lint": "eslint .",
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx --conditions=source src/db/migrate-cli.ts",
-    "db:seed": "tsx --conditions=source src/seed/cli.ts",
-    "dev:notify": "tsx --conditions=source src/scripts/dev-notify.ts"
+    "db:migrate": "tsx --conditions=@heyagent/source src/db/migrate-cli.ts",
+    "db:seed": "tsx --conditions=@heyagent/source src/seed/cli.ts",
+    "dev:notify": "tsx --conditions=@heyagent/source src/scripts/dev-notify.ts"
   },
   "dependencies": {
     "@ai-sdk/mcp": "2.0.77",

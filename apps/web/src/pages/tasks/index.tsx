@@ -1,7 +1,7 @@
 // 任务页（v3.1）：卡片墙一直是主画面；点卡片从右边打开抽屉看任务详情（?id=），抽屉里再看某次运行的 session（?id=&run=）。
 // 执行中的排最前，而且是全墙唯一会动的卡（转圈、当前在做的那句闪光、已运行时间每秒跳）。
 // 主管能新建任务、开关任务；员工能看全部任务，只能开关、运行自己负责的。
-// 新建、编辑、开关、删除接通后端（M1 P2）；「立即运行」「立即继续」由 P3 接引擎。
+// 新建、编辑、开关、删除接通后端（M1 P2）；立即运行（可带附件）、立即继续、取消、任务附件接引擎（M1 P3）。
 import * as React from "react"
 import { ArrowLeftIcon, ListChecksIcon, PlusIcon } from "lucide-react"
 
@@ -126,7 +126,7 @@ function TaskSheetBody({ task, runId, state, canEdit }: { task: TaskDef; runId: 
             <Button variant="ghost" size="sm" className="self-start" onClick={() => setParams({ run: null })}><ArrowLeftIcon data-icon="inline-start" />{task.id} 任务详情</Button>
             <RunDetail task={task} run={state.runsOf(task.id).find((run) => run.id === runId)} />
           </>
-        ) : <TaskDetail task={task} state={state} />}
+        ) : <TaskDetail task={task} state={state} canEdit={canEdit} />}
       </div>
       <Separator />
       <SheetFooter className="mt-0 flex-row items-center justify-between">

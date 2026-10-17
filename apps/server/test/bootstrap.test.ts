@@ -1,6 +1,6 @@
 // M1 P2：空白正式环境的初始化。空库上跑 bootstrap：建出管理员（密码在文件里、权限 600、不打印），写默认设置，
 // 按 .env 的 OpenRouter key 接入模型服务（只用公开的模型列表接口），不灌任何演示数据；再跑一次什么都不变。
-import { mkdtempSync, readFileSync, statSync } from "node:fs"
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -12,6 +12,8 @@ import { createAuth } from "../src/auth.js"
 import { ADMIN_EMAIL, bootstrap } from "../src/bootstrap/index.js"
 import { createDb } from "../src/db/client.js"
 import * as t from "../src/db/schema.js"
+import { BUILTIN_TOOLS } from "../src/engine/tools/builtin-defs.js"
+import { env } from "../src/env.js"
 import { decryptText } from "../src/lib/crypto.js"
 import { ChangeHub } from "../src/live/hub.js"
 import { login, query, resetTestDatabase, tempKeyring, testDatabaseUrl } from "./helpers.js"
@@ -78,8 +80,12 @@ describe("空白环境初始化", () => {
     }
   })
 
-  it("没有任何演示数据：任务、记忆、技能、规则、工具、MCP、浏览器、平台、待办、session 都是空的", async () => {
-    const tables = { tasks: t.tasks, memories: t.memories, skills: t.skills, rules: t.rules, tools: t.tools, mcpServers: t.mcpServers, browserProfiles: t.browserProfiles, platforms: t.platforms, humanTodos: t.humanTodos, humanItems: t.humanItems, sessions: t.sessions }
+  it("没有任何演示数据：任务、记忆、技能、规则、工具（内置的除外）、MCP、浏览器、平台、待办、session 都是空的", async () => {
+    // 内置工具由 bootstrap 同步进 tools 表（M1 P3）：worker 还没起时工具页也能看到
+    const tools = await db.select({ id: t.tools.id, source: t.tools.source }).from(t.tools)
+    expect(tools.map((tool) => tool.id).sort()).toEqual(BUILTIN_TOOLS.map((tool) => tool.id).sort())
+    expect(tools.every((tool) => tool.source === "builtin")).toBe(true)
+    const tables = { tasks: t.tasks, memories: t.memories, skills: t.skills, rules: t.rules, mcpServers: t.mcpServers, browserProfiles: t.browserProfiles, platforms: t.platforms, humanTodos: t.humanTodos, humanItems: t.humanItems, sessions: t.sessions }
     for (const [name, table] of Object.entries(tables)) {
       const [row] = await db.select({ n: count() }).from(table)
       expect(row!.n, name).toBe(0)
@@ -106,6 +112,7 @@ describe("空白环境初始化", () => {
     expect(await db.select().from(t.users)).toHaveLength(1)
     expect(await db.select().from(t.modelProviders)).toHaveLength(1)
     expect(calls).toHaveLength(1)
+    expect(await db.select().from(t.tools)).toHaveLength(BUILTIN_TOOLS.length)
   })
 
   it("连不上外网也不挡住启动：OpenRouter 下次再试", async () => {
@@ -117,5 +124,31 @@ describe("空白环境初始化", () => {
     const result = await run()
     expect(result.openrouter).toBe("failed")
     expect(await db.select().from(t.modelProviders)).toHaveLength(0)
+  })
+})
+
+describe("OpenRouter 的 key 从文件读（OPENROUTER_API_KEY_FILE，整套 pod 里用）", () => {
+  const saved = { file: process.env.OPENROUTER_API_KEY_FILE, key: process.env.OPENROUTER_API_KEY }
+  afterAll(() => {
+    for (const [name, value] of [["OPENROUTER_API_KEY_FILE", saved.file], ["OPENROUTER_API_KEY", saved.key]] as const) {
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    }
+  })
+
+  it("文件优先；文件读不到时退回 OPENROUTER_API_KEY", () => {
+    const file = join(mkdtempSync(join(tmpdir(), "heyagent-or-")), "openrouter-key")
+    writeFileSync(file, "sk-or-from-file\n", { mode: 0o400 })
+    process.env.OPENROUTER_API_KEY = "sk-or-from-env"
+    process.env.OPENROUTER_API_KEY_FILE = file
+    expect(env.openrouterApiKey).toBe("sk-or-from-file")
+    process.env.OPENROUTER_API_KEY_FILE = join(tmpdir(), "heyagent-no-such-key-file")
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    expect(env.openrouterApiKey).toBe("sk-or-from-env")
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
+    delete process.env.OPENROUTER_API_KEY_FILE
+    delete process.env.OPENROUTER_API_KEY
+    expect(env.openrouterApiKey).toBeUndefined()
   })
 })

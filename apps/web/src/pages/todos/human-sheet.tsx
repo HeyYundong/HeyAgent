@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button"
 import { CodeBlockLine } from "@/components/ui/code-block"
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field"
+import { Spinner } from "@/components/ui/spinner"
 import { Textarea } from "@/components/ui/textarea"
 import { href } from "@/lib/router"
 import { findById, fmtShort, humanItemKindLabel, type HumanItem, type SessionRun } from "@heyagent/shared"
@@ -23,11 +24,11 @@ import { trpc } from "@/lib/trpc"
 import { Block, DetailSheet, Said, TextLink, dots } from "./sheets"
 
 // canAct：主管，或者分给自己的事；否则只读（没有操作按钮，顶部写分给了谁）
-// onDone：真正提交的那一下（批准、拒绝、确认付款……）。记忆审核、技能修改在这里直接调配置接口（M1 P2）；
-// 审批、验收、登录要继续 session，由 P3 接引擎，现在页面传进来的是统一的只读提示
-type Props = { item: HumanItem; runs: SessionRun[]; open: boolean; userId: string; canAct: boolean; onClose: () => void; onDone: () => void }
+// 记忆审核、技能修改直接调配置接口（M1 P2）；审批、验收、登录、花费到了上限要不要继续，调 engine.resolveHumanItem（M1 P3）：
+// how = approve（批准）/ reject（拒绝）/ done（已处理，用于登录这类「去做了」的事），加备注；处理完关联的 session 继续
+type Props = { item: HumanItem; runs: SessionRun[]; open: boolean; userId: string; canAct: boolean; onClose: () => void }
 
-export function HumanSheet({ item, runs, open, userId, canAct, onClose, onDone }: Props) {
+export function HumanSheet({ item, runs, open, userId, canAct, onClose }: Props) {
   const staffName = useStaffName()
   const rules = useRulesQuery().data ?? []
   const detail = item.detail
@@ -38,22 +39,34 @@ export function HumanSheet({ item, runs, open, userId, canAct, onClose, onDone }
   const rejectMemory = useAction(trpc.memories.reject.mutationOptions(closeAfter), { success: "已拒绝" })
   const acceptSkill = useAction(trpc.skills.acceptSuggestion.mutationOptions(closeAfter), { success: detail.done?.[0] ?? "已合并" })
   const rejectSkill = useAction(trpc.skills.rejectSuggestion.mutationOptions(closeAfter), { success: "已拒绝" })
-  // 记忆审核、技能修改：直接调配置接口；其余的事要继续 session，P3 接
-  const done = () => {
+  const engineItem = item.kind !== "memory" && item.kind !== "skill"
+  const [note, setNote] = React.useState("")
+  const resolve = useAction(trpc.engine.resolveHumanItem.mutationOptions(closeAfter), {
+    success: (result, vars) =>
+      result.resumedSessionId
+        ? `${vars.how === "reject" ? "已拒绝" : vars.how === "approve" ? "已批准" : "已处理"}，${result.resumedSessionId} 继续执行`
+        : result.endedSessionId
+          ? `已拒绝，${result.endedSessionId} 结束`
+          : "已处理",
+    errorTitle: "没处理成功",
+  })
+  // 主按钮：登录这类「请人去做」的是已处理，其余是批准；「次按钮也算完成」的（secondaryDone）按已处理
+  const done = (how: "approve" | "done" = item.kind === "login" ? "done" : "approve") => {
     if (item.kind === "memory" && item.memoryId) approveMemory.mutate({ id: item.memoryId })
     else if (item.kind === "skill" && item.skillId) acceptSkill.mutate({ id: item.skillId })
-    else onDone()
+    else resolve.mutate({ itemId: item.id, how, note: note.trim() || undefined })
   }
   const reject = (reason: string) => {
     if (item.kind === "memory" && item.memoryId) rejectMemory.mutate({ id: item.memoryId, reason: reason || undefined })
     else if (item.kind === "skill" && item.skillId) rejectSkill.mutate({ id: item.skillId, reason: reason || undefined })
-    else onDone()
+    else resolve.mutate({ itemId: item.id, how: "reject", note: reason || note.trim() || undefined })
   }
+  const busy = resolve.isPending || approveMemory.isPending || rejectMemory.isPending || acceptSkill.isPending || rejectSkill.isPending
   const primary = detail.link ? <Button nativeButton={false} render={<a href={href(detail.link.page, { id: detail.link.id })} />}>{detail.primary}</Button>
-    : detail.pay ? <PayButton label={detail.primary} confirm={detail.pay} onConfirm={done} />
-      : <Button onClick={done}><CheckIcon data-icon="inline-start" />{detail.primary}</Button>
-  const secondary = detail.secondaryDone ? <Button variant="outline" onClick={done}>{detail.secondary}</Button>
-    : <RejectButton hint={detail.rejectHint ?? ""} onReject={reject} />
+    : detail.pay ? <PayButton label={detail.primary} confirm={detail.pay} onConfirm={() => done()} />
+      : <Button disabled={busy} onClick={() => done()}>{busy ? <Spinner data-icon="inline-start" /> : <CheckIcon data-icon="inline-start" />}{detail.primary}</Button>
+  const secondary = detail.secondaryDone ? <Button variant="outline" disabled={busy} onClick={() => done("done")}>{detail.secondary}</Button>
+    : <RejectButton label={engineItem ? detail.secondary : "拒绝"} hint={detail.rejectHint ?? (engineItem ? "agent 会看到你的原因，照着调整。" : "")} defaultReason={note.trim()} disabled={busy} onReject={reject} />
 
   return (
     <DetailSheet
@@ -81,6 +94,14 @@ export function HumanSheet({ item, runs, open, userId, canAct, onClose, onDone }
       {item.kind === "verify" && run?.verification && <DetailSection title="三方 AI 和执行 agent 的对话">
         {run.verification.notes.map((note, index) => <Said key={index} {...note} />)}
       </DetailSection>}
+      {canAct && engineItem && (
+        <DetailSection title="备注" description="可以不填。写了的话，agent 继续时会看到。">
+          <Field>
+            <FieldLabel htmlFor={`human-note-${item.id}`} className="sr-only">备注</FieldLabel>
+            <Textarea id={`human-note-${item.id}`} rows={3} placeholder="例如：可以，但数量减半" value={note} onChange={(event) => setNote(event.target.value)} />
+          </Field>
+        </DetailSection>
+      )}
       {run?.waiting && (item.kind === "approval" || item.kind === "login") && (
         <DetailSection title="处理完之后" description="不会新开 session">
           <p className="mb-2">{run.id} 已挂起，在等：{run.waiting.what}。处理完，系统就继续这个 session，agent 接着往下做。</p>
@@ -92,14 +113,14 @@ export function HumanSheet({ item, runs, open, userId, canAct, onClose, onDone }
 }
 
 /** 「拒绝」：弹窗填原因（可不填），agent 会照着调整 */
-function RejectButton({ hint, onReject }: { hint: string; onReject: (reason: string) => void }) {
-  // 原因随拒绝一起提交（记忆审核、技能修改已经接通）
+function RejectButton({ label, hint, defaultReason, disabled, onReject }: { label: string; hint: string; defaultReason: string; disabled?: boolean; onReject: (reason: string) => void }) {
+  // 原因随拒绝一起提交；打开时带上下面备注里已经写的
   const [reason, setReason] = React.useState("")
   return (
-    <Dialog>
-      <DialogTrigger render={<Button variant="outline" />}><XIcon data-icon="inline-start" />拒绝</DialogTrigger>
+    <Dialog onOpenChange={(open) => open && setReason(defaultReason)}>
+      <DialogTrigger render={<Button variant="outline" disabled={disabled} />}><XIcon data-icon="inline-start" />{label}</DialogTrigger>
       <DialogContent>
-        <DialogHeader><DialogTitle>拒绝这件事</DialogTitle><DialogDescription>{hint}</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>{label}</DialogTitle><DialogDescription>{hint}</DialogDescription></DialogHeader>
         <Field>
           <FieldLabel htmlFor="reject-reason">原因</FieldLabel><Textarea id="reject-reason" value={reason} onChange={(event) => setReason(event.target.value)} />
           <FieldDescription>可以不填。写了的话，agent 会照着调整。</FieldDescription>

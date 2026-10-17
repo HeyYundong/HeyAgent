@@ -94,7 +94,7 @@ function CardLink({ card, userId }: { card: Card; userId: string }) {
         <Line icon={<PauseIcon className="size-3" />}><span className="text-muted-foreground">{fmtShort(run.waiting.since)} 挂起，到了继续同一个 session</span></Line>
       </>}
       {column === "verifying" && <Line icon={<ShieldQuestionIcon className="size-3" />}>{run.verification?.headline}</Line>}
-      {column === "done" && <Line icon={<CircleCheckIcon className="size-3" />}>{note ? "验收通过（同意跳过）" : `${run.endedAt ? fmtShort(run.endedAt) : ""} 完成 · 验收通过`}</Line>}
+      {column === "done" && <Line icon={<CircleCheckIcon className="size-3" />}>{note ? "验收通过（同意跳过）" : `${run.endedAt ? fmtShort(run.endedAt) : ""} 完成${run.verification?.status === "passed" ? " · 验收通过" : ""}`}</Line>}
       {note && <p className="text-xs/relaxed text-muted-foreground">{note}</p>}
     </Shell>
   )

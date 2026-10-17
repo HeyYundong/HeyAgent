@@ -67,6 +67,16 @@ describe("实时推送（LISTEN/NOTIFY → SSE）", () => {
     expect(event.id).toMatch(/^[0-9a-f]+:\d+$/)
   })
 
+  it("settings 表也推（迁移 0004）：id 是设置的键名", async () => {
+    const res = await subscribe()
+    setTimeout(
+      () => ctx.db.execute(sql`insert into settings (key, value) values ('session.maxSteps', '50') on conflict (key) do update set value = excluded.value`).then(() => {}),
+      300
+    )
+    const event = await readUntil(res, (e) => e.data?.table === "settings")
+    expect(event.data).toEqual({ table: "settings", id: "session.maxSteps" })
+  })
+
   it("pnpm dev:notify 那样直接 pg_notify 也能收到", async () => {
     const res = await subscribe()
     setTimeout(() => ctx.db.execute(sql`select pg_notify('heyagent_changes', '{"table":"tasks","id":"T-1024"}')`).then(() => {}), 300)

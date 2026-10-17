@@ -14,7 +14,7 @@ const { db, pool } = createDb(env.databaseUrl)
 const auth = createAuth(db, { secret: env.authSecret, baseURL: env.authUrl, trustedOrigins: env.trustedOrigins })
 const keyring = loadKeyring(env.kekFile)
 // 空白环境初始化（M1 P2）：建管理员、写默认设置、按 .env 接入 OpenRouter。可以重复执行
-await bootstrap(db, { auth, keyring, adminPasswordFile: adminPasswordFileFromEnv(), openrouterApiKey: process.env.OPENROUTER_API_KEY, log: (message) => console.log(`[bootstrap] ${message}`) })
+await bootstrap(db, { auth, keyring, adminPasswordFile: adminPasswordFileFromEnv(), openrouterApiKey: env.openrouterApiKey, log: (message) => console.log(`[bootstrap] ${message}`) })
 const hub = new ChangeHub(env.databaseUrl)
 await hub.start()
 // 引擎：API 进程只发任务（立即运行、继续、定时同步），不跑任务

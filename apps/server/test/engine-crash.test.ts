@@ -91,7 +91,7 @@ function workerProcess(name: string): ChildProcess & { logs: string[] } {
   // 直接起 node（不经过 tsx 的命令行包装），kill -9 杀的就是 worker 本身
   const child = spawn(
     process.execPath,
-    ["--conditions=source", "--import", "tsx", "src/worker.ts"],
+    ["--conditions=@heyagent/source", "--import", "tsx", "src/worker.ts"],
     {
       cwd: serverDir,
       env: {
