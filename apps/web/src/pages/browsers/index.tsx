@@ -177,14 +177,8 @@ export default function BrowsersPage() {
                     </ItemGroup>
                   )}
                 </DetailSection>
-                <DetailSection title="代理、时区和登录态" description="出口地是配置里写的一句话，系统不检测。所有 agent 共用这份 cookie 和 session，用完把变化合并回来。">
-                  <div className="flex flex-col gap-3">
-                    <Facts rows={profileRows(selected)} />
-                    <p className="text-xs text-muted-foreground">
-                      每次运行第一次用浏览器时临时起一个 Chrome，先装进这份登录态；用完只把变了的 cookie 合并回来，再关掉。
-                      代理挂了就报错，不会退回直连。某个账号同时在用的 session 满了，要用它的任务排队。cookie 不会给 agent 看。
-                    </p>
-                  </div>
+                <DetailSection title="代理、时区和登录态">
+                  <Facts rows={profileRows(selected)} />
                 </DetailSection>
               </DetailPanel>
             )
