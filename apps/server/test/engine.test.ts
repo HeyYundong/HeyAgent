@@ -1339,6 +1339,69 @@ describe("其他接口", () => {
     ).toBe("BAD_REQUEST")
   })
 
+  it("选了技能自动带上 skill.load，有附件自动带上 file.read（任务没选也能读）", async () => {
+    const [skill] = await ctx.db
+      .select()
+      .from(t.skills)
+      .where(eq(t.skills.status, "published"))
+      .limit(1)
+    const form = new FormData()
+    form.append(
+      "file",
+      new File(["这次只看前三行"], "说明.txt", { type: "text/plain" })
+    )
+    const uploaded = (await (
+      await ctx.app.request("/api/files", {
+        method: "POST",
+        body: form,
+        headers: { cookie: wang },
+      })
+    ).json()) as { id: string }
+    const script = useScript(
+      "test/implied",
+      new Script([
+        step([
+          call("skill.load", { skill: skill!.id }),
+          call("file.read", { fileId: uploaded.id }),
+        ]),
+        step([text("读到了")]),
+      ])
+    )
+    const taskId = await createTask(ctx.db, {
+      modelId: "test/implied",
+      skillIds: [skill!.id],
+    })
+    const sessionId = await runNow(taskId, wang, {
+      attachmentFileIds: [uploaded.id],
+    })
+    await waitStatus(ctx.db, sessionId, "done")
+    const toolIds = (await sessionRow(ctx.db, sessionId))!.snapshot!.tools.map(
+      (tool) => tool.id
+    )
+    expect(toolIds).toEqual(expect.arrayContaining(["skill.load", "file.read"]))
+    // 没被拦下：技能全文和附件内容都交给了模型
+    const blocked = (await eventsOf(ctx.db, sessionId)).filter(
+      (event) =>
+        event.kind === "rule" && event.detail?.includes("不在本任务允许的范围里")
+    )
+    expect(blocked).toEqual([])
+    expect(script.promptText(1)).toContain(
+      skill!.body.slice(0, 30).replace(/\n/g, "\\n")
+    )
+    expect(script.promptText(1)).toContain("这次只看前三行")
+
+    // 对照：没选技能、没有附件，就不加
+    useScript("test/implied-none", new Script([step([text("没事做")])]))
+    const plainTask = await createTask(ctx.db, { modelId: "test/implied-none" })
+    const plainSession = await runNow(plainTask)
+    await waitStatus(ctx.db, plainSession, "done")
+    const plainTools = (await sessionRow(ctx.db, plainSession))!.snapshot!.tools.map(
+      (tool) => tool.id
+    )
+    expect(plainTools).not.toContain("skill.load")
+    expect(plainTools).not.toContain("file.read")
+  })
+
   it("lineDiff：默认和删除的行都是原文里的行，新增的行插在前一行后面", () => {
     const diff = lineDiff("a\nb\nc", "a\nB\nc\nd")
     expect(diff).toEqual([

@@ -1,4 +1,4 @@
-// 「通知渠道」分区：agent 调「通知」工具时，除了站内通知，还推送到这里启用的渠道。
+// 「通知渠道」分区：站内通知（要人处理、运行失败、等太久、规则通知、agent 调「通知员工」等）同时推送到这里启用的渠道；只有「运行完成」不推。
 // 列表每行：名字、类型、地址掩码、启用开关（直接保存）、编辑、删除（二次确认）。
 import * as React from "react"
 import { BellIcon, PencilIcon, PlusIcon, Trash2Icon } from "lucide-react"
@@ -35,7 +35,7 @@ export function ChannelsSection({ channels }: { channels: Channel[] }) {
   return (
     <DetailSection
       title="通知渠道"
-      description="agent 调「通知」工具时，除了站内通知，还会推送到下面启用的渠道。"
+      description="除了「运行完成」，所有站内通知都会同时推送到下面启用的渠道。"
       action={
         <Button size="sm" variant="outline" onClick={() => setEditing("new")}>
           <PlusIcon data-icon="inline-start" />

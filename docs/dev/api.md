@@ -319,15 +319,15 @@ curl -s -b 'better-auth.session_token=<COOKIE>' -H 'content-type: application/js
 
 ### 4.5 浏览器
 
-**Chrome 输入**（`browserProfileInputSchema`，修改多 `id`）：`name`(1-100)、`description?`(≤500，给 agent 看的说明，它靠这句话选用哪个 Chrome)、`proxy`、`exitIp?`(≤100)、`timezone?`(≤64)、`locale?`(≤32)。`proxy` 是：
+**Chrome 输入**（`browserProfileInputSchema`，修改多 `id`）：`name`(1-100)、`description?`(≤500，给 agent 看的说明，它靠这句话选用哪个 Chrome)、`proxy`、`exitIp?`(≤100，出口地，一句话给人看，系统不检测)、`timezone?`(≤64，IANA 时区，要是运行环境认识的，存规范写法，例如 `asia/shanghai` → `Asia/Shanghai`；空 = Chrome 用 `Asia/Shanghai`)、`locale?`(≤32，BCP 47 语言代码，存规范写法，例如 `en-us` → `en-US`；空 = Chrome 用 `zh-CN`)。时区、语言写错是 `BAD_REQUEST`。Chrome 启动时时区用环境变量 `TZ`，语言用 `--lang` 和 `--accept-lang`。`proxy` 是：
 
 - `{ kind: "none" }`；
 - `{ kind: "socks5", host(1-200), port(1-65535 整数), username?, password?, clearPassword? }`。密码只加密存；**`password` 不填 = 不改**；`clearPassword: true` 去掉已存的密码；改成 `none` 也会删密码。
 
 | 接口 | 谁能调 | 输入 | 返回 | 主要错误 | 审计 / 推送 |
 |---|---|---|---|---|---|
-| `browsers.create` | 主管 | Chrome 输入 | `{ id }`（`br-<短名>`）。`exitIp` 不填存「第一次打开时检测」 | `FORBIDDEN` | `browser_profile.create`（detail.passwordSet）；推 `browser_profiles`、`secrets` |
-| `browsers.update` | 主管 | 输入 + `id` | `{ id }` | `NOT_FOUND` | `browser_profile.update`（detail.password 是 `set / cleared / kept`）。`exitIp` 不填就保留原值 |
+| `browsers.create` | 主管 | Chrome 输入 | `{ id }`（`br-<短名>`）。`exitIp` 不填存空字符串 | `FORBIDDEN` | `browser_profile.create`（detail.passwordSet）；推 `browser_profiles`、`secrets` |
+| `browsers.update` | 主管 | 输入 + `id` | `{ id }` | `NOT_FOUND` | `browser_profile.update`（detail.password 是 `set / cleared / kept`）。`exitIp` 不传就保留原值，传空字符串就清掉 |
 | `browsers.delete` | 主管 | `{ id }` | `{ id }` | `NOT_FOUND`；`CONFLICT`：它的账号还有没释放的租约（有 session 在用） | `browser_profile.delete`；账号、保险箱、代理密码一起删 |
 | `platforms.create` | 主管 | `{ name(1-100), id?(^[a-z0-9][a-z0-9-]{0,39}$) }` | `{ id }`（不填按名字生成英文短名） | `CONFLICT`：同名或 id 已被用 | `platform.create`；推 `platforms` |
 | `platforms.delete` | 主管 | `{ id }` | `{ id }` | `NOT_FOUND`；`CONFLICT`：平台下还有账号 | `platform.delete` |
@@ -384,7 +384,7 @@ curl -s -b 'better-auth.session_token=<COOKIE>' -H 'content-type: application/js
 
 ### 5.1 `engine.runNow`
 
-- 流程：校验任务和附件 → 在一个事务里**冻结快照**（任务当时的步骤、模型、记忆、技能、工具、规则、检查点、附件清单；之后改任务不影响这次运行）→ 建 session（状态 `running`）、检查点、第一条消息和 `plan` 事件 → 排进 `session.run` 队列。
+- 流程：校验任务和附件 → 在一个事务里**冻结快照**（任务当时的步骤、模型、记忆、技能、工具、规则、检查点、附件清单；之后改任务不影响这次运行。快照里有已发布的技能时自动加上 `skill.load`，有附件（任务附件或这次带的）时自动加上 `file.read`，任务没选也一样）→ 建 session（状态 `running`）、检查点、第一条消息和 `plan` 事件 → 排进 `session.run` 队列。
 - 错误：`NOT_FOUND`（任务；附件 id 不存在）；`FORBIDDEN`（「只有任务负责人和主管能运行这个任务」）；`BAD_REQUEST`：任务已停用（先启用）、附件「已经用在别处，请重新上传」。
 - 附件规则：`attachmentFileIds` 里的文件要么是刚上传、还没用过的（`kind = upload`、没有 `sessionId` 和 `taskId`），要么本来就是这个任务的附件；重复 id 会去重。刚上传的文件会变成这次运行的附件（`kind → attachment`、`sessionId` 写成新 session）。任务附件不用传，每次运行自动带。
 - 副作用：审计 `session.start`（detail 有 taskId、source: `manual`、attachments）；任务选用的记忆写上 `lastUsedAt`；推 `sessions`、`session_events`、`checkpoints`、`files`、`memories`。

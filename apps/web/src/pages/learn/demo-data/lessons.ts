@@ -321,8 +321,8 @@ export const browserScenarios = [
 export type ModelRole = "plan" | "run" | "verify"
 
 export const modelRoles: { id: ModelRole; label: string; what: string }[] = [
-  { id: "plan", label: "规划", what: "把一句话任务拆成步骤。任务没写步骤时，由它探索出步骤，记进运行记录。" },
-  { id: "run", label: "执行", what: "按步骤调工具干活，token 用得最多。每个任务可以单独选，不选就用默认。" },
+  { id: "plan", label: "规划", what: "保存规则时把那句话翻译成程序能执行的结构；长对话压缩上下文时给工具输出写摘要。" },
+  { id: "run", label: "执行", what: "按步骤调工具干活，任务没写步骤时也由它自己探索步骤，token 用得最多。每个任务可以单独选，不选就用默认。" },
   { id: "verify", label: "三方验收", what: "agent 说做完时，逐条核对检查点。不许和执行用同一家的模型：模型页保存不了，新建任务也会拦。" },
 ]
 

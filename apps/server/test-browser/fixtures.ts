@@ -187,7 +187,7 @@ let counter = 0
 export async function createProfile(
   db: Db,
   keyring: Keyring,
-  input: { name?: string; proxy?: { host: string; port: number; username?: string; password?: string } } = {}
+  input: { name?: string; proxy?: { host: string; port: number; username?: string; password?: string }; timezone?: string | null; locale?: string | null } = {}
 ) {
   const id = `br-t${++counter}-${randomBytes(2).toString("hex")}`
   await db.insert(t.browserProfiles).values({
@@ -198,8 +198,8 @@ export async function createProfile(
     proxyHost: input.proxy?.host ?? null,
     proxyPort: input.proxy?.port ?? null,
     proxyUsername: input.proxy?.username ?? null,
-    timezone: "Asia/Shanghai",
-    locale: "zh-CN",
+    timezone: input.timezone === undefined ? "Asia/Shanghai" : input.timezone,
+    locale: input.locale === undefined ? "zh-CN" : input.locale,
   })
   if (input.proxy?.password) {
     const secretId = `sec-${id}`

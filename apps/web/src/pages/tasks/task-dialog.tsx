@@ -51,6 +51,9 @@ type Option = { value: string; label: string; hint?: string; disabled?: boolean 
 type PickKey = "memoryIds" | "skillIds" | "toolIds" | "ruleIds"
 const PICK_KEYS: PickKey[] = ["memoryIds", "skillIds", "toolIds", "ruleIds"]
 
+/** 引擎生成运行快照时自动加上的两个工具（apps/server/src/engine/sessions.ts） */
+const IMPLIED_TOOLS_NOTE = "选了技能会自动带上「读取技能」；有附件会自动带上「读附件」。"
+
 /** 「用哪些」的选项：生效的记忆、已发布的技能、不是自带的工具、全部规则；编辑时已经选上的（哪怕后来归档、停用了）也列出来。
  * 规则：没生效的也列出来但选不了（灰掉，写原因）；编辑时原来就选着的照样留着（后端也保留） */
 function usePickOptions(picked: Partial<Record<PickKey, string[]>>, originalRuleIds: string[]): Record<PickKey, { label: string; options: Option[] }> {
@@ -385,7 +388,7 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
                           options={options[key].options}
                           value={field.value ?? []}
                           onChange={field.onChange}
-                          description={key === "toolIds" && alwaysOn.length ? `每个任务都自带：${alwaysOn.map(toolName).join("、")}`
+                          description={key === "toolIds" ? `${alwaysOn.length ? `每个任务都自带：${alwaysOn.map(toolName).join("、")}。` : ""}${IMPLIED_TOOLS_NOTE}`
                             : key === "ruleIds" ? "只能选已经生效的（主管在「规则」页确认过「系统理解为」）；没生效的灰着，写了原因。" : undefined}
                           notes={key === "ruleIds" ? ruleNotes : undefined}
                         />

@@ -57,6 +57,13 @@
       "when": 1792237431276,
       "tag": "0007_m3_rules_verify",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1792246622516,
+      "tag": "0008_exit_ip_placeholder",
+      "breakpoints": true
     }
   ]
 }

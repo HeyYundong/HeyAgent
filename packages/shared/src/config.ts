@@ -5,6 +5,7 @@ import { CronExpressionParser } from "cron-parser"
 import { z } from "zod"
 
 import { domainSchema } from "./browser-runtime.js"
+import { canonicalLocale, canonicalTimeZone } from "./browsers.js"
 import { httpMethodSchema, httpSpecSchema, modelProviderKindSchema, riskSchema, skillStatusSchema, taskStepSchema } from "./schemas.js"
 import { TIME_ZONE } from "./time.js"
 
@@ -291,9 +292,18 @@ export const browserProfileInputSchema = z.object({
       clearPassword: z.boolean().optional(),
     }),
   ]),
+  /** 出口地：一句话，给人看的（例如「英国 · 伦敦」），系统不检测 */
   exitIp: optionalText(100).optional(),
-  timezone: optionalText(64).optional(),
-  locale: optionalText(32).optional(),
+  /** IANA 时区，例如 Asia/Shanghai；空 = 用默认（上海） */
+  timezone: optionalText(64)
+    .refine((value) => !value || canonicalTimeZone(value), "不认识这个时区，从列表里选一个，例如 Asia/Shanghai")
+    .transform((value) => (value ? canonicalTimeZone(value)! : value))
+    .optional(),
+  /** 语言，例如 zh-CN、en-US；空 = 用默认（zh-CN） */
+  locale: optionalText(32)
+    .refine((value) => !value || canonicalLocale(value), "填语言代码，例如 zh-CN、en-US")
+    .transform((value) => (value ? canonicalLocale(value)! : value))
+    .optional(),
 })
 export type BrowserProfileInput = z.input<typeof browserProfileInputSchema>
 export const browserProfileUpdateSchema = browserProfileInputSchema.extend({ id: z.string().min(1) })

@@ -266,7 +266,7 @@ function ServerDetail({ server, isAdmin, onEdit }: { server: Server; isAdmin: bo
       </DetailSection>
       <DetailSection title="加入的工具" description="连上服务器后读出它提供的工具，勾选的才会给 agent。">
         {tools.length === 0 ? (
-          <p className="flex items-center gap-2 text-muted-foreground"><PlugZapIcon className="size-4" />还没读取工具：「连接并读取工具」接上引擎后可用。</p>
+          <p className="flex items-center gap-2 text-muted-foreground"><PlugZapIcon className="size-4" />还没读取工具。</p>
         ) : (
           <ul className="flex flex-col gap-1">
             {tools.map((tool) => (

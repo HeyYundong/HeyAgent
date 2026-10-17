@@ -1,6 +1,30 @@
 // 浏览器页的纯函数（原型 browsers/data.ts）。
 import type { BrowserProfile, BrowserProxy, BrowserSite, SessionRun, TaskDef } from "./schemas.js"
 import { findById } from "./domain.js"
+import { TIME_ZONE } from "./time.js"
+
+/** Chrome 配置没填时区、语言时按这两个启动（服务端 browser/chrome.ts 里同样的默认值） */
+export const DEFAULT_BROWSER_TIMEZONE = TIME_ZONE
+export const DEFAULT_BROWSER_LOCALE = "zh-CN"
+
+/** IANA 时区的规范写法（例如 asia/shanghai → Asia/Shanghai）；不认识的返回 undefined */
+export function canonicalTimeZone(value: string): string | undefined {
+  try {
+    return new Intl.DateTimeFormat("en-US", { timeZone: value }).resolvedOptions().timeZone
+  } catch {
+    return undefined
+  }
+}
+
+/** 语言代码的规范写法（例如 en-us → en-US）；不是 BCP 47 写法的返回 undefined。逗号、分号之类的拼不进 --accept-lang */
+export function canonicalLocale(value: string): string | undefined {
+  if (!/^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$/.test(value)) return undefined
+  try {
+    return Intl.getCanonicalLocales(value)[0]
+  } catch {
+    return undefined
+  }
+}
 
 /** 一个网站 = 平台 × 账号 */
 export const siteKey = (site: Pick<BrowserSite, "platformId" | "account">) => `${site.platformId}|${site.account}`

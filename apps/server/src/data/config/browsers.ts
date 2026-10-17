@@ -51,7 +51,8 @@ export async function createBrowserProfile(ctx: WriteCtx, input: BrowserProfileF
       name: input.name,
       description: input.description,
       ...proxyColumns(input.proxy),
-      exitIp: input.exitIp || "第一次打开时检测",
+      // 出口地只是给人看的一句话，系统不检测；没填就空着
+      exitIp: input.exitIp ?? "",
       timezone: input.timezone || null,
       locale: input.locale || null,
     })
@@ -75,7 +76,8 @@ export async function updateBrowserProfile(ctx: WriteCtx, input: BrowserProfileF
         description: input.description,
         ...proxyColumns(input.proxy),
         proxyPasswordSecretId: secretId,
-        ...(input.exitIp ? { exitIp: input.exitIp } : {}),
+        // 不传 = 不改；传空 = 清掉
+        ...(input.exitIp !== undefined ? { exitIp: input.exitIp } : {}),
         timezone: input.timezone || null,
         locale: input.locale || null,
       })

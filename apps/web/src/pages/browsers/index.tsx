@@ -126,7 +126,7 @@ export default function BrowsersPage() {
                 const opened = liveOf(profile.id).length
                 return (
                   <PickItem key={profile.id} to={href("browsers", { id: profile.id })} selected={profile.id === selected?.id} title={profile.name}
-                    description={`${proxyText(profile.proxy)} · ${profile.exitIp}${opened ? ` · 开着 ${opened} 个` : ""}`}
+                    description={[proxyText(profile.proxy), profile.exitIp, opened ? `开着 ${opened} 个` : ""].filter(Boolean).join(" · ")}
                     badge={problemCount(profile) > 0 && <Badge variant="destructive">{problemCount(profile)} 个要登录</Badge>}
                   />
                 )
@@ -138,7 +138,7 @@ export default function BrowsersPage() {
               <DetailPanel
                 title={selected.name}
                 badges={<Badge variant={selectedLive.length ? "secondary" : "outline"}>{selectedLive.length ? `开着 ${selectedLive.length} 个 Chrome` : "没有开着的"}</Badge>}
-                meta={`出口 ${selected.exitIp} · 保险箱 v${selected.vaultVersion} · 更新于 ${fmtDateTime(selected.updatedAt)}`}
+                meta={[selected.exitIp && `出口 ${selected.exitIp}`, `保险箱 v${selected.vaultVersion}`, `更新于 ${fmtDateTime(selected.updatedAt)}`].filter(Boolean).join(" · ")}
                 actions={
                   <>
                     <OpenLoginButton pending={login.pending && !login.pendingTarget?.accountId} onClick={() => void login.start({ profileId: selected.id })} />
@@ -177,7 +177,7 @@ export default function BrowsersPage() {
                     </ItemGroup>
                   )}
                 </DetailSection>
-                <DetailSection title="代理和登录态" description="所有 agent 共用这份 cookie 和 session，用完把变化合并回来。">
+                <DetailSection title="代理、时区和登录态" description="出口地是配置里写的一句话，系统不检测。所有 agent 共用这份 cookie 和 session，用完把变化合并回来。">
                   <div className="flex flex-col gap-3">
                     <Facts rows={profileRows(selected)} />
                     <p className="text-xs text-muted-foreground">

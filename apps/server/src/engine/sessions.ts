@@ -8,6 +8,7 @@ import {
   fmtDateTime,
   manualSessionId,
   recognizeCheckpoints,
+  type BuiltinToolId,
   type SessionSnapshot,
   type SnapshotTool,
 } from "@heyagent/shared"
@@ -162,6 +163,16 @@ export async function buildSnapshot(
     })
   )
 
+  // 选了技能却没选「读取技能」、带了附件却没选「读附件」，agent 就只看得到目录读不到内容：这两个跟着自动带上
+  const publishedSkills = skills.filter((skill) => skill.status === "published")
+  const implied: BuiltinToolId[] = []
+  if (publishedSkills.length) implied.push("skill.load")
+  if (attachments.length) implied.push("file.read")
+  for (const id of implied) {
+    if (!tools.some((each) => each.id === id))
+      tools.push(builtinSnapshotTool(id))
+  }
+
   return {
     v: 1,
     task: {
@@ -176,15 +187,13 @@ export async function buildSnapshot(
     memories: memories
       .filter((memory) => memory.status === "active")
       .map(({ id, content, appliesTo }) => ({ id, content, appliesTo })),
-    skills: skills
-      .filter((skill) => skill.status === "published")
-      .map(({ id, name, description, version, body }) => ({
-        id,
-        name,
-        description,
-        version,
-        body,
-      })),
+    skills: publishedSkills.map(({ id, name, description, version, body }) => ({
+      id,
+      name,
+      description,
+      version,
+      body,
+    })),
     tools,
     rules: rules.map(({ rule }) => ({
       id: rule.id,

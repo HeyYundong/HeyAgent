@@ -1,9 +1,11 @@
-// 新建 / 编辑 Chrome（只有主管）：名称、给 agent 的说明、代理（不用 / SOCKS5）。并发上限按账号设，不在这里。
+// 新建 / 编辑 Chrome（只有主管）：名称、给 agent 的说明、代理（不用 / SOCKS5）、出口地、时区、语言。并发上限按账号设，不在这里。
 // 表单：React Hook Form + shared 的 browserProfileInputSchema；代理密码只进不出，编辑时留空 = 不改。
+import * as React from "react"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { Controller, useForm, useWatch, type FieldError as FormFieldError } from "react-hook-form"
-import { browserProfileInputSchema, type BrowserProfileInput } from "@heyagent/shared"
+import { browserProfileInputSchema, DEFAULT_BROWSER_LOCALE, DEFAULT_BROWSER_TIMEZONE, type BrowserProfileInput } from "@heyagent/shared"
 
+import { CreatableCombobox } from "@/components/shell/creatable-combobox"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -17,7 +19,8 @@ import { useAction } from "@/lib/mutations"
 import { navigate } from "@/lib/router"
 import { trpc } from "@/lib/trpc"
 
-import type { Chrome } from "./data"
+import { LOCALE_OPTIONS, type Chrome } from "./data"
+import { TimeZoneCombobox } from "./timezone-combobox"
 
 /** profile 不传就是新建 */
 type BrowserDialogProps = { profile?: Chrome; onClose: () => void }
@@ -38,8 +41,15 @@ function initialValues(profile?: Chrome): BrowserProfileInput {
     password: "",
     clearPassword: false,
   } as BrowserProfileInput["proxy"]
-  // 时区、语言这个弹窗不改，原样带回去，免得保存时被清空
-  return { name: profile?.name ?? "", description: profile?.description ?? "", proxy, timezone: profile?.timezone, locale: profile?.locale }
+  // 没填过时区、语言的，表单里直接显示默认值（Chrome 本来就按默认值启动），保存时一起存下
+  return {
+    name: profile?.name ?? "",
+    description: profile?.description ?? "",
+    proxy,
+    exitIp: profile?.exitIp ?? "",
+    timezone: profile?.timezone || DEFAULT_BROWSER_TIMEZONE,
+    locale: profile?.locale || DEFAULT_BROWSER_LOCALE,
+  }
 }
 
 export function BrowserDialog({ profile, onClose }: BrowserDialogProps) {
@@ -48,6 +58,8 @@ export function BrowserDialog({ profile, onClose }: BrowserDialogProps) {
   const proxyErrors = (errors.proxy ?? {}) as ProxyErrors
   const socks5 = useWatch({ control: form.control, name: "proxy.kind" }) === "socks5"
   const clearPassword = useWatch({ control: form.control, name: "proxy.clearPassword" })
+  // 语言下拉里新输入的，加进选项
+  const [createdLocales, setCreatedLocales] = React.useState<string[]>([])
   const create = useAction(trpc.browsers.create.mutationOptions(), { success: "Chrome 建好了。下一步：在「登录过的网站」里加要登录的平台账号" })
   const update = useAction(trpc.browsers.update.mutationOptions(), { success: "已保存" })
   const pending = create.isPending || update.isPending
@@ -140,6 +152,39 @@ export function BrowserDialog({ profile, onClose }: BrowserDialogProps) {
                 )}
               </div>
             )}
+            <Field data-invalid={!!errors.exitIp}>
+              <FieldLabel htmlFor="br-exit">出口地（可选）</FieldLabel>
+              <Input id="br-exit" placeholder="例如：英国 · 伦敦（住宅 IP）" aria-invalid={!!errors.exitIp} {...form.register("exitIp")} />
+              <FieldDescription>一句话写这个 Chrome 从哪里出网，给人看的，系统不会去检测。</FieldDescription>
+              <FieldError errors={[errors.exitIp]} />
+            </Field>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Controller
+                control={form.control}
+                name="timezone"
+                render={({ field }) => (
+                  <Field data-invalid={!!errors.timezone}>
+                    <FieldLabel htmlFor="br-timezone">时区</FieldLabel>
+                    <TimeZoneCombobox id="br-timezone" value={field.value ?? ""} onValueChange={field.onChange} aria-invalid={!!errors.timezone} />
+                    <FieldDescription>网页看到的本地时间。和出口地一致，不容易被风控。</FieldDescription>
+                    <FieldError errors={[errors.timezone]} />
+                  </Field>
+                )}
+              />
+              <Controller
+                control={form.control}
+                name="locale"
+                render={({ field }) => (
+                  <Field data-invalid={!!errors.locale}>
+                    <FieldLabel htmlFor="br-locale">语言</FieldLabel>
+                    <CreatableCombobox id="br-locale" value={field.value ?? ""} onValueChange={field.onChange} aria-invalid={!!errors.locale}
+                      options={[...LOCALE_OPTIONS, ...createdLocales]} onCreate={(value) => setCreatedLocales((list) => [...list, value])} placeholder="例如 en-US" />
+                    <FieldDescription>浏览器界面和发给网站的语言。列表里没有的直接输入。</FieldDescription>
+                    <FieldError errors={[errors.locale]} />
+                  </Field>
+                )}
+              />
+            </div>
           </FieldGroup>
           <DialogFooter>
             <DialogClose render={<Button type="button" variant="outline" />}>取消</DialogClose>

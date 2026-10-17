@@ -1,6 +1,6 @@
 // 浏览器页留在前端的东西：并发上限选项、详情里几张卡的行、开着的 Chrome 的状态文字。
 // Chrome 配置来自 browsers.list，平台来自 platforms.list，账号使用情况来自 browser.accountStatus，开着的 Chrome 来自 browser.live。
-import { findById, fmtDateTime, type AccountUsage, type BrowserProfile, type LiveBrowser } from "@heyagent/shared"
+import { DEFAULT_BROWSER_LOCALE, DEFAULT_BROWSER_TIMEZONE, findById, fmtDateTime, type AccountUsage, type BrowserProfile, type LiveBrowser } from "@heyagent/shared"
 import { useQuery } from "@tanstack/react-query"
 
 import { usePlatformsQuery } from "@/lib/data"
@@ -19,6 +19,9 @@ export function usePlatformName() {
   const platforms = usePlatformsQuery().data ?? []
   return (id: string) => findById(platforms, id)?.name ?? id
 }
+
+/** 新建 / 编辑 Chrome 时「语言」的常用选项（也可以直接输入别的） */
+export const LOCALE_OPTIONS = ["zh-CN", "zh-TW", "zh-HK", "en-US", "en-GB", "de-DE", "fr-FR", "es-ES", "it-IT", "ja-JP", "ko-KR", "pt-BR", "ru-RU", "ar-SA"]
 
 /** 「这个账号同时最多几个 session」的选项 */
 export const MAX_ITEMS = ["1", "2", "3", "4", "5"]
@@ -40,7 +43,7 @@ export const LIVE_STATE: Record<LiveBrowser["state"], string> = {
   closing: "正在关闭",
 }
 
-/** 详情「代理和登录态」卡的几行 */
+/** 详情「代理、时区和登录态」卡的几行（出口地是配置里写的，系统不检测） */
 export function profileRows(profile: Chrome): [string, string][] {
   const { proxy } = profile
   const proxyRows: [string, string][] =
@@ -49,9 +52,10 @@ export function profileRows(profile: Chrome): [string, string][] {
       : [["代理", "不用代理，直接出网"]]
   return [
     ...proxyRows,
-    ["出口 IP", profile.exitIp],
+    ["出口地", profile.exitIp || "没填"],
+    ["时区", profile.timezone || `${DEFAULT_BROWSER_TIMEZONE}（没填，用默认）`],
+    ["语言", profile.locale || `${DEFAULT_BROWSER_LOCALE}（没填，用默认）`],
     ["保险箱", `v${profile.vaultVersion} · ${profile.cookieCount} 个 cookie`],
     ["更新时间", fmtDateTime(profile.updatedAt)],
-    ...(profile.timezone || profile.locale ? [["时区 / 语言", [profile.timezone, profile.locale].filter(Boolean).join(" · ")] as [string, string]] : []),
   ]
 }

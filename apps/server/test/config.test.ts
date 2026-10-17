@@ -386,6 +386,27 @@ describe("浏览器", () => {
     expect(await lastAudit("browser_profile.delete")).toMatchObject({ targetId: id })
   })
 
+  it("出口地、时区、语言：没填出口地就空着；时区、语言存规范写法，写错拦下", async () => {
+    const plain = await mutate(ctx.app, "browsers.create", lin, { name: "Plain Chrome", proxy: { kind: "none" } })
+    const list = async () => (await query(ctx.app, "browsers.list", lin)).data as { id: string; exitIp: string; timezone?: string; locale?: string }[]
+    expect((await list()).find((b) => b.id === plain.data.id)).toMatchObject({ exitIp: "" })
+    expect((await list()).find((b) => b.id === plain.data.id)?.timezone).toBeUndefined()
+
+    const created = await mutate(ctx.app, "browsers.create", lin, { name: "London Chrome", proxy: { kind: "none" }, exitIp: "英国 · 伦敦", timezone: "europe/london", locale: "en-gb" })
+    expect(created.error).toBeUndefined()
+    const id = created.data.id as string
+    expect((await list()).find((b) => b.id === id)).toMatchObject({ exitIp: "英国 · 伦敦", timezone: "Europe/London", locale: "en-GB" })
+    expect((await mutate(ctx.app, "browsers.update", lin, { id, name: "London Chrome", proxy: { kind: "none" }, timezone: "Mars/Olympus" })).error?.data?.code).toBe("BAD_REQUEST")
+    expect((await mutate(ctx.app, "browsers.update", lin, { id, name: "London Chrome", proxy: { kind: "none" }, locale: "en-GB,en" })).error?.data?.code).toBe("BAD_REQUEST")
+    // 不传出口地 = 不改；传空 = 清掉
+    await mutate(ctx.app, "browsers.update", lin, { id, name: "London Chrome", proxy: { kind: "none" }, timezone: "Europe/London", locale: "en-GB" })
+    expect((await list()).find((b) => b.id === id)).toMatchObject({ exitIp: "英国 · 伦敦" })
+    await mutate(ctx.app, "browsers.update", lin, { id, name: "London Chrome", proxy: { kind: "none" }, exitIp: "" })
+    expect((await list()).find((b) => b.id === id)).toMatchObject({ exitIp: "" })
+    await mutate(ctx.app, "browsers.delete", lin, { id })
+    await mutate(ctx.app, "browsers.delete", lin, { id: plain.data.id })
+  })
+
   it("有 session 正在用它的账号时，Chrome 删不了", async () => {
     const res = await mutate(ctx.app, "browsers.delete", lin, { id: "br-us" })
     expect(res.error?.data?.code).toBe("CONFLICT")
