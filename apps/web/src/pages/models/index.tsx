@@ -257,7 +257,7 @@ function ProviderDetail({ provider, tasks, defaults, isAdmin, actions }: {
                           {ROLES.filter((role) => defaults[role.id] === m.id).map((role) => <Badge key={role.id} variant="secondary">默认{role.label}</Badge>)}
                         </div>
                       </TableCell>
-                      <TableCell className="whitespace-normal">{m.note}</TableCell>
+                      <TableCell className="w-full max-w-0"><div className="truncate" title={m.note}>{m.note}</div></TableCell>
                       <TableCell>{contextText(m)}</TableCell>
                       <TableCell>{priceText(m)}</TableCell>
                       <TableCell>{m.vision ? "能" : "不能"}</TableCell>
