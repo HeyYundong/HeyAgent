@@ -30,6 +30,7 @@ import {
 } from "lucide-react"
 import type { ImportDetail, ImportPlan, ImportStep, PlanMemory, PlanMemoryTarget, PlanRule, PlanSecret, PlanSkill, PlanSkillResolution, PlanTask, PlanTool } from "@heyagent/shared"
 
+import { ModelCombobox } from "@/components/shell/model-combobox"
 import { DetailSection, HelpTip } from "@/components/shell/simple-page"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
@@ -42,6 +43,7 @@ import { Field, FieldLabel } from "@/components/ui/field"
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput, InputGroupText } from "@/components/ui/input-group"
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "@/components/ui/item"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Separator } from "@/components/ui/separator"
 import { Spinner } from "@/components/ui/spinner"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
@@ -315,7 +317,7 @@ function useProfileLabel() {
 function TasksStep({ plan, updatePlan }: { plan: ImportPlan; updatePlan: UpdatePlan }) {
   const [editing, setEditing] = React.useState<PlanTask | null>(null)
   const staff = useStaffQuery().data ?? []
-  const { defaults, modelName } = useModels()
+  const { models, defaults, modelName } = useModels()
   const profileLabel = useProfileLabel()
   const setTask = (key: string, patch: Partial<PlanTask>) => updatePlan((current) => ({ ...current, tasks: current.tasks.map((task) => (task.key === key ? { ...task, ...patch } : task)) }))
   const ownerItems = staff.map((person) => ({ value: person.id, label: person.title ? `${person.name}（${person.title}）` : person.name }))
@@ -354,18 +356,24 @@ function TasksStep({ plan, updatePlan }: { plan: ImportPlan; updatePlan: UpdateP
                 {task.steps.length > 0 && (
                   <div className="flex flex-col gap-1">
                     <span className="text-xs text-muted-foreground">步骤</span>
-                    <ol className="flex flex-col gap-1.5">
+                    <ol className="flex flex-col gap-2">
                       {task.steps.map((step, index) => (
                         <li key={index} className="flex gap-2">
                           <span className="w-4 shrink-0 text-muted-foreground tabular-nums">{index + 1}</span>
-                          <span className="flex min-w-0 flex-wrap items-center gap-2">
-                            <span>{step.text}</span>
-                            {step.wait && <Badge variant="secondary">可以等</Badge>}
+                          <span className="flex min-w-0 flex-col gap-0.5">
+                            <span>
+                              {step.text}
+                              {step.wait && (
+                                <Badge variant="secondary" className="ml-2">
+                                  可以等
+                                </Badge>
+                              )}
+                            </span>
                             {step.checkpoint && (
-                              <Badge variant="outline">
-                                <CircleCheckIcon data-icon="inline-start" />
+                              <span className="flex gap-1 text-xs text-muted-foreground">
+                                <CircleCheckIcon className="mt-0.5 size-3 shrink-0" />
                                 {step.checkpoint}
-                              </Badge>
+                              </span>
                             )}
                           </span>
                         </li>
@@ -373,11 +381,11 @@ function TasksStep({ plan, updatePlan }: { plan: ImportPlan; updatePlan: UpdateP
                     </ol>
                   </div>
                 )}
-                <dl className="grid gap-x-6 gap-y-3 sm:grid-cols-2">
-                  <Meta label="运行">
+                <Separator />
+                <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
+                  <Meta label="运行" hint={task.schedule ? `cron ${task.schedule.cron}` : undefined}>
                     <span className="flex flex-col gap-2">
-                      <span>{task.schedule ? `定时：${task.schedule.text}（cron ${task.schedule.cron}）` : "按需运行（点「立即运行」才跑）"}</span>
-                      {!taskEnabled(task) && <span className="text-muted-foreground">包里写了默认不自动执行，导入后先停用，看过再启用。</span>}
+                      <span>{task.schedule ? `定时：${task.schedule.text}` : "按需运行（点「立即运行」才跑）"}</span>
                       <Field orientation="horizontal" className="w-auto">
                         <Checkbox id={`import-enable-${task.key}`} checked={taskEnabled(task)} onCheckedChange={(checked) => setTask(task.key, { enabled: Boolean(checked) })} />
                         <FieldLabel htmlFor={`import-enable-${task.key}`} className="font-normal">
@@ -386,31 +394,42 @@ function TasksStep({ plan, updatePlan }: { plan: ImportPlan; updatePlan: UpdateP
                       </Field>
                     </span>
                   </Meta>
-                  <div className="flex flex-col gap-1">
-                    <dt className="text-xs text-muted-foreground">负责人</dt>
-                    <dd>
-                      <Select items={ownerItems} value={task.ownerId} onValueChange={(value) => value && setTask(task.key, { ownerId: String(value) })}>
-                        <SelectTrigger size="sm" aria-label="负责人" className="w-full sm:w-56">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {ownerItems.map((item) => (
-                            <SelectItem key={item.value} value={item.value}>
-                              {item.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </dd>
-                  </div>
+                  <Meta label="负责人">
+                    <Select items={ownerItems} value={task.ownerId} onValueChange={(value) => value && setTask(task.key, { ownerId: String(value) })}>
+                      <SelectTrigger size="sm" aria-label="负责人" className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {ownerItems.map((item) => (
+                          <SelectItem key={item.value} value={item.value}>
+                            {item.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </Meta>
                   <Meta label="模型" hint={task.modelNote}>
-                    {task.modelId ? modelName(task.modelId) : `默认执行模型（${modelName(defaults.run)}）`}
+                    <ModelCombobox
+                      className="w-full"
+                      models={models}
+                      value={task.modelId ?? ""}
+                      onValueChange={(value) => {
+                        const modelId = value || null
+                        // 换了模型，AI 写的「为什么用这个模型」就不对了
+                        if (modelId !== task.modelId) setTask(task.key, { modelId, modelNote: undefined })
+                      }}
+                      clearable
+                      placeholder={defaults.run ? `默认执行模型（${modelName(defaults.run)}）` : "搜模型名"}
+                    />
                   </Meta>
                   {browser && (
                     <Meta label="浏览器">
                       {profileLabel(task.browserProfileIds)} · {task.allowedDomains.length ? `只许打开 ${task.allowedDomains.join("、")}` : "网址不限"}
                     </Meta>
                   )}
+                  <Meta label="用到的配置" hint="在后面几步确认。哪一项不导入，这里就跟着去掉。">
+                    {usesOf(plan, task)}
+                  </Meta>
                   {task.attachments.length > 0 && (
                     <Meta label="附件">
                       <span className="flex flex-wrap items-center gap-1">
@@ -423,17 +442,7 @@ function TasksStep({ plan, updatePlan }: { plan: ImportPlan; updatePlan: UpdateP
                       </span>
                     </Meta>
                   )}
-                  <Meta label="来自">
-                    <span className="font-mono text-xs">{task.source}</span>
-                  </Meta>
                 </dl>
-                <div className="flex flex-col gap-1">
-                  <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                    用到的配置
-                    <HelpTip>在后面几步确认。哪一项不导入，这里就跟着去掉。</HelpTip>
-                  </span>
-                  <p className="text-muted-foreground">{usesOf(plan, task)}</p>
-                </div>
                 {missing.length > 0 && (
                   <Alert>
                     <GlobeIcon />
@@ -442,6 +451,11 @@ function TasksStep({ plan, updatePlan }: { plan: ImportPlan; updatePlan: UpdateP
                     </AlertTitle>
                     <AlertDescription>可以先导入。导入后到「浏览器」页登录，不然 agent 打开要登录的页面时会停下来等人。</AlertDescription>
                   </Alert>
+                )}
+                {task.source && (
+                  <p className="truncate text-xs text-muted-foreground" title={task.source}>
+                    来自 {task.source}
+                  </p>
                 )}
               </CardContent>
             )}
@@ -830,24 +844,16 @@ function MemoriesStep({ plan, updatePlan }: { plan: ImportPlan; updatePlan: Upda
 
 // ---------- 5 规则 ----------
 
-/** 新规则「系统理解为」那一行：翻译好的、要等导入后翻译的、文字改过还没翻译的 */
+/** 新规则要人留意的那一行：要等导入后翻译的、文字改过还没翻译的、还没翻译的。翻译好了不显示（和「触发 → 动作」说的是一回事） */
 function Understood({ plan, rule }: { plan: ImportPlan; rule: PlanRule }) {
   const stale = rule.compile && (rule.compile.trigger !== rule.trigger || rule.compile.action !== rule.action)
+  if (!rule.needsNewTools && rule.compile && !stale) return null
   return (
-    <p className="mt-1 flex items-start gap-1.5 text-sm">
-      <LanguagesIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-      {rule.needsNewTools ? (
-        <span className="text-muted-foreground">
-          要用到这次才导入的工具（{rule.toolKeys.map((key) => toolTitle(plan, key)).join("、")}），导入前翻译不了。导入后到「规则」页翻译、确认，确认前不生效。
-        </span>
-      ) : rule.compile && !stale ? (
-        <span>
-          <span className="text-muted-foreground">系统理解为：</span>
-          {rule.compile.understood}
-        </span>
-      ) : (
-        <span className="text-muted-foreground">{stale ? "文字改过，还没重新翻译。" : "还没翻译。"}点「修改」翻译一次；不翻译也能导入，导入后到「规则」页确认。</span>
-      )}
+    <p className="mt-1 flex items-start gap-1.5 text-sm text-muted-foreground">
+      <LanguagesIcon className="mt-0.5 size-3.5 shrink-0" />
+      {rule.needsNewTools
+        ? `要用到这次才导入的工具（${rule.toolKeys.map((key) => toolTitle(plan, key)).join("、")}），导入前翻译不了。导入后到「规则」页翻译、确认，确认前不生效。`
+        : `${stale ? "文字改过，还没重新翻译。" : "还没翻译。"}点「修改」翻译一次；不翻译也能导入，导入后到「规则」页确认。`}
     </p>
   )
 }
@@ -868,7 +874,7 @@ function RulesStep({ importId, plan, updatePlan }: { importId: string; plan: Imp
   return (
     <>
       {fresh.length > 0 && (
-        <DetailSection title={`新建（${fresh.length}）`} description="读包时已经用「规划」模型翻译好了。勾上就是确认「系统理解为」，导入后直接生效；理解得不对就「修改」文字，会重新翻译。">
+        <DetailSection title={`新建（${fresh.length}）`} description="读包时已经用「规划」模型翻译好了，勾上导入后直接生效；不对就「修改」文字，会重新翻译。">
           <ItemGroup className="gap-2">
             {fresh.map((rule) => (
               <Item key={rule.key} variant="outline" size="sm">
