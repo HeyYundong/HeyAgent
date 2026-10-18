@@ -78,48 +78,51 @@ function AdminImports() {
   )
 
   return (
-    <PageFrame
-      header={header}
-      queries={[listQuery, modelsQuery, staffQuery]}
-      isEmpty={records.length === 0}
-      empty={
-        <EmptyState
-          icon={<PackageOpenIcon />}
-          title="还没有导入过"
-          description="别的 agent 的任务想搬过来？让它把任务、技能、记忆、配置打成一个 zip 包，上传后 AI 读懂、整理好，你一步步确认就能导入。"
-          action={
-            <div className="flex flex-wrap justify-center gap-2">
-              <Button onClick={() => setUploading(true)}>
-                <UploadIcon data-icon="inline-start" />
-                上传 zip 包
-              </Button>
-              <Button variant="outline" onClick={() => setGuide(true)}>
-                打包说明
-              </Button>
-            </div>
-          }
-        />
-      }
-    >
-      <MasterDetail
-        hasSelection={Boolean(selectedId)}
-        emptyHint="从左边选一次导入；要导入新的包，点右上角「上传 zip 包」"
-        list={
-          <PickGroup>
-            {records.map((record) => (
-              <PickItem
-                key={record.id}
-                to={href("imports", { id: record.id })}
-                selected={record.id === selectedId}
-                title={record.name ?? record.fileName}
-                description={record.name ? `${record.fileName} · ${fmtShort(record.createdAt)}` : `${fmtShort(record.createdAt)} · ${fmtSize(record.size)}`}
-                badge={<StatusBadge status={record.status} />}
-              />
-            ))}
-          </PickGroup>
+    <>
+      {/* 弹窗放在 PageFrame 外面：列表为空时 PageFrame 只显示空状态、不渲染 children，放在里面的话空状态上的按钮打不开弹窗 */}
+      <PageFrame
+        header={header}
+        queries={[listQuery, modelsQuery, staffQuery]}
+        isEmpty={records.length === 0}
+        empty={
+          <EmptyState
+            icon={<PackageOpenIcon />}
+            title="还没有导入过"
+            description="别的 agent 的任务想搬过来？让它把任务、技能、记忆、配置打成一个 zip 包，上传后 AI 读懂、整理好，你一步步确认就能导入。"
+            action={
+              <div className="flex flex-wrap justify-center gap-2">
+                <Button onClick={() => setUploading(true)}>
+                  <UploadIcon data-icon="inline-start" />
+                  上传 zip 包
+                </Button>
+                <Button variant="outline" onClick={() => setGuide(true)}>
+                  打包说明
+                </Button>
+              </div>
+            }
+          />
         }
-        detail={selectedId ? <ImportDetailView key={selectedId} id={selectedId} record={selected} staffName={staffName} /> : null}
-      />
+      >
+        <MasterDetail
+          hasSelection={Boolean(selectedId)}
+          emptyHint="从左边选一次导入；要导入新的包，点右上角「上传 zip 包」"
+          list={
+            <PickGroup>
+              {records.map((record) => (
+                <PickItem
+                  key={record.id}
+                  to={href("imports", { id: record.id })}
+                  selected={record.id === selectedId}
+                  title={record.name ?? record.fileName}
+                  description={record.name ? `${record.fileName} · ${fmtShort(record.createdAt)}` : `${fmtShort(record.createdAt)} · ${fmtSize(record.size)}`}
+                  badge={<StatusBadge status={record.status} />}
+                />
+              ))}
+            </PickGroup>
+          }
+          detail={selectedId ? <ImportDetailView key={selectedId} id={selectedId} record={selected} staffName={staffName} /> : null}
+        />
+      </PageFrame>
       <UploadDialog
         key={uploading ? "open" : "closed"}
         open={uploading}
@@ -130,7 +133,7 @@ function AdminImports() {
         }}
       />
       <PackGuideDialog open={guide} onOpenChange={setGuide} />
-    </PageFrame>
+    </>
   )
 }
 

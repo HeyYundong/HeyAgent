@@ -78,54 +78,57 @@ export default function ComparePage() {
   )
 
   return (
-    <PageFrame
-      header={header}
-      queries={[listQuery]}
-      isEmpty={!query && records.length === 0}
-      empty={<EmptyState icon={<ScanEyeIcon />} title="还没有比对过" description="点「新比对」放两张图试试；agent 在任务里选上「比图」工具也能自己比。" action={newButton} />}
-    >
-      <MasterDetail
-        hasSelection={Boolean(selectedId)}
-        emptyHint="从左边选一次比对看结果"
-        list={
-          <>
-            <InputGroup>
-              <InputGroupAddon>
-                <SearchIcon />
-              </InputGroupAddon>
-              <InputGroupInput aria-label="搜比对" placeholder="搜标题、编号" value={box} onChange={(event) => setBox(event.target.value)} />
-              {listQuery.isFetching && query && (
-                <InputGroupAddon align="inline-end">
-                  <Spinner />
+    <>
+      {/* 弹窗放在 PageFrame 外面：列表为空时 PageFrame 只显示空状态、不渲染 children，放在里面的话空状态上的按钮打不开弹窗 */}
+      <PageFrame
+        header={header}
+        queries={[listQuery]}
+        isEmpty={!query && records.length === 0}
+        empty={<EmptyState icon={<ScanEyeIcon />} title="还没有比对过" description="点「新比对」放两张图试试；agent 在任务里选上「比图」工具也能自己比。" action={newButton} />}
+      >
+        <MasterDetail
+          hasSelection={Boolean(selectedId)}
+          emptyHint="从左边选一次比对看结果"
+          list={
+            <>
+              <InputGroup>
+                <InputGroupAddon>
+                  <SearchIcon />
                 </InputGroupAddon>
+                <InputGroupInput aria-label="搜比对" placeholder="搜标题、编号" value={box} onChange={(event) => setBox(event.target.value)} />
+                {listQuery.isFetching && query && (
+                  <InputGroupAddon align="inline-end">
+                    <Spinner />
+                  </InputGroupAddon>
+                )}
+              </InputGroup>
+              {records.length === 0 ? (
+                <p className="px-1 text-sm text-muted-foreground">没有搜到「{query}」，换个词试试。</p>
+              ) : (
+                <PickGroup>
+                  {records.map((record) => (
+                    <PickItem
+                      key={record.id}
+                      to={href("compare", { id: record.id })}
+                      selected={record.id === selectedId}
+                      title={record.title}
+                      description={`${fmtShort(record.createdAt)} · ${sourceText(record)}`}
+                      badge={<ScoreBadge record={record} />}
+                    />
+                  ))}
+                </PickGroup>
               )}
-            </InputGroup>
-            {records.length === 0 ? (
-              <p className="px-1 text-sm text-muted-foreground">没有搜到「{query}」，换个词试试。</p>
-            ) : (
-              <PickGroup>
-                {records.map((record) => (
-                  <PickItem
-                    key={record.id}
-                    to={href("compare", { id: record.id })}
-                    selected={record.id === selectedId}
-                    title={record.title}
-                    description={`${fmtShort(record.createdAt)} · ${sourceText(record)}`}
-                    badge={<ScoreBadge record={record} />}
-                  />
-                ))}
-              </PickGroup>
-            )}
-            {listQuery.hasNextPage && (
-              <Button variant="ghost" size="sm" className="self-center" disabled={listQuery.isFetchingNextPage} onClick={() => void listQuery.fetchNextPage()}>
-                {listQuery.isFetchingNextPage && <Spinner data-icon="inline-start" />}
-                再看更早的
-              </Button>
-            )}
-          </>
-        }
-        detail={selectedId ? <CompareDetail key={selectedId} id={selectedId} record={selected} /> : null}
-      />
+              {listQuery.hasNextPage && (
+                <Button variant="ghost" size="sm" className="self-center" disabled={listQuery.isFetchingNextPage} onClick={() => void listQuery.fetchNextPage()}>
+                  {listQuery.isFetchingNextPage && <Spinner data-icon="inline-start" />}
+                  再看更早的
+                </Button>
+              )}
+            </>
+          }
+          detail={selectedId ? <CompareDetail key={selectedId} id={selectedId} record={selected} /> : null}
+        />
+      </PageFrame>
       <NewCompareDialog
         key={creating ? "open" : "closed"}
         open={creating}
@@ -136,7 +139,7 @@ export default function ComparePage() {
           navigate("compare", { id: record.id })
         }}
       />
-    </PageFrame>
+    </>
   )
 }
 
