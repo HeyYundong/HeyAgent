@@ -36,7 +36,7 @@ const FIELDS: {
     label: "单个 session 最多步数",
     unit: "步",
     step: "1",
-    hint: "一步 = 调一次模型。超过这个数，同样生成一件「要人办的事」，session 挂起，等人决定要不要继续。",
+    hint: "一步 = 调一次模型。超过这个数，同样生成一件「要人办的事」，session 挂起，等人决定要不要继续。填 0 表示不限步数（默认）。",
   },
   {
     name: "eventFallbackDays",

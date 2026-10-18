@@ -250,7 +250,7 @@ export async function resolveHumanItemImpl(
     }
     let sessionPatch: Partial<typeof t.sessions.$inferInsert> | undefined
     if (limit) {
-      // 同意继续：在现在的基础上再给一份默认额度
+      // 同意继续：在现在的基础上再给一份默认额度；最多步数现在设成 0（不限）的话，这个 session 也不再限步数
       const [session] = await tx
         .select()
         .from(t.sessions)
@@ -259,7 +259,7 @@ export async function resolveHumanItemImpl(
       sessionPatch =
         limit === "cost"
           ? { costLimitUsd: Number(session!.costUsd) + settings.maxCostUsd }
-          : { maxSteps: session!.stepCount + settings.maxSteps }
+          : { maxSteps: settings.maxSteps > 0 ? session!.stepCount + settings.maxSteps : null }
     }
     const message = limit
       ? `${input.actorName}同意继续（${limit === "cost" ? "花费" : "步数"}上限已调高）。${note ? `备注：${note}` : ""}`

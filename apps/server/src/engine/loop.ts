@@ -594,8 +594,9 @@ export async function runSession(
         await hitLimit(db, session, snapshot, "cost", costLimit)
         return "suspended"
       }
+      // 设置里的最多步数是 0 = 不限；人同意继续后单独调高过的 session 用自己的上限
       const stepLimit = session.maxSteps ?? settings.maxSteps
-      if (session.stepCount >= stepLimit) {
+      if (stepLimit > 0 && session.stepCount >= stepLimit) {
         await hitLimit(db, session, snapshot, "steps", stepLimit)
         return "suspended"
       }

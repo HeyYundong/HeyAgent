@@ -13,6 +13,7 @@ import * as t from "../db/schema.js"
 
 export interface EngineSettings {
   maxCostUsd: number
+  /** 0 = 不限 */
   maxSteps: number
   eventFallbackDays: number
   /** 外部事件令牌的 sha256（hex）；没配就不接受外部事件 */

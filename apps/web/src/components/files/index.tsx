@@ -1,8 +1,8 @@
 // 附件和产物的显示与上传（组合 registry 的 Attachment、Button、Input、Dialog、CodeBlock）：任务附件、带附件运行、session 的附件和产物都用它。
-// 图片显示缩略图，点了弹窗看大图；文本文件点了弹窗看内容（Markdown 按 Markdown 显示）。下载走 GET /api/files/:id（要求登录，cookie 自动带上）。
+// 图片显示缩略图，点了弹窗看大图（左右箭头或键盘 ← → 切换同一组里的其他图片）；文本文件点了弹窗看内容（Markdown 按 Markdown 显示）。下载走 GET /api/files/:id（要求登录，cookie 自动带上）。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
-import { DownloadIcon, FileTextIcon, PaperclipIcon, XIcon } from "lucide-react"
+import { ChevronLeftIcon, ChevronRightIcon, DownloadIcon, FileTextIcon, PaperclipIcon, XIcon } from "lucide-react"
 import type { SessionFile, UploadedFile } from "@heyagent/shared"
 
 import { MarkdownView } from "@/components/markdown"
@@ -51,8 +51,10 @@ interface FileListProps {
 
 /** 一组文件：图片是缩略图（点了看大图），其他的是小卡（文本文件点了看内容）；都带下载，给了 onRemove 就多一个移除按钮 */
 export function FileList({ files, onRemove, removingId, empty }: FileListProps) {
-  const [viewing, setViewing] = React.useState<ShownFile | null>(null)
+  // 记 id 不记对象：列表实时刷新后弹窗跟着新数据走，文件没了弹窗就关掉
+  const [viewingId, setViewingId] = React.useState<string | null>(null)
   if (files.length === 0) return empty ? <>{empty}</> : null
+  const viewing = files.find((file) => file.id === viewingId)
   const images = files.filter(isImage)
   const others = files.filter((file) => !isImage(file))
   const actions = (file: ShownFile) => (
@@ -80,7 +82,7 @@ export function FileList({ files, onRemove, removingId, empty }: FileListProps) 
                 <AttachmentTitle title={file.name}>{file.name}</AttachmentTitle>
                 <AttachmentDescription>{describe(file)}</AttachmentDescription>
               </AttachmentContent>
-              <AttachmentTrigger aria-label={`看大图：${file.name}`} onClick={() => setViewing(file)} />
+              <AttachmentTrigger aria-label={`看大图：${file.name}`} onClick={() => setViewingId(file.id)} />
               {actions(file)}
             </Attachment>
           ))}
@@ -95,28 +97,64 @@ export function FileList({ files, onRemove, removingId, empty }: FileListProps) 
                 <AttachmentTitle title={file.name}>{file.name}</AttachmentTitle>
                 <AttachmentDescription>{describe(file)}</AttachmentDescription>
               </AttachmentContent>
-              {isText(file) && <AttachmentTrigger aria-label={`看内容：${file.name}`} onClick={() => setViewing(file)} />}
+              {isText(file) && <AttachmentTrigger aria-label={`看内容：${file.name}`} onClick={() => setViewingId(file.id)} />}
               {actions(file)}
             </Attachment>
           ))}
         </div>
       )}
-      {viewing && <FileViewer file={viewing} onClose={() => setViewing(null)} />}
+      {viewing && <FileViewer file={viewing} images={isImage(viewing) ? images : []} onShow={(file) => setViewingId(file.id)} onClose={() => setViewingId(null)} />}
     </div>
   )
 }
 
-/** 看大图 / 看文本内容的弹窗 */
-function FileViewer({ file, onClose }: { file: ShownFile; onClose: () => void }) {
+/** 看大图 / 看文本内容的弹窗。看图时 images 是同一组的全部图片：左右箭头、键盘 ← → 切换（到头就停，不循环） */
+function FileViewer({ file, images, onShow, onClose }: { file: ShownFile; images: ShownFile[]; onShow: (file: ShownFile) => void; onClose: () => void }) {
+  const index = images.findIndex((each) => each.id === file.id)
+  const prev = index > 0 ? images[index - 1] : undefined
+  const next = index >= 0 ? images[index + 1] : undefined
+  const paging = index >= 0 && images.length > 1
+
+  // 挂在 window 的捕获阶段：弹窗里的按钮会拦下方向键、不往外冒泡；点到头的箭头按钮变成禁用后焦点也可能丢到弹窗外
+  React.useEffect(() => {
+    if (!paging) return
+    const onKey = (event: KeyboardEvent) => {
+      const el = event.target as HTMLElement | null
+      if (el?.closest("input, textarea, [contenteditable='true']")) return
+      const target = event.key === "ArrowLeft" ? prev : event.key === "ArrowRight" ? next : undefined
+      if (!target) return
+      event.preventDefault()
+      onShow(target)
+    }
+    window.addEventListener("keydown", onKey, true)
+    return () => window.removeEventListener("keydown", onKey, true)
+  }, [paging, prev, next, onShow])
+
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-h-svh overflow-y-auto sm:max-w-5xl">
         <DialogHeader>
           <DialogTitle className="break-all">{file.name}</DialogTitle>
         </DialogHeader>
-        {isImage(file) ? <img src={file.url} alt={file.name} className="h-auto w-full border" /> : <TextPreview file={file} />}
+        {isImage(file) ? (
+          <div className="relative">
+            <img key={file.id} src={file.url} alt={file.name} className="h-auto w-full border" />
+            {paging && (
+              <>
+                <Button variant="secondary" size="icon" aria-label="上一张" disabled={!prev} onClick={() => prev && onShow(prev)} className="absolute top-1/2 left-2 -translate-y-1/2">
+                  <ChevronLeftIcon />
+                </Button>
+                <Button variant="secondary" size="icon" aria-label="下一张" disabled={!next} onClick={() => next && onShow(next)} className="absolute top-1/2 right-2 -translate-y-1/2">
+                  <ChevronRightIcon />
+                </Button>
+              </>
+            )}
+          </div>
+        ) : (
+          <TextPreview file={file} />
+        )}
         <DialogFooter className="sm:items-center">
-          <span className="text-xs text-muted-foreground sm:mr-auto">{describe(file)}</span>
+          <span className="text-xs text-muted-foreground sm:mr-auto">{paging ? `第 ${index + 1} / ${images.length} 张 · ` : ""}{describe(file)}</span>
           <Button variant="outline" nativeButton={false} render={<a href={file.url} download={file.name} />}>
             <DownloadIcon data-icon="inline-start" />
             下载

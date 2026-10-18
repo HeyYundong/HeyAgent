@@ -572,7 +572,7 @@ describe("用户", () => {
 describe("全局设置", () => {
   it("上限、外部事件令牌（只存 sha256）、通知渠道（地址进 secrets）", async () => {
     let view = (await query(ctx.app, "settings.get", lin)).data
-    expect(view).toMatchObject({ maxCostUsd: 2, maxSteps: 100, eventFallbackDays: 7, channels: [] })
+    expect(view).toMatchObject({ maxCostUsd: 2, maxSteps: 0, eventFallbackDays: 7, channels: [] })
     await mutate(ctx.app, "settings.updateLimits", lin, { maxCostUsd: 5, maxSteps: 50, eventFallbackDays: 3 })
     const [cost] = await ctx.db.select().from(t.settings).where(eq(t.settings.key, "session.maxCostUsd"))
     expect(cost!.value).toBe(5)

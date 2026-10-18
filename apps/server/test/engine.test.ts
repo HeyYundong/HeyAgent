@@ -817,7 +817,7 @@ describe("场景 8：超过花费上限转人工", () => {
         error: expect.stringContaining("决定不继续"),
       })
     } finally {
-      await setSetting(ctx.db, "session.maxSteps", 100)
+      await setSetting(ctx.db, "session.maxSteps", 0)
     }
   })
 

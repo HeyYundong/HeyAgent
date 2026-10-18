@@ -481,7 +481,7 @@ export type UserAccount = z.infer<typeof userAccountSchema>
 export const SETTING_KEYS = {
   /** 单个 session 的花费上限（美元），超过就转人工 */
   maxCostUsd: "session.maxCostUsd",
-  /** 单个 session 最多步数（模型调用次数），超过就转人工 */
+  /** 单个 session 最多步数（模型调用次数），超过就转人工；0 = 不限 */
   maxSteps: "session.maxSteps",
   /** 只等事件时的兜底天数 */
   eventFallbackDays: "wait.eventFallbackDays",
@@ -503,7 +503,7 @@ export const SETTING_KEYS = {
 
 export const SETTINGS_DEFAULTS = {
   maxCostUsd: 2,
-  maxSteps: 100,
+  maxSteps: 0,
   eventFallbackDays: 7,
   browserMaxPerWorker: 4,
   browserVisionCheck: false,
@@ -530,7 +530,8 @@ export const eventTokenRecordSchema = z.object({ sha256: z.string(), hint: z.str
 
 export const settingsLimitsInputSchema = z.object({
   maxCostUsd: z.number().min(0.01, "至少 0.01 美元").max(1000, "最多 1000 美元"),
-  maxSteps: z.number().int().min(1, "至少 1 步").max(10_000, "最多 10000 步"),
+  /** 0 = 不限 */
+  maxSteps: z.number().int().min(0, "不能小于 0（0 表示不限）").max(10_000, "最多 10000 步"),
   eventFallbackDays: z.number().int().min(1, "至少 1 天").max(90, "最多 90 天"),
 })
 export type SettingsLimitsInput = z.infer<typeof settingsLimitsInputSchema>

@@ -75,7 +75,7 @@ describe("首次设置管理员", () => {
     // 用自己定的邮箱（大小写不敏感）和密码登录，是主管，默认设置都在
     const cookie = await login(app, `BOSS${winner}@example.com`, `boss-password-${winner}`)
     expect((await query(app, "me.get", cookie)).data).toMatchObject({ email: `boss${winner}@example.com`, isAdmin: true })
-    expect((await query(app, "settings.get", cookie)).data).toMatchObject({ maxCostUsd: 2, maxSteps: 100, eventFallbackDays: 7, channels: [] })
+    expect((await query(app, "settings.get", cookie)).data).toMatchObject({ maxCostUsd: 2, maxSteps: 0, eventFallbackDays: 7, channels: [] })
   })
 
   it("设置过以后：不再显示设置页，再提交回 409，账号不变", async () => {

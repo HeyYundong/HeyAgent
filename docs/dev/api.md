@@ -170,7 +170,7 @@ curl -s -b 'better-auth.session_token=<COOKIE>' -H 'content-type: application/js
 | `browsers.list` | 登录即可 | 无 | `BrowserProfile[]`：代理（无密码，只有 `hasPassword`）、`sites[]`（账号、状态、并发上限、`running` = 没释放的账号租约数）、`vaultVersion`、`cookieCount` | |
 | `models.overview` | 登录即可 | 无 | `{ providers: ModelProvider[]; defaults: {run plan verify} }`。`status` 有 `ok / error / unconfigured`；`apiKeyMasked` 只有掩码 | |
 | `users.list` | **主管**（`user.manage`） | 无 | `UserAccount[]`：`id name email title isAdmin disabled createdAt`，按创建时间 | `FORBIDDEN` |
-| `settings.get` | **主管**（`settings.manage`） | 无 | `SettingsView`：`maxCostUsd maxSteps eventFallbackDays eventToken?{hint createdAt} channels[]{id name kind urlSecretName enabled urlMasked?}`。没配过的设置返回默认值（2 美元、100 步、7 天） | `FORBIDDEN` |
+| `settings.get` | **主管**（`settings.manage`） | 无 | `SettingsView`：`maxCostUsd maxSteps eventFallbackDays eventToken?{hint createdAt} channels[]{id name kind urlSecretName enabled urlMasked?}`。没配过的设置返回默认值（2 美元、0 步 = 不限、7 天） | `FORBIDDEN` |
 
 另有 3 个 engine 下的查询（`engine.taskAttachments`、`engine.sessionFiles`、`engine.notifications.list`），放在第 5 节。
 
@@ -354,7 +354,7 @@ curl -s -b 'better-auth.session_token=<COOKIE>' -H 'content-type: application/js
 
 | 接口 | 谁能调 | 输入 | 返回 | 主要错误 | 审计 / 推送 |
 |---|---|---|---|---|---|
-| `settings.updateLimits` | 主管（`settings.manage`） | `{ maxCostUsd(0.01-1000), maxSteps(1-10000 整数), eventFallbackDays(1-90 整数) }`，三个都必填 | 原样返回输入 | `FORBIDDEN` | `settings.update`（detail 有 before / after）；推 `settings`。引擎每一步都重新读这三个值，所以改了立即对所有运行生效；只有人批准「花费 / 步数到上限继续」后被单独调高过上限的 session，用的是自己的上限 |
+| `settings.updateLimits` | 主管（`settings.manage`） | `{ maxCostUsd(0.01-1000), maxSteps(0-10000 整数，0 = 不限), eventFallbackDays(1-90 整数) }`，三个都必填 | 原样返回输入 | `FORBIDDEN` | `settings.update`（detail 有 before / after）；推 `settings`。引擎每一步都重新读这三个值，所以改了立即对所有运行生效；只有人批准「花费 / 步数到上限继续」后被单独调高过上限的 session，用的是自己的上限（批准时最多步数是 0 的话，这个 session 也不再限步数） |
 | `settings.regenerateEventToken` | 主管 | 无（body 给 `{}`） | `{ token, hint, createdAt }`。`token` 形如 `hae_<32 位 base64url>`，**原文只在这次返回**，库里只存 sha256；`hint` 是最后 4 位 | `FORBIDDEN` | `settings.event_token.regenerate`；旧令牌立刻失效；推 `settings` |
 | `settings.clearEventToken` | 主管 | 无（body 给 `{}`） | `{ ok: true }` | `FORBIDDEN` | `settings.event_token.clear`；之后 `POST /api/events` 一律 401 |
 | `settings.saveChannel` | 主管 | `{ id?, name(1-50), kind: "feishu" / "wecom" / "webhook", url?, enabled(默认 true) }`。新建不带 `id`，必须带 `url`；修改带 `id`，`url` 不填 = 不改 | `{ id }`（`ch-<6 位十六进制>`） | `NOT_FOUND`（渠道）；`BAD_REQUEST`：新建没填地址 | `settings.channel.create` / `settings.channel.update`；地址加密存进 `secrets`（名字 `NOTIFY_<渠道 id>_URL`，所以密钥名不能以 `NOTIFY_` 开头）；推 `settings`、`secrets` |
