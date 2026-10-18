@@ -318,7 +318,7 @@ describe("导入全流程", () => {
     // 任务：负责人、模型、Chrome、白名单、登录、启用
     const [t1, t2] = plan.tasks
     expect(t1).toMatchObject({ ownerId: "u-wang", modelId: EXEC, browserProfileIds: [profileId], allowedDomains: ["shop.example.com"], logins: [{ platformId: "plat-shop", name: "示例商城", domain: "shop.example.com", missing: true }] })
-    expect(t1!.schedule).toEqual({ cron: "0 9 * * *", text: "每天 9:00" })
+    expect(t1!.schedule).toEqual({ cron: "0 9 * * *", text: "每天 09:00" })
     expect(t2).toMatchObject({ ownerId: "u-lin", modelId: null, enabled: false })
     expect(t2!.modelNote).toContain("old-vendor/old-model")
     // 技能：正文从文件取；同名的默认用已有的，带 diff；参考资料合进正文；框架自带的不导入
