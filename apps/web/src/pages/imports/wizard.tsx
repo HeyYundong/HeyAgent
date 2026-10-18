@@ -14,6 +14,7 @@ import {
   EllipsisIcon,
   FileTextIcon,
   GlobeIcon,
+  InboxIcon,
   KeyRoundIcon,
   LayoutGridIcon,
   PackageCheckIcon,
@@ -21,6 +22,7 @@ import {
   PauseIcon,
   PencilIcon,
   PlayIcon,
+  SendIcon,
   ShieldAlertIcon,
   ShieldCheckIcon,
   TerminalIcon,
@@ -53,7 +55,8 @@ import { errorMessage, useAction } from "@/lib/mutations"
 import { trpc, trpcClient } from "@/lib/trpc"
 
 import { cronText } from "@/pages/tasks/cron"
-import { MultiPick } from "@/pages/tasks/task-dialog"
+import { retriesOf } from "@/pages/tasks/dispatch-fields"
+import { MultiPick } from "@/pages/tasks/multi-pick"
 
 import { RuleEditDialog, SkillDiffDialog, SkillEditDialog, syncSecrets, TaskEditDialog, ToolEditDialog } from "./edit-dialogs"
 import { baseName, memoryOn, missingLogins, planCounts, STEP_LABEL, stepsOf, taskUsesBrowser, toolTitle } from "./parts"
@@ -221,7 +224,8 @@ function WizardBody({ detail }: { detail: ImportDetail & { plan: ImportPlan } })
 
 const WARNING_ICON = { secret: <KeyRoundIcon />, script: <TerminalIcon />, suspicious: <ShieldAlertIcon />, other: <TriangleAlertIcon /> }
 
-const runText = (task: PlanTask) => (task.schedule ? `定时：${task.schedule.text}` : "按需运行")
+/** 任务怎么开始的一句话：定时 / 被派活 / 按需（派活第二期） */
+const runText = (task: PlanTask) => (task.schedule ? `定时：${task.schedule.text}` : task.dispatch ? "被派活，不定时" : "按需运行")
 /** 不写 = 启用 */
 export const taskEnabled = (task: PlanTask) => task.enabled !== false
 export const DISABLED_TEXT = "导入后先停用"
@@ -391,11 +395,12 @@ function TasksStep({ plan, updatePlan }: { plan: ImportPlan; updatePlan: UpdateP
                     </ol>
                   </div>
                 )}
+                <DispatchLines plan={plan} task={task} />
                 <Separator />
                 <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
-                  <Meta label="运行" hint={task.schedule ? `cron ${task.schedule.cron}` : undefined}>
+                  <Meta label="运行" hint={task.schedule ? `cron ${task.schedule.cron}` : task.dispatch ? DISPATCH_RUN_HINT : undefined}>
                     <span className="flex flex-col gap-2">
-                      <span>{task.schedule ? `定时：${cronText(task.schedule.cron) ?? task.schedule.cron}` : "按需运行（点「立即运行」才跑）"}</span>
+                      <span>{task.schedule ? `定时：${cronText(task.schedule.cron) ?? task.schedule.cron}` : task.dispatch ? "被派活：有单就开始，没单不跑" : "按需运行（点「立即运行」才跑）"}</span>
                       <Field orientation="horizontal" className="w-auto">
                         <Checkbox id={`import-enable-${task.key}`} checked={taskEnabled(task)} onCheckedChange={(checked) => setTask(task.key, { enabled: Boolean(checked) })} />
                         <FieldLabel htmlFor={`import-enable-${task.key}`} className="font-normal">
@@ -485,6 +490,44 @@ function TasksStep({ plan, updatePlan }: { plan: ImportPlan; updatePlan: UpdateP
         }}
       />
     </>
+  )
+}
+
+const DISPATCH_RUN_HINT = "被派来的运行才带着这件事的参数，按定时跑出来的不知道该办哪件，所以导入时去掉了包里的定时（「总览」的「要注意的」里写了原来的）。要的话点「修改」把定时加回来。"
+
+/**
+ * 任务卡片上的派活关系（派活第二期，导入时自动配好）。
+ * 接受派活的：「接受派活：参数 单号（必填，去重）· 同时最多 1 个 · 来自「巡检」」；派活方：「派活给「处理…」」。
+ * 只算勾上的任务：派活方没勾上时写「来自：（没有勾上的任务）」。
+ */
+function DispatchLines({ plan, task }: { plan: ImportPlan; task: PlanTask }) {
+  const included = (key: string) => plan.tasks.find((each) => each.key === key && each.include)
+  const targets = plan.tasks.filter((each) => each.include && each.key !== task.key && each.dispatch?.fromKeys.includes(task.key))
+  const dispatch = task.dispatch
+  if (!dispatch && !targets.length) return null
+  const from = dispatch?.fromKeys.flatMap((key) => included(key) ?? [])
+  const { retries } = retriesOf(dispatch)
+  return (
+    <div className="flex flex-col gap-1.5">
+      {dispatch && (
+        <p className="flex items-start gap-2">
+          <InboxIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+          <span>
+            接受派活：参数 {dispatch.params.map((p) => `${p.name}（${[p.required ? "必填" : "可选", p.dedupe && "去重"].filter(Boolean).join("，")}）`).join("、") || "（没写，派的时候自己填）"}
+            {" · "}同时最多 {dispatch.maxRunning} 个
+            {!!retries && ` · 没办成自动重试 ${retries} 次`}
+            {" · "}
+            {from?.length ? `来自${from.map((each) => `「${each.title}」`).join("、")}` : dispatch.fromKeys.length ? "来自：（没有勾上的任务）" : "来自：（还没有任务派活给它，只能人派）"}
+          </span>
+        </p>
+      )}
+      {targets.map((target) => (
+        <p key={target.key} className="flex items-start gap-2">
+          <SendIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+          <span>派活给「{target.title}」（导入时给它选上内置工具「派活」）</span>
+        </p>
+      ))}
+    </div>
   )
 }
 
@@ -1247,7 +1290,7 @@ function PlanSummary({ plan, onStep }: { plan: ImportPlan; onStep: (step: Import
       key: "tasks",
       title: `任务 ${tasks.length} 个`,
       description: tasks.length
-        ? names(tasks, (task) => `「${task.title}」（${task.schedule ? task.schedule.text : "按需"}，负责人 ${staffName(task.ownerId)}${taskEnabled(task) ? "" : `，${DISABLED_TEXT}`}）`) + (plan.tasks.length > tasks.length ? `；不导入 ${plan.tasks.length - tasks.length} 个` : "")
+        ? names(tasks, (task) => `「${task.title}」（${task.schedule ? task.schedule.text : task.dispatch ? "被派活" : "按需"}，负责人 ${staffName(task.ownerId)}${taskEnabled(task) ? "" : `，${DISABLED_TEXT}`}）`) + (plan.tasks.length > tasks.length ? `；不导入 ${plan.tasks.length - tasks.length} 个` : "")
         : "不建任务，只导入下面的配置",
     },
     {
@@ -1339,7 +1382,13 @@ function useFollowUpPreview(plan: ImportPlan): FollowUpPreview[] {
   for (const rule of plan.rules.filter((each) => each.include && each.kind === "new" && (each.needsNewTools || !each.compile)))
     list.push({ key: `rule-${rule.key}`, icon: <ShieldCheckIcon />, title: `翻译并确认规则「${rule.name}」`, description: "导入后到「规则」页看「系统理解为」，确认了才生效。" })
   for (const task of tasks)
-    list.push({
+    list.push(task.dispatch ? {
+      // 派活第二期：被派活的任务不定时，导入后在详情里点「派一张试试」打开派活页的「派一张」（#/work?task=<id>&new=1）
+      key: `run-${task.key}`,
+      icon: <SendIcon />,
+      title: `派一张试试「${task.title}」`,
+      description: "被派活的任务不定时，有单才跑。先手动派一张（例如填一个真实的参数）看结果对不对；这个任务名下有过一张单就算办完。",
+    } : {
       key: `run-${task.key}`,
       icon: <PlayIcon />,
       title: `试跑一次「${task.title}」`,

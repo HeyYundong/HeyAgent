@@ -10,7 +10,7 @@ import {
   type WorkTaskStats,
   workListInputSchema,
 } from "@heyagent/shared"
-import { and, asc, count, desc, eq, gte, ilike, inArray, isNotNull, lt, or, sql, type SQL } from "drizzle-orm"
+import { and, asc, count, desc, eq, gte, ilike, inArray, isNotNull, isNull, lt, lte, or, sql, type SQL } from "drizzle-orm"
 
 import type { DbOrTx } from "../data/config/common.js"
 import * as t from "../db/schema.js"
@@ -72,6 +72,9 @@ function toWorkItem(
     depth: row.depth,
     result: row.result ?? null,
     error: row.error,
+    failKind: row.status === "failed" ? (row.failKind ?? "error") : null,
+    notBefore: row.status === "queued" ? isoOrNull(row.notBefore) : null,
+    autoRetries: row.autoRetries,
     queuePosition: row.status === "queued" ? (extra.queuePosition.get(row.id) ?? null) : null,
     createdAt: iso(row.createdAt),
     startedAt: isoOrNull(row.startedAt),
@@ -92,7 +95,8 @@ async function enrich(db: DbOrTx, rows: WorkItemRow[]) {
       ? db
           .select({ id: t.workItems.id, taskId: t.workItems.taskId })
           .from(t.workItems)
-          .where(and(eq(t.workItems.status, "queued"), inArray(t.workItems.taskId, queuedTasks)))
+          // 排队等自动重试的（not_before 在将来）不算名次：到点才领
+          .where(and(eq(t.workItems.status, "queued"), inArray(t.workItems.taskId, queuedTasks), or(isNull(t.workItems.notBefore), lte(t.workItems.notBefore, sql`now()`))))
           .orderBy(asc(t.workItems.createdAt), asc(t.workItems.id))
       : [],
   ])

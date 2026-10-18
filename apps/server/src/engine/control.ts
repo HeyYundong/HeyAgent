@@ -73,8 +73,8 @@ export async function cancelSessionInTx(db: Db, tx: Tx, input: CancelSessionInpu
     targetId: input.sessionId,
     detail: { reason: input.reason },
   })
-  // 被派的运行：派活单跟着记「没办成」（人在派活页点「不办了」时单已经先改成不办了，这里不动它）
-  await settleWorkItemInTx(db, tx, input.sessionId, { status: "failed", error: reason })
+  // 被派的运行：派活单跟着记「没办成」，人取消的不自动重试（人在派活页点「不办了」时单已经先改成不办了，这里不动它）
+  await settleWorkItemInTx(db, tx, input.sessionId, { status: "failed", error: reason, retryable: false, failKind: "cancelled_run" })
   return { sessionId: input.sessionId }
 }
 

@@ -244,8 +244,8 @@ export async function resolveHumanItemImpl(
         .update(t.sessions)
         .set({ status: "failed", endedAt: new Date(), error })
         .where(eq(t.sessions.id, item.sessionId))
-      // 被派的运行：派活单跟着记「没办成」
-      await settleWorkItemInTx(db, tx, item.sessionId, { status: "failed", error })
+      // 被派的运行：派活单跟着记「没办成」，人选了不继续的不自动重试
+      await settleWorkItemInTx(db, tx, item.sessionId, { status: "failed", error, retryable: false, failKind: "cancelled_run" })
       return { endedSessionId: item.sessionId }
     }
     let sessionPatch: Partial<typeof t.sessions.$inferInsert> | undefined
@@ -418,12 +418,14 @@ export async function resolveVerifyDisputeImpl(
       )
       .returning({ id: t.sessions.id })
     if (done.length === 0) return {}
-    // 被派的运行：判通过 = 派活单办完（总结取 agent 最后那段），判失败 = 没办成
+    // 被派的运行：判通过 = 派活单办完（总结取 agent 最后那段），判失败 = 没办成（人判的，不自动重试）
     await settleWorkItemInTx(
       db,
       tx,
       sessionId,
-      input.how === "pass" ? { status: "done" } : { status: "failed", error: `验收没通过，${input.actorName}判定失败${note ? `：${note}` : ""}` }
+      input.how === "pass"
+        ? { status: "done" }
+        : { status: "failed", error: `验收没通过，${input.actorName}判定失败${note ? `：${note}` : ""}`, retryable: false, failKind: "cancelled_run" }
     )
     return { endedSessionId: sessionId }
   })

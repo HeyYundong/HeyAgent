@@ -3,6 +3,7 @@
 // 要等的时候 session 挂起，等到了继续同一个 session，不新开。卡住运行的事全处理完，这次运行以运行卡回到看板。
 // 人加的待办：新建、编辑、删除接通后端（M1 P2）；记忆审核、技能修改在这里也能批。
 // 立即继续、立即执行、处理审批 / 验收 / 登录、主管手动触发事件接引擎（M1 P3）。
+// 派活第二期：「等待中」里同一个任务被派来的运行有 2 个及以上时收成一张（boardCards 的 group 卡），点开是 GroupSheet。
 import * as React from "react"
 import { KanbanIcon, PlusIcon } from "lucide-react"
 
@@ -19,7 +20,7 @@ import { trpc } from "@/lib/trpc"
 
 import { Board, type Card } from "./board"
 import { HumanSheet } from "./human-sheet"
-import { RunSheet, TodoSheet } from "./sheets"
+import { GroupSheet, RunSheet, TodoSheet } from "./sheets"
 import { TodoDialog } from "./todo-dialog"
 
 export default function TodosPage() {
@@ -75,6 +76,7 @@ export default function TodosPage() {
       {card?.kind === "run" && (
         <RunSheet run={card.run} task={card.task} column={card.column} note={card.note} canAct={can(user, "session.resume", { taskOwnerId: card.task.ownerId })} isAdmin={user.isAdmin} open={open} onClose={close} />
       )}
+      {card?.kind === "group" && <GroupSheet task={card.task} runs={card.runs} open={open} onClose={close} />}
       {card?.kind === "human" && (
         <HumanSheet key={card.id} item={card.item} runs={runs} open={open} userId={user.id} canAct={can(user, "humanItem.resolve", { assigneeId: card.item.assigneeId })} onClose={close} />
       )}

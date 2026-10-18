@@ -6,7 +6,7 @@ import { setTimeout as sleep } from "node:timers/promises"
 
 import type { ModelMessage, ToolResultPart } from "ai"
 import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm"
-import type { HumanDetail, SessionSnapshot } from "@heyagent/shared"
+import type { HumanDetail, SessionSnapshot, WorkFailKind } from "@heyagent/shared"
 
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
@@ -35,6 +35,7 @@ import { runtime } from "./runtime.js"
 import { maskSecretFields } from "./secrets.js"
 import { loadEngineSettings } from "./settings.js"
 import type { SessionRow, ToolOutcome } from "./tools/builtin.js"
+import { recheckWorkDoneAfterSuspend } from "./dispatch/notify.js"
 import { settleWorkItemInTx } from "./dispatch/settle.js"
 import { suspendInTx } from "./waits.js"
 
@@ -119,12 +120,17 @@ async function loadSession(
   return session
 }
 
-/** 标失败并写清原因（只在还是执行中时） */
+/**
+ * 标失败并写清原因（只在还是执行中时）。被派的运行：派活单跟着没办成，或者（运行出错、自动重试还没用完）回到排队；
+ * 还会重试的这次不通知负责人，最后一次没办成才通知（派活第二期 4.3）。
+ * retryable：运行出错（模型、程序出错、验收判失败）= true；规则让它失败 = false（规则就是要它停）
+ */
 async function failSession(
   db: Db,
   session: SessionRow,
   snapshot: SessionSnapshot | null,
-  reason: string
+  reason: string,
+  options: { retryable: boolean; failKind?: WorkFailKind } = { retryable: true }
 ) {
   // 过程记录和最终状态在同一个事务里写：读到「失败」时一定也读得到原因
   const failed = await db.transaction(async (tx) => {
@@ -148,16 +154,23 @@ async function failSession(
       title: "运行失败",
       detail: reason,
     })
-    // 被派的运行：派活单跟着记「没办成」，原因同运行的
-    await settleWorkItemInTx(db, tx, session.id, { status: "failed", error: reason.slice(0, 2000) })
-    return true
+    // 被派的运行：派活单跟着记「没办成」（原因同运行的），或者排队等自动重试
+    const settled = await settleWorkItemInTx(db, tx, session.id, {
+      status: "failed",
+      error: reason.slice(0, 2000),
+      retryable: options.retryable,
+      ...(options.failKind ? { failKind: options.failKind } : {}),
+    })
+    return { settled }
   })
   if (!failed) return
+  if (failed.settled?.kind === "retry") return
   if (snapshot) {
+    const retried = failed.settled?.kind === "failed" ? failed.settled.autoRetries : 0
     await notifyUsers(db, {
       userIds: [snapshot.task.ownerId],
       title: `${snapshot.task.title}：运行失败`,
-      body: reason,
+      body: retried ? `自动重试了 ${retried} 次都没办成：${reason}` : reason,
       link: sessionLink(session.taskId, session.id),
       taskId: session.taskId,
       sessionId: session.id,
@@ -284,6 +297,8 @@ async function suspendWithResults(
         .where(eq(t.humanItems.id, item))
       if (row) await notifyAssignee(db, row)
     }
+    // 等派活单的结果（work.done:<单号>）：挂起提交以后再查一次，单在这期间结束了就补发叫醒
+    if (plan.kind === "wait") await recheckWorkDoneAfterSuspend(db, plan.input.event)
     return true
   } catch (error) {
     if (error instanceof RollbackSignal) return false
@@ -614,7 +629,7 @@ export async function runSession(
       if (before?.action === "suspended") return "suspended"
       if (before?.action === "fail") {
         await closeGateway()
-        await failSession(db, session, snapshot, before.reason)
+        await failSession(db, session, snapshot, before.reason, { retryable: false, failKind: "error" })
         return "failed"
       }
 
@@ -727,13 +742,25 @@ export async function runSession(
             title: verified ? "验收通过，运行完成" : "agent 说做完了",
             detail: result.text || null,
           })
-          // 被派的运行：派活单跟着记「办完」，这段总结写回单上
-          await settleWorkItemInTx(db, tx, sessionId, { status: "done", summary: result.text || "" })
-          return true
+          // 被派的运行：派活单跟着记「办完」，这段总结写回单上（agent 报过办不成的记「没办成」）
+          const settled = await settleWorkItemInTx(db, tx, sessionId, { status: "done", summary: result.text || "" })
+          return { settled }
         })
         if (!finished) return "stopped"
-        // 被派的运行一天可能几十上百次：完成时不发站内通知（派活页能看全部结果）；失败照常通知
-        if (live.workItemId) return "done"
+        // 被派的运行一天可能几十上百次：完成时不发站内通知（派活页能看全部结果）；失败照常通知。
+        // agent 判断办不成的：运行正常结束，但单没办成，照常给负责人发失败通知
+        if (live.workItemId) {
+          if (finished.settled?.kind === "failed")
+            await notifyUsers(db, {
+              userIds: [snapshot.task.ownerId],
+              title: `${snapshot.task.title}：没办成`,
+              body: finished.settled.error,
+              link: sessionLink(session.taskId, sessionId),
+              taskId: session.taskId,
+              sessionId,
+            })
+          return "done"
+        }
         await notifyUsers(db, {
           userIds: [snapshot.task.ownerId],
           title: `${snapshot.task.title}：运行完成`,

@@ -12,7 +12,7 @@ import { insertMemory } from "../data/config/memories.js"
 import { confirmRuleInTx, insertRule } from "../data/config/rules.js"
 import { changeSkillStatus, insertSkill, saveSkillVersion } from "../data/config/skills.js"
 import { insertTaskMemory } from "../data/config/task-memory.js"
-import { insertTask } from "../data/config/tasks.js"
+import { insertTask, setDispatchSources } from "../data/config/tasks.js"
 import { insertHttpTool, insertMcpServer } from "../data/config/tools.js"
 import * as t from "../db/schema.js"
 import { syncTaskSchedule } from "../engine/api.js"
@@ -201,6 +201,15 @@ async function commitInTx(tx: Tx, ctx: WriteCtx, importId: string, written: stri
       ruleIds: task.ruleKeys.flatMap((key) => ruleIdByKey.get(key) ?? []),
       browserProfileIds: task.browserProfileIds,
       allowedDomains: task.allowedDomains,
+      // 派活（第二期）：先建好「可以被派活」；谁能派活给它等全部任务建完再连（派活方可能排在后面，见 ⑥b）
+      dispatch: task.dispatch
+        ? {
+            params: task.dispatch.params,
+            maxRunning: task.dispatch.maxRunning,
+            ...(task.dispatch.retries !== undefined ? { retries: task.dispatch.retries } : {}),
+            ...(task.dispatch.retryDelayMinutes !== undefined ? { retryDelayMinutes: task.dispatch.retryDelayMinutes } : {}),
+          }
+        : null,
     })
     if (!parsed.success) throw badRequest(`任务「${task.title}」：${parsed.error.issues[0]?.message ?? "填得不对"}`)
     let id: string
@@ -213,6 +222,13 @@ async function commitInTx(tx: Tx, ctx: WriteCtx, importId: string, written: stri
     }
     taskIdByKey.set(task.key, id)
     result.tasks.push({ key: task.key, id })
+  }
+
+  // ⑥b 派活：谁能派活给它。只连这次勾上的任务（没勾的派活方去掉；一个都不剩的在「还要你做的」里提醒）
+  for (const task of tasks) {
+    if (!task.dispatch) continue
+    const sourceIds = task.dispatch.fromKeys.flatMap((key) => taskIdByKey.get(key) ?? [])
+    await setDispatchSources(tx, taskIdByKey.get(task.key)!, sourceIds)
   }
 
   // ⑦ 任务记忆

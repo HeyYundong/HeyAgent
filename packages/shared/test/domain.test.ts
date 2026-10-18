@@ -63,6 +63,40 @@ describe("boardCards", () => {
   })
 })
 
+describe("boardCards：收起被派的卡片（派活第二期）", () => {
+  const tasks = [task("T-1"), task("T-2"), task("T-3")]
+  const dispatched = { source: "dispatch" as const }
+  const runs = [
+    run("R-0", "T-3", "running", "2026-10-18T00:00:00.000Z"),
+    // T-1：3 个被派来、在等 → 收成一张；另有一个执行中的被派运行、一个手动的在等，不收
+    run("R-1-b", "T-1", "waiting", "2026-10-18T02:00:00.000Z", { ...dispatched, workItemId: "W-2" }),
+    run("R-1-a", "T-1", "waiting", "2026-10-18T01:00:00.000Z", { ...dispatched, workItemId: "W-1" }),
+    run("R-1-c", "T-1", "waiting", "2026-10-18T03:00:00.000Z", { ...dispatched, workItemId: "W-3" }),
+    run("R-1-d", "T-1", "running", "2026-10-18T04:00:00.000Z", { ...dispatched, workItemId: "W-4" }),
+    run("R-1-e", "T-1", "waiting", "2026-10-18T05:00:00.000Z", { source: "manual" }),
+    // T-2：只有 1 个被派来在等 → 不收；等人处理的不收（由「要人办的事」代表）
+    run("R-2-a", "T-2", "waiting", "2026-10-18T01:00:00.000Z", { ...dispatched, workItemId: "W-5" }),
+    run("R-2-b", "T-2", "needs_human", "2026-10-18T02:00:00.000Z", { ...dispatched, workItemId: "W-6" }),
+    run("R-2-c", "T-2", "needs_human", "2026-10-18T03:00:00.000Z", { ...dispatched, workItemId: "W-7" }),
+  ]
+  const cards = boardCards({ runs, tasks, humanItems: [], humanTodos: [] })
+
+  it("同一个任务被派来、在等的 2 个及以上收成一张，放在第一张原来的位置，runs 按开始时间", () => {
+    expect(cards.map((c) => c.id)).toEqual(["R-0", "group-T-1", "R-1-d", "R-1-e", "R-2-a"])
+    const group = cards.find((c) => c.kind === "group")
+    expect(group).toMatchObject({ kind: "group", column: "waiting", task: { id: "T-1" } })
+    expect(group?.kind === "group" && group.runs.map((r) => r.id)).toEqual(["R-1-a", "R-1-b", "R-1-c"])
+  })
+  it("列头数字按运行数算：收起的卡片算它的 runs.length", () => {
+    const waiting = cards.filter((c) => c.column === "waiting").reduce((n, c) => n + (c.kind === "group" ? c.runs.length : 1), 0)
+    expect(waiting).toBe(5)
+  })
+  it("没有可收的时候原样返回", () => {
+    const plain = boardCards({ runs: runs.filter((r) => r.taskId !== "T-1"), tasks, humanItems: [], humanTodos: [] })
+    expect(plain.some((c) => c.kind === "group")).toBe(false)
+  })
+})
+
 describe("needsMeCount", () => {
   const items = [item("a", "u-lin"), item("b", "u-wang"), item("c", "u-wang")]
   it("主管算全部，员工只算分给自己的", () => {

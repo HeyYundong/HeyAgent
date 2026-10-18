@@ -6,6 +6,7 @@ import {
   builtinToolInputs,
   fmtDateTime,
   memoryId,
+  workDoneEvent,
   type BuiltinToolId,
   type HumanDetail,
   type SessionSnapshot,
@@ -27,7 +28,10 @@ import {
   notifyAssignee,
   type CreateHumanItemInput,
 } from "../humans.js"
+import { listFromAgent, reportFromAgent } from "../dispatch/agent-tools.js"
 import { dispatchFromAgent } from "../dispatch/dispatch.js"
+import { isFinalWorkStatus, itemIdOfEvent, workDoneMessage } from "../dispatch/notify.js"
+import { toWorkItems } from "../../work/service.js"
 import { notifyUsers, sessionLink } from "../notify.js"
 import { appendEvent } from "../records.js"
 import { loadEngineSettings } from "../settings.js"
@@ -181,6 +185,24 @@ const handlers: {
       return fail(`时间 ${fmtDateTime(resumeAt)} 已经过了，不用等`)
     if (!resumeAt && !input.event)
       return fail("until / afterMinutes 和 event 至少给一个")
+    // 等派活单的结果（work.done:<单号>，第二期）：只能等这个任务派出去的单；单已经结束就不挂起，直接给结果（先结束、后等）
+    const itemId = itemIdOfEvent(input.event)
+    if (itemId) {
+      const [row] = await ctx.db
+        .select()
+        .from(t.workItems)
+        .where(eq(t.workItems.id, itemId))
+      if (!row || row.fromTaskId !== ctx.snapshot.task.id)
+        return fail(
+          `没有这个任务派出去的派活单 ${itemId}（事件 ${workDoneEvent(itemId)} 只能等自己派的单）。用 work_list 看派过哪些`
+        )
+      if (isFinalWorkStatus(row.status)) {
+        const [item] = await toWorkItems(ctx.db, [row])
+        return {
+          output: `不用等了，派活单已经结束：${workDoneMessage(item!)}`,
+        }
+      }
+    }
     const settings = await loadEngineSettings(ctx.db)
     const eventOnly = !resumeAt && input.event
     const plan: SuspendPlan = {
@@ -438,6 +460,13 @@ const handlers: {
   // 派活：检查、去重、上限、返回文字都在 engine/dispatch/dispatch.ts
   async "work.dispatch"(ctx, input) {
     return dispatchFromAgent(ctx, input)
+  },
+  // 第二期：查自己任务派出去的单、被派的运行写结构化结果（engine/dispatch/agent-tools.ts）
+  async "work.list"(ctx, input) {
+    return listFromAgent(ctx, input)
+  },
+  async "work.report"(ctx, input) {
+    return reportFromAgent(ctx, input)
   },
   async "plan.set"(ctx, input) {
     const steps = input.steps.map((step) => step.trim()).filter(Boolean)

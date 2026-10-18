@@ -2,9 +2,8 @@
 // 表单：React Hook Form + shared 的 taskInputSchema；执行模型和三方验收模型不许同一家（前端先拦，后端也拦）。
 // M3：规则只能选已经生效的（没生效的列出来但选不了，写明原因）；可以给任务单独选验收模型。
 // tasks.update 是整体替换：verifyModelId、浏览器的三项、派活的三项（dispatch、dispatchFrom、cronSkipIfRunning）都要带上，不然会被清空。
-// 派活（docs/dev/dispatch.md 9.1 节）：「被派活」一组（参数、名额、谁能派活给它）；定时那里「上一次还没跑完就跳过」；选了内置工具「派活」时写能派给谁。
+// 派活（docs/dev/dispatch.md 9.1 节）：「被派活」一组（参数、名额、谁能派活给它，第二期加自动重试，组件在 dispatch-fields.tsx，导入向导也用）；定时那里「上一次还没跑完就跳过」；选了内置工具「派活」时写能派给谁。
 import * as React from "react"
-import { zodResolver } from "@hookform/resolvers/zod"
 import { Controller, useFieldArray, useForm, useWatch, type Control, type UseFormRegister } from "react-hook-form"
 import { PlayIcon, PlusIcon, XIcon } from "lucide-react"
 import {
@@ -15,7 +14,6 @@ import {
   modelFamily,
   recognizeCheckpoints,
   sameFamily,
-  taskInputSchema,
   WORK_DISPATCH_TOOL_ID,
   type TaskDef,
   type TaskInput,
@@ -24,18 +22,15 @@ import {
 
 import { FileList, UploadButton } from "@/components/files"
 import { ModelCombobox } from "@/components/shell/model-combobox"
-import { HelpTip } from "@/components/shell/simple-page"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Combobox, ComboboxChip, ComboboxChips, ComboboxChipsInput, ComboboxContent, ComboboxEmpty, ComboboxItem, ComboboxList, ComboboxValue, useComboboxAnchor } from "@/components/ui/combobox"
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldLegend, FieldSeparator, FieldSet } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from "@/components/ui/input-group"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Spinner } from "@/components/ui/spinner"
-import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 
 import { useBrowsersQuery, useMemoriesQuery, useModels, useRulesQuery, useSkillsQuery, useStaffQuery, useTasksQuery, useToolName, useToolsQuery } from "@/lib/data"
@@ -48,10 +43,11 @@ import { trpc } from "@/lib/trpc"
 import { compileOf, ruleHint, ruleSelectable } from "@/pages/rules/compile"
 
 import { cronText } from "./cron"
+import { DispatchFields, retriesOf, taskResolver } from "./dispatch-fields"
+import { MultiPick, type Option } from "./multi-pick"
 import { PLACEHOLDER } from "./data"
 import { TaskAttachments } from "./run-actions"
 
-export type Option = { value: string; label: string; hint?: string; disabled?: boolean }
 type PickKey = "memoryIds" | "skillIds" | "toolIds" | "ruleIds"
 const PICK_KEYS: PickKey[] = ["memoryIds", "skillIds", "toolIds", "ruleIds"]
 
@@ -81,44 +77,6 @@ function usePickOptions(picked: Partial<Record<PickKey, string[]>>, originalRule
       })),
     },
   }
-}
-
-export function MultiPick({ id, label, options, value, onChange, description, notes, hideLabel = false }: { id: string; label: string; options: Option[]; value: string[]; onChange: (value: string[]) => void; description?: string; notes?: string[]; /** 外面已经有标题时（例如导入向导的任务卡片）只给读屏用 */ hideLabel?: boolean }) {
-  const anchor = useComboboxAnchor()
-  const labelOf = (v: string) => options.find((o) => o.value === v)?.label ?? v
-  return (
-    <Field>
-      <FieldLabel htmlFor={id} className={hideLabel ? "sr-only" : undefined}>{label}</FieldLabel>
-      {/* Base UI 默认按 Esc 会清空全部已选，这里忽略，免得关下拉时把选好的丢掉 */}
-      <Combobox multiple items={options.map((o) => o.value)} value={value} onValueChange={(next: string[], details) => details.reason !== "escape-key" && onChange(next)} itemToStringLabel={labelOf}>
-        <ComboboxChips ref={anchor}>
-          <ComboboxValue>
-            {(selected: string[]) => (
-              <>
-                {selected.map((v) => <ComboboxChip key={v}>{labelOf(v)}</ComboboxChip>)}
-                <ComboboxChipsInput id={id} placeholder={selected.length ? "" : options.length ? `选${label}，可以多选` : `还没有可选的${label}`} />
-              </>
-            )}
-          </ComboboxValue>
-        </ComboboxChips>
-        <ComboboxContent anchor={anchor}>
-          <ComboboxEmpty>没有匹配的{label}</ComboboxEmpty>
-          <ComboboxList>
-            {(v: string) => (
-              <ComboboxItem key={v} value={v} disabled={options.find((o) => o.value === v)?.disabled}>
-                <span className="flex min-w-0 flex-col">
-                  <span>{labelOf(v)}</span>
-                  <span className="line-clamp-2 text-muted-foreground">{options.find((o) => o.value === v)?.hint}</span>
-                </span>
-              </ComboboxItem>
-            )}
-          </ComboboxList>
-        </ComboboxContent>
-      </Combobox>
-      {description && <FieldDescription>{description}</FieldDescription>}
-      {notes?.map((note) => <FieldDescription key={note}>{note}</FieldDescription>)}
-    </Field>
-  )
 }
 
 export function StepEditor({ index, control, register, error, checkpointError, onRemove }: {
@@ -223,135 +181,7 @@ export function BrowserFields({ control, domainText, domainError, onDomainText, 
   )
 }
 
-/** 被派活的一个参数：参数名 + 说明 + 必填 + 去重 + 删除（写法照步骤编辑器） */
-function ParamEditor({ index, control, register, error, onRemove }: { index: number; control: Control<TaskInput>; register: UseFormRegister<TaskInput>; error?: string; onRemove: () => void }) {
-  return (
-    <Field data-invalid={!!error}>
-      <div className="flex flex-col gap-2 border-l-2 pl-3 sm:flex-row sm:items-center">
-        <div className="flex min-w-0 flex-1 gap-2">
-          <Input className="w-28 shrink-0" aria-label={`参数 ${index + 1} 的名字`} aria-invalid={!!error} placeholder="例如：单号" {...register(`dispatch.params.${index}.name`)} />
-          <Input className="min-w-0 flex-1" aria-label={`参数 ${index + 1} 的说明`} placeholder="给派活的 agent 看：填什么" {...register(`dispatch.params.${index}.description`)} />
-        </div>
-        <div className="flex items-center gap-4">
-          {(["required", "dedupe"] as const).map((key) => (
-            <Controller
-              key={key}
-              control={control}
-              name={`dispatch.params.${index}.${key}`}
-              render={({ field }) => (
-                <Field orientation="horizontal" className="w-auto">
-                  <Checkbox id={`param-${index}-${key}`} checked={!!field.value} onCheckedChange={(on) => field.onChange(Boolean(on))} />
-                  <FieldLabel htmlFor={`param-${index}-${key}`} className="font-normal">{key === "required" ? "必填" : "去重"}</FieldLabel>
-                </Field>
-              )}
-            />
-          ))}
-          <Button type="button" variant="ghost" size="icon-xs" aria-label={`删除参数 ${index + 1}`} onClick={onRemove}><XIcon /></Button>
-        </div>
-      </div>
-      {error && <FieldError>{error}</FieldError>}
-    </Field>
-  )
-}
-
-const MAX_RUNNING_ITEMS = Array.from({ length: 10 }, (_, i) => ({ value: String(i + 1), label: `${i + 1} 个` }))
-const NEW_PARAM = { name: "", description: "", required: false, dedupe: false }
-
-/** 「被派活」一组：开关；打开后参数、名额、谁能派活给它 */
-function DispatchFields({ control, register, taskId, errors }: { control: Control<TaskInput>; register: UseFormRegister<TaskInput>; taskId?: string; errors: { root?: string; params?: (string | undefined)[] } }) {
-  const tasks = useTasksQuery().data ?? []
-  const dispatch = useWatch({ control, name: "dispatch" })
-  const params = useFieldArray({ control, name: "dispatch.params" })
-  // 关掉再打开，刚才写的参数还在
-  const draft = React.useRef(dispatch ?? { params: [{ name: "", description: "", required: true, dedupe: true }], maxRunning: 1 })
-  const clip = (title: string) => (title.length > 12 ? `${title.slice(0, 12)}…` : title)
-  const fromOptions = tasks.filter((each) => each.id !== taskId).map((each) => ({
-    value: each.id,
-    label: `${each.id} ${clip(each.title)}`,
-    hint: each.toolIds.includes(WORK_DISPATCH_TOOL_ID) ? "已选了内置工具「派活」" : "还没选内置工具「派活」，选上才能派",
-  }))
-  return (
-    <FieldSet>
-      <FieldLegend variant="label" className="flex items-center gap-1">
-        被派活
-        <HelpTip>打开后，别的任务可以把一件件事派给它办，一件事开一次运行；人也能在派活页手动派。</HelpTip>
-      </FieldLegend>
-      <Controller
-        control={control}
-        name="dispatch"
-        render={({ field }) => (
-          <Field orientation="horizontal">
-            <Switch id="task-accepts-work" checked={!!field.value} onCheckedChange={(on) => {
-              if (!on && field.value) draft.current = field.value
-              field.onChange(on ? draft.current : null)
-              // 改整个对象时字段数组不一定跟着刷新，参数行再明确放一次
-              if (on) params.replace(draft.current.params)
-            }} />
-            <FieldLabel htmlFor="task-accepts-work">可以被派活</FieldLabel>
-          </Field>
-        )}
-      />
-      {dispatch && (
-        <>
-          <Field data-invalid={!!errors.root}>
-            <FieldLabel className="flex items-center gap-1">
-              每件事带的参数
-              <HelpTip>派活的 agent 按这里填，缺必填的当场被拒。标了「去重」的参数用来判断是不是同一件事：同一个值只办一次；一个都不标时，派活的 agent 要自己给每件事一个编号。</HelpTip>
-            </FieldLabel>
-            <div className="flex flex-col gap-3">
-              {params.fields.map((param, index) => (
-                <ParamEditor key={param.id} index={index} control={control} register={register} error={errors.params?.[index]} onRemove={() => params.remove(index)} />
-              ))}
-              <Button type="button" variant="outline" size="sm" className="self-start" onClick={() => params.append(NEW_PARAM)}>
-                <PlusIcon data-icon="inline-start" />加一个参数
-              </Button>
-            </div>
-            {errors.root && <FieldError>{errors.root}</FieldError>}
-          </Field>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field>
-              <FieldLabel htmlFor="task-max-running" className="flex items-center gap-1">
-                同时最多几个在跑
-                <HelpTip>执行中、验收中、等浏览器的运行占名额；agent 自己挂起等待、等人处理的不占，空出来的位子给下一张单。最好不超过要用的账号能同时登录几个。</HelpTip>
-              </FieldLabel>
-              <Controller
-                control={control}
-                name="dispatch.maxRunning"
-                render={({ field }) => (
-                  <Select items={MAX_RUNNING_ITEMS} value={String(field.value ?? 1)} onValueChange={(v) => v && field.onChange(Number(v))}>
-                    <SelectTrigger id="task-max-running" className="w-full"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {MAX_RUNNING_ITEMS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                )}
-              />
-            </Field>
-            <Controller
-              control={control}
-              name="dispatchFrom"
-              render={({ field }) => (
-                <MultiPick id="task-dispatch-from" label="谁能派活给它" options={fromOptions} value={field.value ?? []} onChange={field.onChange} description="不选就只能人在派活页派。" />
-              )}
-            />
-          </div>
-        </>
-      )}
-    </FieldSet>
-  )
-}
-
 const DEFAULT_CRON = "0 9 * * *"
-
-/** shared 的 taskInputSchema 之外再查一条：打开了「可以被派活」就至少写一个参数（和别的错误一起显示） */
-const zodTaskResolver = zodResolver(taskInputSchema)
-const taskResolver: typeof zodTaskResolver = async (values, context, options) => {
-  const result = await zodTaskResolver(values, context, options)
-  if (values.dispatch && values.dispatch.params.length === 0) {
-    return { values: {}, errors: { ...result.errors, dispatch: { type: "custom", message: "至少写一个参数：每件事要带什么（例如单号）" } } }
-  }
-  return result
-}
 
 export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpenChange: (open: boolean) => void; task?: TaskDef }) {
   const { user } = useMe()
@@ -378,7 +208,7 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
           allowedDomains: task.allowedDomains,
           allowBrowserEvaluate: task.allowBrowserEvaluate,
           verifyModelId: task.verifyModelId ?? "",
-          dispatch: task.dispatch ?? null,
+          dispatch: task.dispatch ? { ...task.dispatch, ...retriesOf(task.dispatch) } : null,
           dispatchFrom: task.dispatchFrom,
           cronSkipIfRunning: task.cronSkipIfRunning,
         }
@@ -394,6 +224,13 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
   const steps = useFieldArray({ control: form.control, name: "steps" })
   const [modelId, schedule, memoryIds, skillIds, toolIds, ruleIds, verifyModelId, dispatch] = useWatch({ control: form.control, name: ["modelId", "schedule", "memoryIds", "skillIds", "toolIds", "ruleIds", "verifyModelId", "dispatch"] })
   const allTasks = useTasksQuery().data ?? []
+  // 「谁能派活给它」：系统里的其他任务
+  const clip = (title: string) => (title.length > 12 ? `${title.slice(0, 12)}…` : title)
+  const fromOptions = allTasks.filter((each) => each.id !== task?.id).map((each) => ({
+    value: each.id,
+    label: `${each.id} ${clip(each.title)}`,
+    hint: each.toolIds.includes(WORK_DISPATCH_TOOL_ID) ? "已选了内置工具「派活」" : "还没选内置工具「派活」，选上才能派",
+  }))
   // 选了内置工具「派活」：能派给谁（被派的任务在「谁能派活给它」里加了它才行）
   const dispatchTargets = task ? allTasks.filter((each) => each.dispatch && each.dispatchFrom.includes(task.id)) : []
   const toolNotes = (toolIds ?? []).includes(WORK_DISPATCH_TOOL_ID)
@@ -593,7 +430,7 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
                 </div>
               </FieldSet>
               <FieldSeparator />
-              <DispatchFields control={form.control} register={form.register} taskId={task?.id} errors={{ root: errors.dispatch?.message ?? errors.dispatch?.params?.message ?? errors.dispatch?.params?.root?.message, params: (dispatch?.params ?? []).map((_, index) => errors.dispatch?.params?.[index]?.name?.message ?? errors.dispatch?.params?.[index]?.description?.message) }} />
+              <DispatchFields id="task-dispatch" control={form.control} register={form.register} errors={errors} fromOptions={fromOptions} />
               <FieldSeparator />
               <Field>
                 <FieldLabel>附件（可以不加）</FieldLabel>

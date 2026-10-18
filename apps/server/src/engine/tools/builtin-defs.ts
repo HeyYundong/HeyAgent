@@ -22,6 +22,11 @@ export interface BuiltinToolDef {
   summary: string
   description: string
   risk: Risk
+  /**
+   * 不单独选、跟着别的自动带上（快照里由 sessions.ts 加）：不同步进 tools 表，任务的「用哪些」、导入的内置工具清单里都没有它。
+   * 「查派过的活」跟着「派活」，「报结果」跟着被派来的运行（派活第二期）
+   */
+  implied?: true
 }
 
 export const BUILTIN_TOOLS: BuiltinToolDef[] = [
@@ -108,6 +113,24 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
     risk: "write",
   },
   {
+    id: "work.list",
+    name: "查派过的活",
+    summary: "查这个任务派出去的派活单：排队、在办、办完的结果、没办成的原因",
+    description:
+      "只能查这个任务派出去的单，最新的在前，默认 20 张。items 按单号查；status 按状态筛（open = 还没结束的）；thisRun = true 只看这次运行派的。等结果时用 session.wait 等事件 work.done:<单号>（一次等一张），醒来后用它看其余的。",
+    risk: "read",
+    implied: true,
+  },
+  {
+    id: "work.report",
+    name: "报结果",
+    summary: "被派来的运行把结果的几个字段写回派活单；办不成时报 not_done 并写原因",
+    description:
+      "data 写结果的几个字段（名字 → 文字、数字或是 / 否，最多 20 个），可以调多次，同名字段以后一次为准；派活的一方和派活页都能看到。这件事办不成（例如找不到、对方拒绝）时 outcome = not_done、reason 写原因：运行结束后单记「没办成」，不会自动重试。只写自己这张单，不对外。",
+    risk: "read",
+    implied: true,
+  },
+  {
     id: "file.read",
     name: "读附件",
     summary: "读这次运行的附件或文件：文本直接返回内容，图片交给你看",
@@ -189,6 +212,9 @@ export function compareSnapshotTool(): SnapshotTool {
   }
 }
 
+/** 能在任务里单独选的内置工具（同步进 tools 表、导入的内置工具清单用它） */
+export const SELECTABLE_BUILTIN_TOOLS = BUILTIN_TOOLS.filter((tool) => !tool.implied)
+
 export const builtinDef = (id: string) =>
   BUILTIN_TOOLS.find((tool) => tool.id === id)
 export const isBuiltinTool = (id: string): id is BuiltinToolId =>
@@ -218,7 +244,7 @@ export function builtinSnapshotTool(id: BuiltinToolId): SnapshotTool {
 
 /** 启动时把内置工具同步进 tools 表：有就更新，没有就插入；代码里已经没有的内置工具删掉 */
 export async function syncBuiltinTools(db: DbLike) {
-  const all: { id: string; name: string; summary: string; description: string; risk: Risk }[] = [...BUILTIN_TOOLS, BROWSER_TOOL_DEF, GALLERY_TOOL_DEF, COMPARE_TOOL_DEF]
+  const all: { id: string; name: string; summary: string; description: string; risk: Risk }[] = [...SELECTABLE_BUILTIN_TOOLS, BROWSER_TOOL_DEF, GALLERY_TOOL_DEF, COMPARE_TOOL_DEF]
   for (const [position, def] of all.entries()) {
     const values = {
       id: def.id,

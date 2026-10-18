@@ -2,6 +2,8 @@
 // 平台按被派任务的名额一张单开一次运行，办完把结果写回单上。同一件事只办一次，没办成的由人点「重办」。
 // 左边是派活单列表（搜索、按状态、按被派的任务筛，默认最近 7 天，再往前翻页），右边是一张单的详情：参数、结果、处理记录。右上角「派一张」。
 // 筛选放在网址里（?task=&status=&from=&id=），任务抽屉点「排队 5」能直接跳过来并筛好。
+// 第二期（docs/dev/dispatch-p2.md 3.4、4.4 节）：结果区块加「报结果」写的字段表、在办时「已报：…」；没办成按 failKind 分「运行出错」「agent 判断办不成」；
+// 排队等自动重试的单徽章写「排队 · 16:38 重试」，顶部提示和处理记录里写第几次重试；?new=1 直接打开「派一张」（导入后的「派一张试试」用）。
 import * as React from "react"
 import { keepPreviousData, useInfiniteQuery, useQuery } from "@tanstack/react-query"
 import {
@@ -20,6 +22,7 @@ import {
   SearchIcon,
   SearchXIcon,
   SendIcon,
+  TimerIcon,
   UserIcon,
   XIcon,
 } from "lucide-react"
@@ -28,6 +31,7 @@ import {
   runStatusLabel,
   sameShanghaiDay,
   WORK_LIST_DEFAULT_DAYS,
+  WORK_RETRY_DELAY_DEFAULT,
   type RunStatus,
   type SessionRun,
   type TaskDef,
@@ -55,10 +59,11 @@ import { useBoardQuery, useHumanItems, useRunNow, useSessionsQuery, useStaffName
 import { href, navigate, setParams, useRoute } from "@/lib/router"
 import { useMe } from "@/lib/session"
 import { trpc } from "@/lib/trpc"
+import { delayText } from "@/pages/tasks/dispatch-fields"
 import { WaitingAlert, money } from "@/pages/tasks/parts"
 
 import { CancelDialog, DispatchDialog, EditParamsDialog, RedoDoneDialog, dispatchedToast, useRedo } from "./dialogs"
-import { ParamsTable, WorkStatusBadge, shortName, timeText, useWorkTaskStats } from "./parts"
+import { ParamsTable, ReportTable, WorkStatusBadge, reportText, retryAt, shortName, timeText, useWorkTaskStats } from "./parts"
 
 type Filter = "all" | Exclude<WorkItemStatus, "cancelled">
 
@@ -123,6 +128,13 @@ export default function WorkPage() {
   const earlier = items.filter((item) => !sameShanghaiDay(item.createdAt, now))
   const filtered = Boolean(q) || filter !== "all" || taskFilter !== "all" || Boolean(fromFilter)
   const canMore = listQuery.hasNextPage || (!allTime && !q)
+  // ?new=1：导入后「派一张试试」等直接打开「派一张」，任务按 ?task= 选好；关掉时把 new 从网址里去掉
+  const creatingFromUrl = params.get("new") === "1" && manageable.length > 0
+  const dialogOpen = creating || creatingFromUrl
+  const closeDialog = () => {
+    setCreating(false)
+    if (creatingFromUrl) setParams({ new: null })
+  }
 
   const header = (
     <SimpleHeader
@@ -280,9 +292,9 @@ export default function WorkPage() {
         />
       </PageFrame>
       <DispatchDialog
-        key={creating ? "open" : "closed"}
-        open={creating}
-        onOpenChange={setCreating}
+        key={dialogOpen ? "open" : "closed"}
+        open={dialogOpen}
+        onOpenChange={(open) => (open ? setCreating(true) : closeDialog())}
         taskOptions={manageable}
         initialTaskId={scopedTask?.dispatch && manageable.includes(scopedTask) ? scopedTask.id : undefined}
         onDone={(item, existing) => {
@@ -450,6 +462,7 @@ function StatusAlert({ item, run, canManage }: { item: WorkItemDetail; run?: Ses
   const staffName = useStaffName()
   const humanItems = useHumanItems()
   const runNow = useRunNow()
+  if (retryAt(item)) return <RetryAlert item={item} canManage={canManage} />
   if (item.status === "queued") return <QueuedAlert item={item} canManage={canManage} />
   if (item.status === "running" && run?.status === "needs_human") {
     const human = humanItems.find((each) => each.runId === run.id)
@@ -484,6 +497,31 @@ function StatusAlert({ item, run, canManage }: { item: WorkItemDetail; run?: Ses
   return null
 }
 
+/** 自动重试这一轮的第几次（处理记录里最后一条 retry_scheduled）和一共几次 */
+function lastRetry(item: WorkItemDetail) {
+  const entry = item.log.findLast((each) => each.kind === "retry_scheduled")
+  return { n: entry?.retry ?? item.autoRetries, of: item.taskDispatch?.retries }
+}
+
+/** 排队等自动重试（第二期）：第几次运行出错、什么时候重试、这次没通知 */
+function RetryAlert({ item, canManage }: { item: WorkItemDetail; canManage: boolean }) {
+  const { n, of } = lastRetry(item)
+  const runCount = item.runs.length
+  return (
+    <Alert>
+      <TimerIcon />
+      <AlertTitle>
+        第 {runCount} 次运行出错{item.error ? `（${item.error}）` : ""}，{delayText(item.taskDispatch?.retryDelayMinutes ?? WORK_RETRY_DELAY_DEFAULT)}后自动重试
+        {n > 0 && `（第 ${n}${of ? ` / ${of}` : ""} 次）`}
+      </AlertTitle>
+      <AlertDescription>
+        {timeText(retryAt(item))} 到点后排进队里，轮到了开第 {runCount + 1} 次运行。这次失败没有通知负责人，自动重试都用完还没办成才通知；等结果的派活方也要等到最后才被叫醒。
+        {canManage && "不想等可以点右上角「⋯ → 不办了」。"}
+      </AlertDescription>
+    </Alert>
+  )
+}
+
 /** 排队的单：排第几位、谁在占名额；任务停用了（或关了被派活）写「单先排着」 */
 function QueuedAlert({ item, canManage }: { item: WorkItemDetail; canManage: boolean }) {
   const stats = useWorkTaskStats(item.taskId).data
@@ -504,19 +542,45 @@ function QueuedAlert({ item, canManage }: { item: WorkItemDetail; canManage: boo
   )
 }
 
+/** 没办成的三种（第二期 failKind）：提示的标题和下面那句解释 */
+function failText(item: WorkItemDetail) {
+  if (item.failKind === "not_done")
+    return { title: "没办成 · agent 判断办不成", why: "这是 agent 认真办过以后的结论（它用「报结果」报了办不成），运行本身是正常结束的，所以不自动重试。" }
+  if (item.failKind === "cancelled_run")
+    return { title: "没办成 · 运行被人停了", why: "有人取消了运行、选了不继续，或者判了验收不通过，所以不自动重试。" }
+  if (item.autoRetries > 0)
+    return { title: `没办成 · 运行出错，自动重试了 ${item.autoRetries} 次都没办成`, why: "每次都是运行出错（模型、浏览器、程序的问题），不是这件事办不成。" }
+  return { title: "没办成 · 运行出错", why: "运行出错（模型、浏览器、程序的问题），不是这件事办不成。" }
+}
+
 function ResultBody({ item, run, canManage }: { item: WorkItemDetail; run?: SessionRun; canManage: boolean }) {
   const runNow = useRunNow()
+  const data = item.result?.data && Object.keys(item.result.data).length > 0 ? item.result.data : undefined
   if (item.status === "done" && item.result) return <ResultSummary item={item} />
   if (item.status === "failed") {
+    const fail = failText(item)
+    const retried = item.failKind === "error" ? item.autoRetries : 0
+    const notDone = item.failKind === "not_done"
     return (
-      <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-3">
         <Alert variant="destructive">
           <CircleXIcon />
-          <AlertTitle>没办成</AlertTitle>
-          <AlertDescription>{item.error ?? item.runs.at(-1)?.error ?? "运行失败了，详情看那次运行。"}</AlertDescription>
+          <AlertTitle>{fail.title}</AlertTitle>
+          <AlertDescription>
+            {/* agent 报的办不成：后端存的原因带「agent 判断办不成：」前缀，标题里已经写了，这里去掉 */}
+            <p>{(notDone ? item.error?.replace(/^agent 判断办不成[：:]\s*/, "") : item.error) ?? item.runs.at(-1)?.error ?? "运行失败了，详情看那次运行。"}</p>
+            <p>{fail.why}</p>
+          </AlertDescription>
         </Alert>
+        {data && (
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs text-muted-foreground">agent 报的结果</span>
+            <ReportTable data={data} />
+          </div>
+        )}
         <p className="text-xs text-muted-foreground">
-          负责人已经收到通知。{canManage ? "处理好以后点右上角「⋯ → 重办」，会再开一次运行；" : ""}
+          负责人已经收到通知{retried ? `（只在最后一次没办成时通知了一次，中间 ${retried} 次重试没有通知）` : ""}。
+          {canManage ? (notDone ? "确实要再试，点右上角「⋯ → 重办」；" : `处理好以后点右上角「⋯ → 重办」，会再开一次运行${item.taskDispatch?.retries ? "，自动重试的次数也重新算" : ""}；`) : ""}
           {item.via === "agent" ? `「${shortName(item.fromTaskTitle)}」` : "派活方"}再派同一件事，只会收到「没办成」，不会自己重开。
         </p>
       </div>
@@ -528,6 +592,12 @@ function ResultBody({ item, run, canManage }: { item: WorkItemDetail; run?: Sess
     return (
       <div className="flex flex-col gap-2">
         <p className="text-muted-foreground">还在办，办完了结果写在这里。</p>
+        {data && (
+          <p>
+            <span className="text-muted-foreground">已报：</span>
+            {reportText(data)}
+          </p>
+        )}
         {run.checkpoints.length > 0 && (
           <Progress value={(done / run.checkpoints.length) * 100} aria-label={`检查点完成 ${done}/${run.checkpoints.length}`}>
             <span className="text-xs tabular-nums text-muted-foreground">
@@ -544,12 +614,24 @@ function ResultBody({ item, run, canManage }: { item: WorkItemDetail; run?: Sess
       </div>
     )
   }
-  if (item.status === "running") return <p className="text-muted-foreground">还在办，办完了结果写在这里。</p>
+  if (item.status === "running")
+    return (
+      <div className="flex flex-col gap-2">
+        <p className="text-muted-foreground">还在办，办完了结果写在这里。</p>
+        {data && (
+          <p>
+            <span className="text-muted-foreground">已报：</span>
+            {reportText(data)}
+          </p>
+        )}
+      </div>
+    )
+  if (retryAt(item)) return <p className="text-muted-foreground">上一次运行出错，还没有结果；{timeText(retryAt(item))} 自动重试，办完了结果写在这里。</p>
   if (item.status === "queued") {
     return (
       <div className="flex flex-col gap-3">
         <p className="text-muted-foreground">{item.attempts > 0 ? "重办了，还没开始；新的运行办完后结果换成新的。" : "还没开始，办完了结果写在这里。"}</p>
-        {item.result && <ResultSummary item={item} previous />}
+        {item.result?.summary && <ResultSummary item={item} previous />}
       </div>
     )
   }
@@ -565,6 +647,7 @@ function ResultSummary({ item, previous = false }: { item: WorkItemDetail; previ
     <div className="flex flex-col gap-3">
       {previous && <span className="text-xs text-muted-foreground">上一次的结果：</span>}
       <MarkdownView>{result.summary}</MarkdownView>
+      {result.data && Object.keys(result.data).length > 0 && <ReportTable data={result.data} />}
       {result.verification && (
         <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <ScanSearchIcon className="size-3.5" />
@@ -585,11 +668,15 @@ function History({ item }: { item: WorkItemDetail }) {
   return (
     <Trace className="gap-3">
       {item.log.map((entry, index) => {
-        if (entry.kind === "run_ended") return null
+        // reported：agent 报了结果，结果区块里看；处理记录里不单列（原型如此）
+        if (entry.kind === "run_ended" || entry.kind === "reported") return null
         if (entry.kind === "run_started") {
           const run = runs.find((each) => each.sessionId === entry.sessionId)
-          return run ? <RunLine key={index} run={run} attempt={runs.indexOf(run) + 1} /> : null
+          // agent 报了「办不成」：运行正常结束，单记没办成
+          const notDone = item.failKind === "not_done" && run === runs.at(-1) && run?.status === "done"
+          return run ? <RunLine key={index} run={run} attempt={runs.indexOf(run) + 1} notDone={notDone} /> : null
         }
+        if (entry.kind === "retry_scheduled") return <RetryLine key={index} item={item} entry={entry} />
         return <EventLine key={index} item={item} entry={entry} />
       })}
       {unlogged.map((run) => (
@@ -602,8 +689,21 @@ function History({ item }: { item: WorkItemDetail }) {
               <ListOrderedIcon />
             </TraceIcon>
             <TraceTitle>
-              排队中 · 第 {item.queuePosition ?? "—"} 位，轮到了开第 {runs.length + 1} 次运行
+              {retryAt(item)
+                ? `等自动重试：${timeText(retryAt(item))} 到点后排队，轮到了开第 ${runs.length + 1} 次运行`
+                : `排队中 · 第 ${item.queuePosition ?? "—"} 位，轮到了开第 ${runs.length + 1} 次运行`}
             </TraceTitle>
+          </TraceLine>
+        </div>
+      )}
+      {item.status === "failed" && item.failKind === "error" && item.autoRetries > 0 && (
+        <div>
+          <TraceLine status="error">
+            <TraceIcon>
+              <CircleXIcon />
+            </TraceIcon>
+            <TraceTitle>自动重试 {item.autoRetries} 次都没办成，单记成没办成，通知了负责人</TraceTitle>
+            <TraceDescription>{timeText(item.finishedAt)}</TraceDescription>
           </TraceLine>
         </div>
       )}
@@ -611,7 +711,26 @@ function History({ item }: { item: WorkItemDetail }) {
   )
 }
 
-function RunLine({ run, attempt }: { run: WorkRun; attempt: number }) {
+/** 一次运行出错后排队等自动重试：「10 分钟后自动重试（第 1 / 2 次）」 */
+function RetryLine({ item, entry }: { item: WorkItemDetail; entry: WorkLogEntry }) {
+  const minutes = entry.notBefore ? Math.round((Date.parse(entry.notBefore) - Date.parse(entry.at)) / 60_000) : (item.taskDispatch?.retryDelayMinutes ?? WORK_RETRY_DELAY_DEFAULT)
+  const of = item.taskDispatch?.retries
+  return (
+    <div>
+      <TraceLine>
+        <TraceIcon>
+          <TimerIcon />
+        </TraceIcon>
+        <TraceTitle>
+          {delayText(minutes)}后自动重试{entry.retry ? `（第 ${entry.retry}${of ? ` / ${of}` : ""} 次）` : ""}
+        </TraceTitle>
+        <TraceDescription>{entry.notBefore ? `${timeText(entry.notBefore)} 再排进队里` : timeText(entry.at)} · 这次没通知负责人</TraceDescription>
+      </TraceLine>
+    </div>
+  )
+}
+
+function RunLine({ run, attempt, notDone = false }: { run: WorkRun; attempt: number; notDone?: boolean }) {
   const Icon = RUN_ICON[run.status]
   const active = run.status === "running"
   return (
@@ -619,7 +738,7 @@ function RunLine({ run, attempt }: { run: WorkRun; attempt: number }) {
       <TraceLine status={active ? "running" : run.status === "failed" ? "error" : undefined}>
         <TraceIcon>{active ? <Spinner /> : <Icon />}</TraceIcon>
         <TraceTitle className="text-foreground">
-          第 {attempt} 次 · <span className="font-mono">{run.sessionId}</span> · {RUN_TEXT[run.status]}
+          第 {attempt} 次 · <span className="font-mono">{run.sessionId}</span> · {notDone ? "运行完成 · agent 报了办不成" : RUN_TEXT[run.status]}
         </TraceTitle>
         <TraceDescription>
           {timeText(run.startedAt)}
@@ -627,7 +746,7 @@ function RunLine({ run, attempt }: { run: WorkRun; attempt: number }) {
         </TraceDescription>
       </TraceLine>
       <span className="pl-5.5 text-xs text-muted-foreground">
-        检查点 完成 {run.checkpointsDone}/{run.checkpointsTotal} · 花费 {money(run.costUsd)}
+        {run.checkpointsTotal ? `检查点 完成 ${run.checkpointsDone}/${run.checkpointsTotal}` : "没有检查点"} · 花费 {money(run.costUsd)}
         {run.status === "failed" && run.error ? ` · ${run.error}` : ""}
         {run.waitingWhat ? ` · 在等：${run.waitingWhat.replace(/^等/, "")}` : ""}
       </span>
@@ -649,8 +768,10 @@ function EventLine({ item, entry }: { item: WorkItemDetail; entry: WorkLogEntry 
       }
     if (entry.kind === "redo") return { icon: <RotateCwIcon />, title: `${who} 点了「重办」` }
     if (entry.kind === "params_changed") return { icon: <PencilIcon />, title: entry.byId ? `${who} 改了参数` : "参数改了（派活方用新参数覆盖）" }
+    if (entry.kind !== "cancelled") return null
     return { icon: <CircleSlashIcon />, title: `${entry.byId ? who : ""} 点了「不办了」${entry.note ? `：${entry.note}` : ""}`.trim() }
   })()
+  if (!line) return null
   return (
     <div>
       <TraceLine>

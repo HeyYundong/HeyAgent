@@ -1228,3 +1228,45 @@ claude mcp add --transport http heyagent-compare http://<host>:8080/api/compare/
 - `work_items` 有推送触发器：推 `work.list` `work.get` `work.taskStats` `work.lookup`；`sessions` 变了也推 `work.*`（徽章、名额数字跟着变）。
 - 审计 action：`work.dispatch` `work.dispatch.existing` `work.update_params` `work.redo` `work.cancel` `settings.dispatch.update`。
 
+
+### 16.8 第二期（2026-10-18）：等结果、报结果、自动重试、导入、看板
+
+开发说明 `docs/dev/dispatch-p2.md`（实现记录在最后）。新代码 `engine/dispatch/notify.ts`（`work.notify`）、`engine/dispatch/agent-tools.ts`（`work.list`、`work.report`）；迁移 `0018_dispatch_p2.sql`。
+
+**单上的新字段**（`WorkItem`）：`failKind`（没办成时：`error` 运行出错 / `not_done` agent 报办不成 / `cancelled_run` 人取消、人选不继续、人判验收失败；不是没办成为 null）、`notBefore`（排队等自动重试：到这个时间才领；不等为 null）、`autoRetries`（这一轮已经自动重试了几次；重试用完时等于重试过的次数，人点重办清零）、`result.data`（`work.report` 报的「名字 → 文字 / 数字 / 是否」，最多 20 个）。`log` 新种类：`retry_scheduled`（带 `retry` 第几次、`notBefore`、`note` 出错原因）、`reported`（这次运行第一次 `work.report`，`sessionId`、`note` 是压成一行的结果或「办不成：原因」）。
+
+- 在办时报的结果：`result = { summary: "", fileIds: [], data }`（这次运行第一次报时整个换掉上一次运行的 result）；单结束时写上总结、产物、验收结论，`data` 只保留这次运行报的。
+- 在办时报了办不成：`failKind = 'not_done'`、`error = 'agent 判断办不成：原因'` 先写在单上（接口里在办的单 `failKind` 显示 null，`error` 可能是这句话），运行结束时单记 `failed`、保留 `result`（含 `data`）。
+- 等重试的单：`status = 'queued'`、`notBefore` 在将来、`error` = 上一次出错的原因、`result` 置空；不算排队名次（`queuePosition = null`）。
+- `redo` 另外清零 `autoRetries`、清空 `notBefore` `failKind`；`cancel` 也能取消等重试的单。
+
+**任务配置**：`TaskDispatch` 加可选的 `retries`（0～5，不写 = 0）、`retryDelayMinutes`（1～1440，不写 = 10）；`TaskDef.dispatch` 同样带出这两项（`tasks.update` 整体替换，前端保存时要带上）。
+
+**自动重试**（`settleWorkItemInTx` 的 `outcome.retryable` / `failKind`）：
+
+| 运行怎么结束的 | 单 |
+|---|---|
+| 模型解析失败、模型调用重试完还失败、引擎出错、验收判失败（`failSession` 默认）；清扫补写（运行没了、漏写） | 重试没用完 → 回到排队、`notBefore = now + 间隔`，发一个**延迟**的 `work.pump`（`singletonKey = <任务 id>@<时间>`，不和即时的合并）；用完 → `failed / error` |
+| 规则让它失败（`before.action === 'fail'`） | `failed / error`，不重试 |
+| 人取消、人选不继续（上限 / 规则确认）、人判验收失败 | `failed / cancelled_run`，不重试 |
+| agent 报办不成（不管运行怎么结束的） | `failed / not_done`，不重试 |
+
+领单只取 `not_before is null or not_before <= now()` 的排队单；每分钟的清扫只给有**到点**排队单的任务发 `work.pump`（延迟的丢了也有它兜底）。通知：还会重试的那次失败不发「运行失败」，最后一次发，正文「自动重试了 N 次都没办成：原因」；agent 报办不成的运行是「已完成」，另发一条「<任务>：没办成」。
+
+**叫醒等结果的派活方**：单**最终**结束（办完、没办成、不办了，包括清扫补写、重试用完、领单时开不出运行）时在同一个事务里发 `work.notify`（standard，参数 `{ itemId }`）；worker 按事件名 `work.done:<单号>`（`workDoneEvent`）找等待中的运行 `resume`，消息「等到了事件「work.done:W-57」（派活单结束）。之前在等：…」+ 一句话（「W-57「标题」办完：总结… · 结果：件数=3」）+ 事件数据 `{ item, status, title, summary?, error?, report? }`。排队等重试的不叫醒。
+- `session.wait` 的 `event` 是 `work.done:` 开头时：单不存在或不是这个任务派的 → `isError`；已经结束 → 不挂起，直接返回「不用等了，派活单已经结束：…」（内容同叫醒消息）。挂起的事务提交以后再查一次单，已经结束就补发 `work.notify`（`recheckWorkDoneAfterSuspend`）。
+
+**内置工具**（都不同步进 `tools` 表、不能在任务里单独选，`BuiltinToolDef.implied`；导入的内置工具清单也没有它们）：
+
+| 工具 | 什么时候有 | 输入 → 返回 |
+|---|---|---|
+| `work.list`「查派过的活」（`work_list`，read） | 任务选了「派活」自动带上 | `{ items?, status?（含 open = 排队 + 在办）, thisRun?, limit?（默认 20） }` → 只查 `from_task_id` = 自己任务的单，最新的在前，每张一行（同 `work.dispatch` 的写法，办完 / 没办成的带「 · 结果：…」，等重试的写「排队（第 n 次重试，MM-DD HH:mm 以后）」）；有更多时「还有 N 张没列出来，用 status / items 缩小范围」 |
+| `work.report`「报结果」（`work_report`，read） | 被派来的运行（快照有 `dispatch`）自动带上 | `{ data?, outcome?: "done" \| "not_done", reason? }` → 合并进 `result.data`（同名以后一次为准，最多 20 个）；`not_done` 必须写 `reason`；`done` 撤回之前报的办不成。单已经不归这次运行（被人点了不办了、已经结束）→ `isError` |
+
+系统提示：派活方「可以派活给」一节加「要等结果时：用 session_wait 等事件 work.done:<单号>，一次等一张；醒来后用 work_list 看其余的。」；被派来的运行那一节加「有要交回去的结果（数字、是 / 否、编号），用 work_report 写；办不成（例如找不到、对方拒绝）就用它报 not_done 并写原因。」（都是固定的话）。
+
+**没有检查点就不提检查点**：快照 `checkpoints` 为空时，工具网关不给 `checkpoint.mark`（快照的 `tools` 不改），系统提示的工具清单不列它，「怎么工作」改成「没做成的以及原因」「验收员会按目标核对结果和证据」，第一条消息「请按系统提示里的目标和步骤开始工作」。
+
+**导入**：读包 AI 的任务格式多 `acceptsDispatch` `dispatchParams[{ name, description, required, dedupe }]` `dispatchMaxRunning` `dispatchFromKeys`（全部必填）；方案 `PlanTask.dispatch?: { params, maxRunning, retries?, retryDelayMinutes?, fromKeys } | null`（`planProblems` 查 `fromKeys` 对得上、不是自己）。整理（organize）：派活方只留方案里有的、不是自己的；派活方没有「派活」工具就补一项（kind builtin、refId `work.dispatch`）加进它的 `toolKeys`；参数去空白去重、最多 20 个；名额 1～20、重试 0～5、间隔 1～1440；被派活又有定时的去掉定时；没有派活方的提醒。导入：建任务时带 `dispatch`，全部建完后 `setDispatchSources`（`data/config/tasks.ts`）只连勾上的派活方。导入后还要做的事：能被派活的任务的 `try_run` 是「派一张试试」（不带 `action`，`link = #/work?task=<id>&new=1`，名下有过一张单算办完；没有派活方时说明里提醒）。
+
+**看板**（shared `boardCards`）：同一个任务 `source = dispatch`、在「挂起等待」的运行有 2 个及以上时收成一张 `{ kind: "group", id: "group-<任务 id>", column: "waiting", task, runs }`，放在其中第一张原来的位置，`runs` 按开始时间；只收这一列。列头数字按运行数算（收起的卡片算 `runs.length`）。

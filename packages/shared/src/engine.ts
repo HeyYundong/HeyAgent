@@ -290,6 +290,28 @@ export const builtinToolInputs = {
       .optional()
       .describe("同一件事已经派过：skip = 不动（默认）；update = 还在排队的话用这次的参数覆盖"),
   }),
+  // 第二期：派活方查自己任务派出去的单（选了「派活」自动带上）
+  "work.list": z.object({
+    items: z.array(z.string()).max(50).optional().describe('按单号查，例如 ["W-57"]'),
+    status: z
+      .enum(["queued", "running", "done", "failed", "cancelled", "open"])
+      .optional()
+      .describe("只看某种状态；open = 还没结束的（排队 + 在办）"),
+    thisRun: z.boolean().optional().describe("只看这次运行派的（默认看这个任务派过的全部）"),
+    limit: z.number().int().min(1).max(50).optional().describe("最多列几张，默认 20"),
+  }),
+  // 第二期：被派来的运行写结构化结果（被派来的运行自动带上）
+  "work.report": z.object({
+    data: z
+      .record(z.string().min(1).max(40), z.union([z.string().max(1000), z.number(), z.boolean()]))
+      .optional()
+      .describe('结果的几个字段，例如 {"件数": 3, "已回填": true}；最多 20 个。可以调多次，同名字段以后一次为准'),
+    outcome: z
+      .enum(["done", "not_done"])
+      .optional()
+      .describe("not_done = 这件事办不成（例如找不到、对方拒绝），写了这张单就记「没办成」，不会重试"),
+    reason: z.string().max(1000).optional().describe("outcome = not_done 时必填：为什么办不成"),
+  }),
   "plan.set": z.object({
     steps: z
       .array(z.string().min(1).max(300))

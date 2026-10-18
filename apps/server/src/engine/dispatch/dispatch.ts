@@ -3,11 +3,13 @@
 // 已经有的单只返回现状（ifExists = update 只改排队的）；有新单就在同一个事务里发 work.pump。
 import {
   fmtDateTime,
+  fmtShort,
   runStatusLabel,
   WORK_DISPATCH_TOOL_ID,
   workDedupeKey,
   workItemId,
   workParamsProblem,
+  workReportLine,
   type builtinToolInputs,
   type TaskDispatch,
   type WorkItem,
@@ -243,17 +245,22 @@ const clip = (value: string, max = 100) => {
   return line.length > max ? `${line.slice(0, max)}…` : line
 }
 
-/** 一张已有的单现在怎么样（一句话） */
+/** 一张已有的单现在怎么样（一句话）；办完 / 没办成的带上 work.report 报的结果 */
 export function describeItem(item: WorkItem): string {
+  const data = workReportLine(item.result?.data)
+  const tail = data ? ` · 结果：${data}` : ""
   switch (item.status) {
     case "queued":
+      // 排队等自动重试（第二期）：到点才领，不算排队名次
+      if (item.notBefore) return `排队（第 ${item.autoRetries} 次重试，${fmtShort(item.notBefore)} 以后）${item.error ? `，上次：${clip(item.error)}` : ""}`
       return item.queuePosition ? `排队第 ${item.queuePosition} 位` : "排队"
     case "running":
       return `在办（运行 ${item.sessionId ?? "—"}${item.sessionStatus ? `，${runStatusLabel[item.sessionStatus]}` : ""}）`
     case "done":
-      return `办完（${item.finishedAt ? fmtDateTime(item.finishedAt) : "—"}）${item.result?.summary ? `：${clip(item.result.summary)}` : ""}`
+      return `办完（${item.finishedAt ? fmtDateTime(item.finishedAt) : "—"}）${item.result?.summary ? `：${clip(item.result.summary)}` : ""}${tail}`
     case "failed":
-      return `没办成，等人处理${item.error ? `（${clip(item.error)}）` : ""}`
+      // agent 判断办不成的不用人处理（原因里已经写了「agent 判断办不成」）；运行出错的等人处理
+      return `没办成${item.failKind === "not_done" ? "" : "，等人处理"}${item.error ? `（${clip(item.error)}）` : ""}${tail}`
     case "cancelled":
       return `不办了${item.error ? `（${clip(item.error)}）` : ""}`
   }

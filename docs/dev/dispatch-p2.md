@@ -1,6 +1,6 @@
 # 派活第二期（开发说明，2026-10-18）
 
-> **状态：用户 2026-10-18 确认，第 8 节 11 个问题全部按建议。** 界面先出原型（`design/BRIEF-dispatch-p2.md`），确认后再写代码。
+> **状态：已完成（2026-10-18）。** 用户确认了第 8 节 11 个问题（全部按建议）和设计稿（`design/BRIEF-dispatch-p2.md`）；实现记录、联调记录在文末。
 > 方案：`docs/dev/dispatch.md`（用户 2026-10-18 确认）第 13 节「第二期」。第一期的说明和实现记录：`docs/dev/dispatch-p1.md`；接口：`docs/dev/api.md` 第 16 节。
 > 文中写「现在」的，都是读 main（1e7254d）的代码确认过的，后面写了文件和函数名。
 
@@ -356,3 +356,170 @@ retryDelayMinutes: z.number().int().min(1).max(1440).default(10), // 隔多久�
 | 9 | 看板：只收「**挂起等待**」那一列、**2 个及以上**才收，列头数字按运行数算 | 照这个。执行中受名额限制，数量少；「要人办的事」要一件件处理，不收 |
 | 10 | 检查点小修：没有检查点时**连工具也不给**（不只是改提示） | **连工具也不给**。光改提示，agent 看到工具清单里有它，还是会调 |
 | 11 | 派活页「派一张」能不能用 URL 直接打开（`#/work?task=…&new=1`），导入后的「派一张试试」要用 | 能 |
+
+---
+
+## 9. 开发（2026-10-18 开工）
+
+### 9.1 已定
+
+- 第 8 节 11 个问题全部按建议。
+- 设计稿用户 2026-10-18 确认：说明在本地 `design/BRIEF-dispatch-p2.md`，原型在 `design/prototype/`，截图在 `design/shots/dispatch-p2/`。这三处都在主目录 `/mnt/toshiba/Projects/HeyAgent/design/` 下，不进 git，只读。设计稿「我先定了的」5 条也按原型做，但有两条只是原型的做法，正式版不照做：
+  - 看板抽屉里点一行，正式版跳到 Session 页那次运行；
+  - 看板和派活页的数字正式版是同一份数据。
+- 派活方案的第一期说明照样适用：`docs/dev/dispatch-p1.md` 第 0 节（先读的）、第 5 节（开发环境）。子 agent 的规矩：**不 commit、不 push、不切分支**。代码里不写任何业务词。
+
+### 9.2 骨架（监工已经写好，两个包都照它）
+
+- shared：
+  - `dispatch.ts`：
+    - `taskDispatchSchema` 加可选的 `retries`、`retryDelayMinutes`，不写分别当 0 和 `WORK_RETRY_DELAY_DEFAULT`；
+    - `workItemSchema` 加 `failKind`、`notBefore`、`autoRetries`；
+    - `workResultSchema.data`，以及 `workReportValueSchema`、`WORK_REPORT_MAX_FIELDS`、`workReportLine`；
+    - `workFailKindSchema`；log 加 `retry_scheduled`（带 `retry`、`notBefore`）和 `reported`；
+    - `WORK_LIST_TOOL_ID`、`WORK_REPORT_TOOL_ID`、`workDoneEvent`、`WORK_DONE_EVENT_PREFIX`。
+  - `engine.ts`：内置工具输入 `work.list`、`work.report`。
+  - `imports.ts`：`planTaskSchema.dispatch`。
+  - `domain.ts`：`BoardCard` 加 `group`，`boardCards` 还没改。
+- server：
+  - 迁移 `drizzle/0018_dispatch_p2.sql`：`work_items` 加 `fail_kind`、`not_before`、`auto_retries` 和一个索引；`db/schema.ts` 同步改了。
+  - `work/service.ts` 的 `toWorkItem` 读出这三个字段。
+  - `tools/builtin.ts` 里 `work.list`、`work.report` 是桩。
+- web：`pages/todos/board.tsx` 遇到 `group` 卡片先返回 null。
+
+### 9.3 包 A（后端）
+
+照第 1～6 节做。只是前端的那些不用做：1.7、3.4、4.4、5.2 的页面部分。要点：
+
+- 第 1 节：`prompt.ts`、`organize.ts`、`commit.ts`（拆出 `setDispatchSources`）、`follow-ups.ts`。
+- 第 2 节：叫醒（新队列 `work.notify`）、`session.wait` 遇到 `work.done:`、`work.list`。
+- 第 3 节：`work.report`、`failKind`。
+- 第 4 节：重试（`settleWorkItemInTx` 的 `retryable`、`not_before`、延迟的 `work.pump`、清扫只看到点的排队单、还会重试的不发失败通知）。
+- 第 6 节：没有检查点时不给 `checkpoint.mark`、系统提示不提检查点。
+- `domain.ts` 的 `boardCards` 合并规则（第 5.1 节）也由包 A 做，纯函数，`packages/shared/test/domain.test.ts` 加用例。
+- 排队名次：等重试的单（`not_before` 在将来）不算名次。
+- 「重办」把 `auto_retries` 清零，`not_before`、`fail_kind` 置空。
+- 演示数据 `seed/work-fixture.ts` 补上几种新情况：带 `data` 的办完、agent 报办不成、等重试、重试用完。另加一个能被派活、配了 `retries: 2` 的任务。
+- `docs/dev/api.md` 第 16 节补充；本文件最后加「实现记录（包 A）」。
+- 测试（真库、假模型），每一条都要覆盖：
+  - 导入：toPlan、organize 六条、commit 两遍连关联（派活方排在后面、没勾上）、撤销；
+  - 叫醒：办完、没办成、不办了、清扫，四处都叫醒；中间重试的不叫醒；先结束后等的直接返回；挂起窗口的补发；
+  - `work.list`：只看自己任务的、`thisRun`、`open`；
+  - `work.report`：合并、`not_done` 记没办成且不重试、不是被派的运行拿不到这个工具；
+  - 重试：会重试的那几种和不重试的那几种各一个用例；到点才领；重办清零；只在最后一次通知；
+  - 检查点：没步骤时工具清单和系统提示里都没有检查点；
+  - `boardCards`。
+- 跑通：server 全部测试、shared 测试、`pnpm -r typecheck`、`pnpm lint`、`pnpm build`。
+
+### 9.4 包 B（前端）
+
+**照原型做，样子和原型一样。** 原型里改过的文件有：
+
+- `src/pages/tasks/dispatch-fields.tsx`（新）、`multi-pick.tsx`（新）、`new-task-dialog.tsx`、`task-detail.tsx`；
+- `src/pages/imports/wizard.tsx`、`edit-dialogs.tsx`、`result.tsx`；
+- `src/pages/work/index.tsx`、`parts.tsx`、`dialogs.tsx`；
+- `src/pages/todos/board.tsx`、`sheets.tsx`、`index.tsx`。
+
+要做的：
+
+- 把任务弹窗（`pages/tasks/task-dialog.tsx`）的「被派活」一组抽成共用组件，加上重试两项。导入的修改弹窗（`pages/imports/edit-dialogs.tsx`）也用这个组件，「谁能派活给它」的选项是方案里的其他任务。
+- 向导任务卡片加两行。导入结果的「派一张试试」走 `#/work?task=<id>&new=1`，派活页认 `new=1`。
+- 派活页：
+  - 结果字段表、「已报：…」；
+  - 两种没办成：按 `failKind` 写标题；
+  - 等重试的徽章「排队 · HH:mm 重试」、顶部提示和处理记录（log 的 `retry_scheduled`）；
+  - 重试用完的提示。
+- 任务抽屉的「派活」区块加重试那一句。
+- 看板：`group` 卡片和 `GroupSheet`，点一行跳到 Session 页那次运行，列头数字按运行数算。`boardCards` 的合并逻辑包 A 在写；包 B 先在页面里按原型写好卡片和抽屉，合并逻辑等监工合并后联调，也可以先在本地临时造一个 group 卡片调样子。
+- `docs/guide.md` 的「派活」一节补充：等结果、报结果、重试、导入。
+- 验证：lint、build；浅色、暗色、窄屏截图都看过。截图方法见 `dispatch-p1.md` 第 4 节最后。
+
+### 9.5 环境
+
+| | 包 A（后端） | 包 B（前端） |
+|---|---|---|
+| worktree | `/mnt/toshiba/Projects/HeyAgent/.claude/worktrees/dispatch-p2-be` | `/mnt/toshiba/Projects/HeyAgent/.claude/worktrees/dispatch-p2-web` |
+| 分支 | `feat/dispatch-p2-be` | `feat/dispatch-p2-web` |
+| 数据库 | `heyagent_d2be`、`heyagent_d2be_test` | `heyagent_d2web`、`heyagent_d2web_test` |
+| 端口 | 不用 | API 3123，Vite 5193 |
+
+- 两个分支都从骨架那次提交开出来。`.env` 和 `.dev/kek` 由监工放好（已 gitignore），里面的库都可以随便清。
+- 包 B 起服务：
+  ```bash
+  PORT=3123 TRUSTED_ORIGINS=http://localhost:5193 BETTER_AUTH_URL=http://localhost:5193 pnpm --filter @heyagent/server dev
+  ```
+  ```bash
+  WEB_PORT=5193 API_PORT=3123 pnpm --filter @heyagent/web dev
+  ```
+  做完关掉，包括 `tsx watch`。
+- 不要动 8080 上的 pod；不要停 5173 上的原型；不调真模型。
+
+## 实现记录（包 A，2026-10-18）
+
+代码：新文件 `engine/dispatch/notify.ts`（`work.notify` 队列、叫醒、挂起后补查）、`engine/dispatch/agent-tools.ts`（`work.list`、`work.report`）；改了 `engine/dispatch/settle.ts`（重试、`failKind`、办不成、叫醒）、`pump.ts`（`not_before`）、`sweep.ts`、`manage.ts`、`dispatch.ts`（`describeItem`）、`engine/loop.ts` `control.ts` `humans.ts`（`retryable`、通知）、`queue.ts` `worker-runtime.ts`（`work.notify`）、`sessions.ts`（自动带上两个工具）、`gateway.ts` `prompt.ts`（检查点、两句提示）、`tools/builtin-defs.ts` `tools/builtin.ts`（两个工具、`session.wait` 遇到 `work.done:`）、`work/service.ts`（等重试的不算名次）、`imports/prompt.ts` `organize.ts` `commit.ts` `follow-ups.ts` `catalog.ts`、`data/config/tasks.ts`（`setDispatchSources`）、`seed/work-fixture.ts`；shared 的 `domain.ts`（`boardCards` 合并）、`imports.ts`（`planProblems`、`planTaskSchema.dispatch` 的重试两项）、`schemas.ts`（`TaskDef.dispatch` 的重试两项）。接口说明 `docs/dev/api.md` 16.8 节。测试 `apps/server/test/dispatch-p2.test.ts`（17 个用例），`packages/shared/test/domain.test.ts` 加 3 个。
+
+**取舍、和说明不一样的地方**：
+
+1. **`work.list`、`work.report` 不进 `tools` 表**：说明写「加进 `BUILTIN_TOOLS`」。加了，但标 `implied`，`syncBuiltinTools` 和导入的内置工具清单（`builtinToolList`）用 `SELECTABLE_BUILTIN_TOOLS` 跳过它们。理由：进了表就会出现在任务的「用哪些」、工具页、导入 AI 的清单里，人或 AI 会去单独选，和「不单独选」矛盾；`work.report` 被选进普通任务也没意义。它们只在快照里由 `sessions.ts` 自动加。`bootstrap.test.ts` 跟着改成按 `SELECTABLE_BUILTIN_TOOLS` 数。
+2. **延迟的 `work.pump` 用自己的 singletonKey**（`<任务 id>@<到点时间>`）：说明担心延迟的和别的合并掉。实测 pg-boss 的 stately 是「同一个 key 在 created 状态最多一个」，延迟的任务排在那里时也算 created，用同一个 key 会**反过来**把之后的即时 `work.pump` 都合并掉（新派的单要等到重试到点才开）。换成自己的 key 以后两边互不影响；领单本身有 advisory lock，同时跑两个也不会超名额。清扫照说明只看到点的排队单，兜底。
+3. **办不成先记在单上**：agent 在运行中途报 `not_done` 时，单上先写 `failKind = 'not_done'`、`error = 'agent 判断办不成：原因'`（单还是在办，接口里 `failKind` 只在没办成时才显示，所以页面看到的是 null；`error` 会是这句话）。运行结束时（不管是说做完了、出错还是被人取消）只要这次运行报过办不成，单就记 `failed / not_done`、不重试、保留 `result`（总结 + 产物 + `data`）。`outcome: "done"` 可以撤回。人在派活页点「不办了」照旧记不办了。
+4. **`work.report` 的 `result`**：这次运行第一次报时整个换成 `{ summary: "", fileIds: [], data }`（不再挂着重办以前那次运行的总结），之后合并；单结束时 `data` 只保留这次运行报的（按 `log` 里有没有这次运行的 `reported` 判断）。运行出错的没办成照第一期置空 `result`（包括 `data`），等重试的也置空。
+5. **办不成的通知**：被派的运行完成时本来不发通知；agent 报办不成的，运行是「已完成」，另发一条「<任务>：没办成」（正文是原因）。还会重试的失败不发；最后一次没办成的正文「自动重试了 N 次都没办成：原因」。人取消、人选不继续、人判验收失败这几处第一期就不发通知，没改。
+6. **叫醒的范围**：说明列了 4 处，另外「领单时开不出运行」（第一期记没办成的那种）也是最终结束，一样发 `work.notify`；那种单 `failKind = 'error'`，不重试（多半是配置坏了）。`work.cancel` 取消等重试的单也叫醒。
+7. **`session.wait` 等 `work.done:`**：说明只说「单不存在，或者不是这个任务派的：报错」，按 `from_task_id` 判断，所以**人派的单**（`from_task_id` 为空）agent 等不了；`work.list` 同样只看 `from_task_id`。已经结束时不挂起，返回「不用等了，派活单已经结束：…」+ 事件数据，内容和叫醒消息一样。
+8. **规则让它失败**记 `failKind = 'error'`（不是 `cancelled_run`）：skeleton 的注释里 `cancelled_run` 只写了人做的三种，规则不是人点的；只是不重试。
+9. **`failSession` 的参数**：加了 `options: { retryable, failKind? }`，默认 `retryable: true`（模型解析失败、模型调用失败、引擎出错、验收判失败都走默认），只有规则那处传 `false`。
+10. **检查点小修**连第一条消息也改了：没有检查点时「请按系统提示里的目标和步骤开始工作」（原来写「目标、步骤和检查点」）。快照的 `tools` 不改；已经在跑、快照里没有检查点的老运行继续时也会失去 `checkpoint_mark`（系统提示变一次，前缀缓存失效一次）。
+11. **导入的自动重试**：按包 B 的联调要求，`planTaskSchema.dispatch` 加了可选的 `retries`、`retryDelayMinutes`（读包 AI 的格式里**没有**这两项，默认不重试；人在向导里改），organize 卡范围（0～5、1～1440），commit 建任务时带上。
+12. **导入后的「派一张试试」**：没有新的 follow-up 种类，用 `try_run`：不带 `action`、`link = #/work?task=<id>&new=1`，名下有过一张单就算办完；派活方没勾上（一个派活方都没连上）时在这一项的说明里提醒，没有另加一项。标题「派一张试试「<任务标题>」」。
+13. **`describeItem`**（`work.dispatch` / `work.list` 的一行）：等重试的写「排队（第 n 次重试，MM-DD HH:mm 以后），上次：原因」；agent 判断办不成的写「没办成（agent 判断办不成：…）」，不写「等人处理」；办完 / 没办成的带「 · 结果：件数=3」。
+14. **演示数据**：加了一个「核对一张…的回填」任务（`retries: 2`、间隔 10 分钟、名额 2），一张等第 1 次重试（8 分钟后）、一张重试 2 次都没办成；原来的任务上加了一张带 `data` 的办完、一张 agent 报办不成、一张在办已报的。`pnpm --filter @heyagent/server dev:work-fixture` 在私有开发库上跑过。
+
+**改了 shared 的地方（都只加可选字段 / 纯函数）**：
+
+- `schemas.ts`：`TaskDef.dispatch` 加 `retries?`、`retryDelayMinutes?`（不加的话 `tasks.list` 的输出校验会剥掉，前端保存一次就清掉重试）。
+- `imports.ts`：`planTaskSchema.dispatch` 加 `retries?`、`retryDelayMinutes?`；`planProblems` 查 `dispatch.fromKeys` 引用的任务存在、不是自己。
+- `domain.ts`：`boardCards` 按 5.1 合并（新函数 `groupDispatchedWaiting`，不导出）。
+
+**要包 B 知道的**：
+
+- `WorkItem.failKind` 只在 `failed` 时有值；在办时 agent 已经报了办不成的，`failKind` 是 null、`error` 是「agent 判断办不成：…」。
+- 在办的单报过结果：`result = { summary: "", fileIds: [], data }`，「已报：…」用 `result.data`（`workReportLine` 压成一行）。办不成的单 `result` 保留（`summary` 是 agent 最后那段总结，可能有 `data`）；运行出错的没办成 `result` 为 null。
+- 等重试：`status = queued`、`notBefore` 有值、`queuePosition = null`、`autoRetries` = 这是第几次重试、`error` = 上一次出错的原因；`log` 的 `retry_scheduled` 带 `retry`、`notBefore`、`note`（原因），前面紧跟一条 `run_ended`（`note: "failed"`）。重试用完：`failed / error`，`autoRetries` = 重试过的次数，对照任务的 `dispatch.retries` 就能写「自动重试了 2 次都没办成」。办不成的单 `run_ended` 的 `note` 是 `"not_done"`。
+- `tasks.update` 是整体替换：`dispatch` 里的 `retries`、`retryDelayMinutes` 要带上，不带就是不重试。
+- 看板 `group` 卡片的 `runs` 按开始时间先后；最早到点的时间要页面自己从 `runs[].waiting.trigger` 算。
+- 导入结果里能被派活的任务的「派一张试试」是 `kind: "try_run"`、没有 `action`、有 `link`。
+
+**验证**：`pnpm --filter @heyagent/server test` 20 个文件 304 个用例全过（新增 17 个），`pnpm --filter @heyagent/shared test` 55 个全过（新增 3 个），`pnpm -r typecheck`、`pnpm lint`、`pnpm build` 通过。全部用假模型，没有跑真模型。业务词检查没有新增命中（新代码里没有；演示数据在 `seed/` 里）。
+
+## 监工联调记录（2026-10-18）
+
+- **合并**：两个包合并以后，又合了 main 的 bced78c（「比图」改名「比物」，新写的演示数据跟着改）。合并后跑了一遍检查：
+  - server 测试 20 个文件 304 个用例，shared 测试 55 个，全部通过；
+  - `pnpm -r typecheck`、`pnpm lint`、`pnpm build` 通过；
+  - 仓库里搜「比图」，0 处。
+- **真模型联调**用的是私有库，执行模型 Claude Haiku 5.5：
+  - **一共 3 个任务**：
+    - A 是派活方，让它把 3、7、−2 派给 B，把 5 派给 C，然后等 3 那一张；
+    - B「算平方」，负数报办不成；
+    - C 配了重试 2 次、间隔 1 分钟，模型故意配成一个不存在的 id。
+  - **结果**：
+    - **派活方等结果**：A 用 `session.wait` 等 `work.done:W-1`，W-1 办完后被叫醒，用 `work.list` 看了其余几张，然后总结。
+    - **报结果**：W-1、W-2 办完，单上有报的结果（`平方=9`、`平方=49`）。
+    - **办不成**：W-3 是「没办成 · agent 判断办不成：不处理负数」，运行本身是完成的，没有重试。
+    - **自动重试**：W-4 一共跑了 3 次，间隔 1 分钟，最后记成「没办成 · 运行出错，自动重试了 2 次」。负责人只收到 1 条失败通知。
+    - **检查点**：B 的 3 次运行都没有调 `checkpoint.mark`，过程和总结里也没有出现「检查点」。
+  - **派活页**：用真数据截了 W-3、W-4 的图，显示正常。顺手改了一处：「agent 判断办不成」的原因前面带着同样的前缀，和标题重复，详情里去掉了。
+- **重新导入真实的搜品包** `sourcing-agent-portable.zip`：读包用 Claude Opus 5.5，花了 $1.28。
+  - t2「处理一张搜品单」被导成接受派活：参数是「搜品单号」（必填、去重）和「标题」（可选），名额 1，来自 t1。
+  - t1 选上了内置工具「派活」，步骤里写的是派给 t2 的**标题**，不是 key。
+  - sourcing-todo 的插件和 `sync_tasks` 契约进了 unused，原因是「用平台自带的『派活』代替」。
+  - 包里写了默认关闭自动执行，所以两个任务都导成了停用；t2 原来就没有定时，这次没有触发「去掉定时」那条规则。
+  - 点「导入」后：
+    - `task_dispatch_sources` 写对了（t2 ← t1）；
+    - t2 的「还要做的事」是「派一张试试」，链接 `#/work?task=…&new=1`；
+    - 撤销后，两个任务和它们的派活关系都删干净了。
+- **没联调到的**：
+  - 看板收起被派的卡片：有单元测试和前端截图（用的是假数据），没有用真模型凑出 2 个以上在等的运行；
+  - 「接受派活又有定时就去掉定时」：有单元测试，真包里没碰到这种情况。
+- 8080 的 pod 没有重建。迁移 0018 要等重建时才会执行。

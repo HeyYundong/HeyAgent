@@ -1,5 +1,6 @@
 // 确认时「修改」打开的弹窗：改的是方案（导入前什么都不建），内容按 AI 的方案填好。
-// 字段、文案和各页的「新建」表单一样：任务直接复用 pages/tasks/task-dialog.tsx 的步骤、浏览器、「用哪些」部件；
+// 字段、文案和各页的「新建」表单一样：任务直接复用 pages/tasks/task-dialog.tsx 的步骤、浏览器、「用哪些」部件，以及「被派活」一组（dispatch-fields.tsx，
+// 「谁能派活给它」只能选方案里的其他任务，值是方案里的 key）；
 // 技能、规则、工具的表单照「新建技能 / 规则 / 工具」的字段写（那几个弹窗直接调接口，不能拿来改方案）。
 // 规则改了文字要重新翻译：imports.compileRule，等十几秒拿到新的「系统理解为」。
 import * as React from "react"
@@ -13,7 +14,6 @@ import {
   riskLabel,
   secretNameSchema,
   skillInputSchema,
-  taskInputSchema,
   templatePlaceholders,
   type ImportPlan,
   type PlanRule,
@@ -47,7 +47,9 @@ import { useAction } from "@/lib/mutations"
 import { trpc } from "@/lib/trpc"
 
 import { cronText } from "@/pages/tasks/cron"
-import { BrowserFields, MultiPick, StepEditor, type Option } from "@/pages/tasks/task-dialog"
+import { DispatchFields, retriesOf, taskResolver, type RetryFields } from "@/pages/tasks/dispatch-fields"
+import { MultiPick, type Option } from "@/pages/tasks/multi-pick"
+import { BrowserFields, StepEditor } from "@/pages/tasks/task-dialog"
 import { DIALOG_TEXT } from "@/pages/tools/data"
 
 import { baseName } from "./parts"
@@ -73,7 +75,19 @@ function planOptions(plan: ImportPlan): Record<"skillIds" | "memoryIds" | "ruleI
 
 const PICKS = ["skillIds", "memoryIds", "ruleIds", "toolIds"] as const
 
-/** 改任务：和「新建任务」同一个表单（任务、步骤、目标、用哪些、浏览器、模型、负责人、定时）。附件来自包里，这里只看 */
+/**
+ * 方案里的 dispatch 和表单的互转。方案的形状（shared planTaskSchema.dispatch）现在只有 params / maxRunning / fromKeys；
+ * 自动重试的两项照样带上（导入时建任务要用），等 shared 加上这两个可选字段就能存下来。
+ */
+type PlanDispatch = NonNullable<PlanTask["dispatch"]>
+function toPlanDispatch(dispatch: TaskInput["dispatch"], fromKeys: string[]): PlanDispatch | null {
+  if (!dispatch) return null
+  const params = dispatch.params.map((param) => ({ name: param.name.trim(), description: (param.description ?? "").trim(), required: Boolean(param.required), dedupe: Boolean(param.dedupe) }))
+  const shape: PlanDispatch & RetryFields = { params, maxRunning: dispatch.maxRunning ?? 1, fromKeys, retries: dispatch.retries, retryDelayMinutes: dispatch.retryDelayMinutes }
+  return shape
+}
+
+/** 改任务：和「新建任务」同一个表单（任务、步骤、目标、用哪些、浏览器、模型、负责人、被派活、定时）。附件来自包里，这里只看 */
 export function TaskEditDialog({ plan, task, onClose, onSave }: { plan: ImportPlan; task: PlanTask | null; onClose: () => void; onSave: (task: PlanTask) => void }) {
   return (
     <Dialog open={task !== null} onOpenChange={(open) => !open && onClose()}>
@@ -86,7 +100,7 @@ function TaskForm({ plan, task, onSave }: { plan: ImportPlan; task: PlanTask; on
   const staff = useStaffQuery().data ?? []
   const { models, defaults, modelName } = useModels()
   const form = useForm<TaskInput>({
-    resolver: zodResolver(taskInputSchema),
+    resolver: taskResolver,
     defaultValues: {
       title: task.title,
       goal: task.goal,
@@ -103,16 +117,22 @@ function TaskForm({ plan, task, onSave }: { plan: ImportPlan; task: PlanTask; on
       allowedDomains: task.allowedDomains,
       allowBrowserEvaluate: false,
       verifyModelId: "",
+      dispatch: task.dispatch ? { params: task.dispatch.params, maxRunning: task.dispatch.maxRunning, ...retriesOf(task.dispatch) } : null,
+      dispatchFrom: task.dispatch?.fromKeys ?? [],
     },
   })
   const [domainText, setDomainText] = React.useState(() => domainsText(task.allowedDomains))
   const { errors } = form.formState
   const steps = useFieldArray({ control: form.control, name: "steps" })
-  const [schedule, toolIds, modelId] = useWatch({ control: form.control, name: ["schedule", "toolIds", "modelId"] })
+  const [schedule, toolIds, modelId, dispatch] = useWatch({ control: form.control, name: ["schedule", "toolIds", "modelId", "dispatch"] })
   const usesBrowser = (toolIds ?? []).some((key) => plan.tools.find((tool) => tool.key === key)?.refId === "browser")
   const options = planOptions(plan)
   const cronHuman = schedule?.cron ? cronText(schedule.cron) : null
   const ownerItems = staff.map((person) => ({ value: person.id, label: `${person.name}${person.title ? ` · ${person.title}` : ""}` }))
+  // 「谁能派活给它」：方案里的其他任务（没勾上的也列出来，写明不会导入）
+  const fromOptions = plan.tasks
+    .filter((other) => other.key !== task.key)
+    .map((other) => ({ value: other.key, label: clip(other.title, 14), hint: other.include ? "导入时会给它选上内置工具「派活」" : "这个任务没勾上，不会导入" }))
 
   const submit = form.handleSubmit((values) => {
     const emptyCheckpoint = values.steps.findIndex((step) => step.checkpoint !== undefined && !step.checkpoint.trim())
@@ -142,6 +162,7 @@ function TaskForm({ plan, task, onSave }: { plan: ImportPlan; task: PlanTask; on
       toolKeys: values.toolIds ?? [],
       browserProfileIds: values.browserProfileIds ?? [],
       allowedDomains: parsedDomains.domains,
+      dispatch: toPlanDispatch(values.dispatch, values.dispatchFrom ?? []),
     })
   })
 
@@ -272,6 +293,8 @@ function TaskForm({ plan, task, onSave }: { plan: ImportPlan; task: PlanTask; on
               </>
             )}
             <FieldSeparator />
+            <DispatchFields id="import-task-dispatch" control={form.control} register={form.register} errors={errors} fromOptions={fromOptions} fromNote="只能选这次要导入的任务；系统里已有的任务，导入后到它的任务弹窗里加。" />
+            <FieldSeparator />
             <FieldSet>
               <Controller
                 control={form.control}
@@ -295,10 +318,11 @@ function TaskForm({ plan, task, onSave }: { plan: ImportPlan; task: PlanTask; on
                     <InputGroupInput id="import-task-cron" className="font-mono" aria-invalid={!!errors.schedule?.cron} {...form.register("schedule.cron")} />
                   </InputGroup>
                   <FieldDescription>{cronHuman ? `${cronHuman}。导入后就按定时跑，每次触发是一次新的运行。` : "分 时 日 月 周，例如 0 9 * * *（每天 09:00）、0 10 * * 1（每周一 10:00）"}</FieldDescription>
+                  {dispatch && <FieldDescription>能被派活的任务一般不用定时：按定时跑出来的运行不带参数，不知道该办哪件。</FieldDescription>}
                   <FieldError errors={[errors.schedule?.cron]} />
                 </Field>
               ) : (
-                <FieldDescription>不勾就只在点「立即运行」时跑。</FieldDescription>
+                <FieldDescription>{dispatch ? "不定时：有派活单就开始，没单不跑。原来包里的定时导入时会去掉（见「总览」里要注意的），勾上「定时运行」可以加回来。" : "不勾就只在点「立即运行」时跑。"}</FieldDescription>
               )}
             </FieldSet>
           </FieldGroup>

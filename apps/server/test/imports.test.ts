@@ -113,6 +113,10 @@ function plannedPackage(): Record<string, unknown> {
     ruleKeys: [],
     toolKeys: [],
     attachments: [],
+    acceptsDispatch: false,
+    dispatchParams: [],
+    dispatchMaxRunning: 1,
+    dispatchFromKeys: [],
     source: "",
     ...extra,
   })

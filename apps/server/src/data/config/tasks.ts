@@ -39,14 +39,7 @@ async function checkTask(db: DbOrTx, input: TaskInput, previousRuleIds: string[]
       throw badRequest(`执行模型和三方验收模型是同一家（${modelFamily(modelId)}），验收就不算第三方了。换一个执行模型，或去「模型」页换验收模型。`)
     }
   }
-  // 派活：谁能派活给它（必须存在、不能是自己）
-  const dispatchFrom = [...new Set(input.dispatchFrom)]
-  if (selfId && dispatchFrom.includes(selfId)) throw badRequest("「谁能派活给它」里不能选这个任务自己")
-  if (dispatchFrom.length) {
-    const rows = await db.select({ id: t.tasks.id }).from(t.tasks).where(inArray(t.tasks.id, dispatchFrom))
-    const missing = dispatchFrom.filter((id) => !rows.some((row) => row.id === id))
-    if (missing.length) throw badRequest(`「谁能派活给它」里的任务不存在：${missing.join("、")}`)
-  }
+  const dispatchFrom = await checkDispatchSources(db, input.dispatchFrom, selfId)
   const exist = async (table: typeof t.memories | typeof t.skills | typeof t.rules | typeof t.tools, list: string[], what: string) => {
     if (list.length === 0) return
     const rows = await db.select({ id: table.id }).from(table).where(inArray(table.id, list))
@@ -78,6 +71,28 @@ async function checkTask(db: DbOrTx, input: TaskInput, previousRuleIds: string[]
     ? (await db.select({ id: t.tools.id }).from(t.tools).where(and(inArray(t.tools.id, input.toolIds), eq(t.tools.alwaysOn, true)))).map((row) => row.id)
     : []
   return { modelId, verifyModelId, toolIds: input.toolIds.filter((id) => !alwaysOn.includes(id)), dispatchFrom }
+}
+
+/** 派活：谁能派活给它（必须存在、不能是自己）。返回去重后的 */
+async function checkDispatchSources(db: DbOrTx, sourceIds: string[], selfId?: string) {
+  const dispatchFrom = [...new Set(sourceIds)]
+  if (selfId && dispatchFrom.includes(selfId)) throw badRequest("「谁能派活给它」里不能选这个任务自己")
+  if (dispatchFrom.length) {
+    const rows = await db.select({ id: t.tasks.id }).from(t.tasks).where(inArray(t.tasks.id, dispatchFrom))
+    const missing = dispatchFrom.filter((id) => !rows.some((row) => row.id === id))
+    if (missing.length) throw badRequest(`「谁能派活给它」里的任务不存在：${missing.join("、")}`)
+  }
+  return dispatchFrom
+}
+
+/**
+ * 在调用方的事务里改「谁能派活给它」（先删后插），校验同 checkTask。
+ * 导入（imports/commit.ts）全部任务建完以后再连：派活方可能排在被派的任务后面
+ */
+export async function setDispatchSources(tx: Tx, taskId: string, sourceIds: string[]) {
+  const dispatchFrom = await checkDispatchSources(tx, sourceIds, taskId)
+  await tx.delete(t.taskDispatchSources).where(eq(t.taskDispatchSources.taskId, taskId))
+  if (dispatchFrom.length) await tx.insert(t.taskDispatchSources).values(dispatchFrom.map((sourceTaskId) => ({ taskId, sourceTaskId })))
 }
 
 function columns(input: TaskInput, modelId: string, verifyModelId: string | null) {

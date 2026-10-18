@@ -9,6 +9,17 @@ import { isoTime, runStatusSchema } from "./schemas.js"
 /** 内置工具「派活」的 id（模型看到的名字是 work_dispatch） */
 export const WORK_DISPATCH_TOOL_ID = "work.dispatch"
 
+/** 内置工具「查派过的活」「报结果」的 id（第二期）：前者跟着「派活」自动带上，后者在被派来的运行里自动带上 */
+export const WORK_LIST_TOOL_ID = "work.list"
+export const WORK_REPORT_TOOL_ID = "work.report"
+
+/** 派活方等结果的事件名：单最终结束（办完 / 没办成 / 不办了）时叫醒等它的运行（第二期） */
+export const workDoneEvent = (itemId: string) => `work.done:${itemId}`
+export const WORK_DONE_EVENT_PREFIX = "work.done:"
+
+/** 自动重试的默认间隔（分钟） */
+export const WORK_RETRY_DELAY_DEFAULT = 10
+
 /** 一次 work.dispatch 最多派几张 */
 export const WORK_DISPATCH_BATCH_MAX = 50
 
@@ -33,6 +44,10 @@ export const taskDispatchSchema = z
     params: z.array(taskDispatchParamSchema).max(20, "最多 20 个参数"),
     /** 同时最多几个在跑（名额）：执行中、验收中、等浏览器的占名额；agent 自己挂起、等人处理不占 */
     maxRunning: z.number().int().min(1, "至少 1 个").max(20, "最多 20 个").default(1),
+    /** 没办成自动重试几次（第二期）：只对运行出错重试，人取消、人选不继续、agent 报办不成、规则让它失败的不重试。不写 = 0（旧数据没有） */
+    retries: z.number().int().min(0).max(5, "最多重试 5 次").optional(),
+    /** 隔多久再试（分钟）；不写 = WORK_RETRY_DELAY_DEFAULT */
+    retryDelayMinutes: z.number().int().min(1).max(1440, "最多隔 24 小时").optional(),
   })
   .superRefine((value, ctx) => {
     const seen = new Set<string>()
@@ -62,15 +77,40 @@ export type WorkVia = z.infer<typeof workViaSchema>
 /** 单上的处理记录（派进来、开运行、重办、改参数、不办了），按时间先后 */
 export const workLogEntrySchema = z.object({
   at: isoTime,
-  kind: z.enum(["created", "run_started", "run_ended", "redo", "params_changed", "cancelled"]),
+  /** retry_scheduled：运行出错、排队等自动重试（第二期）；reported：被派的运行用 work.report 报了结果（第二期，同一次运行只记第一次） */
+  kind: z.enum(["created", "run_started", "run_ended", "redo", "params_changed", "cancelled", "retry_scheduled", "reported"]),
   /** 人做的：谁 */
   byId: z.string().optional(),
   /** run_started / run_ended：哪次运行 */
   sessionId: z.string().optional(),
-  /** 补充：不办了的原因、运行结束的结果（done / failed）等 */
+  /** 补充：不办了的原因、运行结束的结果（done / failed）、重试的原因等 */
   note: z.string().optional(),
+  /** retry_scheduled：这是第几次自动重试（从 1 开始）、什么时候再试 */
+  retry: z.number().int().optional(),
+  notBefore: isoTime.optional(),
 })
 export type WorkLogEntry = z.infer<typeof workLogEntrySchema>
+
+/** work.report 的一个值：文字、数字或是 / 否 */
+export const workReportValueSchema = z.union([z.string().max(1000), z.number(), z.boolean()])
+export type WorkReportValue = z.infer<typeof workReportValueSchema>
+/** work.report 一张单最多几个字段 */
+export const WORK_REPORT_MAX_FIELDS = 20
+
+/**
+ * 没办成的种类（第二期）：error = 运行出错（自动重试用完了，或者不重试的那几种）；
+ * not_done = agent 用 work.report 报了办不成（运行本身正常结束）；cancelled_run = 人取消了运行、人选了不继续、人判验收失败
+ */
+export const workFailKindSchema = z.enum(["error", "not_done", "cancelled_run"])
+export type WorkFailKind = z.infer<typeof workFailKindSchema>
+
+/** 结构化结果压成一行：「源商品数=3，后台已回填=是」 */
+export function workReportLine(data: Record<string, WorkReportValue> | undefined): string {
+  if (!data) return ""
+  return Object.entries(data)
+    .map(([name, value]) => `${name}=${typeof value === "boolean" ? (value ? "是" : "否") : String(value)}`)
+    .join("，")
+}
 
 export const workResultSchema = z.object({
   /** agent 最后那段总结（前 2000 字） */
@@ -79,6 +119,8 @@ export const workResultSchema = z.object({
   verification: z.string().optional(),
   /** 这次运行存下的产物（session 的文件 id） */
   fileIds: z.array(z.string()),
+  /** 被派的运行用 work.report 写的结构化结果（第二期）：字段名 → 值 */
+  data: z.record(z.string(), workReportValueSchema).optional(),
 })
 export type WorkResult = z.infer<typeof workResultSchema>
 
@@ -109,8 +151,14 @@ export const workItemSchema = z.object({
   /** 派活的层数（防无限递归） */
   depth: z.number().int(),
   result: workResultSchema.nullable(),
-  /** 没办成的原因 / 不办了的原因（给人看） */
+  /** 没办成的原因 / 不办了的原因（给人看）；排队等重试时是上一次出错的原因 */
   error: z.string().nullable(),
+  /** 没办成的种类（第二期）；不是没办成为 null */
+  failKind: workFailKindSchema.nullable(),
+  /** 排队等自动重试：到这个时间才会领（第二期）；不等为 null */
+  notBefore: isoTime.nullable(),
+  /** 这一轮已经自动重试了几次（人点重办清零） */
+  autoRetries: z.number().int(),
   /** 排队时：在这个任务里排第几位（从 1 开始）；不排队为 null */
   queuePosition: z.number().int().nullable(),
   createdAt: isoTime,

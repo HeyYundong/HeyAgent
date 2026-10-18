@@ -9,6 +9,7 @@ import { ensureDefaultStandard } from "../compare/service.js"
 import { runImportRead } from "../imports/reader.js"
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
+import { onWorkNotify } from "./dispatch/notify.js"
 import { pumpTask } from "./dispatch/pump.js"
 import { sweepWork } from "./dispatch/sweep.js"
 import { runSession } from "./loop.js"
@@ -202,6 +203,8 @@ export async function startEngineWorker(
     async ([job]) => job && (await pumpTask(db, job.data.taskId))
   )
   await boss.work(QUEUES.workSweep, polling, async () => sweepWork(db))
+  // 派活：单最终结束时叫醒等 work.done:<单号> 的运行（第二期）
+  await boss.work<{ itemId: string }>(QUEUES.workNotify, polling, async ([job]) => job && (await onWorkNotify(db, job.data)))
   await boss.schedule(QUEUES.workSweep, "* * * * *", {}, { tz: SCHEDULE_TZ })
 
   const comparisons = await recoverRunningComparisons(db, (name, data, options) => boss.send(name, data, options))

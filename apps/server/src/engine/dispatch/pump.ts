@@ -2,13 +2,14 @@
 // 按名额数空位、取最早的排队单（for update skip locked）、开运行、单改成「在办」，全在一个事务里：
 // 要么单和运行一起成，要么都不成，一张单不会被两个运行领到。
 import type { SessionSnapshot } from "@heyagent/shared"
-import { and, asc, eq, sql } from "drizzle-orm"
+import { and, asc, eq, isNull, lte, or, sql } from "drizzle-orm"
 
 import type { Db } from "../../db/client.js"
 import * as t from "../../db/schema.js"
 import { occupiedSlots } from "../../work/service.js"
 import type { Tx } from "../queue.js"
 import { startSessionInTx } from "../sessions.js"
+import { sendWorkDoneInTx } from "./notify.js"
 import { appendLog } from "./settle.js"
 
 type WorkItemRow = typeof t.workItems.$inferSelect
@@ -53,7 +54,8 @@ export async function pumpTask(db: Db, taskId: string): Promise<{ started: { ite
     const items = await tx
       .select()
       .from(t.workItems)
-      .where(and(eq(t.workItems.taskId, taskId), eq(t.workItems.status, "queued")))
+      // 排队等自动重试的（not_before 在将来）到点才领
+      .where(and(eq(t.workItems.taskId, taskId), eq(t.workItems.status, "queued"), or(isNull(t.workItems.notBefore), lte(t.workItems.notBefore, sql`now()`))))
       .orderBy(asc(t.workItems.createdAt), asc(t.workItems.id))
       .limit(free)
       .for("update", { skipLocked: true })
@@ -77,6 +79,7 @@ export async function pumpTask(db: Db, taskId: string): Promise<{ started: { ite
               sessionId,
               attempts: sql`${t.workItems.attempts} + 1`,
               startedAt: now,
+              notBefore: null,
               updatedAt: now,
               log: appendLog({ at: now.toISOString(), kind: "run_started", sessionId }),
             })
@@ -90,8 +93,10 @@ export async function pumpTask(db: Db, taskId: string): Promise<{ started: { ite
         console.warn(`[work] ${item.id} ${reason}`)
         await tx
           .update(t.workItems)
-          .set({ status: "failed", error: reason, finishedAt: now, updatedAt: now, log: appendLog({ at: now.toISOString(), kind: "run_ended", note: "failed" }) })
+          .set({ status: "failed", error: reason, failKind: "error", notBefore: null, finishedAt: now, updatedAt: now, log: appendLog({ at: now.toISOString(), kind: "run_ended", note: "failed" }) })
           .where(eq(t.workItems.id, item.id))
+        // 最终结束（配置坏了，重试也没用）：叫醒等它的派活方
+        await sendWorkDoneInTx(db, tx, item.id)
       }
     }
     return { started }

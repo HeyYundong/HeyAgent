@@ -10,7 +10,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 import { bootstrap, retryOpenRouterInBackground } from "../src/bootstrap/index.js"
 import { createDb } from "../src/db/client.js"
 import * as t from "../src/db/schema.js"
-import { BUILTIN_TOOLS } from "../src/engine/tools/builtin-defs.js"
+import { SELECTABLE_BUILTIN_TOOLS } from "../src/engine/tools/builtin-defs.js"
 import { env } from "../src/env.js"
 import { decryptText } from "../src/lib/crypto.js"
 import { resetTestDatabase, tempKeyring, testDatabaseUrl } from "./helpers.js"
@@ -71,7 +71,7 @@ describe("空白环境初始化", () => {
     // 内置工具由 bootstrap 同步进 tools 表（M1 P3）：worker 还没起时工具页也能看到
     const tools = await db.select({ id: t.tools.id, source: t.tools.source }).from(t.tools)
     // 另加 M2 的「浏览器」、图库的「图库」、比物的「比物」（选了它们就开放整组工具）
-    expect(tools.map((tool) => tool.id).sort()).toEqual([...BUILTIN_TOOLS.map((tool) => tool.id), "browser", "gallery", "compare"].sort())
+    expect(tools.map((tool) => tool.id).sort()).toEqual([...SELECTABLE_BUILTIN_TOOLS.map((tool) => tool.id), "browser", "gallery", "compare"].sort())
     expect(tools.every((tool) => tool.source === "builtin")).toBe(true)
     const tables = { tasks: t.tasks, memories: t.memories, skills: t.skills, rules: t.rules, mcpServers: t.mcpServers, browserProfiles: t.browserProfiles, platforms: t.platforms, humanTodos: t.humanTodos, humanItems: t.humanItems, sessions: t.sessions }
     for (const [name, table] of Object.entries(tables)) {
@@ -112,7 +112,7 @@ describe("空白环境初始化", () => {
     expect(await db.select().from(t.users)).toHaveLength(0)
     expect(await db.select().from(t.modelProviders)).toHaveLength(1)
     expect(calls).toHaveLength(2)
-    expect(await db.select().from(t.tools)).toHaveLength(BUILTIN_TOOLS.length + 3)
+    expect(await db.select().from(t.tools)).toHaveLength(SELECTABLE_BUILTIN_TOOLS.length + 3)
     expect(await db.select().from(t.compareStandards)).toHaveLength(1)
   })
 

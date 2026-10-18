@@ -8,6 +8,7 @@ import {
   PlugZapIcon,
   RotateCwIcon,
   ScrollTextIcon,
+  SendIcon,
   ShieldCheckIcon,
   TriangleAlertIcon,
   Undo2Icon,
@@ -157,7 +158,9 @@ export function ImportedView({ detail }: { detail: ImportDetail }) {
 function FollowUpRow({ importId, todo }: { importId: string; todo: ImportFollowUp }) {
   const runNow = useAction(trpc.engine.runNow.mutationOptions(), { success: ({ sessionId }) => `开始运行了（${sessionId}），在「待办」看板和任务详情里能看到`, errorTitle: "没能开始运行" })
   const attach = useAction(trpc.imports.attachMcpTools.mutationOptions(), { success: "工具选进任务了", errorTitle: "工具没选进任务" })
-  const meta = FOLLOW_UP[todo.kind]
+  // 派活第二期：能被派活的任务，「试跑」换成「派一张试试」，链接到派活页并打开「派一张」（#/work?task=<id>&new=1）
+  const dispatchTry = todo.kind === "try_run" && !todo.action && Boolean(todo.link?.startsWith("#/work"))
+  const meta = dispatchTry ? { icon: <SendIcon />, label: "派一张试试" } : FOLLOW_UP[todo.kind]
   const pending = runNow.isPending || attach.isPending
   const run = todo.action === "run_task"
 
@@ -178,6 +181,13 @@ function FollowUpRow({ importId, todo }: { importId: string; todo: ImportFollowU
         {meta.label}
       </Button>
     )
+  } else if (dispatchTry && todo.link) {
+    button = (
+      <Button size="sm" nativeButton={false} render={<a href={todo.link} />}>
+        <SendIcon data-icon="inline-start" />
+        {meta.label}
+      </Button>
+    )
   } else if (todo.link) {
     // 只有链接：去那一页办。停用的任务试跑前要先到任务页启用
     button = (
@@ -192,7 +202,7 @@ function FollowUpRow({ importId, todo }: { importId: string; todo: ImportFollowU
       <ItemMedia variant="icon">{todo.done ? <CircleCheckIcon /> : meta.icon}</ItemMedia>
       <ItemContent className="min-w-0">
         <ItemTitle className="line-clamp-none">{todo.title}</ItemTitle>
-        <ItemDescription className="line-clamp-none">{todo.done ? (run ? "已经跑过了" : "已办好") : todo.description}</ItemDescription>
+        <ItemDescription className="line-clamp-none">{todo.done ? (run ? "已经跑过了" : dispatchTry ? "已经派过一张了" : "已办好") : todo.description}</ItemDescription>
       </ItemContent>
       {!todo.done && button && <ItemActions>{button}</ItemActions>}
     </Item>

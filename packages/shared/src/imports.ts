@@ -7,6 +7,7 @@
 import { z } from "zod"
 
 import { domainSchema } from "./browser-runtime.js"
+import { taskDispatchParamSchema } from "./dispatch.js"
 import { secretNameSchema } from "./config.js"
 import { ruleCompileResultSchema } from "./rules.js"
 import { httpMethodSchema, isoTime, riskSchema, skillStatusSchema } from "./schemas.js"
@@ -96,6 +97,21 @@ export const planTaskSchema = z.object({
   toolKeys: z.array(key).max(200),
   /** 挂成任务附件的文件（包内路径） */
   attachments: z.array(z.string().max(500)).max(50),
+  /**
+   * 可以被派活（第二期，派活方案第 10 节）：null / 不写 = 不能。fromKeys：谁能派活给它（方案里的任务 key，导入时只连勾上的）。
+   * 派活方不用新字段：toolKeys 里有内置工具「派活」（kind builtin，refId work.dispatch）
+   */
+  dispatch: z
+    .object({
+      params: z.array(taskDispatchParamSchema).max(20),
+      maxRunning: z.number().int().min(1).max(20),
+      /** 没办成自动重试几次、隔多久（分钟），同 taskDispatchSchema；不写 = 不重试（读包 AI 不填，人在向导里改） */
+      retries: z.number().int().min(0).max(5).optional(),
+      retryDelayMinutes: z.number().int().min(1).max(1440).optional(),
+      fromKeys: z.array(key).max(20),
+    })
+    .nullable()
+    .optional(),
   source,
 })
 export type PlanTask = z.infer<typeof planTaskSchema>
@@ -432,6 +448,10 @@ export function planProblems(plan: ImportPlan): string[] {
     missing(`任务「${task.title}」的记忆`, task.memoryKeys, has(plan.memories))
     missing(`任务「${task.title}」的规则`, task.ruleKeys, has(plan.rules))
     missing(`任务「${task.title}」的工具`, task.toolKeys, has(plan.tools))
+    if (task.dispatch) {
+      missing(`任务「${task.title}」的派活方`, task.dispatch.fromKeys, has(plan.tasks))
+      if (task.dispatch.fromKeys.includes(task.key)) problems.push(`任务「${task.title}」不能派活给它自己`)
+    }
   }
   for (const skill of plan.skills) {
     missing(`技能「${skill.name}」的工具`, skill.toolKeys, has(plan.tools))

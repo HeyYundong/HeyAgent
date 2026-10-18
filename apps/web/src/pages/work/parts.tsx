@@ -1,11 +1,11 @@
-// 派活页、任务页、运行详情共用的小块：派活单的状态徽章、时间、短任务名、参数表、被派任务的一行数字。
+// 派活页、任务页、运行详情共用的小块：派活单的状态徽章、时间、短任务名、参数表、报的结果、被派任务的一行数字。
 import { useQuery } from "@tanstack/react-query"
-import { CircleCheckIcon, CircleSlashIcon, CircleXIcon, HandIcon, HourglassIcon, ListOrderedIcon, ScanSearchIcon } from "lucide-react"
-import { fmtClock, relativeDayText, sameShanghaiDay, type TaskDispatchParam, type WorkItem } from "@heyagent/shared"
+import { CircleCheckIcon, CircleSlashIcon, CircleXIcon, HandIcon, HourglassIcon, ListOrderedIcon, RotateCwIcon, ScanSearchIcon } from "lucide-react"
+import { fmtClock, relativeDayText, sameShanghaiDay, type TaskDispatchParam, type WorkItem, type WorkReportValue } from "@heyagent/shared"
 
 import { Badge } from "@/components/ui/badge"
 import { Spinner } from "@/components/ui/spinner"
-import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { trpc } from "@/lib/trpc"
 
 /** 「16:00」（今天）「昨天 10:05」「10-14 15:00」；没有就是「—」 */
@@ -21,6 +21,44 @@ export function shortName(title?: string | null) {
   return first.length <= 6 ? first : `${title.slice(0, 6)}…`
 }
 
+/** 排队等自动重试的单：什么时候以后才会开（已经到点的不算，派活第二期） */
+export function retryAt(item: Pick<WorkItem, "status" | "notBefore">) {
+  return item.status === "queued" && item.notBefore && Date.parse(item.notBefore) > Date.now() ? item.notBefore : undefined
+}
+
+/** 报的结果的一个值：是 / 否、千分位数字、文字 */
+export const reportValue = (value: WorkReportValue) => (typeof value === "boolean" ? (value ? "是" : "否") : typeof value === "number" ? value.toLocaleString("zh-CN") : value)
+
+/** 报的结果压成一行（还在办时「已报：」用）：「源商品数 3 · 后台已回填 是」 */
+export const reportText = (data: Record<string, WorkReportValue>) =>
+  Object.entries(data)
+    .map(([name, value]) => `${name} ${reportValue(value)}`)
+    .join(" · ")
+
+/** 被派的运行用「报结果」写的字段（字段、值），派活第二期 */
+export function ReportTable({ data }: { data: Record<string, WorkReportValue> }) {
+  return (
+    <div className="border">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead className="w-32">字段</TableHead>
+            <TableHead>值</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {Object.entries(data).map(([name, value]) => (
+            <TableRow key={name}>
+              <TableCell className="text-muted-foreground">{name}</TableCell>
+              <TableCell className="whitespace-normal tabular-nums">{reportValue(value)}</TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
+  )
+}
+
 const RUNNING_STATE = {
   running: { label: "执行中", icon: null },
   waiting: { label: "挂起等待", icon: HourglassIcon },
@@ -31,8 +69,9 @@ const RUNNING_STATE = {
 /**
  * 派活单状态。按 ui-rules 第 4 节的映射，不加新颜色：排队 outline、在办 secondary（执行中加转圈）、办完 outline + 勾、没办成 destructive、不办了 ghost。
  * 在办的直接写运行此刻的状态（执行中 / 挂起等待 / 等人处理 / 验收中）；long = 详情里写成「在办 · 挂起等待」「排队 · 第 2 位」。
+ * 排队等自动重试的写「排队 · 16:38 重试」（第二期）。
  */
-export function WorkStatusBadge({ item, long }: { item: Pick<WorkItem, "status" | "sessionStatus" | "queuePosition">; long?: boolean }) {
+export function WorkStatusBadge({ item, long }: { item: Pick<WorkItem, "status" | "sessionStatus" | "queuePosition" | "notBefore">; long?: boolean }) {
   if (item.status === "running") {
     const state = RUNNING_STATE[item.sessionStatus as keyof typeof RUNNING_STATE] ?? RUNNING_STATE.running
     return (
@@ -42,6 +81,14 @@ export function WorkStatusBadge({ item, long }: { item: Pick<WorkItem, "status" 
       </Badge>
     )
   }
+  const retry = retryAt(item)
+  if (retry)
+    return (
+      <Badge variant="outline">
+        <RotateCwIcon data-icon="inline-start" />
+        排队 · {timeText(retry)} 重试
+      </Badge>
+    )
   if (item.status === "queued")
     return (
       <Badge variant="outline">

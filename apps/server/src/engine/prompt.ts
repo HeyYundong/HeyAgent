@@ -5,8 +5,14 @@ import {
   compiledRuleSchema,
   riskLabel,
   WORK_DISPATCH_TOOL_ID,
+  WORK_LIST_TOOL_ID,
+  WORK_REPORT_TOOL_ID,
   type SessionSnapshot,
 } from "@heyagent/shared"
+
+/** 没有检查点的运行不给 checkpoint.mark（工具网关组工具清单、系统提示列工具都按它） */
+export const isCheckpointToolHidden = (snapshot: Pick<SessionSnapshot, "checkpoints">, toolId: string) =>
+  toolId === "checkpoint.mark" && snapshot.checkpoints.length === 0
 
 export function buildSystemPrompt(
   snapshot: SessionSnapshot,
@@ -26,9 +32,15 @@ export function buildSystemPrompt(
     `## 任务\n${task.title}\n\n## 目标（做到什么算完成）\n${task.goal}`
   )
 
-  // 被派来的运行：只加一句固定的话（所有被派的运行都一样，前缀缓存才有用），参数在第一条消息里
+  // 被派来的运行：只加固定的话（所有被派的运行都一样，前缀缓存才有用），参数在第一条消息里
   if (snapshot.dispatch)
-    sections.push("## 派来的活\n这次运行是被派来办一件事的，参数在第一条消息里。")
+    sections.push(
+      [
+        "## 派来的活",
+        "这次运行是被派来办一件事的，参数在第一条消息里。",
+        `有要交回去的结果（数字、是 / 否、编号），用 ${toolNames.get(WORK_REPORT_TOOL_ID) ?? "work_report"} 写；办不成（例如找不到、对方拒绝）就用它报 not_done 并写原因。`,
+      ].join("\n")
+    )
 
   if (task.steps.length) {
     const lines = task.steps.map(
@@ -79,7 +91,8 @@ export function buildSystemPrompt(
     )
   }
 
-  const toolLines = snapshot.tools.map(
+  const hasCheckpoints = snapshot.checkpoints.length > 0
+  const toolLines = snapshot.tools.filter((tool) => !isCheckpointToolHidden(snapshot, tool.id)).map(
     (tool) =>
       `- ${toolNames.get(tool.id) ?? tool.id}（${tool.name}，${riskLabel[tool.risk]}）：${tool.summary}`
   )
@@ -99,6 +112,7 @@ export function buildSystemPrompt(
               (target) =>
                 `- ${target.taskId}「${target.title}」${target.enabled ? "" : "（停用中，派了先排着）"}：${target.params.length ? `参数 ${target.params.map(paramText).join("、")}` : "没有参数"}`
             ),
+            `要等结果时：用 ${toolNames.get("session.wait") ?? "session_wait"} 等事件 work.done:<单号>，一次等一张；醒来后用 ${toolNames.get(WORK_LIST_TOOL_ID) ?? "work_list"} 看其余的。`,
           ].join("\n")
         : `## 可以派活给\n现在没有任务允许你派活（要对方任务的负责人在「谁能派活给它」里加上这个任务），不要调 ${name}。`
     )
@@ -143,8 +157,13 @@ export function buildSystemPrompt(
       "- 要等外部的事或等一段时间，用 session.wait；要人批准、回答或去登录，用 ask.human。不要假装已经等到或已经拿到批准。",
       "- 要交付的表格、文档用 file.save 存成文件。",
       "- 工具输出太长时只给你开头部分，全文存成了文件，需要时用 file.read 读。",
-      "- 全部做完后，直接回复一段总结（做了什么、结果在哪、哪些检查点没完成以及原因），不要再调工具。回复不调工具就表示你认为任务做完了。",
-      "- 如果有三方验收，验收员会逐条核对检查点和证据（记录、文件、截图）；被反问时如实说明原因，能补做的就补做。",
+      // 没有检查点的任务（例如被派来办一件事的）不提检查点：提了 agent 会去找、会在总结里写「检查点清单为空」
+      hasCheckpoints
+        ? "- 全部做完后，直接回复一段总结（做了什么、结果在哪、哪些检查点没完成以及原因），不要再调工具。回复不调工具就表示你认为任务做完了。"
+        : "- 全部做完后，直接回复一段总结（做了什么、结果在哪、没做成的以及原因），不要再调工具。回复不调工具就表示你认为任务做完了。",
+      hasCheckpoints
+        ? "- 如果有三方验收，验收员会逐条核对检查点和证据（记录、文件、截图）；被反问时如实说明原因，能补做的就补做。"
+        : "- 如果有三方验收，验收员会按目标核对结果和证据（记录、文件、截图）；被反问时如实说明原因，能补做的就补做。",
     ].join("\n")
   )
   return sections.join("\n\n")

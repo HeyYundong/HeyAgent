@@ -54,6 +54,7 @@ import {
   type TaskStep,
   type Verification,
   type WorkLogEntry,
+  type WorkFailKind,
   type WorkResult,
 } from "@heyagent/shared"
 
@@ -1283,6 +1284,12 @@ export const workItems = pgTable(
     depth: integer("depth").notNull().default(1),
     result: jsonb("result").$type<WorkResult>(),
     error: text("error"),
+    /** 没办成的种类（第二期）：error 运行出错 / not_done agent 报办不成 / cancelled_run 人取消、人选不继续、人判验收失败 */
+    failKind: text("fail_kind").$type<WorkFailKind>(),
+    /** 排队等自动重试：到这个时间才领（第二期） */
+    notBefore: ts("not_before"),
+    /** 这一轮已经自动重试了几次（人点重办清零；第二期） */
+    autoRetries: integer("auto_retries").notNull().default(0),
     /** 处理记录：派进来、开运行、运行结束、重办、改参数、不办了 */
     log: jsonb("log").$type<WorkLogEntry[]>().notNull().default([]),
     createdAt: createdAt(),
@@ -1293,6 +1300,7 @@ export const workItems = pgTable(
   (t) => [
     uniqueIndex("work_items_task_key_idx").on(t.taskId, t.key),
     index("work_items_task_status_idx").on(t.taskId, t.status, t.createdAt),
+    index("work_items_task_not_before_idx").on(t.taskId, t.status, t.notBefore),
     index("work_items_created_idx").on(t.createdAt.desc(), t.id.desc()),
     index("work_items_from_session_idx").on(t.fromSessionId),
     index("work_items_from_task_idx").on(t.fromTaskId),

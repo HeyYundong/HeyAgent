@@ -4,7 +4,7 @@ import { compiledRuleSchema, ruleCompileStatusLabel, type Risk, type SkillStatus
 
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
-import { BROWSER_TOOL_DEF, BUILTIN_TOOLS, COMPARE_TOOL_DEF, GALLERY_TOOL_DEF } from "../engine/tools/builtin-defs.js"
+import { BROWSER_TOOL_DEF, COMPARE_TOOL_DEF, GALLERY_TOOL_DEF, SELECTABLE_BUILTIN_TOOLS } from "../engine/tools/builtin-defs.js"
 
 /** 给 AI 的共用记忆最多几条（太多时只给最近的） */
 const MEMORY_LIMIT = 300
@@ -31,7 +31,7 @@ export interface ImportCatalog {
 }
 
 export const builtinToolList = () =>
-  [...BUILTIN_TOOLS, BROWSER_TOOL_DEF, GALLERY_TOOL_DEF, COMPARE_TOOL_DEF].map((tool) => ({ id: tool.id as string, name: tool.name, summary: tool.summary }))
+  [...SELECTABLE_BUILTIN_TOOLS, BROWSER_TOOL_DEF, GALLERY_TOOL_DEF, COMPARE_TOOL_DEF].map((tool) => ({ id: tool.id as string, name: tool.name, summary: tool.summary }))
 
 export async function loadCatalog(db: Db): Promise<ImportCatalog> {
   const [staff, models, defaults, profiles, platforms, accounts, skills, memories, rules, tools, servers, tasks, secrets] = await Promise.all([

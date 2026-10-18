@@ -62,6 +62,8 @@ export type BoardCard =
   | { kind: "run"; id: string; column: BoardColumn; run: SessionRun; task: TaskDef }
   | { kind: "human"; id: string; column: "needs_human"; item: HumanItem }
   | { kind: "todo"; id: string; column: "waiting"; todo: HumanTodo }
+  /** 第二期：同一个任务被派来、在「挂起等待」的运行有 2 个及以上时收成一张（id = group-<任务 id>）；列头数字按 runs.length 算 */
+  | { kind: "group"; id: string; column: "waiting"; task: TaskDef; runs: SessionRun[] }
 
 /** 看板上的全部卡片。已定：员工也能看全部（只读），能不能操作由页面按负责人判断 */
 export function boardCards(data: { runs: readonly SessionRun[]; tasks: readonly TaskDef[]; humanItems: readonly HumanItem[]; humanTodos: readonly HumanTodo[] }): BoardCard[] {
@@ -78,7 +80,34 @@ export function boardCards(data: { runs: readonly SessionRun[]; tasks: readonly 
   }
   for (const item of humanItems) cards.push({ kind: "human", id: item.id, column: "needs_human", item })
   for (const todo of humanTodos) cards.push({ kind: "todo", id: todo.id, column: "waiting", todo })
-  return cards
+  return groupDispatchedWaiting(cards)
+}
+
+/**
+ * 派活第二期（开发说明 5.1）：同一个任务被派来（source = dispatch）、在「挂起等待」的运行有 2 个及以上时收成一张，
+ * 放在其中第一张原来的位置，runs 按开始时间先后。只收这一列：执行中、验收中受名额限制、每个都在变；「要人办的事」要一件件处理
+ */
+function groupDispatchedWaiting(cards: BoardCard[]): BoardCard[] {
+  const byTask = new Map<string, Extract<BoardCard, { kind: "run" }>[]>()
+  for (const card of cards) {
+    if (card.kind !== "run" || card.column !== "waiting" || card.run.source !== "dispatch") continue
+    byTask.set(card.task.id, [...(byTask.get(card.task.id) ?? []), card])
+  }
+  const grouped = new Set([...byTask.values()].filter((group) => group.length >= 2).flatMap((group) => group.map((card) => card.id)))
+  if (!grouped.size) return cards
+  const out: BoardCard[] = []
+  for (const card of cards) {
+    if (card.kind !== "run" || !grouped.has(card.id)) {
+      out.push(card)
+      continue
+    }
+    const group = byTask.get(card.task.id)!
+    // 只在这一组的第一张那里放收起的卡片，其余的跳过
+    if (group[0] !== card) continue
+    const runs = group.map((each) => each.run).sort((a, b) => a.startedAt.localeCompare(b.startedAt) || a.id.localeCompare(b.id))
+    out.push({ kind: "group", id: `group-${card.task.id}`, column: "waiting", task: card.task, runs })
+  }
+  return out
 }
 
 /** 侧边栏「待办」上的数字：等我处理的事（主管算全部） */

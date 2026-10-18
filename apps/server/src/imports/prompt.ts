@@ -59,6 +59,19 @@ export const planModelSchema = z.object({
         ruleKeys: keys("规则"),
         toolKeys: keys("工具"),
         attachments: z.array(z.string()).describe("挂成任务附件的文件（包内路径，例如表格模板）；没有就空数组"),
+        acceptsDispatch: z.boolean().describe("这个任务是「一次办一件事」的、要别的任务把一件件事派给它时为 true（见「派活」）；否则 false"),
+        dispatchParams: z
+          .array(
+            z.object({
+              name: s("参数名，用中文，例如「单号」"),
+              description: s("一句话：填什么"),
+              required: z.boolean().describe("必填为 true"),
+              dedupe: z.boolean().describe("用它判断「是不是同一件事」的为 true"),
+            })
+          )
+          .describe("每件事要带的参数（一两个就够）；不接受派活的写空数组"),
+        dispatchMaxRunning: z.number().describe("同时最多办几件；包里没说就写 1。不接受派活的写 1"),
+        dispatchFromKeys: z.array(z.string()).describe("哪些任务派活给它（任务的 key）；不接受派活的写空数组"),
         source: s(SOURCE),
       })
     )
@@ -157,6 +170,11 @@ export const READER_SYSTEM = `你是 HeyAgent 平台的「导入助手」。别�
 
 ## 本平台的概念和填法
 - 任务：一句话标题；目标必填（做到什么算完成，三方 AI 按它验收）；步骤可选，一句话一步，每一步可以「等待」（挂起等外部的回复、审批，或者等到某个时间），可以有检查点（做到什么算这一步完成）。定时用 5 段 cron（分 时 日 月 周），按上海时间。负责人、模型、Chrome 只能从现有配置的清单里选。用到的技能、共用记忆、规则、工具写方案里的 key。表格模板这类文件做成任务附件。
+- 派活：一个任务找出一批要办的事，交给另一个任务一件一件办（原来靠本机的待办服务、队列、数据库或文件串起来，例如一个定时巡检把事写进待办服务，另一个从里面领一件办一件）时，导成「派活」：
+  - 办事的任务 acceptsDispatch = true。dispatchParams 写清每件事要带什么（名字用中文，一两个字段就够），用来判断是不是同一件事的那个标 dedupe。dispatchFromKeys 写找事的任务。一般不定时（cron 写空字符串）。
+  - 找事的任务在 toolKeys 里加内置工具「派活」（kind = builtin，refId = work.dispatch）。步骤里写「把每件要办的事用『派活』派给『<办事任务的标题>』，参数填……」。写标题，不要写 t1、t2 这种 key（导入后 key 就没了）。
+  - 中间那个本机的待办服务、队列，以及它的工具契约（领单、标记完成这类）不导入，在 unused 里写「用平台自带的『派活』代替」。
+  - 办事任务原来「先领一件」「领到了再办」的步骤去掉：平台会把这件事的参数放在运行的第一条消息里。
 - 技能：SKILL.md 式的操作手册：名称、岗位、什么时候用、正文。短的参考资料合进正文（写进 merged）；长的模板、表格做成任务附件。
 - 记忆：一条一两句话的经验。共用记忆写「适用于」（「分类 · 对象」或只有分类，照已有共用记忆的写法）；只对一个任务有用的放成那个任务的任务记忆（scope = task）。
 - 规则：一句话「什么情况下」+「怎么办」。只有程序能判断的才算规则，v1 支持的触发和动作：
@@ -168,7 +186,7 @@ ${ruleCatalog()}
   - 内置工具（kind = builtin）：系统自带，清单见下面；原 agent 打开过网页、点过网页，就选「浏览器」（browser）。
   - 包里有「用视觉模型比两张图、打分」的 MCP 或工具（例如 Lens MCP 的 compare_images）时，选内置的「比物」（kind = builtin，refId = compare），不要导入本机地址的那个 MCP，在 unused 里写「用平台自带的「比物」代替」。
   - 已有工具（kind = existing）：现有配置里已经有的接口、MCP 服务器，直接用，不要重复新建。
-- 只有函数定义（参数 schema）、没有接口地址的工具契约导入不了：平台自带的能替代的（勾检查点、挂起等待、问人是每个任务都自带的；打开网页用「浏览器」）不用建，在 unused 里写「用平台自带的某某代替」；其余的写进 warnings（kind = other，「需要先有接口才能用」）和 unused。
+- 只有函数定义（参数 schema）、没有接口地址的工具契约导入不了：平台自带的能替代的（勾检查点、挂起等待、问人是每个任务都自带的；打开网页用「浏览器」；领单、派单、标记完成这类，用平台自带的「派活」代替）不用建，在 unused 里写「用平台自带的某某代替」；其余的写进 warnings（kind = other，「需要先有接口才能用」）和 unused。
 - MCP 服务地址是 127.0.0.1 / localhost 的照样建（导入后人会改成真正的服务地址），在 warnings 里提醒。
 - 浏览器：任务用到网页时选「浏览器」工具，能用哪些 Chrome 从 Chrome 配置清单里选；要登录的网站写进 logins（网站名 + 域名）；只许打开某些网站的写进网址白名单。
 
@@ -219,6 +237,14 @@ export function toPlan(output: PlanModelOutput): { plan: ImportPlan; skillPaths:
       ruleKeys: task.ruleKeys.map(keyOf).slice(0, 200),
       toolKeys: task.toolKeys.map(keyOf).slice(0, 200),
       attachments: task.attachments.map((path) => clip(path, 500)).slice(0, 50),
+      // 派活（第二期）：不接受派活的忽略其余三个字段；参数名去重、名额范围这些由 organize 规整
+      dispatch: task.acceptsDispatch
+        ? {
+            params: task.dispatchParams.slice(0, 20).map((param) => ({ name: clip(param.name, 40), description: clip(param.description, 200), required: param.required, dedupe: param.dedupe })),
+            maxRunning: Number.isFinite(task.dispatchMaxRunning) ? Math.round(task.dispatchMaxRunning) : 1,
+            fromKeys: task.dispatchFromKeys.map(keyOf).filter(Boolean).slice(0, 20),
+          }
+        : null,
       source: clip(task.source, 500),
     })),
     skills: output.skills.slice(0, 1000).map((skill) => ({

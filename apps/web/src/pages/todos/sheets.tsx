@@ -1,6 +1,7 @@
-// 看板卡片的详情 Sheet：外壳 + 运行（session）详情 + 人加的待办详情。「要人办的事」在 human-sheet.tsx。
+// 看板卡片的详情 Sheet：外壳 + 运行（session）详情 + 人加的待办详情 + 收起的被派运行（派活第二期）。「要人办的事」在 human-sheet.tsx。
 import { Fragment, createElement, type ReactNode } from "react"
-import { BrainIcon, CircleCheckIcon, CircleDashedIcon, CircleDotIcon, CircleSlashIcon, EllipsisIcon, FlagIcon, ListTodoIcon, PauseIcon } from "lucide-react"
+import { useQuery } from "@tanstack/react-query"
+import { ArrowRightIcon, BrainIcon, CircleCheckIcon, CircleDashedIcon, CircleDotIcon, CircleSlashIcon, EllipsisIcon, FlagIcon, ListTodoIcon, PauseIcon } from "lucide-react"
 import { PlayIcon, ShieldIcon, ShieldQuestionIcon, TriangleAlertIcon, UserIcon, UserPenIcon, WrenchIcon, ZapIcon, type LucideIcon } from "lucide-react"
 
 import { DetailSection } from "@/components/shell/simple-page"
@@ -8,6 +9,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { CodeBlock, CodeBlockContent, CodeBlockHeader, CodeBlockTitle } from "@/components/ui/code-block"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { Item, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "@/components/ui/item"
 import { Kbd } from "@/components/ui/kbd"
 import { Separator } from "@/components/ui/separator"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
@@ -199,6 +201,58 @@ export function TodoSheet({ todo, runs, tasks, open, canRun, canManage, isAdmin,
           <TextLink to={href("tasks", { id: task.id })}>{task.id} {task.title} →</TextLink>
         </DetailSection>
       )}
+    </DetailSheet>
+  )
+}
+
+/** 挂起的运行最早什么时候继续：定时的是那个时间，只等事件的是兜底期限（since + fallbackDays） */
+export function dueAt(run: SessionRun) {
+  const waiting = run.waiting
+  if (!waiting) return run.startedAt
+  const trigger = waiting.trigger
+  if (trigger.kind === "time" || trigger.kind === "time_or_event") return trigger.at
+  if (trigger.kind === "cron") return trigger.next
+  return addDaysIso(waiting.since, trigger.fallbackDays)
+}
+
+const byTime = (a: string, b: string) => Date.parse(a) - Date.parse(b)
+
+type GroupProps = { task: TaskDef; runs: SessionRun[]; open: boolean; onClose: () => void }
+
+/**
+ * 派活第二期：收起的卡片点开，列出同一个任务被派来、在等的运行（按什么时候继续排），点一行去 Session 页看那次运行；底部去派活页看全部。
+ * 派活单的标题从派活页的接口取（这个任务在办的单）。
+ */
+export function GroupSheet({ task, runs: list, open, onClose }: GroupProps) {
+  const staffName = useStaffName()
+  const items = useQuery(trpc.work.list.queryOptions({ taskId: task.id, status: "running", days: 0, limit: 200 }, { enabled: open })).data?.items ?? []
+  const titleOf = (run: SessionRun) => items.find((item) => item.id === run.workItemId || item.sessionId === run.id)?.title
+  const sorted = [...list].sort((a, b) => byTime(dueAt(a), dueAt(b)))
+  return (
+    <DetailSheet
+      open={open} onClose={onClose} title={task.title}
+      badges={<><Badge variant="secondary">等待中</Badge><Badge variant="outline">派来的活 · {list.length} 个在等</Badge></>}
+      meta={dots(task.id, `${staffName(task.ownerId)}负责`, "挂起等待的不占名额，到点或等到回复就继续各自的 session")}
+      footer={<Button nativeButton={false} render={<a href={href("work", { task: task.id, status: "running" })} />}>去派活页看全部<ArrowRightIcon data-icon="inline-end" /></Button>}
+    >
+      <ItemGroup className="gap-2">
+        {sorted.map((run) => (
+          <Item key={run.id} variant="outline" size="sm" render={<a href={href("sessions", { id: run.id })} />}>
+            <ItemContent className="min-w-0">
+              <ItemTitle className="line-clamp-1">
+                <span className="font-mono text-muted-foreground">{run.id}</span>
+                {run.workItemId && ` · ${run.workItemId}`}
+                {titleOf(run) && ` · ${titleOf(run)}`}
+              </ItemTitle>
+              <ItemDescription className="line-clamp-none">
+                在等：{run.waiting?.what ?? "—"}
+                <br />
+                继续：{isoShortTime(dueAt(run))} 到点{run.waiting?.trigger.kind === "time_or_event" ? "，或等到回复先继续" : run.waiting?.trigger.kind === "event" ? `（最晚），或等到「${run.waiting.trigger.event}」先继续` : ""}
+              </ItemDescription>
+            </ItemContent>
+          </Item>
+        ))}
+      </ItemGroup>
     </DetailSheet>
   )
 }

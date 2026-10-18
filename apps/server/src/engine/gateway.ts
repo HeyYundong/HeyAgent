@@ -23,6 +23,7 @@ import {
   runBeforeToolHooks,
   type ToolCallContext,
 } from "./hooks.js"
+import { isCheckpointToolHidden } from "./prompt.js"
 import { appendEvent } from "./records.js"
 import { runtime } from "./runtime.js"
 import { maskSecretFields, redactSecrets } from "./secrets.js"
@@ -126,6 +127,9 @@ export class ToolGateway {
     const { db } = this.ctx
     const taken = new Set<string>()
     for (const def of this.ctx.snapshot.tools) {
+      // 任务没写检查点（清单是空的）：不给 agent「勾检查点」，免得它去调、被拒以后还在总结里写「清单为空」。
+      // 快照的 tools 不改（规则页、任务页照样显示它是自带的）
+      if (isCheckpointToolHidden(this.ctx.snapshot, def.id)) continue
       if (def.id === BROWSER_TOOL_ID && def.source === "builtin") {
         await this.buildBrowser(taken)
         continue

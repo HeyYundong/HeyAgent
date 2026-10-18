@@ -13,6 +13,7 @@ import {
   type PlanSecret,
   type PlanTool,
   type PlanWarning,
+  WORK_DISPATCH_TOOL_ID,
 } from "@heyagent/shared"
 import { cronText, isValidCron } from "@heyagent/shared"
 
@@ -310,6 +311,9 @@ export function organizePlan(input: ImportPlan, ctx: OrganizeContext): ImportPla
     return true
   })
 
+  // ---------- 派活（第二期，开发说明 1.4）：谁派给谁、派活方要有「派活」工具、参数和名额、被派活的不用定时 ----------
+  organizeDispatch(plan, catalog, toolKeys, warn)
+
   // ---------- 引用：去掉的项从所有引用里拿掉 ----------
   const skillKeys = new Set(plan.skills.map((skill) => skill.key))
   const sharedMemoryKeys = new Set(plan.memories.filter((memory) => memory.target.kind === "shared").map((memory) => memory.key))
@@ -341,6 +345,75 @@ export function organizePlan(input: ImportPlan, ctx: OrganizeContext): ImportPla
     : []
   plan.warnings = [...secretWarning, ...plan.warnings.filter((warning) => warning.kind !== "secret"), ...notes].slice(0, 50)
   return plan
+}
+
+/**
+ * 派活的六条（开发说明 1.4）：
+ * ① fromKeys 只留方案里有的、不是自己的任务（include 没勾的在导入时再过滤，人在向导里可能改勾选）；
+ * ② 派活方的 toolKeys 里没有「派活」：方案里没有 refId = work.dispatch 的工具就补一项，再把它加进派活方；
+ * ③ 参数名去空白、去重，空的去掉，最多 20 个；④ 名额卡在 1～20；
+ * ⑤ 被派活又有定时的：去掉定时（按定时跑出来的运行没有参数，不知道该办哪件），写一条提醒；
+ * ⑥ 被派活、但没有任务派活给它：照样导入（人可以在派活页手动派），写一条提醒
+ */
+function organizeDispatch(plan: ImportPlan, catalog: ImportCatalog, toolKeys: Set<string>, warn: (title: string, text: string) => void) {
+  const taskKeys = new Set(plan.tasks.map((task) => task.key))
+  /** 派活方 key → 它派给的任务标题 */
+  const senders = new Map<string, string[]>()
+  for (const task of plan.tasks) {
+    if (!task.dispatch) continue
+    const name = task.title.slice(0, 40)
+    const fromKeys = [...new Set(task.dispatch.fromKeys)]
+    const kept = fromKeys.filter((key) => key !== task.key && taskKeys.has(key))
+    const lost = fromKeys.filter((key) => !kept.includes(key))
+    if (lost.length) warn(`「${name}」的派活方对不上`, `派活方 ${lost.join("、")} 方案里没有（或者写的是它自己），去掉了。`)
+    const seen = new Set<string>()
+    const params = task.dispatch.params
+      .flatMap((param) => {
+        const paramName = param.name.trim().slice(0, 40)
+        if (!paramName || seen.has(paramName)) return []
+        seen.add(paramName)
+        return [{ name: paramName, description: (param.description ?? "").trim().slice(0, 200), required: Boolean(param.required), dedupe: Boolean(param.dedupe) }]
+      })
+      .slice(0, 20)
+    const clamp = (value: unknown, min: number, max: number, fallback: number) => Math.min(max, Math.max(min, Number.isFinite(Number(value)) ? Math.round(Number(value)) : fallback))
+    const maxRunning = clamp(task.dispatch.maxRunning, 1, 20, 1) || 1
+    // 自动重试（人在向导里改的）：次数 0～5、间隔 1～1440 分钟；没写的不加
+    const { retries, retryDelayMinutes } = task.dispatch
+    task.dispatch = {
+      params,
+      maxRunning,
+      ...(retries !== undefined && retries !== null ? { retries: clamp(retries, 0, 5, 0) } : {}),
+      ...(retryDelayMinutes !== undefined && retryDelayMinutes !== null ? { retryDelayMinutes: clamp(retryDelayMinutes, 1, 1440, 10) } : {}),
+      fromKeys: kept,
+    }
+    if (task.schedule) {
+      warn(`「${name}」会被派活，不用定时`, `原来的定时「${task.schedule.text || task.schedule.cron}」已去掉：按定时跑出来的运行没有参数，不知道该办哪件。要的话在向导里加回来。`)
+      task.schedule = null
+    }
+    if (!kept.length) warn(`还没有任务派活给「${name}」`, "它能被派活，但方案里没有任务派活给它。照样导入，可以在派活页手动派，或者导入后在任务设置的「谁能派活给它」里加。")
+    for (const key of kept) senders.set(key, [...(senders.get(key) ?? []), task.title])
+  }
+  if (!senders.size) return
+  let tool = plan.tools.find((each) => each.kind === "builtin" && each.refId === WORK_DISPATCH_TOOL_ID)
+  if (!tool) {
+    const used = new Set([...plan.tasks, ...plan.skills, ...plan.memories, ...plan.rules, ...plan.tools].map((each) => each.key))
+    let n = plan.tools.length + 1
+    while (used.has(`x${n}`)) n++
+    const def = catalog.builtins.find((each) => each.id === WORK_DISPATCH_TOOL_ID)
+    const targets = [...new Set([...senders.values()].flat())]
+    tool = {
+      key: `x${n}`,
+      include: true,
+      kind: "builtin",
+      name: def?.name ?? "派活",
+      summary: (def?.summary ?? "把要办的事一件一张派给别的任务").slice(0, 300),
+      refId: WORK_DISPATCH_TOOL_ID,
+      why: `把事派给${targets.map((title) => `「${title.slice(0, 40)}」`).join("")}`.slice(0, 300),
+    }
+    plan.tools.push(tool)
+    toolKeys.add(tool.key)
+  }
+  for (const task of plan.tasks) if (senders.has(task.key) && !task.toolKeys.includes(tool.key)) task.toolKeys.push(tool.key)
 }
 
 /** 每个解压出来的文件都要有着落：某一项的来源、被合并、做成附件，或者在「没用上的文件」里。模型漏掉的按目录收拢补上（AI 已经提到的目录不再补） */

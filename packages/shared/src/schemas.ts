@@ -347,6 +347,9 @@ export const taskSchema = z.object({
     .object({
       params: z.array(z.object({ name: z.string(), description: z.string(), required: z.boolean(), dedupe: z.boolean() })),
       maxRunning: z.number().int(),
+      /** 第二期：没办成自动重试几次、隔多久（分钟）；不写 = 不重试 / 默认间隔（同 taskDispatchSchema） */
+      retries: z.number().int().optional(),
+      retryDelayMinutes: z.number().int().optional(),
     })
     .optional(),
   /** 派活：谁能派活给这个任务（任务 id） */

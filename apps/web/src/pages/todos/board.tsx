@@ -1,6 +1,7 @@
+// 派活第二期：同一个任务被派来、在「等待中」的运行有 2 个及以上时，shared 的 boardCards 收成一张（kind = group），点开右侧 GroupSheet；列头数字按运行数算。
 // 看板：五列横排，列宽固定，放不下就横向滚动，可以按住鼠标左右拖动或用方向键平移。每张卡是一个链接（?id=），点开右侧 Sheet。
 import type { ReactNode } from "react"
-import { BanknoteIcon, CircleCheckIcon, PauseIcon, ShieldQuestionIcon, UserPenIcon } from "lucide-react"
+import { BanknoteIcon, CircleCheckIcon, InboxIcon, PauseIcon, ShieldQuestionIcon, UserPenIcon } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Item, ItemContent, ItemDescription, ItemFooter, ItemHeader, ItemTitle } from "@/components/ui/item"
@@ -11,10 +12,13 @@ import { boardColumns, fmtShort, humanItemKindLabel, type BoardCard } from "@hey
 
 import { useStaffName } from "@/lib/data"
 
-import { isoShortTime, triggerHeadline, waitText } from "./sheets"
+import { dueAt, isoShortTime, triggerHeadline, waitText } from "./sheets"
 import { useDragScroll } from "./use-drag-scroll"
 
 export type Card = BoardCard & { note?: string } // note：卡住它的事处理完（或手动继续）后，写「谁做了什么」（M1 接通写操作后由后端给）
+
+/** 列头数字按运行数算：收起的卡片算它里面的运行数 */
+const weight = (card: Card) => (card.kind === "group" ? card.runs.length : 1)
 
 const LANE = "flex w-64 shrink-0 grow flex-col gap-2" // 列宽固定；宽屏放得下时撑满，放不下不压缩
 
@@ -31,7 +35,7 @@ export function Board({ cards, userId }: { cards: Card[]; userId: string }) {
             return (
               <section key={column.id} aria-label={column.name} className={LANE}>
                 <header className="flex flex-col gap-0.5 border-b pb-2">
-                  <h2 className="flex items-center gap-2 font-heading text-sm font-medium">{column.name}<Badge variant={column.id === "needs_human" && laneCards.length > 0 ? "default" : "secondary"}>{laneCards.length}</Badge></h2>
+                  <h2 className="flex items-center gap-2 font-heading text-sm font-medium">{column.name}<Badge variant={column.id === "needs_human" && laneCards.length > 0 ? "default" : "secondary"}>{laneCards.reduce((sum, card) => sum + weight(card), 0)}</Badge></h2>
                   <p className="text-xs text-muted-foreground">{column.hint}</p>
                 </header>
                 {laneCards.length === 0 && <p className="border border-dashed p-4 text-center text-xs text-muted-foreground">现在没有</p>}
@@ -80,6 +84,18 @@ function CardLink({ card, userId }: { card: Card; userId: string }) {
     return (
       <Shell id={card.id} title={todo.title} head={head} foot={<span>{who(todo.createdById)}加的</span>}>
         {todo.trigger.kind === "cron" ? <Line label="下次：">{isoShortTime(todo.trigger.next)}</Line> : <Line label="什么时候：">{triggerHeadline(todo.trigger, todo.createdAt)}</Line>}
+      </Shell>
+    )
+  }
+  if (card.kind === "group") {
+    const { task, runs } = card
+    const earliest = (times: string[]) => times.reduce((min, at) => (Date.parse(at) < Date.parse(min) ? at : min))
+    const since = earliest(runs.map((run) => run.waiting?.since ?? run.startedAt))
+    const due = earliest(runs.map(dueAt))
+    return (
+      <Shell id={card.id} title={task.title} head={<span className="text-muted-foreground">{task.id} · {who(task.ownerId)}负责</span>}>
+        <Line icon={<InboxIcon className="size-3" />}>派来的活 · {runs.length} 个在等</Line>
+        <Line icon={<PauseIcon className="size-3" />}><span className="text-muted-foreground">最早 {fmtShort(since)} 起等 · 最近一个 {fmtShort(due)} 到点</span></Line>
       </Shell>
     )
   }

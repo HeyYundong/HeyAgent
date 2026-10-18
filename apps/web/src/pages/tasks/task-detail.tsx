@@ -25,6 +25,7 @@ import { compileOf, ruleSelectable } from "@/pages/rules/compile"
 
 import { CheckpointGrid, RunStatusBadge, StepList, WaitingAlert, checkpointSummary, money, tokens, type TasksState } from "./parts"
 import { CancelRunDialog, isActive, ResumeButton, RunWithFilesDialog, TaskAttachments, useStartRun } from "./run-actions"
+import { retryText } from "./dispatch-fields"
 import { TaskDialog } from "./task-dialog"
 import { TaskMemorySection } from "./task-memory"
 
@@ -301,7 +302,7 @@ function DispatchSection({ task }: { task: TaskDef }) {
         </p>
         <p className="text-muted-foreground">
           参数：{dispatch.params.map((p) => `${p.name}（${[p.required ? "必填" : "可选", p.dedupe && "去重"].filter(Boolean).join("，")}）`).join("、") || "没有"} · 同时最多 {dispatch.maxRunning} 个在跑 ·
-          谁能派活给它：{task.dispatchFrom.length ? task.dispatchFrom.map((id) => `「${title(id)}」`).join("、") : "只能人派"}
+          谁能派活给它：{task.dispatchFrom.length ? task.dispatchFrom.map((id) => `「${title(id)}」`).join("、") : "只能人派"} · {retryText(dispatch)}
         </p>
       </div>
     </DetailSection>

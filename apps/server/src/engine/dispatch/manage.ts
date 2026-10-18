@@ -20,6 +20,7 @@ import { cancelSessionInTx } from "../control.js"
 import type { Tx } from "../queue.js"
 import { writeAudit } from "../records.js"
 import { createItemsInTx, itemKey, loadTarget, normalizeParams, notifyDayLimitOnce, type DispatchTarget } from "./dispatch.js"
+import { sendWorkDoneInTx } from "./notify.js"
 import { appendLog } from "./settle.js"
 import { sendPumpInTx } from "./signal.js"
 
@@ -118,7 +119,7 @@ export async function updateWorkParams(db: Db, actor: WorkActor, input: z.infer<
   })
 }
 
-/** 重办：办完、没办成、不办了的单再排一次队（attempts 在开运行时 +1；result 留着直到新的运行结束） */
+/** 重办：办完、没办成、不办了的单再排一次队（attempts 在开运行时 +1；result 留着直到新的运行结束）。自动重试的次数清零，又有完整的 N 次 */
 export async function redoWorkItem(db: Db, actor: WorkActor, input: { id: string }): Promise<WorkItem> {
   return db.transaction(async (tx) => {
     const { item } = await lockItem(tx, actor, input.id)
@@ -126,7 +127,16 @@ export async function redoWorkItem(db: Db, actor: WorkActor, input: { id: string
     const now = new Date()
     const [row] = await tx
       .update(t.workItems)
-      .set({ status: "queued", error: null, finishedAt: null, updatedAt: now, log: appendLog({ at: now.toISOString(), kind: "redo", byId: actor.id }) })
+      .set({
+        status: "queued",
+        error: null,
+        failKind: null,
+        notBefore: null,
+        autoRetries: 0,
+        finishedAt: null,
+        updatedAt: now,
+        log: appendLog({ at: now.toISOString(), kind: "redo", byId: actor.id }),
+      })
       .where(eq(t.workItems.id, item.id))
       .returning()
     await writeAudit(tx, { actorId: actor.id, action: "work.redo", targetTable: "work_items", targetId: item.id, detail: { from: item.status } })
@@ -135,7 +145,7 @@ export async function redoWorkItem(db: Db, actor: WorkActor, input: { id: string
   })
 }
 
-/** 不办了：排队的直接结束；在办的先取消正在跑的运行，单记「不办了」（不会被结束回写改成没办成）。已经结束的报错 */
+/** 不办了：排队的（包括等自动重试的）直接结束；在办的先取消正在跑的运行，单记「不办了」（不会被结束回写改成没办成）。已经结束的报错。叫醒等结果的派活方 */
 export async function cancelWorkItem(db: Db, actor: WorkActor, input: { id: string; reason?: string }): Promise<WorkItem> {
   return db.transaction(async (tx) => {
     const { item } = await lockItem(tx, actor, input.id)
@@ -144,7 +154,15 @@ export async function cancelWorkItem(db: Db, actor: WorkActor, input: { id: stri
     const now = new Date()
     const [row] = await tx
       .update(t.workItems)
-      .set({ status: "cancelled", error: reason, finishedAt: now, updatedAt: now, log: appendLog({ at: now.toISOString(), kind: "cancelled", byId: actor.id, ...(input.reason ? { note: input.reason } : {}) }) })
+      .set({
+        status: "cancelled",
+        error: reason,
+        failKind: null,
+        notBefore: null,
+        finishedAt: now,
+        updatedAt: now,
+        log: appendLog({ at: now.toISOString(), kind: "cancelled", byId: actor.id, ...(input.reason ? { note: input.reason } : {}) }),
+      })
       .where(eq(t.workItems.id, item.id))
       .returning()
     if (item.status === "running" && item.sessionId) {
@@ -154,6 +172,7 @@ export async function cancelWorkItem(db: Db, actor: WorkActor, input: { id: stri
         await cancelSessionInTx(db, tx, { sessionId: item.sessionId, actorId: actor.id, actorName: actor.name, reason: `在派活单 ${item.id} 上点了不办了${input.reason ? `：${input.reason}` : ""}` })
       await sendPumpInTx(db, tx, item.taskId)
     }
+    await sendWorkDoneInTx(db, tx, item.id)
     await writeAudit(tx, { actorId: actor.id, action: "work.cancel", targetTable: "work_items", targetId: item.id, detail: { from: item.status, reason: input.reason } })
     return one(tx, row!)
   })

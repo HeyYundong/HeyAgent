@@ -6,6 +6,8 @@ import {
   COMPARE_TOOL_ID,
   GALLERY_TOOL_ID,
   WORK_DISPATCH_TOOL_ID,
+  WORK_LIST_TOOL_ID,
+  WORK_REPORT_TOOL_ID,
   cronSessionId,
   fmtDate,
   fmtDateTime,
@@ -178,11 +180,14 @@ export async function buildSnapshot(
     })
   )
 
-  // 选了技能却没选「读取技能」、带了附件却没选「读附件」，agent 就只看得到目录读不到内容：这两个跟着自动带上
+  // 选了技能却没选「读取技能」、带了附件却没选「读附件」，agent 就只看得到目录读不到内容：这两个跟着自动带上。
+  // 派活第二期：选了「派活」自动带上「查派过的活」；被派来的运行自动带上「报结果」（这两个不能单独选）
   const publishedSkills = skills.filter((skill) => skill.status === "published")
   const implied: BuiltinToolId[] = []
   if (publishedSkills.length) implied.push("skill.load")
   if (attachments.length) implied.push("file.read")
+  if (tools.some((tool) => tool.id === WORK_DISPATCH_TOOL_ID)) implied.push(WORK_LIST_TOOL_ID)
+  if (extra.dispatch) implied.push(WORK_REPORT_TOOL_ID)
   for (const id of implied) {
     if (!tools.some((each) => each.id === id))
       tools.push(builtinSnapshotTool(id))
@@ -288,7 +293,11 @@ export function firstUserMessage(snapshot: SessionSnapshot): string {
     lines.push(
       `这次运行带了 ${snapshot.attachments.length} 个附件，清单见系统提示，用 file.read 读取。`
     )
-  lines.push("请按系统提示里的目标、步骤和检查点开始工作。")
+  lines.push(
+    snapshot.checkpoints.length
+      ? "请按系统提示里的目标、步骤和检查点开始工作。"
+      : "请按系统提示里的目标和步骤开始工作。"
+  )
   return lines.join("\n")
 }
 
