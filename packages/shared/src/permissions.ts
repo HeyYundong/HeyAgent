@@ -37,6 +37,10 @@ export interface ActionResources {
   "gallery.upload": Record<string, never>
   /** 改图库里一张图的文本和标签、删掉它：上传的人（API 密钥传的算密钥的创建人） */
   "gallery.manage": { createdById: string }
+  /** 比图：发起一次比对（所有人） */
+  "compare.create": Record<string, never>
+  /** 删除一条比对记录：发起的人（API 密钥发起的算密钥的创建人）；比对标准是配置，用 config.manage */
+  "compare.manage": { createdById: string }
 }
 
 export type Action = keyof ActionResources
@@ -47,6 +51,7 @@ export function can<A extends Action>(user: Actor, action: A, resource: ActionRe
     case "view":
     case "browser.login":
     case "gallery.upload":
+    case "compare.create":
       return true
     case "task.create":
     case "config.manage":
@@ -69,6 +74,8 @@ export function can<A extends Action>(user: Actor, action: A, resource: ActionRe
       return (resource as ActionResources["todo.manage"]).createdById === user.id
     case "gallery.manage":
       return (resource as ActionResources["gallery.manage"]).createdById === user.id
+    case "compare.manage":
+      return (resource as ActionResources["compare.manage"]).createdById === user.id
     default:
       // 新加的操作忘了写规则时，员工默认不能做
       return false

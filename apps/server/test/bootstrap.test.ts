@@ -23,6 +23,8 @@ const catalog = {
     context_length: 1_000_000,
     pricing: { prompt: "0.000001", completion: "0.000002" },
     supported_parameters: ["tools"],
+    // 只有最后一个能看图：比图的默认标准用它
+    ...(id === "qwen/qwen3.8-flash" ? { architecture: { input_modalities: ["text", "image"] } } : {}),
   })),
 }
 const embeddingCatalog = {
@@ -68,8 +70,8 @@ describe("空白环境初始化", () => {
   it("没有任何演示数据：任务、记忆、技能、规则、工具（内置的除外）、MCP、浏览器、平台、待办、session 都是空的", async () => {
     // 内置工具由 bootstrap 同步进 tools 表（M1 P3）：worker 还没起时工具页也能看到
     const tools = await db.select({ id: t.tools.id, source: t.tools.source }).from(t.tools)
-    // 另加 M2 的「浏览器」、图库的「图库」（选了它们就开放整组工具）
-    expect(tools.map((tool) => tool.id).sort()).toEqual([...BUILTIN_TOOLS.map((tool) => tool.id), "browser", "gallery"].sort())
+    // 另加 M2 的「浏览器」、图库的「图库」、比图的「比图」（选了它们就开放整组工具）
+    expect(tools.map((tool) => tool.id).sort()).toEqual([...BUILTIN_TOOLS.map((tool) => tool.id), "browser", "gallery", "compare"].sort())
     expect(tools.every((tool) => tool.source === "builtin")).toBe(true)
     const tables = { tasks: t.tasks, memories: t.memories, skills: t.skills, rules: t.rules, mcpServers: t.mcpServers, browserProfiles: t.browserProfiles, platforms: t.platforms, humanTodos: t.humanTodos, humanItems: t.humanItems, sessions: t.sessions }
     for (const [name, table] of Object.entries(tables)) {
@@ -96,6 +98,10 @@ describe("空白环境初始化", () => {
       { id: "openrouter/google/gemini-embedding-2", vision: true },
       { id: "openrouter/openai/text-embedding-3-small", vision: false },
     ])
+    // 比图的默认标准：模型是能看图的那个
+    expect(await db.select({ id: t.compareStandards.id, modelId: t.compareStandards.modelId, isDefault: t.compareStandards.isDefault }).from(t.compareStandards)).toEqual([
+      { id: "std-same-item", modelId: "openrouter/qwen/qwen3.8-flash", isDefault: true },
+    ])
     // 只调了公开的模型列表（聊天模型、embedding 模型各一次），没有带 key 调任何接口
     expect(calls).toEqual(["https://openrouter.ai/api/v1/models no-key", "https://openrouter.ai/api/v1/embeddings/models no-key"])
   })
@@ -106,7 +112,8 @@ describe("空白环境初始化", () => {
     expect(await db.select().from(t.users)).toHaveLength(0)
     expect(await db.select().from(t.modelProviders)).toHaveLength(1)
     expect(calls).toHaveLength(2)
-    expect(await db.select().from(t.tools)).toHaveLength(BUILTIN_TOOLS.length + 2)
+    expect(await db.select().from(t.tools)).toHaveLength(BUILTIN_TOOLS.length + 3)
+    expect(await db.select().from(t.compareStandards)).toHaveLength(1)
   })
 
   it("升级前建的环境（没有 embedding 模型、没设图库的模型）：刷新一次列表，设上默认 embedding 模型；主管清空以后不再改回来", async () => {

@@ -25,6 +25,9 @@ import {
   accountStatusSchema,
   GALLERY_EMBED_DIMENSIONS,
   checkpointKindSchema,
+  compareConfidenceSchema,
+  compareStatusSchema,
+  compareViaSchema,
   importStatusSchema,
   humanItemKindSchema,
   memoryEvidenceSchema,
@@ -127,6 +130,9 @@ export const modelRoleEnum = pgEnum("model_role", values(modelRoleSchema.options
  */
 export const secretScopeEnum = pgEnum("secret_scope", ["http_tool", "mcp_env", "model_provider", "browser_proxy", "browser_account", "import"])
 export const importStatusEnum = pgEnum("import_status", values(importStatusSchema.options))
+export const compareStatusEnum = pgEnum("compare_status", values(compareStatusSchema.options))
+export const compareConfidenceEnum = pgEnum("compare_confidence", values(compareConfidenceSchema.options))
+export const compareViaEnum = pgEnum("compare_via", values(compareViaSchema.options))
 
 // ---------- 新 id 用的序列（规则见 shared/ids.ts） ----------
 
@@ -139,6 +145,8 @@ export const todoNoSeq = pgSequence("todo_no_seq", { startWith: 1 })
 export const galleryNoSeq = pgSequence("gallery_no_seq", { startWith: 1 })
 export const apiKeyNoSeq = pgSequence("api_key_no_seq", { startWith: 1 })
 export const importNoSeq = pgSequence("import_no_seq", { startWith: 1 })
+export const compareNoSeq = pgSequence("compare_no_seq", { startWith: 1 })
+export const compareStandardNoSeq = pgSequence("compare_standard_no_seq", { startWith: 1 })
 
 // ---------- 账号（better-auth 的 4 张表，字段名照 better-auth 1.7.10 + admin 插件的要求） ----------
 
@@ -1147,4 +1155,73 @@ export const imports = pgTable(
     updatedAt: updatedAt(),
   },
   (t) => [index("imports_created_at_idx").on(t.createdAt.desc())]
+)
+
+// ---------- 比图（2026-10-18） ----------
+
+/** 比对标准：一段打分要求 + 合格线 + 模型。页面、agent、接口都按标准比，结果才前后一致。只有一个 is_default */
+export const compareStandards = pgTable(
+  "compare_standards",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    prompt: text("prompt").notNull(),
+    passScore: integer("pass_score").notNull(),
+    /** 不加外键：模型列表会随服务刷新变化 */
+    modelId: text("model_id").notNull(),
+    isDefault: boolean("is_default").notNull().default(false),
+    createdById: text("created_by_id").references(() => users.id, { onDelete: "set null" }),
+    position: position(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex("compare_standards_name_idx").on(t.name), uniqueIndex("compare_standards_default_idx").on(t.isDefault).where(sql`${t.isDefault}`)]
+)
+
+/**
+ * 一次比对：两张图（files 里 kind = compare 的文件）、当时用的要求 / 合格线 / 模型、模型给的结论。
+ * dedupe_key = 两张图的 sha256 + 要求 + 模型的哈希：COMPARE_REUSE_MINUTES 内重复比直接返回上次的结果
+ */
+export const comparisons = pgTable(
+  "comparisons",
+  {
+    id: text("id").primaryKey(),
+    title: text("title").notNull(),
+    status: compareStatusEnum("status").notNull(),
+    fileAId: text("file_a_id").notNull().references(() => files.id),
+    fileBId: text("file_b_id").notNull().references(() => files.id),
+    labelA: text("label_a").notNull().default(""),
+    labelB: text("label_b").notNull().default(""),
+    fromA: text("from_a").notNull().default(""),
+    fromB: text("from_b").notNull().default(""),
+    standardId: text("standard_id").references(() => compareStandards.id, { onDelete: "set null" }),
+    standardName: text("standard_name"),
+    prompt: text("prompt").notNull(),
+    passScore: integer("pass_score").notNull(),
+    modelId: text("model_id").notNull(),
+    dedupeKey: text("dedupe_key").notNull(),
+    score: integer("score"),
+    confidence: compareConfidenceEnum("confidence"),
+    verdict: text("verdict").notNull().default(""),
+    reasons: jsonb("reasons").$type<string[]>().notNull().default([]),
+    dimensions: jsonb("dimensions").$type<{ name: string; score: number; note: string }[]>().notNull().default([]),
+    differences: jsonb("differences").$type<string[]>().notNull().default([]),
+    /** 模型的原始回复（排查用，接口里叫 raw） */
+    raw: text("raw"),
+    error: text("error"),
+    costUsd: numeric("cost_usd", { precision: 12, scale: 6, mode: "number" }).notNull().default(0),
+    via: compareViaEnum("via").notNull(),
+    createdById: text("created_by_id").references(() => users.id, { onDelete: "set null" }),
+    sessionId: text("session_id").references(() => sessions.id, { onDelete: "set null" }),
+    taskId: text("task_id"),
+    apiKeyId: text("api_key_id").references(() => apiKeys.id, { onDelete: "set null" }),
+    createdAt: createdAt(),
+    finishedAt: ts("finished_at"),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("comparisons_created_idx").on(t.createdAt.desc(), t.id.desc()),
+    index("comparisons_dedupe_idx").on(t.dedupeKey, t.createdAt.desc()),
+    index("comparisons_session_idx").on(t.sessionId),
+  ]
 )

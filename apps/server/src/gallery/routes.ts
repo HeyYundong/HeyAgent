@@ -1,5 +1,5 @@
 // 图库的 HTTP 接口（字段说明见 docs/dev/api.md 第 12 节）。鉴权二选一：Authorization: Bearer <API 密钥>（外部系统），或者登录的 cookie（控制台页面）。
-// 带了 Bearer 就只认密钥，不对就 401，不会退回去认 cookie。
+// 带了 Bearer 就只认密钥，不对就 401，不会退回去认 cookie（lib/api-auth.ts）。下面读请求体的小函数比图的接口（compare/routes.ts）也用。
 //   POST   /api/gallery/images          传图：multipart（image 文件 + text JSON 字符串 + tags JSON 数组字符串）或 JSON { image, text, tags }
 //   POST   /api/gallery/search          检索：JSON，或 multipart（image 文件 + 其余字段，tags / anyTags / text / where 是 JSON 字符串）
 //   POST   /api/gallery/compare         比对：JSON { a, b, threshold }，或 multipart（a、b 两个文件 + threshold）
@@ -25,9 +25,9 @@ import { bodyLimit } from "hono/body-limit"
 import { z } from "zod"
 
 import type { Auth } from "../auth.js"
-import { verifyApiKey } from "../data/config/api-keys.js"
 import type { Db } from "../db/client.js"
 import { runtime } from "../engine/runtime.js"
+import { authenticateRequest, publicBaseUrl, zodMessage } from "../lib/api-auth.js"
 import { GalleryError } from "./errors.js"
 import type { LoadedImage } from "./images.js"
 import { handleGalleryMcp } from "./mcp.js"
@@ -52,43 +52,21 @@ interface Deps {
   auth: Auth
 }
 
-/** 认人：Bearer 密钥优先，没带才看 cookie。认不出返回 undefined；密钥不对时 reason 说清楚 */
+/** 认人（lib/api-auth.ts）：密钥调用 via 是 api / mcp，cookie 是 web */
 async function authenticate(deps: Deps, req: Request, via: GalleryVia): Promise<GalleryActor | { reason: string }> {
-  const bearer = req.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim()
-  if (bearer) {
-    const key = await verifyApiKey(deps.db, bearer)
-    if (!key) return { reason: "API 密钥不对，或者已经删了（在「设置」→「API 密钥」里看）" }
-    return { user: key.user, via, apiKeyId: key.apiKeyId }
-  }
-  const session = await deps.auth.api.getSession({ headers: req.headers })
-  if (!session?.user) return { reason: "请先登录，或者在 Authorization: Bearer 里带上 API 密钥" }
-  return { user: { id: session.user.id, isAdmin: session.user.role === "admin" }, via: "web" }
+  const caller = await authenticateRequest(deps, req)
+  if ("reason" in caller) return caller
+  return caller.apiKeyId ? { user: caller.user, via, apiKeyId: caller.apiKeyId } : { user: caller.user, via: "web" }
 }
 
-/** 返回给外部的图片地址要完整（经过反向代理时看 X-Forwarded-*） */
-export function publicBaseUrl(req: Request) {
-  const url = new URL(req.url)
-  const proto = req.headers.get("x-forwarded-proto")?.split(",")[0]?.trim() || url.protocol.replace(/:$/, "")
-  const host = req.headers.get("x-forwarded-host")?.split(",")[0]?.trim() || req.headers.get("host") || url.host
-  return `${proto}://${host}`
-}
-
-/** zod 的错误变成一句话：「tags.0：标签不能是空的」 */
-function zodMessage(error: z.ZodError) {
-  return error.issues
-    .slice(0, 3)
-    .map((issue) => (issue.path.length ? `${issue.path.join(".")}：${issue.message}` : issue.message))
-    .join("；")
-}
-
-function parse<T extends z.ZodType>(schema: T, value: unknown): z.output<T> {
+export function parse<T extends z.ZodType>(schema: T, value: unknown): z.output<T> {
   const result = schema.safeParse(value)
   if (!result.success) throw new GalleryError("bad_request", zodMessage(result.error))
   return result.data
 }
 
 /** multipart 里的 JSON 字段（text 要是对象、tags 要是数组）：先按 JSON 解析，再交给 schema 校验 */
-function jsonField(form: FormData, name: string): unknown {
+export function jsonField(form: FormData, name: string): unknown {
   const value = form.get(name)
   if (value === null || value === "") return undefined
   if (typeof value !== "string") throw new GalleryError("bad_request", `${name} 要是 JSON 字符串，不是文件`)
@@ -99,12 +77,12 @@ function jsonField(form: FormData, name: string): unknown {
   }
 }
 
-function textField(form: FormData, name: string) {
+export function textField(form: FormData, name: string) {
   const value = form.get(name)
   return typeof value === "string" && value !== "" ? value : undefined
 }
 
-function numberField(form: FormData, name: string) {
+export function numberField(form: FormData, name: string) {
   const value = textField(form, name)
   if (value === undefined) return undefined
   const number = Number(value)
@@ -112,7 +90,7 @@ function numberField(form: FormData, name: string) {
   return number
 }
 
-async function fileField(form: FormData, ...names: string[]): Promise<LoadedImage | undefined> {
+export async function fileField(form: FormData, ...names: string[]): Promise<LoadedImage | undefined> {
   for (const name of names) {
     const value = form.get(name)
     if (value instanceof File) return { data: Buffer.from(await value.arrayBuffer()), name: value.name || "image" }
@@ -120,9 +98,9 @@ async function fileField(form: FormData, ...names: string[]): Promise<LoadedImag
   return undefined
 }
 
-const isMultipart = (c: Context) => (c.req.header("content-type") ?? "").toLowerCase().startsWith("multipart/form-data")
+export const isMultipart = (c: Context) => (c.req.header("content-type") ?? "").toLowerCase().startsWith("multipart/form-data")
 
-async function readJson(c: Context): Promise<unknown> {
+export async function readJson(c: Context): Promise<unknown> {
   try {
     return await c.req.json()
   } catch {
@@ -130,7 +108,7 @@ async function readJson(c: Context): Promise<unknown> {
   }
 }
 
-async function readForm(c: Context) {
+export async function readForm(c: Context) {
   try {
     return await c.req.formData()
   } catch {
@@ -138,14 +116,14 @@ async function readForm(c: Context) {
   }
 }
 
-function fail(c: Context, error: unknown) {
+export function fail(c: Context, error: unknown) {
   if (error instanceof GalleryError) return c.json({ error: error.message }, error.status)
   console.error("[gallery]", error)
   return c.json({ error: "服务器出错了，请稍后再试" }, 500)
 }
 
 /** 两张图 + base64 的 JSON 也放得下 */
-const bigBody = () =>
+export const bigBody = () =>
   bodyLimit({
     maxSize: runtime.uploadMaxBytes * 3 + 1024 * 1024,
     onError: (c) => c.json({ error: `内容太大，图片最多 ${Math.round(runtime.uploadMaxBytes / 1024 / 1024)} MB` }, 413),

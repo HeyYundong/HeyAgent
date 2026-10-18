@@ -4,6 +4,7 @@
 import { jsonSchema, tool, type ToolSet } from "ai"
 import {
   BROWSER_TOOL_ID,
+  COMPARE_TOOL_ID,
   GALLERY_TOOL_ID,
   builtinToolInputs,
   type Risk,
@@ -15,6 +16,7 @@ import { z } from "zod"
 import { BrowserTools } from "../browser/tools.js"
 import type { Db } from "../db/client.js"
 import { saveFile } from "../files/service.js"
+import { compareToolEntries } from "../compare/tools.js"
 import { galleryToolEntries } from "../gallery/tools.js"
 import {
   runAfterToolHooks,
@@ -131,6 +133,12 @@ export class ToolGateway {
       // 「图库」展开成一组：检索、比对、看一张、传图、改文本和标签（gallery/tools.ts）
       if (def.id === GALLERY_TOOL_ID && def.source === "builtin") {
         for (const entry of galleryToolEntries(this.ctx))
+          this.entries.push({ ...entry, name: safeName(entry.id, taken) })
+        continue
+      }
+      // 「比图」展开成一组：比两张图、看一条比对、比对记录、比对标准（compare/tools.ts）
+      if (def.id === COMPARE_TOOL_ID && def.source === "builtin") {
+        for (const entry of compareToolEntries(this.ctx))
           this.entries.push({ ...entry, name: safeName(entry.id, taken) })
         continue
       }

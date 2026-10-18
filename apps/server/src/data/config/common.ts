@@ -41,7 +41,7 @@ export async function audit(tx: DbOrTx, actorId: string | null, action: string, 
 
 // ---------- 编号 ----------
 
-type SeqName = "task_no_seq" | "memory_no_seq" | "skill_no_seq" | "rule_no_seq" | "human_item_no_seq" | "todo_no_seq" | "gallery_no_seq" | "api_key_no_seq" | "import_no_seq"
+type SeqName = "task_no_seq" | "memory_no_seq" | "skill_no_seq" | "rule_no_seq" | "human_item_no_seq" | "todo_no_seq" | "gallery_no_seq" | "api_key_no_seq" | "import_no_seq" | "compare_no_seq" | "compare_standard_no_seq"
 
 export async function nextNo(tx: DbOrTx, seq: SeqName): Promise<number> {
   const result = await tx.execute<{ n: string }>(sql`select nextval(${seq}) as n`)

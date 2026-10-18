@@ -3,6 +3,7 @@
 import {
   ALWAYS_ON_BUILTIN_TOOLS,
   BROWSER_TOOL_ID,
+  COMPARE_TOOL_ID,
   GALLERY_TOOL_ID,
   builtinToolInputs,
   type BuiltinToolId,
@@ -156,6 +157,30 @@ export function gallerySnapshotTool(): SnapshotTool {
   }
 }
 
+/**
+ * 「比图」：任务选了它，工具网关就开放整组比图工具（compare.images / get / list / standards，见 compare/tools.ts）。
+ * 和「图库」一样本身不能直接调用。agent 不能删比对记录。
+ */
+export const COMPARE_TOOL_DEF = {
+  id: COMPARE_TOOL_ID,
+  name: "比图",
+  summary: "两张图交给视觉模型，按比对标准逐项打分、写出差异，判断是不是达到合格线（例如是不是同款）",
+  description:
+    "开放整组比图工具：比两张图（网址、图库的图、这次运行的截图或附件；等比完返回分数、是否达标、把握度、结论、理由、差异）、按 id 看一条比对、比对记录（默认只列这次运行的）、比对标准。每次比对都存档，页面上能看。",
+  risk: "write" as Risk,
+}
+
+export function compareSnapshotTool(): SnapshotTool {
+  return {
+    id: COMPARE_TOOL_DEF.id,
+    name: COMPARE_TOOL_DEF.name,
+    summary: COMPARE_TOOL_DEF.summary,
+    description: COMPARE_TOOL_DEF.description,
+    source: "builtin",
+    risk: COMPARE_TOOL_DEF.risk,
+  }
+}
+
 export const builtinDef = (id: string) =>
   BUILTIN_TOOLS.find((tool) => tool.id === id)
 export const isBuiltinTool = (id: string): id is BuiltinToolId =>
@@ -185,7 +210,7 @@ export function builtinSnapshotTool(id: BuiltinToolId): SnapshotTool {
 
 /** 启动时把内置工具同步进 tools 表：有就更新，没有就插入；代码里已经没有的内置工具删掉 */
 export async function syncBuiltinTools(db: DbLike) {
-  const all: { id: string; name: string; summary: string; description: string; risk: Risk }[] = [...BUILTIN_TOOLS, BROWSER_TOOL_DEF, GALLERY_TOOL_DEF]
+  const all: { id: string; name: string; summary: string; description: string; risk: Risk }[] = [...BUILTIN_TOOLS, BROWSER_TOOL_DEF, GALLERY_TOOL_DEF, COMPARE_TOOL_DEF]
   for (const [position, def] of all.entries()) {
     const values = {
       id: def.id,

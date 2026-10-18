@@ -3,6 +3,7 @@ import { and, asc, count, eq, inArray } from "drizzle-orm"
 import {
   ALWAYS_ON_BUILTIN_TOOLS,
   BROWSER_TOOL_ID,
+  COMPARE_TOOL_ID,
   GALLERY_TOOL_ID,
   cronSessionId,
   fmtDate,
@@ -21,6 +22,7 @@ import { QUEUES, runJobOptions, sendInTx, type Tx } from "./queue.js"
 import { appendEvent, appendMessage, writeAudit } from "./records.js"
 import {
   browserSnapshotTool,
+  compareSnapshotTool,
   gallerySnapshotTool,
   builtinSnapshotTool,
   isBuiltinTool,
@@ -116,6 +118,7 @@ export async function buildSnapshot(
     if (tool.source === "builtin") {
       if (tool.id === BROWSER_TOOL_ID) tools.push(browserSnapshotTool())
       else if (tool.id === GALLERY_TOOL_ID) tools.push(gallerySnapshotTool())
+      else if (tool.id === COMPARE_TOOL_ID) tools.push(compareSnapshotTool())
       else if (isBuiltinTool(tool.id)) tools.push(builtinSnapshotTool(tool.id))
       continue
     }

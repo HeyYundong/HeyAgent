@@ -4,6 +4,8 @@ import { and, eq, isNotNull } from "drizzle-orm"
 
 import { startControlServer, type ControlServer } from "../browser/control.js"
 import { BrowserManager, setBrowserManager } from "../browser/manager.js"
+import { recoverRunningComparisons, runComparison } from "../compare/run.js"
+import { ensureDefaultStandard } from "../compare/service.js"
 import { runImportRead } from "../imports/reader.js"
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
@@ -70,6 +72,7 @@ export async function startEngineWorker(
   await ensureQueues(boss)
   registerBoss(db, boss)
   await syncBuiltinTools(db)
+  await ensureDefaultStandard(db).catch((error) => console.warn("[worker] 没建好默认的比对标准", error))
 
   // 浏览器管理：登记 worker、开内部控制接口（远程画面、打开 Chrome）
   let browser: BrowserManager | undefined
@@ -171,6 +174,26 @@ export async function startEngineWorker(
       }
     }
   )
+
+  // 比图：一次比对。worker 要退出时比到一半的抛错，让 pg-boss 交给下一个 worker 重比
+  await boss.work<{ comparisonId: string }>(
+    QUEUES.compareRun,
+    { ...polling, localConcurrency: 4 },
+    async ([job]) => {
+      if (!job) return
+      const controller = new AbortController()
+      controllers.add(controller)
+      try {
+        return await runComparison(db, job.data.comparisonId, {
+          signal: AbortSignal.any([controller.signal, job.signal]),
+        })
+      } finally {
+        controllers.delete(controller)
+      }
+    }
+  )
+  const comparisons = await recoverRunningComparisons(db, (name, data, options) => boss.send(name, data, options))
+  if (comparisons) log(`有 ${comparisons} 条比对中的比图，已排队继续`)
 
   // 兜底：还标着「执行中」的 session 都排一次（同一个 session 只会排一个；被杀掉的 worker 手里那个，心跳过期后也会被重试）
   const running = await db

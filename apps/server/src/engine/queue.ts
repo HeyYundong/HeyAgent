@@ -29,6 +29,8 @@ export const QUEUES = {
   todoCron: "todo.cron",
   /** 导入：读包（解压、挪密钥、读包 agent、整理方案）；singletonKey = 导入 id */
   importRead: "import.read",
+  /** 比图：一次比对（两张图交给视觉模型）；singletonKey = 比对 id */
+  compareRun: "compare.run",
 } as const
 
 export const SCHEDULE_TZ = "Asia/Shanghai"
@@ -71,6 +73,20 @@ export function importReadJobOptions(importId: string): SendOptions {
   }
 }
 
+/**
+ * compare.run 的任务参数：一次比对正常十几秒，最多 5 分钟；要心跳（worker 被杀掉后交给活着的 worker 重比）；
+ * 模型出错由 compare/run.ts 自己重试，只有进程崩溃才走 pg-boss 的重试，给两次
+ */
+export function compareRunJobOptions(comparisonId: string): SendOptions {
+  return {
+    singletonKey: comparisonId,
+    heartbeatSeconds: Math.max(10, Math.round(num("HEYAGENT_RUN_HEARTBEAT_SECONDS", 30))),
+    expireInSeconds: 300,
+    retryLimit: 2,
+    retryDelay: 5,
+  }
+}
+
 const QUEUE_SETUP: { name: string; policy: "standard" | "stately" }[] = [
   { name: QUEUES.run, policy: "stately" },
   { name: QUEUES.wake, policy: "standard" },
@@ -80,6 +96,7 @@ const QUEUE_SETUP: { name: string; policy: "standard" | "stately" }[] = [
   { name: QUEUES.taskCron, policy: "standard" },
   { name: QUEUES.todoCron, policy: "standard" },
   { name: QUEUES.importRead, policy: "stately" },
+  { name: QUEUES.compareRun, policy: "stately" },
 ]
 
 export async function ensureQueues(boss: PgBoss) {

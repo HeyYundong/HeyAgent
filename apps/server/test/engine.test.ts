@@ -1430,6 +1430,7 @@ describe("其他接口", () => {
       "ask.human",
       "browser",
       "checkpoint.mark",
+      "compare",
       "file.read",
       "file.save",
       "gallery",

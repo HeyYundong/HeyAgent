@@ -166,6 +166,7 @@ ${ruleCatalog()}
   - HTTP 接口（kind = http）：方法、地址、请求头、请求体。agent 调用时要填的参数写 {参数名}，密钥一律写 {{名字}}（包里的密钥已经被系统换成 {{名字}} 了，照抄这个名字）。
   - MCP 服务器（kind = mcp）：stdio 写启动命令、http 写服务地址；环境变量（或请求头）的值里的密钥写 {{名字}}。
   - 内置工具（kind = builtin）：系统自带，清单见下面；原 agent 打开过网页、点过网页，就选「浏览器」（browser）。
+  - 包里有「用视觉模型比两张图、打分」的 MCP 或工具（例如 Lens MCP 的 compare_images）时，选内置的「比图」（kind = builtin，refId = compare），不要导入本机地址的那个 MCP，在 unused 里写「用平台自带的「比图」代替」。
   - 已有工具（kind = existing）：现有配置里已经有的接口、MCP 服务器，直接用，不要重复新建。
 - 只有函数定义（参数 schema）、没有接口地址的工具契约导入不了：平台自带的能替代的（勾检查点、挂起等待、问人是每个任务都自带的；打开网页用「浏览器」）不用建，在 unused 里写「用平台自带的某某代替」；其余的写进 warnings（kind = other，「需要先有接口才能用」）和 unused。
 - MCP 服务地址是 127.0.0.1 / localhost 的照样建（导入后人会改成真正的服务地址），在 warnings 里提醒。
