@@ -413,7 +413,7 @@ try {
     await sheet(page).getByRole("button", { name: "看画面" }).click()
     await waitScreen(page, { control: false })
     await dialog(page).getByText("只读", { exact: true }).waitFor({ timeout: 10_000 })
-    if (await addressBar(page).isEnabled()) throw new Error("只读时地址栏还能用")
+    if (await addressBar(page).isEditable()) throw new Error("只读时地址栏还能改")
     await page.screenshot({ path: join(SHOTS, "captcha-staff-readonly-dark.png") })
     await page.keyboard.press("Escape")
   })

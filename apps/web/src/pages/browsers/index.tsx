@@ -360,7 +360,7 @@ function LiveRow({ browser, taskTitle, openedBy, onWatch }: { browser: LiveBrows
 }
 
 /**
- * 一个账号：状态只是标记；「立刻登录」= agent 在后台用存的密码登录（没存密码时点不了），「人工登录」= 打开登录网址人自己登录。
+ * 一个账号：状态只是标记（跟在标题后面，和开着的 Chrome 一样）；「立刻登录」= agent 在后台用存的密码登录（没存密码时点不了），「人工登录」= 打开登录网址人自己登录。
  * admin 只有主管有：「⋯」里编辑账号（账号、密码、登录网址、并发上限）、改平台域名、删除账号
  */
 function SiteRow({ site, login, auto, admin }: {
@@ -377,7 +377,13 @@ function SiteRow({ site, login, auto, admin }: {
   return (
     <Item size="sm" variant="outline">
       <ItemContent className="min-w-0">
-        <ItemTitle>{platformName(site.platformId)} · {site.account}</ItemTitle>
+        <ItemTitle className="flex-wrap">
+          <span>{platformName(site.platformId)} · {site.account}</span>
+          <Badge variant={ok ? "outline" : "destructive"}>
+            {ok ? <CircleCheckIcon data-icon="inline-start" /> : <TriangleAlertIcon data-icon="inline-start" />}
+            {accountStatusLabel[site.status]}
+          </Badge>
+        </ItemTitle>
         <ItemDescription>
           上次登录 {fmtDateTime(site.lastLoginAt)} · {staffName(site.loggedInById)} · {site.hasPassword ? "已存密码" : "没存密码，只能人工登录"}
         </ItemDescription>
@@ -395,10 +401,6 @@ function SiteRow({ site, login, auto, admin }: {
         <ItemDescription className="truncate">{platform?.domains.length ? `域名：${platform.domains.join("、")}` : "平台没填域名（打开网址时不占这个账号的名额）"}</ItemDescription>
       </ItemContent>
       <ItemActions className="basis-full sm:basis-auto">
-        <Badge variant={ok ? "outline" : "destructive"}>
-          {ok ? <CircleCheckIcon data-icon="inline-start" /> : <TriangleAlertIcon data-icon="inline-start" />}
-          {accountStatusLabel[site.status]}
-        </Badge>
         <Button size="sm" variant="outline" disabled={!site.hasPassword || auto.pending} onClick={auto.onClick}>
           {auto.pending ? <Spinner data-icon="inline-start" /> : <KeyRoundIcon data-icon="inline-start" />}
           {auto.pending ? "正在登录…" : "立刻登录"}

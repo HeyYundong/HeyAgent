@@ -1,11 +1,11 @@
 // 远程画面（自定义组件，登记在 docs/ui-rules.md 第 8 节）：看、操作服务器上的 Chrome。
 // 组件库没有「远程桌面 / 画面」类组件，这里用 canvas 画 JPEG 帧，外面全部用 registry 组件组合：
-// 工具栏 Button + Input、标签页 Tabs、状态 Badge、网页弹框 AlertDialog、加载 Spinner、关闭后 Empty；agent 的虚拟光标见 agent-cursor.tsx。
+// 工具栏 Button + InputGroup（地址栏，连接状态放在它右端）、标签页 Tabs、网页弹框 AlertDialog、加载 Spinner、关闭后 Empty；agent 的虚拟光标见 agent-cursor.tsx。
 // - 坐标按 meta.width/height（页面视口的 CSS 像素）换算；
 // - 键盘和输入法：焦点放在一个看不见的 textarea 上，组好的中文和粘贴的文字发 { t: "text" }，其余按键发 key 消息；
-// - 没有操作权限（meta.canControl = false）时只读：不发任何输入，工具栏和标签页都禁用。
+// - 没有操作权限（meta.canControl = false）时只读：不发任何输入，按钮和标签页都禁用，地址栏只读（还能选中复制）。
 import * as React from "react"
-import { ArrowLeftIcon, ArrowRightIcon, EyeIcon, MonitorOffIcon, RotateCwIcon, XIcon } from "lucide-react"
+import { ArrowLeftIcon, ArrowRightIcon, EyeIcon, MonitorOffIcon, MousePointerClickIcon, RotateCwIcon, UnplugIcon, XIcon } from "lucide-react"
 
 import {
   AlertDialog,
@@ -17,10 +17,10 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
 import { Input } from "@/components/ui/input"
+import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from "@/components/ui/input-group"
 import { Spinner } from "@/components/ui/spinner"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
@@ -74,13 +74,15 @@ type View = ReturnType<typeof useRemoteView>
 
 const STATUS_TEXT: Record<RemoteViewState["status"], string> = { connecting: "连接中", open: "已连接", reconnecting: "重连中", closed: "已断开" }
 
-function StatusBadge({ view, canControl }: { view: View; canControl: boolean }) {
+/** 连接状态：图标 + 文字，放在地址栏右端 */
+function StatusText({ view, canControl }: { view: View; canControl: boolean }) {
   if (view.status === "open" && view.meta && !view.meta.canControl)
-    return <Badge variant="outline"><EyeIcon data-icon="inline-start" />只读</Badge>
+    return <InputGroupText><EyeIcon />只读</InputGroupText>
   if (view.status === "connecting" || view.status === "reconnecting")
-    return <Badge variant="secondary"><Spinner data-icon="inline-start" />{STATUS_TEXT[view.status]}</Badge>
-  if (view.status === "closed") return <Badge variant="destructive">已断开</Badge>
-  return <Badge variant="outline">{canControl ? "可以操作" : STATUS_TEXT[view.status]}</Badge>
+    return <InputGroupText><Spinner />{STATUS_TEXT[view.status]}</InputGroupText>
+  if (view.status === "closed")
+    return <InputGroupText><span className="flex items-center gap-2 text-destructive"><UnplugIcon />已断开</span></InputGroupText>
+  return <InputGroupText>{canControl && <MousePointerClickIcon />}{canControl ? "可以操作" : STATUS_TEXT[view.status]}</InputGroupText>
 }
 
 /** 后退 / 前进 / 刷新 + 地址栏 + 连接状态 */
@@ -93,6 +95,7 @@ function Toolbar({ view, canControl }: { view: View; canControl: boolean }) {
 
   function go(event: React.FormEvent) {
     event.preventDefault()
+    if (!canControl) return
     const next = normalizeAddress(draft)
     if (next) view.send({ t: "nav", action: "goto", url: next })
     setEditing(false)
@@ -115,25 +118,29 @@ function Toolbar({ view, canControl }: { view: View; canControl: boolean }) {
         </Tooltip>
       ))}
       <form onSubmit={go} className="min-w-0 flex-1">
-        <Input
-          aria-label="地址栏"
-          className="font-mono"
-          spellCheck={false}
-          value={draft}
-          disabled={!canControl}
-          onFocus={() => setEditing(true)}
-          onBlur={() => setEditing(false)}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.stopPropagation()
-              setDraft(url)
-              event.currentTarget.blur()
-            }
-          }}
-        />
+        <InputGroup>
+          <InputGroupInput
+            aria-label="地址栏"
+            className="font-mono"
+            spellCheck={false}
+            value={draft}
+            readOnly={!canControl}
+            onFocus={() => setEditing(canControl)}
+            onBlur={() => setEditing(false)}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.stopPropagation()
+                setDraft(url)
+                event.currentTarget.blur()
+              }
+            }}
+          />
+          <InputGroupAddon align="inline-end">
+            <StatusText view={view} canControl={canControl} />
+          </InputGroupAddon>
+        </InputGroup>
       </form>
-      <StatusBadge view={view} canControl={canControl} />
     </div>
   )
 }
