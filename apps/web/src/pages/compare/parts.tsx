@@ -1,4 +1,4 @@
-// 比图页的小零件：列表和详情共用的状态徽章、「谁发起的」、花费。
+// 比物页的小零件：列表和详情共用的状态徽章、「谁发起的」、花费。
 import { useQuery } from "@tanstack/react-query"
 import { CircleCheckIcon } from "lucide-react"
 import type { Comparison } from "@heyagent/shared"

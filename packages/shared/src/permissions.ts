@@ -37,7 +37,7 @@ export interface ActionResources {
   "gallery.upload": Record<string, never>
   /** 改图库里一张图的文本和标签、删掉它：上传的人（API 密钥传的算密钥的创建人） */
   "gallery.manage": { createdById: string }
-  /** 比图：发起一次比对（所有人） */
+  /** 比物：发起一次比对（所有人） */
   "compare.create": Record<string, never>
   /** 删除一条比对记录：发起的人（API 密钥发起的算密钥的创建人）；比对标准是配置，用 config.manage */
   "compare.manage": { createdById: string }

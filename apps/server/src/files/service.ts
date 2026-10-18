@@ -13,7 +13,7 @@ import { LocalDiskStorage, sha256Hex, type FileStorage } from "./storage.js"
 
 /**
  * gallery / gallery_thumb：图库的原图和缩略图（归 gallery_images 管，删图时一起删）；
- * compare：比图的两张图（归 comparisons 管，删记录时没人再用就一起删）；
+ * compare：比物的两张图（归 comparisons 管，删记录时没人再用就一起删）；
  * import：要导入的 zip 包（归 imports 管，放弃导入时一起删；里面可能有明文密钥，只有主管能下载）
  */
 export type FileKind =

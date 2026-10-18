@@ -178,7 +178,7 @@ export async function startEngineWorker(
     }
   )
 
-  // 比图：一次比对。worker 要退出时比到一半的抛错，让 pg-boss 交给下一个 worker 重比
+  // 比物：一次比对。worker 要退出时比到一半的抛错，让 pg-boss 交给下一个 worker 重比
   await boss.work<{ comparisonId: string }>(
     QUEUES.compareRun,
     { ...polling, localConcurrency: 4 },
@@ -205,7 +205,7 @@ export async function startEngineWorker(
   await boss.schedule(QUEUES.workSweep, "* * * * *", {}, { tz: SCHEDULE_TZ })
 
   const comparisons = await recoverRunningComparisons(db, (name, data, options) => boss.send(name, data, options))
-  if (comparisons) log(`有 ${comparisons} 条比对中的比图，已排队继续`)
+  if (comparisons) log(`有 ${comparisons} 条比对中的比物，已排队继续`)
 
   // 兜底：还标着「执行中」的 session 都排一次（同一个 session 只会排一个；被杀掉的 worker 手里那个，心跳过期后也会被重试）
   const running = await db

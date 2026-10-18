@@ -41,8 +41,8 @@ export async function insertWorkFixtures(db: Db): Promise<{ patrolId: string; wo
     },
     {
       id: workerId,
-      title: "处理一张搜品单（图搜、比图、询盘、建源商品并回填）",
-      goal: "这张搜品单找到同款（比图 ≥ 95 分）、建好源商品并关联、回填后台；找不到同款就在单上写清原因",
+      title: "处理一张搜品单（图搜、比物、询盘、建源商品并回填）",
+      goal: "这张搜品单找到同款（比物 ≥ 95 分）、建好源商品并关联、回填后台；找不到同款就在单上写清原因",
       steps: [],
       ownerId: admin.id,
       enabled: true,
@@ -84,7 +84,7 @@ export async function insertWorkFixtures(db: Db): Promise<{ patrolId: string; wo
     { no: "PSS-1016-0029", status: "running", ago: 145, from: 1, runs: [{ status: "needs_human", start: 120 }] },
     { no: "PSS-1016-0027", status: "running", ago: 146, from: 1, runs: [{ status: "verifying", start: 135 }] },
     { no: "PSS-1016-0021", status: "running", ago: 390, from: 0, runs: [{ status: "waiting", start: 380, wait: "等义乌恒达日用品厂回复单件包装尺寸和毛重" }] },
-    { no: "PSS-1016-0018", status: "done", ago: 392, from: 0, runs: [{ status: "done", start: 370, end: 330 }], result: "已建源商品 SPU-2210（3 个 SKU）并关联，回填 noteId 88123。同款：义乌恒达日用品厂，比图 97 分。" },
+    { no: "PSS-1016-0018", status: "done", ago: 392, from: 0, runs: [{ status: "done", start: 370, end: 330 }], result: "已建源商品 SPU-2210（3 个 SKU）并关联，回填 noteId 88123。同款：义乌恒达日用品厂，比物 97 分。" },
     { no: "PSS-1016-0012", status: "done", ago: 395, from: 0, redo: true, runs: [{ status: "failed", start: 394, end: 391, error: "BestDealer 后台登录失效" }, { status: "done", start: 300, end: 260 }], result: "已建源商品 SPU-2207（2 个 SKU）并关联，回填 noteId 88101。" },
     { no: "PSS-1016-0009", status: "failed", ago: 396, from: 0, runs: [{ status: "failed", start: 260, end: 230, error: "没找到同款：14 个候选最高 71 分" }], error: "没找到同款：14 个候选最高 71 分" },
     { no: "PSS-1015-0045", status: "cancelled", ago: 1500, from: 0, error: "客户撤回了搜品单" },
@@ -131,7 +131,7 @@ export async function insertWorkFixtures(db: Db): Promise<{ patrolId: string; wo
         parentSessionId: fromSessionId,
       })
       await db.insert(t.checkpoints).values(
-        ["读到单子和原商品", "以图搜图找到候选", "比图找到同款", "询盘拿到包装数据", "建源商品并关联", "回填后台"].map((title, position) => ({
+        ["读到单子和原商品", "以图搜图找到候选", "比物找到同款", "询盘拿到包装数据", "建源商品并关联", "回填后台"].map((title, position) => ({
           sessionId,
           position,
           title,

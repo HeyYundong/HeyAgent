@@ -1,4 +1,4 @@
-// 比图页的演示数据（开发、测试用，不进正式环境）：两个比对标准，五条比对（达标、没达标、证据不足、比对中、没比成）。
+// 比物页的演示数据（开发、测试用，不进正式环境）：两个比对标准，五条比对（达标、没达标、证据不足、比对中、没比成）。
 // 图是用 SVG 画的杯子，sharp 转成 PNG 存成文件（kind = compare）。
 import { and, asc, eq, sql } from "drizzle-orm"
 import sharp from "sharp"

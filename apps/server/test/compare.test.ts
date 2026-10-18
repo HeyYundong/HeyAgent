@@ -1,4 +1,4 @@
-// 比图：新比对（文件 id、图库 id、base64、网址、multipart）、标准 / 自己写的要求 / 默认标准、换模型、复用、再比一次、
+// 比物：新比对（文件 id、图库 id、base64、网址、multipart）、标准 / 自己写的要求 / 默认标准、换模型、复用、再比一次、
 // worker 比对（正常、证据不足、格式不对重试、模型一直出错）、权限、比对标准的增删改和设默认、启动时建默认标准、HTTP 接口、MCP、agent 工具组。
 // 真实的测试库 + 进程内 worker + 假模型（按 model id 找剧本），不花钱、不连外网。
 import { createServer, type Server } from "node:http"
@@ -160,7 +160,7 @@ describe("默认标准", () => {
 })
 
 describe("新比对和 worker", () => {
-  it("文件 id + 默认标准：先返回比对中，worker 比完写分数、达标、花费；两张图都给了模型，页面传的图直接改成比图的文件", async () => {
+  it("文件 id + 默认标准：先返回比对中，worker 比完写分数、达标、花费；两张图都给了模型，页面传的图直接改成比物的文件", async () => {
     behavior = () => answer(good)
     const calls = script.prompts.length
     const fileA = await uploadFile(wang, imgA, "原图.png")
@@ -168,7 +168,7 @@ describe("新比对和 worker", () => {
     const created = await create(wang, { imageA: { fileId: fileA }, imageB: { fileId: fileB }, labelB: "候选 1 号" })
     expect(created).toMatchObject({ status: "running", reused: false, standardId: "std-same-item", standardName: "同款判断", passScore: 95, modelId: VISION, title: "同款判断 · 候选 1 号" })
     expect(created.imageA).toMatchObject({ from: "上传", label: "原图.png" })
-    // 页面刚传的文件直接改成比图的，不再复制一份
+    // 页面刚传的文件直接改成比物的，不再复制一份
     expect(created.imageA.fileId).toBe(fileA)
     const row = await finished(created.id)
     expect(row).toMatchObject({ status: "done", score: 97, confidence: "high", via: "web", createdById: "u-wang", error: null })
@@ -210,7 +210,7 @@ describe("新比对和 worker", () => {
     await ctx.db.update(t.comparisons).set({ createdAt: new Date(Date.now() - 11 * 60_000) }).where(inArray(t.comparisons.id, [first.id, redo.data.id]))
     const fresh = await create(wang, { imageA: { fileId: fileA }, imageB: { fileId: fileB } })
     expect(fresh.reused).toBe(false)
-    // 已经有同样内容的比图文件：自己刚传的那份删掉，不留下没人用的；别人的（li 用 wang 传的）不删
+    // 已经有同样内容的比物文件：自己刚传的那份删掉，不留下没人用的；别人的（li 用 wang 传的）不删
     expect(fresh.imageA.fileId).not.toBe(fileA)
     expect(await ctx.db.select().from(t.files).where(inArray(t.files.id, [fileA, fileB]))).toHaveLength(0)
     await finished(fresh.id)
@@ -219,7 +219,7 @@ describe("新比对和 worker", () => {
   it("证据不足：模型写 -1 → 总分 null、没有达标与否、把握度 low、结论以「证据不足：」开头", async () => {
     behavior = () => answer({ ...good, score: -1, confidence: "medium", verdict: "第二张看不清。" })
     const created = await create(wang, { imageA: { base64: imgA.toString("base64") }, imageB: { base64: `data:image/png;base64,${imgC.toString("base64")}` }, prompt: "看两张图的颜色是不是一样" })
-    expect(created).toMatchObject({ standardId: null, standardName: null, passScore: 95, title: expect.stringMatching(/^比图 cmp-\d+$/) })
+    expect(created).toMatchObject({ standardId: null, standardName: null, passScore: 95, title: expect.stringMatching(/^比物 cmp-\d+$/) })
     expect(created.imageA).toMatchObject({ from: "上传", label: "" })
     const row = await finished(created.id)
     expect(row).toMatchObject({ status: "done", score: null, confidence: "low", verdict: "证据不足：第二张看不清。" })
@@ -294,7 +294,7 @@ describe("新比对和 worker", () => {
     const created = await create(wang, { imageA: { imageId: uploaded.image.id }, imageB: { url } })
     expect(created.imageA).toMatchObject({ from: `图库 ${uploaded.image.id}`, label: "图库里的.png" })
     expect(created.imageB).toMatchObject({ from: `网址 ${url}`, label: url })
-    // 两张是同一个内容：只存一份比图的文件
+    // 两张是同一个内容：只存一份比物的文件
     expect(created.imageA.fileId).toBe(created.imageB.fileId)
     await finished(created.id)
     const missing = await mutate(ctx.app, "compare.create", wang, { imageA: { imageId: "img-99999" }, imageB: { base64: imgA.toString("base64") } })
@@ -393,7 +393,7 @@ describe("HTTP 接口和 MCP", () => {
   const bearer = () => ({ authorization: `Bearer ${key}` })
 
   beforeAll(async () => {
-    key = (await mutate(ctx.app, "apiKeys.create", lin, { name: "比图客户端" })).data.key
+    key = (await mutate(ctx.app, "apiKeys.create", lin, { name: "比物客户端" })).data.key
   })
 
   async function post(path: string, body: unknown, headers: Record<string, string> = bearer()) {
@@ -524,7 +524,7 @@ describe("HTTP 接口和 MCP", () => {
   })
 })
 
-describe("agent 的「比图」工具组", () => {
+describe("agent 的「比物」工具组", () => {
   let session: SessionRow
   let entries: ReturnType<typeof compareToolEntries>
   const tool = (id: string) => entries.find((entry) => entry.id === id)!
@@ -559,8 +559,8 @@ describe("agent 的「比图」工具组", () => {
     expect(JSON.parse((await tool("compare.standards").execute({})).output).standards[0]).toMatchObject({ id: "std-same-item", isDefault: true })
   })
 
-  it("任务选了「比图」：快照和工具清单里有这一组（内置工具同步进了 tools 表）", async () => {
+  it("任务选了「比物」：快照和工具清单里有这一组（内置工具同步进了 tools 表）", async () => {
     const [row] = await ctx.db.select().from(t.tools).where(eq(t.tools.id, "compare"))
-    expect(row).toMatchObject({ source: "builtin", name: "比图" })
+    expect(row).toMatchObject({ source: "builtin", name: "比物" })
   })
 })

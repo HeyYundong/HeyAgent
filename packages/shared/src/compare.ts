@@ -1,12 +1,12 @@
-// 比图（2026-10-18）：两张图交给视觉模型，按「比对标准」逐项打分、写出差异，判断是不是同款；每次比对都存档。
-// 替代原来本机的 Lens MCP。四种入口共用这一份：页面（tRPC compare.*）、agent（内置工具组「比图」）、HTTP 接口、MCP。
+// 比物（2026-10-18）：两张图交给视觉模型，按「比对标准」逐项打分、写出差异，判断是不是同款；每次比对都存档。
+// 替代原来本机的 Lens MCP。四种入口共用这一份：页面（tRPC compare.*）、agent（内置工具组「比物」）、HTTP 接口、MCP。
 // 设计稿：design/BRIEF-compare.md（本地）；开发说明：docs/dev/compare.md。
 import { z } from "zod"
 
 import { galleryImageRefSchema } from "./gallery.js"
 import { isoTime } from "./schemas.js"
 
-/** 内置工具组「比图」的 id：任务选了它，agent 就能比图、查比对、搜历史 */
+/** 内置工具组「比物」的 id：任务选了它，agent 就能比物、查比对、搜历史 */
 export const COMPARE_TOOL_ID = "compare"
 
 /** 同样的两张图 + 同样的要求 + 同一个模型，多久以内重复比直接返回上次的结果（不重复花钱） */
@@ -150,7 +150,7 @@ export const comparePageSchema = z.object({
 })
 export type ComparePage = z.infer<typeof comparePageSchema>
 
-/** 能比图的视觉模型（models 里 vision = true、能出文字的），价格是每百万 token 的美元 */
+/** 能比物的视觉模型（models 里 vision = true、能出文字的），价格是每百万 token 的美元 */
 export const compareModelSchema = z.object({
   id: z.string(),
   name: z.string(),

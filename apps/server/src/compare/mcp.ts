@@ -1,4 +1,4 @@
-// 比图的 MCP 服务（Streamable HTTP，无状态）：POST /api/compare/mcp，Authorization: Bearer <API 密钥>（登录的 cookie 也行）。
+// 比物的 MCP 服务（Streamable HTTP，无状态）：POST /api/compare/mcp，Authorization: Bearer <API 密钥>（登录的 cookie 也行）。
 // 工具名、参数名、返回字段都照原来本机的 Lens MCP（蛇形），原来调 Lens 的地方换个地址就能用；另外加了 list_compare_standards。
 import { createMcpHandler, McpServer, type CallToolResult } from "@modelcontextprotocol/server"
 import { compareStatusSchema, galleryImageRefSchema, type Comparison } from "@heyagent/shared"
@@ -21,7 +21,7 @@ import {
 const SERVER_INFO = { name: "heyagent-compare", version: "1.0.0" }
 
 const INSTRUCTIONS = [
-  "HeyAgent 的比图：两张图交给视觉模型，按「比对标准」（或这次自己写的要求）逐项打分、写出差异，判断达没达到合格线。每次比对都存档。",
+  "HeyAgent 的比物：两张图交给视觉模型，按「比对标准」（或这次自己写的要求）逐项打分、写出差异，判断达没达到合格线。每次比对都存档。",
   "图片可以写网址（http/https）、data: 开头的 base64、图库里的图片 id（img-…）或 HeyAgent 的文件 id（f-…）。",
   "compare_images 等比完再返回（最多约 90 秒，还没比完返回 status = running，之后用 get_comparison 查）；submit_image_comparison 立即返回 id。",
   "score 是 0～100（证据不足时为 null），passed = score 到没到合格线。同样的两张图 + 同样的要求 + 同一个模型，10 分钟内重复比直接返回上次的结果（reused = true）。",
@@ -127,7 +127,7 @@ export function buildCompareMcpServer(db: Db, actor: CompareActor, baseUrl: stri
   server.registerTool(
     "submit_image_comparison",
     {
-      title: "提交比图（不等结果）",
+      title: "提交比物（不等结果）",
       description: "和 compare_images 一样，但立即返回 id 和状态（running），之后用 get_comparison 查结果。",
       inputSchema: compareInput,
     },
@@ -168,7 +168,7 @@ export function buildCompareMcpServer(db: Db, actor: CompareActor, baseUrl: stri
   server.registerTool(
     "list_vision_models",
     {
-      title: "能比图的模型",
+      title: "能比物的模型",
       description: "能看图的模型，便宜的在前；价格是每百万 token 的美元。",
       inputSchema: z.object({}),
       annotations: { readOnlyHint: true },

@@ -29,7 +29,7 @@ export const QUEUES = {
   todoCron: "todo.cron",
   /** 导入：读包（解压、挪密钥、读包 agent、整理方案）；singletonKey = 导入 id */
   importRead: "import.read",
-  /** 比图：一次比对（两张图交给视觉模型）；singletonKey = 比对 id */
+  /** 比物：一次比对（两张图交给视觉模型）；singletonKey = 比对 id */
   compareRun: "compare.run",
   /** 派活：给一个被派任务领单（按名额开运行）；singletonKey = 任务 id，同一个任务同时最多一个在领、一个在排 */
   workPump: "work.pump",

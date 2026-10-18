@@ -1,4 +1,4 @@
-// 比图的比对本身（worker 进程，队列 compare.run）：两张图缩到长边 1024，和「比对要求」一起交给视觉模型，
+// 比物的比对本身（worker 进程，队列 compare.run）：两张图缩到长边 1024，和「比对要求」一起交给视觉模型，
 // 按扁平的结构化格式拿回总分、把握度、结论、理由、各项分、差异，写回记录。写入都带 status = running 条件：被删了、重复执行都不覆盖。
 import { NoObjectGeneratedError, type ModelMessage } from "ai"
 import { and, eq, lt } from "drizzle-orm"

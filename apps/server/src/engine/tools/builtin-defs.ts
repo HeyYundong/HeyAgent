@@ -166,15 +166,15 @@ export function gallerySnapshotTool(): SnapshotTool {
 }
 
 /**
- * 「比图」：任务选了它，工具网关就开放整组比图工具（compare.images / get / list / standards，见 compare/tools.ts）。
+ * 「比物」：任务选了它，工具网关就开放整组比物工具（compare.images / get / list / standards，见 compare/tools.ts）。
  * 和「图库」一样本身不能直接调用。agent 不能删比对记录。
  */
 export const COMPARE_TOOL_DEF = {
   id: COMPARE_TOOL_ID,
-  name: "比图",
+  name: "比物",
   summary: "两张图交给视觉模型，按比对标准逐项打分、写出差异，判断是不是达到合格线（例如是不是同款）",
   description:
-    "开放整组比图工具：比两张图（网址、图库的图、这次运行的截图或附件；等比完返回分数、是否达标、把握度、结论、理由、差异）、按 id 看一条比对、比对记录（默认只列这次运行的）、比对标准。每次比对都存档，页面上能看。",
+    "开放整组比物工具：比两张图（网址、图库的图、这次运行的截图或附件；等比完返回分数、是否达标、把握度、结论、理由、差异）、按 id 看一条比对、比对记录（默认只列这次运行的）、比对标准。每次比对都存档，页面上能看。",
   risk: "write" as Risk,
 }
 

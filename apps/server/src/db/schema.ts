@@ -1186,7 +1186,7 @@ export const imports = pgTable(
   (t) => [index("imports_created_at_idx").on(t.createdAt.desc())]
 )
 
-// ---------- 比图（2026-10-18） ----------
+// ---------- 比物（2026-10-18） ----------
 
 /** 比对标准：一段打分要求 + 合格线 + 模型。页面、agent、接口都按标准比，结果才前后一致。只有一个 is_default */
 export const compareStandards = pgTable(

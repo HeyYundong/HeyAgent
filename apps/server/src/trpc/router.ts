@@ -329,7 +329,7 @@ export const appRouter = router({
   /** API 密钥（只有主管）：外部系统调图库的 HTTP 接口和 MCP 用 */
   apiKeys: apiKeysRouter,
 
-  /** 比图：两张图交给视觉模型按标准逐项打分（图片先走 /api/files 上传；外部系统用 /api/compare/* 和 MCP） */
+  /** 比物：两张图交给视觉模型按标准逐项打分（图片先走 /api/files 上传；外部系统用 /api/compare/* 和 MCP） */
   compare: compareRouter,
   /** 派活：派活单的列表、详情、名额数字，人派一张、改参数、重办、不办了（agent 用内置工具 work.dispatch） */
   work: workRouter,

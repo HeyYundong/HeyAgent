@@ -3,7 +3,7 @@
 // 2. 写入全局设置的默认值；
 // 3. 环境变量里有 OpenRouter 的 key（OPENROUTER_API_KEY_FILE 指向的文件，或 OPENROUTER_API_KEY）、还没配过 OpenRouter 时：建 OpenRouter 服务（key 加密存）、刷新模型列表、设好三个默认模型。
 // 4. 把内置工具同步进 tools 表（worker 启动时也会同步一次）：worker 还没起时，空白环境的工具页也能看到它们。
-// 5. 比图：一个比对标准都没有时建初始的「同款判断」（模型 = 最便宜的视觉模型；还没有视觉模型就等接好模型服务以后再建）。
+// 5. 比物：一个比对标准都没有时建初始的「同款判断」（模型 = 最便宜的视觉模型；还没有视觉模型就等接好模型服务以后再建）。
 // 6. 图库的 embedding 模型还没设过、库里也还没有 embedding 模型（升级前建的环境）：刷新一次 OpenRouter 的模型列表（公开接口，不花钱），设成 BOOTSTRAP_EMBED_MODEL。
 // 不灌任何演示数据（任务、记忆、技能、规则、平台都由用户自己加）。
 import { and, count, eq } from "drizzle-orm"
@@ -59,7 +59,7 @@ async function setupOpenRouter(db: Db, options: BootstrapOptions): Promise<Boots
       }
     }
     options.log?.(`已接入 OpenRouter（key 已加密保存），模型列表已刷新`)
-    // 后台重试接上时，比图的默认标准也在这时建（启动时还没有视觉模型）
+    // 后台重试接上时，比物的默认标准也在这时建（启动时还没有视觉模型）
     await ensureDefaultStandard(db).catch(() => undefined)
     return "created"
   } catch (error) {
@@ -105,7 +105,7 @@ export async function bootstrap(db: Db, options: BootstrapOptions): Promise<Boot
   await ensureDefaultSettings(db)
   await syncBuiltinTools(db)
   const openrouter = await setupOpenRouter(db, options)
-  if (await ensureDefaultStandard(db).catch(() => false)) options.log?.("建好了比图的默认标准「同款判断」（可以在比图页改）")
+  if (await ensureDefaultStandard(db).catch(() => false)) options.log?.("建好了比物的默认标准「同款判断」（可以在比物页改）")
   await ensureEmbedDefault(db, options).catch((error) => options.log?.(`没设好图库的 embedding 模型：${error instanceof Error ? error.message : String(error)}`))
   const needed = await setupNeeded(db)
   if (needed) options.log?.("还没有任何账号：打开控制台，按提示设置管理员的邮箱和密码")

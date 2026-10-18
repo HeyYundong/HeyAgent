@@ -46,7 +46,7 @@ export const liveQueriesByTable: Record<string, string[]> = {
   // 图库：图的增删改（向量表不推，重算进度靠页面轮询 gallery.stats）
   gallery_images: ["gallery.list", "gallery.get", "gallery.stats", "gallery.tags"],
   api_keys: ["apiKeys.list"],
-  // 比图：比对记录（比对中 → 比完）、比对标准
+  // 比物：比对记录（比对中 → 比完）、比对标准
   comparisons: ["compare.list", "compare.get"],
   compare_standards: ["compare.standards"],
   // 导入：读包进度、方案、导入后的状态

@@ -1,14 +1,14 @@
-# 比图（开发说明，2026-10-18）
+# 比物（开发说明，2026-10-18）
 
-> 用户要的：在侧边栏「资源」组加一个模块，替代原来本机的 Lens MCP：两张图交给视觉模型，按「比对标准」逐项打分、写出差异，判断是不是同款；每次比对都存档。名字「比图」用户定的。
+> 用户要的：在侧边栏「资源」组加一个模块，替代原来本机的 Lens MCP：两张图交给视觉模型，按「比对标准」逐项打分、写出差异，判断是不是同款；每次比对都存档。名字「比物」用户定的。
 > 设计稿用户 2026-10-18 确认过：本地的 `design/BRIEF-compare.md`，原型在 `design/prototype/src/pages/compare/`（http://192.168.31.100:5173/#/compare?id=cmp-127），截图在 `design/shots/compare/`。这三处都在主目录 `/mnt/toshiba/Projects/HeyAgent/design/` 下（不进 git），只读。
-> 和图库的「比对」（`gallery.compare`，两张图的 embedding 余弦相似度，便宜、快、不解释）不是一回事：比图是视觉模型看图、按要求打分、说理由。两个都留着。
+> 和图库的「比对」（`gallery.compare`，两张图的 embedding 余弦相似度，便宜、快、不解释）不是一回事：比物是视觉模型看图、按要求打分、说理由。两个都留着。
 
 ## 0. 先读
 
 - `docs/dev/conventions.md`，特别是第 0 节（平台通用：代码里不写任何业务；「同款」这类要求写在标准的文字里，是数据）和第 6 节（子 agent 的规矩：不 commit、不 push、不切分支）。
 - 前端还要读 `docs/ui-rules.md`（只用 shadcn 预设的组件）。
-- 图库的写法（`docs/dev/gallery.md`、`apps/server/src/gallery/`）：HTTP 接口、API 密钥鉴权、MCP、agent 工具组、图片引用 `galleryImageRefSchema`、给模型的图 `modelInputImage`，比图全部照它。
+- 图库的写法（`docs/dev/gallery.md`、`apps/server/src/gallery/`）：HTTP 接口、API 密钥鉴权、MCP、agent 工具组、图片引用 `galleryImageRefSchema`、给模型的图 `modelInputImage`，比物全部照它。
 - **接口约定（监工已经写好，两个包都照它）**：`packages/shared/src/compare.ts`。真要改形状，先在汇报里说明为什么；只加可选字段可以自己加，汇报里列出来。
 - 骨架（监工已经写好）：
   - 表 `comparisons`、`compare_standards` 和迁移 `apps/server/drizzle/0016_compare.sql`（含实时推送的触发器）；序列 `compare_no_seq`、`compare_standard_no_seq`；`ids.ts` 的 `comparisonId`（`cmp-n`）、`compareStandardId`（`std-n`）；权限 `compare.create`（所有人）、`compare.manage`（发起的人或主管）；文件 `kind = "compare"`；
@@ -26,7 +26,7 @@
 | 图片 | 存成文件（`files`，`kind = compare`，和图库共用文件存储），给模型前统一缩到长边 1024（`modelInputImage`） |
 | 复用 | 同样的两张图 + 同样的要求 + 同一个模型，10 分钟（`COMPARE_REUSE_MINUTES`）内重复调用直接返回上次的结果（`reused = true`），不重复花钱 |
 | 证据不足 | 模型看不清、两张图不是一类东西时，总分写 null，把握度 low，结论写「证据不足：…」 |
-| 外部和 agent | HTTP 接口和 MCP（API 密钥，和图库一样），工具名照 Lens 的；agent 的内置工具组「比图」；导入时包里有 Lens MCP 的，建议改用内置「比图」 |
+| 外部和 agent | HTTP 接口和 MCP（API 密钥，和图库一样），工具名照 Lens 的；agent 的内置工具组「比物」；导入时包里有 Lens MCP 的，建议改用内置「比物」 |
 
 ## 2. 结构
 
@@ -34,7 +34,7 @@
 页面 pages/compare/ ──tRPC compare.*──┐
 HTTP /api/compare/*   ─────────────────┼──> compare/service.ts（建记录、复用、删除、标准）
 MCP  /api/compare/mcp ─────────────────┤          │ 同一个事务里发 pg-boss 任务 compare.run
-agent 内置工具组「比图」───────────────┘          ▼
+agent 内置工具组「比物」───────────────┘          ▼
                                   worker：compare/run.ts ──> resolveModel + callStructured（两张图 + 要求）
                                          写分数、理由、各项分、差异、花费，状态 done / failed
 ```
@@ -47,7 +47,7 @@ agent 内置工具组「比图」───────────────�
 
 - 输入 `compareCreateSchema`。两张图是图库的图片引用：`imageId`（图库的图，用原图文件）、`fileId`（已经上传的文件；页面先 `POST /api/files` 上传）、`url`（服务器去下载，照图库的做法：大小上限、超时、只收图片）、`base64`。用 `gallery/images.ts` 的 `loadImageRef`、`checkSize`；不是文件的（url、base64）存成 `files`（`kind = compare`，`saveFile` 本来就按内容去重）。读文件要检查权限（`canReadFile`，和图库一样）。
 - `fromA` / `fromB` 记来源，给人看：「上传」「图库 img-7」「网址 https://…」「运行 R-12 的截图」。`labelA` / `labelB` 不填时用文件名，网址就用网址。
-- 要求：`standard`（id 或名字，不分大小写）→ 用它的 prompt、passScore、modelId，记下 standardId、standardName；`prompt` → 这次自己写的要求，passScore 不填用默认标准的，standardId 为空；都不填 → 默认标准。`modelId` 填了就覆盖（必须是库里 `vision = true` 的 chat 模型，不是就报错说清楚）。`title` 不填：有标准用「标准名 · 第二张的标签」，否则「比图 cmp-n」。
+- 要求：`standard`（id 或名字，不分大小写）→ 用它的 prompt、passScore、modelId，记下 standardId、standardName；`prompt` → 这次自己写的要求，passScore 不填用默认标准的，standardId 为空；都不填 → 默认标准。`modelId` 填了就覆盖（必须是库里 `vision = true` 的 chat 模型，不是就报错说清楚）。`title` 不填：有标准用「标准名 · 第二张的标签」，否则「比物 cmp-n」。
 - 复用：`dedupeKey` = sha256（文件 A 的 sha、文件 B 的 sha、prompt、passScore、modelId）。10 分钟内有同样 key、状态是 running 或 done 的，直接返回它（`reused = true`），不建新记录。failed 的不复用。外部接口的 `idempotency_key` 也映射到这里：带了就把它并进 key（同一个 idempotency_key 不管多久都返回同一条，照 Lens 的意思）。
 - 建记录 `cmp-n`（序列 `compare_no_seq`），状态 running，在**同一个事务**里发 pg-boss 任务 `compare.run`（`sendInTx`，singletonKey = 比对 id）。记 `via`、`createdById`、`sessionId` / `taskId`（agent 调用时）、`apiKeyId`（接口调用时）。审计 `compare.create`。
 - 同步等结果：HTTP / MCP 的 `compare_images` 和 agent 工具要等比完再返回（最多约 90 秒，查库或监听都行；超时返回 running 的记录，让对方用 `get_comparison` 查）；`submit_image_comparison` 和页面立即返回。
@@ -84,12 +84,12 @@ agent 内置工具组「比图」───────────────�
   - 返回给 MCP 的结果：`score`（0～100 或 null）、`passed`、`confidence`、`verdict`、`reasons`、`dimensions`、`differences`、`id`、`status`、`url`（控制台里这条比对的链接 `#/compare?id=`）。字段名用蛇形（和 Lens 一致）。
 - 在 `app.ts` 注册（文件头的注释也补上）。
 
-### 3.5 agent 的内置工具组「比图」（`compare/tools.ts`）
+### 3.5 agent 的内置工具组「比物」（`compare/tools.ts`）
 
-- 照图库：`builtin-defs.ts` 加 `COMPARE_TOOL_DEF`（id `COMPARE_TOOL_ID` = `compare`，名字「比图」，一句话、说明、风险 low），进 `syncBuiltinTools` 的清单；engine 里按工具组展开的地方照 `gallery` 加上。
+- 照图库：`builtin-defs.ts` 加 `COMPARE_TOOL_DEF`（id `COMPARE_TOOL_ID` = `compare`，名字「比物」，一句话、说明、风险 low），进 `syncBuiltinTools` 的清单；engine 里按工具组展开的地方照 `gallery` 加上。
 - 工具：`compare_images`（等结果）、`get_comparison`、`list_comparisons`（默认只列这次运行的，`sessionId`）、`list_compare_standards`。图片参数除了网址、图库 id、文件 id，还能写**这次运行的截图或附件**（照图库工具怎么认运行里的文件）。记 `via = agent`、`sessionId`、`taskId`，`from` 写「运行 R-n 的截图」这类。
 - 返回给模型的文字要短：分数、是否达标、把握度、结论、理由、差异，不带图。
-- 导入：`imports/catalog.ts` 的内置工具清单会自动带上（`syncBuiltinTools` 的清单）；读包的系统提示里加一句通用的：包里有「用视觉模型比两张图」的 MCP 或工具时，建议用内置「比图」（`builtin`，refId `compare`），不要导入本机地址的 MCP。不写 Lens 这个名字以外的业务词。
+- 导入：`imports/catalog.ts` 的内置工具清单会自动带上（`syncBuiltinTools` 的清单）；读包的系统提示里加一句通用的：包里有「用视觉模型比两张图」的 MCP 或工具时，建议用内置「比物」（`builtin`，refId `compare`），不要导入本机地址的 MCP。不写 Lens 这个名字以外的业务词。
 
 ### 3.6 测试（vitest，真 PostgreSQL，假模型）
 
@@ -103,13 +103,13 @@ agent 内置工具组「比图」───────────────�
 
 ### 3.7 文档
 
-- `docs/dev/api.md` 加第 15 节「比图」：HTTP、MCP、tRPC、agent 工具、数据库（迁移 0016）。
+- `docs/dev/api.md` 加第 15 节「比物」：HTTP、MCP、tRPC、agent 工具、数据库（迁移 0016）。
 - 本文件最后加「实现记录」：取舍、上限、和本说明不一样的地方。
 
 ## 4. 前端（包 B）
 
 - 页面 `apps/web/src/pages/compare/`，**照原型做，样子要和原型一样**（原型代码在 `design/prototype/src/pages/compare/`：`index.tsx` 页面、`dialogs.tsx` 新比对和标准弹窗、`data.ts` 演示数据；截图在 `design/shots/compare/`），数据换成真接口。
-- 路由加 `compare`（`lib/router.ts` 的 PageId 和列表、`App.tsx` 的 PAGES），侧边栏 `NAV_RESOURCES` 在「图库」后面加 `{ id: "compare", title: "比图", icon: ScanEyeIcon }`。
+- 路由加 `compare`（`lib/router.ts` 的 PageId 和列表、`App.tsx` 的 PAGES），侧边栏 `NAV_RESOURCES` 在「图库」后面加 `{ id: "compare", title: "比物", icon: ScanEyeIcon }`。
 - 数据：`trpc.compare.list`（搜索、翻页）、`trpc.compare.get`、`trpc.compare.standards`、`trpc.compare.models`（实时推送已经接好：两张表变了相关查询会重新拉）；写操作用 `useAction`。
 - 列表：标题、编号、徽章（比对中 `Spinner` / 「97 分」达标带勾 / 「61 分」/ 证据不足 / 没比成）、来源（人、运行 R-…、接口）、时间。按 `docs/ui-rules.md` 第 4 节的状态徽章映射，不加新颜色。
 - 详情：两张图（点开看大图，复用 `components/files` 的查看弹窗或同样的写法）→ 结论（总分 / 100、把握度、合格线、一句话结论、理由）→ 各项分（`Progress`）和差异 → 比对要求（这次实际用的文字、标准名、模型、花费）。running 显示转圈；failed 用 `Alert` 写原因。「再比一次」，「⋯」：复制结论、删除（`AlertDialog` + `variant="destructive"`，只有能删的人看得到）。来源是运行的，点过去看那次运行。
@@ -117,7 +117,7 @@ agent 内置工具组「比图」───────────────�
 - 比对标准弹窗（新比对弹窗里「管理标准」打开）：列表（默认的带「默认」徽章、合格线、模型、id）、新建 / 修改（名称、打分要求、合格线、模型）、设为默认、删除（`AlertDialog`）。员工只能看（按钮不显示），提示「标准由主管维护」。表单用 React Hook Form + `Field`（照现有配置页的弹窗）。
 - 空状态：`Empty` +「新比对」。加载用 `Skeleton`。
 - 只用 shadcn 预设的组件；原型里用到的非 registry 写法（上传区：原生按钮 + 虚线框，和图库一样）在 `docs/ui-rules.md` 第 8 节登记一行。
-- `docs/guide.md` 加一节「比图」（给人看的用法：怎么新比对、标准是什么、agent 和外部系统怎么用）。
+- `docs/guide.md` 加一节「比物」（给人看的用法：怎么新比对、标准是什么、agent 和外部系统怎么用）。
 - 包 A 没做完之前，骨架里 create、again、delete、models、标准的增删改会返回「还没做好」：页面照常把错误 toast 出来；演示数据够你把列表、详情、标准列表做完；其余等监工合并以后一起联调。
 - 验证：lint、build（`tsc -b`）；浅色、暗色、窄屏截图看过（截图办法见监工给的说明）。
 
@@ -139,12 +139,12 @@ agent 内置工具组「比图」───────────────�
 ### 6.1 文件
 
 - `compare/service.ts`：全部业务逻辑（读、新比对、复用、再比一次、删除、视觉模型、标准的增删改和设默认、默认标准、等结果）；`run.ts`：worker 里的比对；`routes.ts`、`mcp.ts`、`tools.ts`：HTTP、MCP、agent 工具组，只做翻译；`defaults.ts`：默认标准的文字（演示数据也改成从这里取）；`errors.ts`：和图库同一个错误类（`loadImageRef` 抛的错能原样传出去）。
-- `lib/api-auth.ts`：从图库挪出来的 `authenticateRequest`、`publicBaseUrl`、`zodMessage`，图库和比图共用。图库 `routes.ts` 里读请求体的小函数（`parse`、`readJson`、`fileField`……）改成 export，比图的接口直接用。
-- 队列 `compare.run`（`engine/queue.ts`、`engine/worker-runtime.ts`），内置工具组「比图」（`builtin-defs.ts` 的 `COMPARE_TOOL_DEF`、`sessions.ts`、`gateway.ts`、`imports/catalog.ts`），读包提示加了一句（`imports/prompt.ts`），`bootstrap/index.ts` 建默认标准，`app.ts` 注册路由。
+- `lib/api-auth.ts`：从图库挪出来的 `authenticateRequest`、`publicBaseUrl`、`zodMessage`，图库和比物共用。图库 `routes.ts` 里读请求体的小函数（`parse`、`readJson`、`fileField`……）改成 export，比物的接口直接用。
+- 队列 `compare.run`（`engine/queue.ts`、`engine/worker-runtime.ts`），内置工具组「比物」（`builtin-defs.ts` 的 `COMPARE_TOOL_DEF`、`sessions.ts`、`gateway.ts`、`imports/catalog.ts`），读包提示加了一句（`imports/prompt.ts`），`bootstrap/index.ts` 建默认标准，`app.ts` 注册路由。
 
 ### 6.2 和说明不一样的地方
 
-- **图片都复制一份成比图自己的文件**（说明里图库的图「用原图文件」、已上传的文件直接用）。原因：`comparisons.file_a_id / file_b_id` 对 `files` 有外键（no action），直接引用图库的原图或任务附件的话，图库删图（`removeFiles`）、删任务（附件 cascade）会被外键挡住报错。复制一份以后，删比对只删比图自己的文件（`kind = compare`，且没有别的比对、图库、附件再用），互不影响。同样内容的比图文件只存一份（按 sha256 找已有的 `compare` 文件；`saveFile` 本身并不按内容去重）。代价：同一张图在磁盘上可能有两份（图库一份、比图一份）。按 sha256 找已有文件是在 `files` 上按 `kind + sha256` 查，没有索引，文件很多时会慢一点（没加迁移）。
+- **图片都复制一份成比物自己的文件**（说明里图库的图「用原图文件」、已上传的文件直接用）。原因：`comparisons.file_a_id / file_b_id` 对 `files` 有外键（no action），直接引用图库的原图或任务附件的话，图库删图（`removeFiles`）、删任务（附件 cascade）会被外键挡住报错。复制一份以后，删比对只删比物自己的文件（`kind = compare`，且没有别的比对、图库、附件再用），互不影响。同样内容的比物文件只存一份（按 sha256 找已有的 `compare` 文件；`saveFile` 本身并不按内容去重）。代价：同一张图在磁盘上可能有两份（图库一份、比物一份）。按 sha256 找已有文件是在 `files` 上按 `kind + sha256` 查，没有索引，文件很多时会慢一点（没加迁移）。
 - **默认标准不只在 `index.ts` 建**：写在 `bootstrap()` 里（`index.ts` 启动时调它，和 `syncBuiltinTools` 同一处），另外后台重试接上 OpenRouter 时、worker 启动时、`compare.standards` / 新比对时也检查一次（一个标准都没有时才建），这样「库里还没有视觉模型就先不建，等有了再建」不用等重启。
 - **合格线 `passScore` 对标准也能覆盖**（说明里只说自己写要求时用）；MCP 的 `pass_score` 照 Lens 也是覆盖。覆盖后复用的 key 跟着变。
 - **agent 工具的 id** 是 `compare.images`、`compare.get`、`compare.list`、`compare.standards`（照图库的 `gallery.search` 这种写法，模型看到的名字是把点换成下划线：`compare_images`、`compare_get`……），不是说明里的 `get_comparison`、`list_comparisons`、`list_compare_standards`。主工具 `compare_images` 和 Lens 同名；参数名照 MCP（蛇形）。MCP 的工具名完全照说明。
@@ -173,7 +173,7 @@ agent 内置工具组「比图」───────────────�
 
 ### 6.6 监工审核和真模型联调（2026-10-18）
 
-- 页面传的图：先 `POST /api/files` 得到 `kind = upload` 的文件。比对时如果是自己刚传、不属于任务和运行的，直接改成 `kind = compare`，不再复制；已经有同样内容的比图文件时，把刚传的那份删掉。原来每比一次就留下两个没人用的上传文件。
+- 页面传的图：先 `POST /api/files` 得到 `kind = upload` 的文件。比对时如果是自己刚传、不属于任务和运行的，直接改成 `kind = compare`，不再复制；已经有同样内容的比物文件时，把刚传的那份删掉。原来每比一次就留下两个没人用的上传文件。
 - 默认标准的模型：「最便宜的视觉模型」实测会选到 OpenRouter 的 `:free`（限流、常下线）或 `:batch`（批处理线路，聊天接口直接报错）。现在 `compare.models` 去掉 `:batch`；默认标准挑最便宜的、有标价的、不是 `:free`、不是预览版、不是 `~` 开头别名的视觉模型（2026-10-18 是 `qwen/qwen3.7-flash`，约 $0.0001 一次）。
 - 看了下面的实测，用户 2026-10-18 定：默认标准优先用 `google/gemini-3.1-flash-lite`（`DEFAULT_COMPARE_MODEL`，任何服务里名字以它结尾的都算）；库里没有它时才按上一条挑最便宜的。
 - 真模型（OpenRouter，同款判断标准）三组图：同一张图调色缩小加白边、杯子 vs 带盖黑杯子、羊 vs 杯子。三个模型都按格式返回、中文、「证据不足」判断正确：

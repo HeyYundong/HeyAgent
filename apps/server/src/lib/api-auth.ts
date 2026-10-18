@@ -1,4 +1,4 @@
-// 对外 HTTP 接口和 MCP 共用的鉴权、地址、报错（图库、比图都用）。
+// 对外 HTTP 接口和 MCP 共用的鉴权、地址、报错（图库、比物都用）。
 // 鉴权二选一：Authorization: Bearer <API 密钥>（外部系统），或者登录的 cookie（控制台页面）。带了 Bearer 就只认密钥，不对就 401，不会退回去认 cookie。
 import type { Actor } from "@heyagent/shared"
 import type { z } from "zod"

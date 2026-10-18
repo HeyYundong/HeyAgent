@@ -136,7 +136,7 @@ export class ToolGateway {
           this.entries.push({ ...entry, name: safeName(entry.id, taken) })
         continue
       }
-      // 「比图」展开成一组：比两张图、看一条比对、比对记录、比对标准（compare/tools.ts）
+      // 「比物」展开成一组：比两张图、看一条比对、比对记录、比对标准（compare/tools.ts）
       if (def.id === COMPARE_TOOL_ID && def.source === "builtin") {
         for (const entry of compareToolEntries(this.ctx))
           this.entries.push({ ...entry, name: safeName(entry.id, taken) })

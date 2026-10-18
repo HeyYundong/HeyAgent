@@ -1,4 +1,4 @@
-// 比图的 HTTP 接口（字段说明见 docs/dev/api.md 第 15 节）。鉴权和图库一样（lib/api-auth.ts）：Bearer API 密钥优先，没带看 cookie。
+// 比物的 HTTP 接口（字段说明见 docs/dev/api.md 第 15 节）。鉴权和图库一样（lib/api-auth.ts）：Bearer API 密钥优先，没带看 cookie。
 //   POST   /api/compare                新比对：JSON（CompareCreateInput + idempotencyKey），或 multipart（image_a、image_b 两个文件 + 其余字段）。
 //                                      默认等比完再返回（最多约 90 秒，还没比完返回 running 的记录）；?wait=false 立即返回
 //   GET    /api/compare?query=&status=&sessionId=&limit=&cursor=   比对记录，新的在前
@@ -6,7 +6,7 @@
 //   POST   /api/compare/:id/again      同样的两张图和要求再比一次（不复用），?wait=false 立即返回
 //   DELETE /api/compare/:id            删除（发起的人和主管）
 //   GET    /api/compare/standards      比对标准（默认的排第一）
-//   GET    /api/compare/models         能比图的视觉模型（便宜的在前）
+//   GET    /api/compare/models         能比物的视觉模型（便宜的在前）
 //   GET    /api/compare/files/:fileId  比对里的一张图（API 密钥也能下）
 //   POST   /api/compare/mcp            MCP（Streamable HTTP），见 mcp.ts
 import { compareCreateSchema, compareListInputSchema, compareStatusSchema, type CompareVia } from "@heyagent/shared"

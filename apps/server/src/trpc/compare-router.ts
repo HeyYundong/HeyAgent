@@ -1,5 +1,5 @@
-// 比图的 tRPC 接口（页面用）。图片先走 POST /api/files 上传拿到文件 id（或者用图库 id、网址），再调 compare.create。
-// 外部系统用 HTTP 接口 /api/compare/*（compare/routes.ts）和 MCP /api/compare/mcp；agent 用内置工具组「比图」。
+// 比物的 tRPC 接口（页面用）。图片先走 POST /api/files 上传拿到文件 id（或者用图库 id、网址），再调 compare.create。
+// 外部系统用 HTTP 接口 /api/compare/*（compare/routes.ts）和 MCP /api/compare/mcp；agent 用内置工具组「比物」。
 import { compareCreateSchema, compareListInputSchema, compareModelSchema, comparePageSchema, compareStandardInputSchema, compareStandardSchema, compareStandardUpdateSchema, comparisonSchema } from "@heyagent/shared"
 import { z } from "zod"
 
@@ -26,7 +26,7 @@ type AuthedContext = Context & { user: SessionUser }
 
 const actorOf = (ctx: AuthedContext): CompareActor => ({ user: ctx.user, via: "web" })
 
-/** 比图的错误换成 tRPC 的错误码（message 原样给页面看） */
+/** 比物的错误换成 tRPC 的错误码（message 原样给页面看） */
 async function translate<T>(action: () => Promise<T>): Promise<T> {
   try {
     return await action()
@@ -58,7 +58,7 @@ export const compareRouter = router({
     .mutation(({ ctx, input }) => translate(() => compareAgain(ctx.db, actorOf(ctx), input.id))),
   /** 删除记录：发起的人和主管 */
   delete: protectedProcedure.input(idInput).mutation(({ ctx, input }) => translate(() => deleteComparison(ctx.db, actorOf(ctx), input.id))),
-  /** 能比图的视觉模型（便宜的在前） */
+  /** 能比物的视觉模型（便宜的在前） */
   models: protectedProcedure.output(z.array(compareModelSchema)).query(({ ctx }) => listVisionModels(ctx.db)),
   /** 比对标准（默认的排第一） */
   standards: protectedProcedure.output(z.array(compareStandardSchema)).query(({ ctx }) => listStandards(ctx.db)),

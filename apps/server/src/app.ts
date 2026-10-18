@@ -1,4 +1,4 @@
-// HTTP 入口：/api/health、/api/setup（首次设置管理员）、/api/auth/*（better-auth）、/api/trpc/*（tRPC，含 SSE 订阅）、/api/gallery/*（图库的 HTTP 接口和 MCP）、/api/compare/*（比图的 HTTP 接口和 MCP）、/api/imports（上传要导入的 zip）。
+// HTTP 入口：/api/health、/api/setup（首次设置管理员）、/api/auth/*（better-auth）、/api/trpc/*（tRPC，含 SSE 订阅）、/api/gallery/*（图库的 HTTP 接口和 MCP）、/api/compare/*（比物的 HTTP 接口和 MCP）、/api/imports（上传要导入的 zip）。
 import { fetchRequestHandler } from "@trpc/server/adapters/fetch"
 import { sql } from "drizzle-orm"
 import { Hono } from "hono"

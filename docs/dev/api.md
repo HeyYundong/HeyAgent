@@ -20,7 +20,7 @@
 12. 任务记忆和运行总结
 13. 图库、API 密钥、embedding 模型（2026-10-17）
 14. 导入（2026-10-18）
-15. 比图（2026-10-18）
+15. 比物（2026-10-18）
 16. 派活（2026-10-18）
 
 ---
@@ -591,7 +591,7 @@ curl -s -X POST http://localhost:3100/api/events \
 | 浏览器 | `browser_profile.create` `browser_profile.update` `browser_profile.delete` `platform.create` `platform.delete` `browser_account.create` `browser_account.update` `browser_account.delete` |
 | 模型 | `model_provider.create` `model_provider.update` `model_provider.test` `model_provider.refresh` `model_provider.delete` `model_defaults.update` |
 | 图库（第 13 节） | `gallery.create` `gallery.update` `gallery.delete`（`detail.via` 是 web / api / mcp / agent；agent 传的 `actor_id` 为空，`detail.sessionId` 是哪次运行）`api_key.create` `api_key.delete` |
-| 比图（第 15 节） | `compare.create`（`detail.via`、`apiKeyId`、`sessionId`；agent 发起的 `actor_id` 为空）`compare.delete` `compare_standard.create`（启动时自动建的 `detail.by = "bootstrap"`，`actor_id` 为空）`compare_standard.update` `compare_standard.delete` `compare_standard.set_default` |
+| 比物（第 15 节） | `compare.create`（`detail.via`、`apiKeyId`、`sessionId`；agent 发起的 `actor_id` 为空）`compare.delete` `compare_standard.create`（启动时自动建的 `detail.by = "bootstrap"`，`actor_id` 为空）`compare_standard.update` `compare_standard.delete` `compare_standard.set_default` |
 | 设置 | `settings.update` `settings.event_token.regenerate` `settings.event_token.clear` `settings.channel.create` `settings.channel.update` `settings.channel.delete` `settings.browser.update`（M2） `settings.agent.update`（M3） |
 | 运行 | `session.digest`（第 12 节）`session.start`（`runNow`）`session.cancel` `session.resume.resume_now` `session.resume.human` `session.resume.event`（控制台触发，webhook 没有操作人所以不记）`human_item.resolve` `event.fire` |
 
@@ -1046,7 +1046,7 @@ claude mcp add --transport http heyagent-gallery http://<host>:8080/api/gallery/
 | `rule_confirm` | 导入时没确认的新规则 | 规则已生效 | `#/rules?id=<规则 id>` |
 | `try_run` | 每个导入的任务 | 有过运行 | 启用的任务 `action = run_task`、`taskId`；停用的没有按钮，`link` = `#/tasks?id=<任务 id>`（`engine.runNow` 不跑停用的任务） |
 
-## 15. 比图（2026-10-18）
+## 15. 比物（2026-10-18）
 
 两张图交给视觉模型，按「比对标准」（或这次自己写的要求）逐项打分、写出差异，判断达没达到合格线；每次比对都存档。替代原来本机的 Lens MCP。和图库的「比对」（`gallery.compare`，embedding 余弦相似度，便宜、快、不解释）不是一回事，两个都留着。形状都在 `packages/shared/src/compare.ts`；代码在 `apps/server/src/compare/`；开发说明 `docs/dev/compare.md`。
 
@@ -1054,11 +1054,11 @@ claude mcp add --transport http heyagent-gallery http://<host>:8080/api/gallery/
 
 `Comparison`：`id`（`cmp-<序号>`）、`title`、`status`（`running` 比对中 / `done` 比完 / `failed` 没比成）、`imageA` / `imageB`（`{ fileId, url, label, from }`）、`standardId` / `standardName`（这次用的标准；自己写要求的为 null；标准删了以后 `standardId` 为 null、`standardName` 还在）、`prompt` / `passScore` / `modelId`（这次实际用的，标准以后改了这里不变）、`score`（0～100；证据不足、比对中、没比成时 null）、`passed`（`score >= passScore`；没有分数时 null）、`confidence`（high / medium / low）、`verdict`（一句话结论，证据不足时以「证据不足：」开头）、`reasons`（≤8）、`dimensions`（`{ name, score, note }`，≤12）、`differences`（≤12）、`error`（没比成的原因，给人看）、`costUsd`、`via`（web / agent / api / mcp）、`createdById`（人；API 密钥算创建人；agent 为空）、`sessionId` / `taskId`（agent 发起的）、`apiKeyId`、`reused`（这次调用直接返回了已有的那条）、`createdAt`、`finishedAt`。
 
-- **图片**：输入是图库的图片引用（`GalleryImageRef`：`{ imageId }` `{ fileId }` `{ url }` `{ base64, mime? }`），HTTP 还能 multipart 直接传文件。两张图都存成比图自己的文件（`files.kind = compare`，同样内容只存一份）：图库的图、运行的截图、任务附件也复制一份，不直接引用（比对记录对文件有外键，引用别人的文件会让删图、删任务失败）。单张最多 `HEYAGENT_UPLOAD_MAX_MB`（默认 20）MB、1 亿像素，只认 jpg / png / webp / gif。网址 20 秒超时。
+- **图片**：输入是图库的图片引用（`GalleryImageRef`：`{ imageId }` `{ fileId }` `{ url }` `{ base64, mime? }`），HTTP 还能 multipart 直接传文件。两张图都存成比物自己的文件（`files.kind = compare`，同样内容只存一份）：图库的图、运行的截图、任务附件也复制一份，不直接引用（比对记录对文件有外键，引用别人的文件会让删图、删任务失败）。单张最多 `HEYAGENT_UPLOAD_MAX_MB`（默认 20）MB、1 亿像素，只认 jpg / png / webp / gif。网址 20 秒超时。
 - **图片地址**：tRPC 返回 `/api/files/:id`（相对地址，要登录）；HTTP 接口和 MCP 返回完整地址 `<base>/api/compare/files/:id`（API 密钥也能下，只给比对记录用到的文件）。
 - **`from`**（给人看的来源）：`上传`、`图库 img-7`、`网址 https://…`、`运行 R-12-3 的截图`（附件、产物同理）、`任务 T-5 的附件`、`文件 f-…`。`label` 不填时：图库的图和文件用文件名，网址用网址，base64 为空。
 - **要求**：`standard`（id 或名字，不分大小写）→ 用它的要求、合格线、模型；`prompt` → 这次自己写的，合格线不填用默认标准的（没有默认标准时 90），模型不填用默认标准的；都不给 → 默认标准。`passScore`、`modelId` 填了就覆盖（标准的也覆盖）。模型必须是库里 `vision = true` 的聊天模型，不是就 400 / `BAD_REQUEST`（「…不能看图」「…不在模型列表里」）。`standard` 和 `prompt` 同时给 400。
-- **标题**：不填时有标准用「标准名 · 第二张的说明」（没有说明用来源），否则「比图 cmp-n」。
+- **标题**：不填时有标准用「标准名 · 第二张的说明」（没有说明用来源），否则「比物 cmp-n」。
 - **复用**：两张图的 sha256 + 要求 + 合格线 + 模型相同、`COMPARE_REUSE_MINUTES`（10）分钟内、状态 running 或 done 的，直接返回那一条（`reused: true`，不重复花钱，标题、发起人都是那一条的）。failed 的不复用。外部接口的 `idempotencyKey` / `idempotency_key` 并进这个 key：同一个 key、同样的图和要求，不管多久都返回同一条。`again` 不复用。
 
 ### 15.2 权限
@@ -1134,11 +1134,11 @@ claude mcp add --transport http heyagent-compare http://<host>:8080/api/compare/
 - 出错：模型出错按 `isRetryable` 退避重试（`runtime.modelRetries` 次）；格式不对再要一次；还不行 `failed`，`error` 写给人看的原因。花费把失败的那几次也算上。原始输出存 `raw`（排错用，不进接口）。写入都带 `status = running` 条件（删了、重复执行不覆盖）。
 - worker 启动时：还标着 `running`、超过 15 分钟的记为没比成（「比了太久没有结果…」），其余重新排队。
 
-### 15.7 agent 的「比图」工具组
+### 15.7 agent 的「比物」工具组
 
-任务的工具里选「比图」（内置，id `compare`，风险 `write`），工具网关展开成：`compare.images`（模型看到的名字 `compare_images`，等比完返回）、`compare.get`、`compare.list`（默认只列这次运行发起的，`all: true` 列所有人的）、`compare.standards`。参数名照 MCP（`image_a` `image_b` `standard` `prompt` `pass_score` `label_a` `label_b` `title`），图片可以写网址、图库 id、**这次运行的文件 id**（截图、附件、产物；别的运行的文件用不了）。返回给模型的是短 JSON：分数、是否达标、合格线、把握度（中文）、结论、理由、差异，不带图和地址。记 `via = agent`、`sessionId`、`taskId`，`createdById` 为空。没有删除。
+任务的工具里选「比物」（内置，id `compare`，风险 `write`），工具网关展开成：`compare.images`（模型看到的名字 `compare_images`，等比完返回）、`compare.get`、`compare.list`（默认只列这次运行发起的，`all: true` 列所有人的）、`compare.standards`。参数名照 MCP（`image_a` `image_b` `standard` `prompt` `pass_score` `label_a` `label_b` `title`），图片可以写网址、图库 id、**这次运行的文件 id**（截图、附件、产物；别的运行的文件用不了）。返回给模型的是短 JSON：分数、是否达标、合格线、把握度（中文）、结论、理由、差异，不带图和地址。记 `via = agent`、`sessionId`、`taskId`，`createdById` 为空。没有删除。
 
-导入：内置工具清单里多了「比图」；读包的系统提示里加了一句：包里有「用视觉模型比两张图」的 MCP 或工具时，选内置「比图」（`builtin`，refId `compare`），不要导入本机地址的那个 MCP。
+导入：内置工具清单里多了「比物」；读包的系统提示里加了一句：包里有「用视觉模型比两张图」的 MCP 或工具时，选内置「比物」（`builtin`，refId `compare`），不要导入本机地址的那个 MCP。
 
 ### 15.8 默认标准和数据库（迁移 0016）
 

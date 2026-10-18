@@ -1,4 +1,4 @@
-// 比图：两张图交给视觉模型，按比对标准逐项打分、写出差异（docs/dev/compare.md）。
+// 比物：两张图交给视觉模型，按比对标准逐项打分、写出差异（docs/dev/compare.md）。
 // 这里是全部业务逻辑：读记录、新比对（四个入口共用一个函数：页面、HTTP 接口、MCP、agent）、复用、再比一次、删除、视觉模型、比对标准。
 // 比对本身在 worker 里（run.ts）；HTTP 接口（routes.ts）、MCP（mcp.ts）、agent 工具组（tools.ts）只做翻译。
 import {
@@ -153,7 +153,7 @@ export async function waitForComparison(db: Db, id: string, options: ViewOptions
 
 // ---------- 视觉模型 ----------
 
-/** 能比图的模型：库里 vision = true 的聊天模型，便宜的在前 */
+/** 能比物的模型：库里 vision = true 的聊天模型，便宜的在前 */
 export async function listVisionModels(db: DbOrTx): Promise<CompareModel[]> {
   const rows = await db
     .select({ id: t.models.id, name: t.models.name, priceIn: t.models.priceIn, priceOut: t.models.priceOut })
@@ -186,7 +186,7 @@ async function cheapestVisionModel(db: DbOrTx): Promise<string | undefined> {
 async function assertVisionModel(db: DbOrTx, modelId: string, context = "") {
   const [model] = await db.select({ name: t.models.name, vision: t.models.vision, kind: t.models.kind }).from(t.models).where(eq(t.models.id, modelId))
   if (!model) throw new CompareError("bad_request", `${context}模型 ${modelId} 不在模型列表里（模型服务刷新后可能没了）：换一个能看图的模型`)
-  if (model.kind !== "chat" || !model.vision) throw new CompareError("bad_request", `${context}${model.name}（${modelId}）不能看图：比图要用能看图的聊天模型`)
+  if (model.kind !== "chat" || !model.vision) throw new CompareError("bad_request", `${context}${model.name}（${modelId}）不能看图：比物要用能看图的聊天模型`)
 }
 
 // ---------- 比对标准 ----------
@@ -337,9 +337,9 @@ interface ResolvedSide {
   name: string
   mime: string
   sha256: string
-  /** 本来就是比图的文件：直接用，不再存一份 */
+  /** 本来就是比物的文件：直接用，不再存一份 */
   compareFile?: FileRow
-  /** 页面上传的文件（kind = upload）：存的时候可以直接改成比图的 */
+  /** 页面上传的文件（kind = upload）：存的时候可以直接改成比物的 */
   uploadFile?: FileRow
   from: string
   defaultLabel: string
@@ -424,12 +424,12 @@ export function parseImageParam(value: string | GalleryImageRef): GalleryImageRe
 const EXT: Record<string, string> = { "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif" }
 
 /**
- * 两张图存成比图自己的文件（kind = compare，同样内容的只存一份）。图库的图、运行的截图、任务附件也复制一份：
- * 比对记录对文件有外键，直接引用别人的文件会让删图、删任务失败；复制一份，删比对时也只删比图自己的
+ * 两张图存成比物自己的文件（kind = compare，同样内容的只存一份）。图库的图、运行的截图、任务附件也复制一份：
+ * 比对记录对文件有外键，直接引用别人的文件会让删图、删任务失败；复制一份，删比对时也只删比物自己的
  */
 async function storeSide(db: Db, actor: CompareActor, side: ResolvedSide): Promise<FileRow> {
   if (side.compareFile) return side.compareFile
-  // 页面刚为这次比对传上来的文件（POST /api/files，不属于任务和运行）：直接改成比图的，或者已经有同样的图时删掉，不留下没人用的
+  // 页面刚为这次比对传上来的文件（POST /api/files，不属于任务和运行）：直接改成比物的，或者已经有同样的图时删掉，不留下没人用的
   const ownUpload = Boolean(side.uploadFile && actor.user && side.uploadFile.createdById === actor.user.id)
   const [same] = await db.select().from(t.files).where(and(eq(t.files.kind, "compare"), eq(t.files.sha256, side.sha256))).limit(1)
   if (same) {
@@ -519,7 +519,7 @@ async function insertComparison(db: Db, actor: CompareActor, values: NewComparis
       if (found) return { row: found, reused: true }
     }
     const id = comparisonId(await nextNo(tx, "compare_no_seq"))
-    const title = (values.title || (values.standardName ? `${values.standardName} · ${values.labelB || values.fromB || "第二张"}` : `比图 ${id}`)).slice(0, 200)
+    const title = (values.title || (values.standardName ? `${values.standardName} · ${values.labelB || values.fromB || "第二张"}` : `比物 ${id}`)).slice(0, 200)
     const [row] = await tx
       .insert(t.comparisons)
       .values({
@@ -555,7 +555,7 @@ export interface CreateOptions extends ViewOptions {
 
 /** 新比对（页面、HTTP、MCP、agent 共用）：立即返回「比对中」的记录（或者复用的那条，reused = true） */
 export async function createComparison(db: Db, actor: CompareActor, input: CompareCreateRequest, options: CreateOptions = {}): Promise<Comparison> {
-  if (actor.user && !can(actor.user, "compare.create", {})) throw new CompareError("forbidden", "你不能比图")
+  if (actor.user && !can(actor.user, "compare.create", {})) throw new CompareError("forbidden", "你不能比物")
   if (input.standard && input.prompt) throw new CompareError("bad_request", "标准和自己写的要求只能给一个")
   const requirement = await resolveRequirement(db, input)
   const [a, b] = await Promise.all([resolveSide(db, actor, input.imageA), resolveSide(db, actor, input.imageB)])
@@ -583,7 +583,7 @@ export async function createComparison(db: Db, actor: CompareActor, input: Compa
 
 /** 再比一次：同样的两张图、要求、合格线、模型、标准、标题，新建一条（不复用）；发起方算这次调用的 */
 export async function compareAgain(db: Db, actor: CompareActor, id: string, options: ViewOptions = {}): Promise<Comparison> {
-  if (actor.user && !can(actor.user, "compare.create", {})) throw new CompareError("forbidden", "你不能比图")
+  if (actor.user && !can(actor.user, "compare.create", {})) throw new CompareError("forbidden", "你不能比物")
   const row = await loadRow(db, id)
   await assertVisionModel(db, row.modelId, "这条比对用的")
   return insertComparison(

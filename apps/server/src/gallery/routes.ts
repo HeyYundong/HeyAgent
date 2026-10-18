@@ -1,5 +1,5 @@
 // 图库的 HTTP 接口（字段说明见 docs/dev/api.md 第 12 节）。鉴权二选一：Authorization: Bearer <API 密钥>（外部系统），或者登录的 cookie（控制台页面）。
-// 带了 Bearer 就只认密钥，不对就 401，不会退回去认 cookie（lib/api-auth.ts）。下面读请求体的小函数比图的接口（compare/routes.ts）也用。
+// 带了 Bearer 就只认密钥，不对就 401，不会退回去认 cookie（lib/api-auth.ts）。下面读请求体的小函数比物的接口（compare/routes.ts）也用。
 //   POST   /api/gallery/images          传图：multipart（image 文件 + text JSON 字符串 + tags JSON 数组字符串）或 JSON { image, text, tags }
 //   POST   /api/gallery/search          检索：JSON，或 multipart（image 文件 + 其余字段，tags / anyTags / text / where 是 JSON 字符串）
 //   POST   /api/gallery/compare         比对：JSON { a, b, threshold }，或 multipart（a、b 两个文件 + threshold）

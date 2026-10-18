@@ -1,5 +1,5 @@
-// 比图页（docs/dev/compare.md）：两张图交给视觉模型，按比对标准逐项打分、写差异，判断是不是同款；每次比对都存档。
-// 页面上人能比；agent 在运行里用「比图」工具组；外部系统用 HTTP 接口或 MCP（API 密钥）。都记在这里。
+// 比物页（docs/dev/compare.md）：两张图交给视觉模型，按比对标准逐项打分、写差异，判断是不是同款；每次比对都存档。
+// 页面上人能比；agent 在运行里用「比物」工具组；外部系统用 HTTP 接口或 MCP（API 密钥）。都记在这里。
 // 左边比对记录（新的在前，能搜标题、编号，往下翻页），右边一次比对的结果。比对中的那条比完由实时推送刷新。
 import * as React from "react"
 import { keepPreviousData, useInfiniteQuery, useQuery } from "@tanstack/react-query"
@@ -74,7 +74,7 @@ export default function ComparePage() {
     </Button>
   )
   const header = (
-    <SimpleHeader title="比图" description="两张图交给视觉模型，按比对标准逐项打分、写出差异，判断是不是同款；每次比对都存档。agent 和外部系统也能用。" action={newButton} />
+    <SimpleHeader title="比物" description="两张图交给视觉模型，按比对标准逐项打分、写出差异，判断是不是同款；每次比对都存档。agent 和外部系统也能用。" action={newButton} />
   )
 
   return (
@@ -84,7 +84,7 @@ export default function ComparePage() {
         header={header}
         queries={[listQuery]}
         isEmpty={!query && records.length === 0}
-        empty={<EmptyState icon={<ScanEyeIcon />} title="还没有比对过" description="点「新比对」放两张图试试；agent 在任务里选上「比图」工具也能自己比。" action={newButton} />}
+        empty={<EmptyState icon={<ScanEyeIcon />} title="还没有比对过" description="点「新比对」放两张图试试；agent 在任务里选上「比物」工具也能自己比。" action={newButton} />}
       >
         <MasterDetail
           hasSelection={Boolean(selectedId)}

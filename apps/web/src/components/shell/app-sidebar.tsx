@@ -68,7 +68,7 @@ export const NAV_WORK: NavItem[] = [
 /** agent 干活时用的东西：图片、浏览器 */
 export const NAV_RESOURCES: NavItem[] = [
   { id: "gallery", title: "图库", icon: ImagesIcon },
-  { id: "compare", title: "比图", icon: ScanEyeIcon },
+  { id: "compare", title: "比物", icon: ScanEyeIcon },
   { id: "browsers", title: "浏览器", icon: GlobeIcon },
 ]
 

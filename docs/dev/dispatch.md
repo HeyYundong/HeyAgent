@@ -22,13 +22,13 @@
 
 | | t1「巡检」 | t2「处理一张搜品单」 |
 |---|---|---|
-| 做什么 | 每分钟只读地查后台里归属某个账号、还没完成的搜品单，按单号去重后「同步」 | 图搜、比图、旺旺询盘（可能挂起等商家回复一天）、建源商品并关联、回填后台。一张单一个 session |
+| 做什么 | 每分钟只读地查后台里归属某个账号、还没完成的搜品单，按单号去重后「同步」 | 图搜、比物、旺旺询盘（可能挂起等商家回复一天）、建源商品并关联、回填后台。一张单一个 session |
 | 在 Hermes 上 | 把单写进本机的 sourcing-todo 服务 | 主 cron 每次从 sourcing-todo 领下一张单开一个会话；谁在处理哪张单也由它记着 |
 | 导入 HeyAgent 后 | 查到的单没地方放 | 不知道该处理哪张；每分钟启动一次，没人保证几个 session 不抢同一张单 |
 
 ### 1.2 平台现在有什么、缺什么（读代码确认）
 
-- **agent 的内置工具**只有 10 个：`checkpoint.mark`、`session.wait`、`ask.human`、`plan.set`、`skill.load`、`memory.propose`、`skill.propose`、`notify.staff`、`file.save`、`file.read`（`apps/server/src/engine/tools/builtin-defs.ts` 的 `BUILTIN_TOOLS`），外加三个工具组：浏览器、图库、比图。没有一个能「让别的任务去办一件事」。
+- **agent 的内置工具**只有 10 个：`checkpoint.mark`、`session.wait`、`ask.human`、`plan.set`、`skill.load`、`memory.propose`、`skill.propose`、`notify.staff`、`file.save`、`file.read`（`apps/server/src/engine/tools/builtin-defs.ts` 的 `BUILTIN_TOOLS`），外加三个工具组：浏览器、图库、比物。没有一个能「让别的任务去办一件事」。
 - **一次运行有 4 种触发来源**：`manual`、`cron`、`todo`、`event`（`packages/shared/src/engine.ts` 的 `sessionSnapshotSchema.source`）。其中 `event` 只在类型里有，**没有任何代码用它新开运行**：外部事件（`engine/control.ts` 的 `fireEventImpl`）只做两件事，继续正在等这个事件的 session，或者触发等这个事件的「人加的待办」。
 - **人加的待办**（`engine/schedule.ts` 的 `fireTodo`）：不是 cron 的待办只触发一次；触发时如果任务有挂起的 session，就继续**最近的那一个**（`sessions.ts` 的 `latestWaitingSession`），否则新开一次运行，只把待办标题作为附加说明，事件数据带不进去。
 - **定时**（`schedule.ts` 的 `onTaskCron`）：到点就新开一次运行，不看上一次跑完没有。
@@ -440,7 +440,7 @@ session 结束的地方现在有 5 处（读代码确认），每处在**同一�
 
 1. 10:00 t1 的运行查到 3 张没完成的单，调一次 `work_dispatch`（3 张）。返回：新建 W-57、W-58，W-41 已经在办（R-1042-37，挂起等待中）。
 2. 同一个事务里发了 `work.pump`。t2 名额 1，现在没有占名额的 session（R-1042-37 在等商家回复，不占）→ 给 W-57 开 R-1042-38，第一条消息里是单号。
-3. R-1042-38 图搜、比图、发旺旺询盘，然后 `session.wait(afterMinutes: 1440, event: "…")` 挂起。挂起时发 `work.pump` → 名额空了 → 给 W-58 开 R-1042-39。
+3. R-1042-38 图搜、比物、发旺旺询盘，然后 `session.wait(afterMinutes: 1440, event: "…")` 挂起。挂起时发 `work.pump` → 名额空了 → 给 W-58 开 R-1042-39。
 4. 10:05 t1 又跑一次，三张单都返回「已经有了」，什么都没新建。
 5. 第二天商家回复（或者到点），R-1042-38 被叫醒继续（不卡名额），建源商品、回填后台、回复总结 → 验收通过 → 同一个事务里 W-57 改成「办完」，总结写回单上，并发 `work.pump` 领下一张。
 6. 如果 R-1042-39 失败（例如后台登录失效）：W-58「没办成」，t2 的负责人收到失败通知；在派活页看原因，处理好登录后点「重办」，开 R-1042-40。t1 再派 W-58 只会收到「没办成，等人处理」，不会自己重开。
@@ -474,7 +474,7 @@ session 结束的地方现在有 5 处（读代码确认），每处在**同一�
 
 ### 第三期：对外（1 个子 agent，约 2 个工作日）
 
-- HTTP 接口 `POST /api/work-items`（API 密钥鉴权，照图库、比图的 `lib/api-auth.ts`），外部系统直接派活；`via = api`。
+- HTTP 接口 `POST /api/work-items`（API 密钥鉴权，照图库、比物的 `lib/api-auth.ts`），外部系统直接派活；`via = api`。
 - 外部事件 → 派一张单：任务上配「收到事件 X 就派一张，去重键取事件数据的某个字段」。
 - 每个任务每天的花费预算（被派的运行加起来）、优先级、「过多久再办」（`not_before`）。
 
