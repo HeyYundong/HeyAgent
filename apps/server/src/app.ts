@@ -1,4 +1,4 @@
-// HTTP 入口：/api/health、/api/setup（首次设置管理员）、/api/auth/*（better-auth）、/api/trpc/*（tRPC，含 SSE 订阅）、/api/gallery/*（图库的 HTTP 接口和 MCP）。
+// HTTP 入口：/api/health、/api/setup（首次设置管理员）、/api/auth/*（better-auth）、/api/trpc/*（tRPC，含 SSE 订阅）、/api/gallery/*（图库的 HTTP 接口和 MCP）、/api/imports（上传要导入的 zip）。
 import { fetchRequestHandler } from "@trpc/server/adapters/fetch"
 import { sql } from "drizzle-orm"
 import { Hono } from "hono"
@@ -9,6 +9,7 @@ import type { Db } from "./db/client.js"
 import { registerEngineRoutes } from "./engine/http.js"
 import { env } from "./env.js"
 import { registerGalleryRoutes } from "./gallery/routes.js"
+import { registerImportRoutes } from "./imports/routes.js"
 import { loadKeyring, type Keyring } from "./lib/crypto.js"
 import type { ChangeHub } from "./live/hub.js"
 import type { Context } from "./trpc/init.js"
@@ -62,6 +63,7 @@ export function createApp({ db, auth, hub, keyring: givenKeyring }: AppDeps) {
 
   registerEngineRoutes(app, { db, auth })
   registerGalleryRoutes(app, { db, auth })
+  registerImportRoutes(app, { db, auth })
 
   app.all("/api/trpc/*", (c) =>
     fetchRequestHandler({

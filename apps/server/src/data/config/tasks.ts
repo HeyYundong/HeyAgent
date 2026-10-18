@@ -1,6 +1,6 @@
 // 任务的写操作：新建、修改、启停、删除。保存后调引擎的 syncTaskSchedule（定时触发由引擎管）。
 import { and, count, eq, inArray } from "drizzle-orm"
-import { compiledRuleSchema, modelFamily, nextCronRun, ruleCompileStatusLabel, sameFamily, taskId, type TaskStep, type taskInputSchema } from "@heyagent/shared"
+import { compiledRuleSchema, modelFamily, nextCronRun, ruleCompileStatusLabel, sameFamily, taskId, type Actor, type TaskStep, type taskInputSchema } from "@heyagent/shared"
 import type { z } from "zod"
 
 import type { Db } from "../../db/client.js"
@@ -8,7 +8,7 @@ import * as t from "../../db/schema.js"
 import { syncTaskSchedule } from "../../engine/api.js"
 import { assertCan, audit, badRequest, conflict, nextNo, notFound, type DbOrTx, type Tx, type WriteCtx } from "./common.js"
 
-type TaskInput = z.output<typeof taskInputSchema>
+export type TaskInput = z.output<typeof taskInputSchema>
 
 async function defaultModel(db: DbOrTx, role: "run" | "verify") {
   const [row] = await db.select({ modelId: t.modelDefaults.modelId }).from(t.modelDefaults).where(eq(t.modelDefaults.role, role))
@@ -121,19 +121,26 @@ async function loadTask(db: DbOrTx, id: string) {
   return row
 }
 
+/**
+ * 在调用方的事务里新建任务（全部校验照 checkTask）。导入（imports/commit.ts）一个事务里建好多样东西时也用它。
+ * allowInactiveRuleIds：允许选上还没生效的规则——导入时新建、要用到这次才导入的工具、导入后才能翻译确认的规则；
+ * 运行时引擎只执行确认过的规则（engine/rules.ts 的 activeRules），确认以后自动生效。调用方事务提交后要调 syncTaskSchedule
+ */
+export async function insertTask(tx: Tx, actor: Actor, input: TaskInput, options: { allowInactiveRuleIds?: string[]; audit?: Record<string, unknown> } = {}): Promise<string> {
+  const ownerId = input.ownerId || actor.id
+  const { modelId, verifyModelId, toolIds } = await checkTask(tx, input, options.allowInactiveRuleIds ?? [])
+  const [owner] = await tx.select({ id: t.users.id }).from(t.users).where(eq(t.users.id, ownerId))
+  if (!owner) throw badRequest("负责人不存在")
+  const id = taskId(await nextNo(tx, "task_no_seq"))
+  await tx.insert(t.tasks).values({ id, ownerId, ...columns(input, modelId, verifyModelId) })
+  await writeLinks(tx, id, { ...input, toolIds })
+  await audit(tx, actor.id, "task.create", "tasks", id, { title: input.title, ownerId, modelId, ...options.audit })
+  return id
+}
+
 export async function createTask(ctx: WriteCtx, input: TaskInput): Promise<{ id: string }> {
   assertCan(ctx.actor, "task.create", {}, "只有主管能新建任务")
-  const ownerId = input.ownerId || ctx.actor.id
-  const id = await ctx.db.transaction(async (tx) => {
-    const { modelId, verifyModelId, toolIds } = await checkTask(tx, input)
-    const [owner] = await tx.select({ id: t.users.id }).from(t.users).where(eq(t.users.id, ownerId))
-    if (!owner) throw badRequest("负责人不存在")
-    const id = taskId(await nextNo(tx, "task_no_seq"))
-    await tx.insert(t.tasks).values({ id, ownerId, ...columns(input, modelId, verifyModelId) })
-    await writeLinks(tx, id, { ...input, toolIds })
-    await audit(tx, ctx.actor.id, "task.create", "tasks", id, { title: input.title, ownerId, modelId })
-    return id
-  })
+  const id = await ctx.db.transaction((tx) => insertTask(tx, ctx.actor, input))
   await syncTaskSchedule(ctx.db, id)
   return { id }
 }

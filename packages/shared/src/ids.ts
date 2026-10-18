@@ -53,3 +53,6 @@ export const galleryImageId = (n: number) => `img-${n}`
 
 /** API 密钥：ak-3。序列 api_key_no_seq */
 export const apiKeyId = (n: number) => `ak-${n}`
+
+/** 导入（别的 agent 打的 zip 包）：IM-3。序列 import_no_seq */
+export const importId = (n: number) => `IM-${n}`

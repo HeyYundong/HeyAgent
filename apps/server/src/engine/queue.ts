@@ -27,6 +27,8 @@ export const QUEUES = {
   /** cron：任务的定时运行、人加的 cron 待办。按对象 id 作为 schedule key */
   taskCron: "task.cron",
   todoCron: "todo.cron",
+  /** 导入：读包（解压、挪密钥、读包 agent、整理方案）；singletonKey = 导入 id */
+  importRead: "import.read",
 } as const
 
 export const SCHEDULE_TZ = "Asia/Shanghai"
@@ -55,6 +57,20 @@ export function runJobOptions(sessionId: string): SendOptions {
   }
 }
 
+/**
+ * import.read 的任务参数：要心跳（worker 被杀掉后交给活着的 worker 从头读）；单个任务最多 60 分钟
+ * （读包自己跑满 55 分钟就停，见 imports/limits.ts；大的包要读几十步）；进程崩溃才走 pg-boss 的重试，给两次
+ */
+export function importReadJobOptions(importId: string): SendOptions {
+  return {
+    singletonKey: importId,
+    heartbeatSeconds: Math.max(10, Math.round(num("HEYAGENT_RUN_HEARTBEAT_SECONDS", 30))),
+    expireInSeconds: 3600,
+    retryLimit: 2,
+    retryDelay: 5,
+  }
+}
+
 const QUEUE_SETUP: { name: string; policy: "standard" | "stately" }[] = [
   { name: QUEUES.run, policy: "stately" },
   { name: QUEUES.wake, policy: "standard" },
@@ -63,6 +79,7 @@ const QUEUE_SETUP: { name: string; policy: "standard" | "stately" }[] = [
   { name: QUEUES.todoRemind, policy: "standard" },
   { name: QUEUES.taskCron, policy: "standard" },
   { name: QUEUES.todoCron, policy: "standard" },
+  { name: QUEUES.importRead, policy: "stately" },
 ]
 
 export async function ensureQueues(boss: PgBoss) {

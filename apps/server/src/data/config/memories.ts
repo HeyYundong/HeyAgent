@@ -1,9 +1,9 @@
 // 记忆的写操作：主管新建、修改、归档、删除；agent 提议的记忆由审核人批准或拒绝（同时处理掉待办里那件事）。
 import { and, eq } from "drizzle-orm"
-import { memoryId, type MemoryInput } from "@heyagent/shared"
+import { memoryId, type Actor, type MemoryInput } from "@heyagent/shared"
 
 import * as t from "../../db/schema.js"
-import { assertCan, audit, conflict, nextNo, notFound, type DbOrTx, type WriteCtx } from "./common.js"
+import { assertCan, audit, conflict, nextNo, notFound, type DbOrTx, type Tx, type WriteCtx } from "./common.js"
 import { tasksUsingRef, usedByText } from "./tasks.js"
 
 async function loadMemory(db: DbOrTx, id: string) {
@@ -12,15 +12,18 @@ async function loadMemory(db: DbOrTx, id: string) {
   return row
 }
 
+/** 在调用方的事务里新建记忆（人加的直接生效，来源是这个人）。导入时也用它 */
+export async function insertMemory(tx: Tx, actor: Actor, input: MemoryInput, auditDetail: Record<string, unknown> = {}) {
+  const id = memoryId(await nextNo(tx, "memory_no_seq"))
+  // 人加的记忆直接生效
+  await tx.insert(t.memories).values({ id, content: input.content, appliesTo: input.appliesTo, status: "active", sourceKind: "human", sourceById: actor.id })
+  await audit(tx, actor.id, "memory.create", "memories", id, { appliesTo: input.appliesTo, ...auditDetail })
+  return { id }
+}
+
 export async function createMemory(ctx: WriteCtx, input: MemoryInput) {
   assertCan(ctx.actor, "config.manage", {}, "只有主管能新建记忆")
-  return ctx.db.transaction(async (tx) => {
-    const id = memoryId(await nextNo(tx, "memory_no_seq"))
-    // 人加的记忆直接生效
-    await tx.insert(t.memories).values({ id, content: input.content, appliesTo: input.appliesTo, status: "active", sourceKind: "human", sourceById: ctx.actor.id })
-    await audit(tx, ctx.actor.id, "memory.create", "memories", id, { appliesTo: input.appliesTo })
-    return { id }
-  })
+  return ctx.db.transaction((tx) => insertMemory(tx, ctx.actor, input))
 }
 
 export async function updateMemory(ctx: WriteCtx, input: MemoryInput & { id: string }) {

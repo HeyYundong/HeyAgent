@@ -32,6 +32,7 @@ const PAGES: Record<PageId, React.LazyExoticComponent<() => React.ReactNode>> = 
   models: lazy(() => import("@/pages/models")),
   users: lazy(() => import("@/pages/users")),
   settings: lazy(() => import("@/pages/settings")),
+  imports: lazy(() => import("@/pages/imports")),
   learn: lazy(() => import("@/pages/learn")),
 }
 

@@ -81,7 +81,8 @@ export function registerFileRoutes(app: Hono, deps: { db: Db; auth: Auth }) {
     const user = await userOf(c.req.raw.headers)
     if (!user) return c.json({ error: "请先登录" }, 401)
     const row = await getFileRow(deps.db, c.req.param("id"))
-    if (!row) return c.json({ error: "找不到文件" }, 404)
+    // 要导入的 zip 里可能有明文密钥：只有主管能下（走 /api/imports/:id/file）
+    if (!row || (row.kind === "import" && user.role !== "admin")) return c.json({ error: "找不到文件" }, 404)
     const data = await readFileData(row).catch(() => null)
     if (!data) return c.json({ error: "文件内容不见了" }, 410)
     const inline = isImageMime(row.mime)

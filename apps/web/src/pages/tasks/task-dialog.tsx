@@ -47,7 +47,7 @@ import { cronText } from "./cron"
 import { PLACEHOLDER } from "./data"
 import { TaskAttachments } from "./run-actions"
 
-type Option = { value: string; label: string; hint?: string; disabled?: boolean }
+export type Option = { value: string; label: string; hint?: string; disabled?: boolean }
 type PickKey = "memoryIds" | "skillIds" | "toolIds" | "ruleIds"
 const PICK_KEYS: PickKey[] = ["memoryIds", "skillIds", "toolIds", "ruleIds"]
 
@@ -79,7 +79,7 @@ function usePickOptions(picked: Partial<Record<PickKey, string[]>>, originalRule
   }
 }
 
-function MultiPick({ id, label, options, value, onChange, description, notes }: { id: string; label: string; options: Option[]; value: string[]; onChange: (value: string[]) => void; description?: string; notes?: string[] }) {
+export function MultiPick({ id, label, options, value, onChange, description, notes }: { id: string; label: string; options: Option[]; value: string[]; onChange: (value: string[]) => void; description?: string; notes?: string[] }) {
   const anchor = useComboboxAnchor()
   const labelOf = (v: string) => options.find((o) => o.value === v)?.label ?? v
   return (
@@ -117,7 +117,7 @@ function MultiPick({ id, label, options, value, onChange, description, notes }: 
   )
 }
 
-function StepEditor({ index, control, register, error, checkpointError, onRemove }: {
+export function StepEditor({ index, control, register, error, checkpointError, onRemove }: {
   index: number
   control: Control<TaskInput>
   register: UseFormRegister<TaskInput>
@@ -178,8 +178,8 @@ function StepEditor({ index, control, register, error, checkpointError, onRemove
   )
 }
 
-/** 选了「浏览器」工具才出现：允许用哪些 Chrome 配置、网址白名单、是否允许执行脚本 */
-function BrowserFields({ control, domainText, domainError, onDomainText }: { control: Control<TaskInput>; domainText: string; domainError?: string; onDomainText: (text: string) => void }) {
+/** 选了「浏览器」工具才出现：允许用哪些 Chrome 配置、网址白名单、是否允许执行脚本（导入时改任务没有这一项：hideEvaluate） */
+export function BrowserFields({ control, domainText, domainError, onDomainText, hideEvaluate = false }: { control: Control<TaskInput>; domainText: string; domainError?: string; onDomainText: (text: string) => void; hideEvaluate?: boolean }) {
   const profiles = useBrowsersQuery().data ?? []
   const options = profiles.map((profile) => ({ value: profile.id, label: profile.name, hint: profile.description }))
   return (
@@ -201,7 +201,7 @@ function BrowserFields({ control, domainText, domainError, onDomainText }: { con
           <FieldDescription>每行一个域名，子域名也算。不填就不限制；填了，名单外的网页打不开，agent 会收到原因。</FieldDescription>
           <FieldError>{domainError}</FieldError>
         </Field>
-        <Controller
+        {!hideEvaluate && <Controller
           control={control}
           name="allowBrowserEvaluate"
           render={({ field }) => (
@@ -213,7 +213,7 @@ function BrowserFields({ control, domainText, domainError, onDomainText }: { con
               </FieldContent>
             </Field>
           )}
-        />
+        />}
       </div>
     </FieldSet>
   )

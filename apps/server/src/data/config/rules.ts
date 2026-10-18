@@ -3,7 +3,7 @@
 // 文字改了：之前的翻译作废；已经确认过的旧版本继续执行，直到新文字翻译并确认（免得改一个字规则就失效）。
 import { TRPCError } from "@trpc/server"
 import { eq, inArray } from "drizzle-orm"
-import { compiledRuleSchema, ruleId, type RuleCompileInput, type RuleCompileResult, type RuleRef } from "@heyagent/shared"
+import { compiledRuleSchema, ruleId, type Actor, type RuleCompileInput, type RuleCompileResult, type RuleRef } from "@heyagent/shared"
 
 import { compileRuleText } from "../../engine/rule-compile.js"
 import { EngineError } from "../../engine/sessions.js"
@@ -12,7 +12,7 @@ import * as t from "../../db/schema.js"
 import { assertCan, audit, badRequest, conflict, freeId, nextNo, notFound, slugOf, type DbOrTx, type Tx, type WriteCtx } from "./common.js"
 import { tasksUsingRef, usedByText } from "./tasks.js"
 
-interface RuleFields {
+export interface RuleFields {
   name: string
   trigger: string
   action: string
@@ -34,17 +34,24 @@ async function writeTools(tx: Tx, id: string, toolIds: string[]) {
 
 const ruleExists = (tx: DbOrTx) => async (id: string) => (await tx.select({ id: t.rules.id }).from(t.rules).where(eq(t.rules.id, id))).length > 0
 
+/**
+ * 在调用方的事务里新建规则。compileDraft：已经翻译好的结果（导入时读包阶段翻译的），文字对得上才存，存成待确认
+ */
+export async function insertRule(tx: Tx, actor: Actor, input: RuleFields & { compileDraft?: RuleCompileResult }, auditDetail: Record<string, unknown> = {}) {
+  await checkTools(tx, input.toolIds)
+  const slug = slugOf(input.name)
+  // 编号的也要查重：英文短名可能恰好是数字（「1 美元」→ rl-1），和序列号撞上
+  const id = await freeId(ruleExists(tx), slug ? ruleId(slug) : ruleId(await nextNo(tx, "rule_no_seq")))
+  const draft = input.compileDraft && input.compileDraft.trigger === input.trigger && input.compileDraft.action === input.action ? input.compileDraft : null
+  await tx.insert(t.rules).values({ id, name: input.name, trigger: input.trigger, action: input.action, compileDraft: draft, createdById: actor.id })
+  await writeTools(tx, id, input.toolIds)
+  await audit(tx, actor.id, "rule.create", "rules", id, { name: input.name, ...auditDetail })
+  return { id }
+}
+
 export async function createRule(ctx: WriteCtx, input: RuleFields) {
   assertCan(ctx.actor, "config.manage", {}, "只有主管能新建规则")
-  return ctx.db.transaction(async (tx) => {
-    await checkTools(tx, input.toolIds)
-    const slug = slugOf(input.name)
-    const id = slug ? await freeId(ruleExists(tx), ruleId(slug)) : ruleId(await nextNo(tx, "rule_no_seq"))
-    await tx.insert(t.rules).values({ id, name: input.name, trigger: input.trigger, action: input.action, createdById: ctx.actor.id })
-    await writeTools(tx, id, input.toolIds)
-    await audit(tx, ctx.actor.id, "rule.create", "rules", id, { name: input.name })
-    return { id }
-  })
+  return ctx.db.transaction((tx) => insertRule(tx, ctx.actor, input))
 }
 
 export async function updateRule(ctx: WriteCtx, input: RuleFields & { id: string }) {
@@ -140,20 +147,23 @@ export async function compileRule(ctx: WriteCtx, input: RuleCompileInput): Promi
 }
 
 /** 确认「系统理解为……」（M3）：把待确认的翻译设为正在执行的版本。已经在跑的运行不受影响（它们有自己的快照） */
+/** 在调用方的事务里确认规则（规则同 confirmRule）。导入时人在确认向导里看过「系统理解为」，导入就算确认 */
+export async function confirmRuleInTx(tx: Tx, actor: Actor, input: { id: string }, auditDetail: Record<string, unknown> = {}) {
+  const [row] = await tx.select().from(t.rules).where(eq(t.rules.id, input.id))
+  if (!row) throw notFound("规则", input.id)
+  const draft = row.compileDraft
+  if (!draft || draft.trigger !== row.trigger || draft.action !== row.action) throw badRequest("这条规则现在的文字还没有翻译，先翻译再确认")
+  if (!draft.supported || !draft.compiled) throw badRequest(`这条规则 v1 还不支持，不能确认：${draft.reason ?? ""}`)
+  const compiled = compiledRuleSchema.parse(draft.compiled)
+  await tx
+    .update(t.rules)
+    .set({ compiledTrigger: compiled, compiledText: JSON.stringify({ trigger: row.trigger, action: row.action }), confirmedById: actor.id, confirmedAt: new Date() })
+    .where(eq(t.rules.id, row.id))
+  await audit(tx, actor.id, "rule.confirm", "rules", row.id, { understood: compiled.understood, compiled, ...auditDetail })
+  return { id: row.id, understood: compiled.understood }
+}
+
 export async function confirmRule(ctx: WriteCtx, input: { id: string }) {
   assertCan(ctx.actor, "config.manage", {}, "只有主管能确认规则")
-  return ctx.db.transaction(async (tx) => {
-    const [row] = await tx.select().from(t.rules).where(eq(t.rules.id, input.id))
-    if (!row) throw notFound("规则", input.id)
-    const draft = row.compileDraft
-    if (!draft || draft.trigger !== row.trigger || draft.action !== row.action) throw badRequest("这条规则现在的文字还没有翻译，先翻译再确认")
-    if (!draft.supported || !draft.compiled) throw badRequest(`这条规则 v1 还不支持，不能确认：${draft.reason ?? ""}`)
-    const compiled = compiledRuleSchema.parse(draft.compiled)
-    await tx
-      .update(t.rules)
-      .set({ compiledTrigger: compiled, compiledText: JSON.stringify({ trigger: row.trigger, action: row.action }), confirmedById: ctx.actor.id, confirmedAt: new Date() })
-      .where(eq(t.rules.id, row.id))
-    await audit(tx, ctx.actor.id, "rule.confirm", "rules", row.id, { understood: compiled.understood, compiled })
-    return { id: row.id, understood: compiled.understood }
-  })
+  return ctx.db.transaction((tx) => confirmRuleInTx(tx, ctx.actor, input))
 }

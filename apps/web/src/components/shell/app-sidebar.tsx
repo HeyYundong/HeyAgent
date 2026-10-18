@@ -13,6 +13,7 @@ import {
   LayoutGridIcon,
   LightbulbIcon,
   LogOutIcon,
+  PackageOpenIcon,
   SettingsIcon,
   ShieldCheckIcon,
   UsersIcon,
@@ -80,6 +81,7 @@ export const NAV_CONFIG: NavItem[] = [
 export const NAV_ADMIN: NavItem[] = [
   { id: "users", title: "用户", icon: UsersIcon },
   { id: "settings", title: "设置", icon: SettingsIcon },
+  { id: "imports", title: "导入", icon: PackageOpenIcon },
 ]
 
 export const NAV_LEARN: NavItem = { id: "learn", title: "看懂架构", icon: LightbulbIcon }

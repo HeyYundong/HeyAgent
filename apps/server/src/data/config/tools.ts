@@ -52,8 +52,11 @@ const headerLines = (headers: Record<string, string>) =>
     .join("\n")
 const WHERE_LABEL = { url: "URL", headers: "请求头", body: "请求体" } as const
 
-/** 模板里有明文密钥就拒绝；模板引用的 {{名字}} 要么已经存在服务器上，要么这次填了值 */
-async function checkHttpTemplate(db: DbOrTx, input: HttpToolFields) {
+/**
+ * 模板里有明文密钥就拒绝；模板引用的 {{名字}} 要么已经存在服务器上，要么这次填了值。
+ * allowMissing：导入时允许引用还没有值的密钥（导入后在「还要你做的」里提醒去填），返回缺的名字
+ */
+async function checkHttpTemplate(db: DbOrTx, input: HttpToolFields, allowMissing = false) {
   const template = { url: input.http.url, headers: headerLines(input.http.headers), body: input.http.body ?? "" }
   const leaks = moveSecrets(template).moved
   if (leaks.length) {
@@ -68,8 +71,8 @@ async function checkHttpTemplate(db: DbOrTx, input: HttpToolFields) {
     if (input.secrets[name]) continue
     if (!(await findSecret(db, { scope: "http_tool", refId: null, name }))) missing.push(name)
   }
-  if (missing.length) throw badRequest(`还没填值：${missing.join("、")}`)
-  return secrets
+  if (missing.length && !allowMissing) throw badRequest(`还没填值：${missing.join("、")}`)
+  return { used: secrets, missing }
 }
 
 function toolSpec(input: HttpToolFields): HttpSpec {
@@ -82,7 +85,9 @@ const summaryOf = (input: HttpToolFields) => input.summary?.trim() || input.desc
 
 const toolExists = (db: DbOrTx) => async (id: string) => (await db.select({ id: t.tools.id }).from(t.tools).where(eq(t.tools.id, id))).length > 0
 
-async function saveHttpSecrets(tx: Tx, ctx: WriteCtx, used: string[], values: Record<string, string>) {
+type TxCtx = Pick<WriteCtx, "actor" | "keyring">
+
+async function saveHttpSecrets(tx: Tx, ctx: TxCtx, used: string[], values: Record<string, string>) {
   const saved: string[] = []
   for (const name of used) {
     const value = values[name]
@@ -93,25 +98,31 @@ async function saveHttpSecrets(tx: Tx, ctx: WriteCtx, used: string[], values: Re
   return saved
 }
 
+/**
+ * 在调用方的事务里新建 HTTP 工具（校验、起 id 同 createHttpTool）。
+ * allowMissingSecrets：导入时允许引用还没有值的密钥，返回里 missing 是缺的名字
+ */
+export async function insertHttpTool(tx: Tx, ctx: TxCtx, input: HttpToolFields, options: { allowMissingSecrets?: boolean; audit?: Record<string, unknown> } = {}) {
+  const { used, missing } = await checkHttpTemplate(tx, input, options.allowMissingSecrets)
+  // 模型里的名字：没给就按 URL 路径最后一段生成，例如 …/v2/quotes → http.quotes
+  const slug =
+    input.http.url
+      .split("?")[0]!
+      .split("/")
+      .slice(3)
+      .filter((seg) => /^[\w-]+$/.test(seg))
+      .pop()
+      ?.toLowerCase() ?? "api"
+  const id = await freeId(toolExists(tx), input.id ?? `http.${slug}`)
+  await tx.insert(t.tools).values({ id, name: input.name, summary: summaryOf(input), description: input.description, source: "http", http: toolSpec(input), risk: input.risk })
+  const secrets = await saveHttpSecrets(tx, ctx, used, input.secrets)
+  await audit(tx, ctx.actor.id, "tool.create", "tools", id, { source: "http", name: input.name, secretsSet: secrets, ...(missing.length ? { secretsMissing: missing } : {}), ...options.audit })
+  return { id, missing }
+}
+
 export async function createHttpTool(ctx: WriteCtx, input: HttpToolFields) {
   assertCan(ctx.actor, "config.manage", {}, "只有主管能新建工具")
-  return ctx.db.transaction(async (tx) => {
-    const used = await checkHttpTemplate(tx, input)
-    // 模型里的名字：没给就按 URL 路径最后一段生成，例如 …/v2/quotes → http.quotes
-    const slug =
-      input.http.url
-        .split("?")[0]!
-        .split("/")
-        .slice(3)
-        .filter((seg) => /^[\w-]+$/.test(seg))
-        .pop()
-        ?.toLowerCase() ?? "api"
-    const id = await freeId(toolExists(tx), input.id ?? `http.${slug}`)
-    await tx.insert(t.tools).values({ id, name: input.name, summary: summaryOf(input), description: input.description, source: "http", http: toolSpec(input), risk: input.risk })
-    const secrets = await saveHttpSecrets(tx, ctx, used, input.secrets)
-    await audit(tx, ctx.actor.id, "tool.create", "tools", id, { source: "http", name: input.name, secretsSet: secrets })
-    return { id }
-  })
+  return ctx.db.transaction(async (tx) => ({ id: (await insertHttpTool(tx, ctx, input)).id }))
 }
 
 export async function updateHttpTool(ctx: WriteCtx, input: HttpToolFields & { id: string }) {
@@ -120,7 +131,7 @@ export async function updateHttpTool(ctx: WriteCtx, input: HttpToolFields & { id
     const [before] = await tx.select().from(t.tools).where(eq(t.tools.id, input.id))
     if (!before) throw notFound("工具", input.id)
     if (before.source !== "http") throw badRequest(before.source === "builtin" ? "内置工具由系统提供，不能改" : "MCP 工具要编辑它所在的服务器")
-    const used = await checkHttpTemplate(tx, input)
+    const { used } = await checkHttpTemplate(tx, input)
     const http = toolSpec(input)
     await tx.update(t.tools).set({ name: input.name, summary: summaryOf(input), description: input.description, http, risk: input.risk }).where(eq(t.tools.id, input.id))
     const secrets = await saveHttpSecrets(tx, ctx, used, input.secrets)
@@ -163,7 +174,8 @@ export async function restoreHttpTool(ctx: WriteCtx, input: { id: string; name: 
 
 // ---------- 全局密钥（HTTP 模板里的 {{名字}}） ----------
 
-async function secretUsers(db: DbOrTx, name: string) {
+/** 谁在用某个全局密钥：HTTP 工具模板里的 {{名字}}、通知渠道的地址（删除密钥、撤销导入前检查） */
+export async function secretUsers(db: DbOrTx, name: string) {
   const tools = await db
     .select({ id: t.tools.id, name: t.tools.name })
     .from(t.tools)
@@ -239,7 +251,7 @@ function checkMcpFields(input: McpServerFields) {
 }
 
 /** 环境变量 / 请求头的值：没填的保留已存的值；去掉的行连同密文一起删 */
-async function saveMcpEnv(tx: Tx, ctx: WriteCtx, serverId: string, env: McpServerFields["env"], previous: string[]) {
+async function saveMcpEnv(tx: Tx, ctx: TxCtx, serverId: string, env: McpServerFields["env"], previous: string[]) {
   for (const each of env) {
     const ref = { scope: "mcp_env" as const, refId: serverId, name: each.name }
     if (each.value) await putSecret(tx, ctx.keyring(), ref, each.value, ctx.actor.id)
@@ -275,25 +287,28 @@ async function saveMcpTools(tx: Tx, serverId: string, tools: NonNullable<McpServ
 
 export async function createMcpServer(ctx: WriteCtx, input: McpServerFields) {
   assertCan(ctx.actor, "config.manage", {}, "只有主管能新建 MCP 服务器")
-  return ctx.db.transaction(async (tx) => {
-    const target = checkMcpFields(input)
-    const id = await freeId(async (each) => (await tx.select({ id: t.mcpServers.id }).from(t.mcpServers).where(eq(t.mcpServers.id, each))).length > 0, `mcp-${slugOf(input.name) || "server"}`)
-    await tx.insert(t.mcpServers).values({
-      id,
-      name: input.name,
-      transport: input.transport,
-      command: input.transport === "stdio" ? target : null,
-      url: input.transport === "http" ? target : null,
-      // 还没连过：等「连接并读取工具」连上以后改成 connected
-      status: "error",
-      note: input.note,
-      envKeys: input.env.map((each) => each.name),
-    })
-    await saveMcpEnv(tx, ctx, id, input.env, [])
-    if (input.tools) await saveMcpTools(tx, id, input.tools)
-    await audit(tx, ctx.actor.id, "mcp_server.create", "mcp_servers", id, { name: input.name, transport: input.transport, env: input.env.map((each) => each.name), tools: input.tools?.map((tool) => tool.id) })
-    return { id }
+  return ctx.db.transaction((tx) => insertMcpServer(tx, ctx, input))
+}
+
+/** 在调用方的事务里新建 MCP 服务器（校验同 createMcpServer；还没连过，状态是未连接）。导入时也用它 */
+export async function insertMcpServer(tx: Tx, ctx: TxCtx, input: McpServerFields, auditDetail: Record<string, unknown> = {}) {
+  const target = checkMcpFields(input)
+  const id = await freeId(async (each) => (await tx.select({ id: t.mcpServers.id }).from(t.mcpServers).where(eq(t.mcpServers.id, each))).length > 0, `mcp-${slugOf(input.name) || "server"}`)
+  await tx.insert(t.mcpServers).values({
+    id,
+    name: input.name,
+    transport: input.transport,
+    command: input.transport === "stdio" ? target : null,
+    url: input.transport === "http" ? target : null,
+    // 还没连过：等「连接并读取工具」连上以后改成 connected
+    status: "error",
+    note: input.note,
+    envKeys: input.env.map((each) => each.name),
   })
+  await saveMcpEnv(tx, ctx, id, input.env, [])
+  if (input.tools) await saveMcpTools(tx, id, input.tools)
+  await audit(tx, ctx.actor.id, "mcp_server.create", "mcp_servers", id, { name: input.name, transport: input.transport, env: input.env.map((each) => each.name), tools: input.tools?.map((tool) => tool.id), ...auditDetail })
+  return { id }
 }
 
 export async function updateMcpServer(ctx: WriteCtx, input: McpServerFields & { id: string }) {

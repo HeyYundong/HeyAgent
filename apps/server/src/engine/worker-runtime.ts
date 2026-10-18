@@ -4,6 +4,7 @@ import { and, eq, isNotNull } from "drizzle-orm"
 
 import { startControlServer, type ControlServer } from "../browser/control.js"
 import { BrowserManager, setBrowserManager } from "../browser/manager.js"
+import { runImportRead } from "../imports/reader.js"
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
 import { runSession } from "./loop.js"
@@ -149,6 +150,26 @@ export async function startEngineWorker(
     QUEUES.todoCron,
     polling,
     async ([job]) => job && { result: await onTodoCron(db, job.data) }
+  )
+  // 导入：读包。worker 要退出时读到一半的抛错，让 pg-boss 交给下一个 worker 从头读
+  await boss.work<{ importId: string }>(
+    QUEUES.importRead,
+    { ...polling, localConcurrency: 2 },
+    async ([job]) => {
+      if (!job) return
+      const controller = new AbortController()
+      controllers.add(controller)
+      try {
+        const outcome = await runImportRead(db, job.data.importId, {
+          signal: AbortSignal.any([controller.signal, job.signal]),
+        })
+        if (outcome === "interrupted")
+          throw new Error("读包被打断（worker 退出），交给下一个 worker 从头读")
+        return { outcome }
+      } finally {
+        controllers.delete(controller)
+      }
+    }
   )
 
   // 兜底：还标着「执行中」的 session 都排一次（同一个 session 只会排一个；被杀掉的 worker 手里那个，心跳过期后也会被重试）

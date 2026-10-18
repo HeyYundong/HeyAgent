@@ -25,6 +25,7 @@ import {
   accountStatusSchema,
   GALLERY_EMBED_DIMENSIONS,
   checkpointKindSchema,
+  importStatusSchema,
   humanItemKindSchema,
   memoryEvidenceSchema,
   memoryStatusSchema,
@@ -38,6 +39,9 @@ import {
   toolSourceSchema,
   type HttpSpec,
   type HumanDetail,
+  type ImportPlan,
+  type ImportReadStep,
+  type ImportResult,
   type RuleCompileResult,
   type SessionDigest,
   type SessionSnapshot,
@@ -117,8 +121,12 @@ export const proxyKindEnum = pgEnum("proxy_kind", ["none", "socks5"])
 export const providerKindEnum = pgEnum("provider_kind", values(modelProviderKindSchema.options))
 export const providerStatusEnum = pgEnum("provider_status", values(providerStatusSchema.options))
 export const modelRoleEnum = pgEnum("model_role", values(modelRoleSchema.options))
-/** 密钥属于什么：HTTP 工具模板里的 {{名字}}、MCP 服务器的环境变量、模型服务的 API key、Chrome 代理密码 */
-export const secretScopeEnum = pgEnum("secret_scope", ["http_tool", "mcp_env", "model_provider", "browser_proxy", "browser_account"])
+/**
+ * 密钥属于什么：HTTP 工具模板里的 {{名字}}、MCP 服务器的环境变量、模型服务的 API key、Chrome 代理密码；
+ * import：导入时从 zip 包里挪出来的、人在确认时填的密钥值（ref_id = 导入 id），导入时转存成 http_tool 的全局密钥
+ */
+export const secretScopeEnum = pgEnum("secret_scope", ["http_tool", "mcp_env", "model_provider", "browser_proxy", "browser_account", "import"])
+export const importStatusEnum = pgEnum("import_status", values(importStatusSchema.options))
 
 // ---------- 新 id 用的序列（规则见 shared/ids.ts） ----------
 
@@ -130,6 +138,7 @@ export const humanItemNoSeq = pgSequence("human_item_no_seq", { startWith: 1 })
 export const todoNoSeq = pgSequence("todo_no_seq", { startWith: 1 })
 export const galleryNoSeq = pgSequence("gallery_no_seq", { startWith: 1 })
 export const apiKeyNoSeq = pgSequence("api_key_no_seq", { startWith: 1 })
+export const importNoSeq = pgSequence("import_no_seq", { startWith: 1 })
 
 // ---------- 账号（better-auth 的 4 张表，字段名照 better-auth 1.7.10 + admin 插件的要求） ----------
 
@@ -1089,4 +1098,53 @@ export const galleryEmbeddings = pgTable(
     primaryKey({ columns: [t.imageId, t.modelId] }),
     index("gallery_embeddings_hnsw_idx").using("hnsw", t.embedding.op("vector_cosine_ops")),
   ]
+)
+
+// ---------- 导入（2026-10-18） ----------
+
+/**
+ * 一次导入：上传的 zip 包（files 里 kind = import 的一行，解压出的文件放在文件目录的 imports/<id>/ 下）、
+ * AI 读包的过程和整理出的方案、确认到哪一步、导入后建了什么（撤销时按它删）。
+ * 包里挪出来的密钥值不在这里，在 secrets（scope = import，ref_id = 导入 id）。
+ */
+export const imports = pgTable(
+  "imports",
+  {
+    id: text("id").primaryKey(),
+    /** 上传的 zip；放弃导入时连文件一起删 */
+    fileId: text("file_id").references(() => files.id, { onDelete: "set null" }),
+    fileName: text("file_name").notNull(),
+    size: bigint("size", { mode: "number" }).notNull(),
+    /** 包里有多少个文件（解压后才知道） */
+    fileCount: integer("file_count").notNull().default(0),
+    /** AI 起的名字，读完才有 */
+    name: text("name"),
+    /** 上传时的补充说明 */
+    note: text("note").notNull().default(""),
+    /** 读包用的模型 */
+    modelId: text("model_id").notNull(),
+    status: importStatusEnum("status").notNull(),
+    readLog: jsonb("read_log").$type<ImportReadStep[]>().notNull().default([]),
+    /** 导入方案：读完写入，确认时随改随存 */
+    plan: jsonb("plan").$type<ImportPlan>(),
+    /** 确认到哪一步、看过哪几步（ImportStep） */
+    step: text("step").notNull().default("overview"),
+    visited: text("visited").array().notNull().default(sql`'{}'::text[]`),
+    /** 导入后建了什么、用了哪些已有的；撤销后加上 undo */
+    result: jsonb("result").$type<ImportResult>(),
+    /** 读包（含翻译规则）一共花了多少 */
+    costUsd: numeric("cost_usd", { precision: 12, scale: 6, mode: "number" }).notNull().default(0),
+    /** 没读成的原因 */
+    error: text("error"),
+    createdById: text("created_by_id")
+      .notNull()
+      .references(() => users.id),
+    readAt: ts("read_at"),
+    importedAt: ts("imported_at"),
+    importedById: text("imported_by_id").references(() => users.id, { onDelete: "set null" }),
+    undoneAt: ts("undone_at"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("imports_created_at_idx").on(t.createdAt.desc())]
 )

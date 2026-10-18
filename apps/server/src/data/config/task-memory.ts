@@ -1,13 +1,13 @@
 // 任务记忆的写操作：负责人和主管直接写、改、删；运行结束后让三方 AI 总结、提取候选（engine/digest.ts），
 // 候选存在 sessions.digest 里，人审核通过的才记进 task_memory_entries。每次写都记审计。
 import { count, eq, sql } from "drizzle-orm"
-import { TASK_MEMORY_MAX, type DigestReviewInput, type SessionDigest } from "@heyagent/shared"
+import { TASK_MEMORY_MAX, type Actor, type DigestReviewInput, type SessionDigest } from "@heyagent/shared"
 import { TRPCError } from "@trpc/server"
 
 import * as t from "../../db/schema.js"
 import { digestSession, normalizeCandidates } from "../../engine/digest.js"
 import { EngineError } from "../../engine/sessions.js"
-import { assertCan, audit, badRequest, conflict, notFound, type DbOrTx, type WriteCtx } from "./common.js"
+import { assertCan, audit, badRequest, conflict, notFound, type DbOrTx, type Tx, type WriteCtx } from "./common.js"
 
 const CANNOT = "只有任务负责人和主管能改任务记忆"
 const clip = (value: string) => value.slice(0, 200)
@@ -37,14 +37,20 @@ async function assertRoom(db: DbOrTx, taskId: string, adding: number) {
   if (n + adding > TASK_MEMORY_MAX) throw badRequest(`任务记忆最多 ${TASK_MEMORY_MAX} 条，现在已经有 ${n} 条。先删掉或合并几条旧的。`)
 }
 
+/** 在调用方的事务里记一条任务记忆（不查权限，调用方查；条数上限照查）。导入时也用它 */
+export async function insertTaskMemory(tx: Tx, actor: Actor, input: { taskId: string; content: string }, auditDetail: Record<string, unknown> = {}) {
+  const task = await loadTask(tx, input.taskId)
+  await assertRoom(tx, task.id, 1)
+  const [row] = await tx.insert(t.taskMemoryEntries).values({ taskId: task.id, content: input.content, createdById: actor.id }).returning({ id: t.taskMemoryEntries.id })
+  await audit(tx, actor.id, "task_memory.add", "tasks", task.id, { entryId: row!.id, content: clip(input.content), ...auditDetail })
+  return { id: row!.id }
+}
+
 export async function addTaskMemory(ctx: WriteCtx, input: { taskId: string; content: string }) {
   return ctx.db.transaction(async (tx) => {
     const task = await loadTask(tx, input.taskId)
     assertCan(ctx.actor, "task.manage", { ownerId: task.ownerId }, CANNOT)
-    await assertRoom(tx, task.id, 1)
-    const [row] = await tx.insert(t.taskMemoryEntries).values({ taskId: task.id, content: input.content, createdById: ctx.actor.id }).returning({ id: t.taskMemoryEntries.id })
-    await audit(tx, ctx.actor.id, "task_memory.add", "tasks", task.id, { entryId: row!.id, content: clip(input.content) })
-    return { id: row!.id }
+    return insertTaskMemory(tx, ctx.actor, input)
   })
 }
 

@@ -45,6 +45,8 @@ export const liveQueriesByTable: Record<string, string[]> = {
   // 图库：图的增删改（向量表不推，重算进度靠页面轮询 gallery.stats）
   gallery_images: ["gallery.list", "gallery.get", "gallery.stats", "gallery.tags"],
   api_keys: ["apiKeys.list"],
+  // 导入：读包进度、方案、导入后的状态
+  imports: ["imports.list", "imports.get"],
 }
 
 /** 某张表变了要重新拉的查询；不认识的表（或 "*"）返回 null，表示全部重新拉 */

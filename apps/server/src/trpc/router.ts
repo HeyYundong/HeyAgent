@@ -96,6 +96,7 @@ import { protectedProcedure, router, type Context, type SessionUser } from "./in
 import { browserRouter } from "./browser-router.js"
 import { engineRouter } from "./engine-router.js"
 import { apiKeysRouter, galleryRouter } from "./gallery-router.js"
+import { importsRouter } from "./imports-router.js"
 
 const idInput = z.object({ id: z.string().min(1) })
 
@@ -322,6 +323,9 @@ export const appRouter = router({
 
   /** API 密钥（只有主管）：外部系统调图库的 HTTP 接口和 MCP 用 */
   apiKeys: apiKeysRouter,
+
+  /** 导入（只有主管）：别的 agent 打的 zip 包，AI 读包整理成方案，确认后一次导入（上传 zip 走 HTTP 接口 /api/imports） */
+  imports: importsRouter,
 
   live: router({
     /**

@@ -58,6 +58,9 @@ const PAIR = new RegExp(String.raw`([?&]|^)(${KEYISH})=([^&#{\s]{4,})`, "gim") /
 const JSON_PAIR = new RegExp(String.raw`"(${KEYISH})"\s*:\s*"([^"{]{4,})"`, "gi") // "api_key": "…"
 const TOKEN = /\b(?:sk|pk|rk)[-_](?:live_|test_|or_|or-)?[A-Za-z0-9-]{8,}|\bAIza[\w-]{20,}|\bghp_\w{20,}|\bxox[abp]-[\w-]{10,}/g // 常见密钥长相
 
+/** 常见密钥长相（导入时在包里找明文密钥也用它）。每次返回新的正则（带 g 的正则有 lastIndex，不能共用） */
+export const secretTokenPattern = () => new RegExp(TOKEN.source, "g")
+
 export const snakeName = (value: string) =>
   value
     .toUpperCase()

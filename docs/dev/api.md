@@ -977,3 +977,67 @@ claude mcp add --transport http heyagent-gallery http://<host>:8080/api/gallery/
 ### 13.8 数据库（迁移 0014）
 
 `CREATE EXTENSION vector`（数据库镜像换成 `docker.io/pgvector/pgvector:0.8.7-pg18-trixie`）；新表 `api_keys`、`gallery_images`（tags 的 GIN、text 的 jsonb_path_ops GIN、sha256 唯一）、`gallery_embeddings`（`vector(1024)`、HNSW 余弦索引，主键 `(image_id, model_id)`）；`models.kind`（`chat` / `embedding`）；枚举 `model_role` 加 `embed`；序列 `gallery_no_seq` `api_key_no_seq`。`files.kind` 多了 `gallery` `gallery_thumb`。
+
+## 14. 导入（2026-10-18）
+
+别的 agent 打的 zip 包上传后，worker 里的读包 agent 读懂、整理成「导入方案」，主管在页面上一步步确认后一次导入，导入后能撤销。全部接口只有主管能用（`config.manage`），员工调用一律 `FORBIDDEN`（HTTP 是 403）。形状都在 `packages/shared/src/imports.ts`；代码在 `apps/server/src/imports/`；开发说明 `docs/dev/imports.md`。
+
+### 14.1 HTTP 接口
+
+| 接口 | 说明 |
+|---|---|
+| `POST /api/imports` | 上传。multipart：`file`（必填，只认开头是 `PK\x03\x04` 的 zip，不看扩展名）、`note`（补充说明，≤2000 字）、`modelId`（读包用的模型；不传用「规划」默认模型，传了要是库里有的聊天模型）。大小上限 `HEYAGENT_IMPORT_MAX_MB`（默认 `IMPORT_MAX_MB` = 200），超了 413。成功返回 `ImportRecord`（状态 `reading`），同一个事务里发了 `import.read`。错误都是 `{ error: "给人看的中文" }` |
+| `GET /api/imports/:id/file` | 下载原包（`application/zip`，附件下载） |
+
+上传的包存成 `files` 的一行（`kind = "import"`）；里面可能有明文密钥，`GET /api/files/:id` 对这类文件只给主管，员工 404。
+
+### 14.2 tRPC（`appRouter.imports`）
+
+| 接口 | 类型 | 输入 → 输出 | 说明 |
+|---|---|---|---|
+| `list` | query | — → `ImportRecord[]` | 新的在前 |
+| `get` | query | `{ id }` → `ImportDetail` | 含 `readLog`、`plan`、`step`、`visited`、`result`、`followUps`（只在 `imported` 时有，按库里现在的状态算 `done`） |
+| `savePlan` | mutation | `ImportSavePlanInput` → `{ id }` | 只有 `review` 能存；`planProblems` 不为空 `BAD_REQUEST` |
+| `setSecret` | mutation | `{ id, name, value }` → `{ name }` | 名字必须在 `plan.secrets` 里；值加密存进 `secrets`（`scope = import`，`ref_id` = 导入 id），方案里只把 `filled` 改成 true。值不进方案、审计、任何返回 |
+| `compileRule` | mutation | `{ id, key, name, trigger, action }` → `PlanRule` | 用「规划」模型翻译（花费加进这次导入）。翻译得进去 → `kind = new`、`include = true`、`compile`；翻译不进去 → `kind = unsupported`、`include = false`、`reason`。`existing` 的、`needsNewTools` 的规则 `BAD_REQUEST` |
+| `commit` | mutation | `{ id }` → `ImportDetail` | 一个事务建好全部（14.4）；不是 `review` 的 `CONFLICT`（重复导入也是）；中途任何一步出错整个回滚，报错带上是哪一项（例如「任务「xx」：负责人不存在」） |
+| `undo` | mutation | `{ id }` → `ImportDetail` | 只有 `imported` 能撤销（14.5），之后状态 `undone`，`result.undo` 写删了什么、留下了什么 |
+| `abandon` | mutation | `{ id }` → `{ id }` | `review` / `failed` / `undone` 能放弃：删记录、上传的包（行和磁盘文件）、解压目录、`scope = import` 的密钥 |
+| `stop` | mutation | `{ id }` → `{ id }` | `reading` → `failed`，`error` =「你停止了读包。」，正在做的那行标 `error`。worker 在下一步之前看到就退出 |
+| `reread` | mutation | `{ id, note?, modelId? }` → `{ id }` | `review` / `failed` → `reading`：方案、read_log、`scope = import` 的密钥清空，可以换模型、改说明，发 `import.read`。上一次读包的任务还没退出时（刚停止）`CONFLICT`「上一次读包还在收尾，过半分钟再试」 |
+| `attachMcpTools` | mutation | `{ id, serverId }` → `{ taskIds, toolIds }` | 只有 `imported`；服务器必须是这次导入新建或用到的；把它现在的全部工具加进方案里用到它的任务（已经有的不重复加）。还没读到工具 `CONFLICT` |
+
+实时推送：`imports` 表有触发器，`imports.list`、`imports.get` 跟着刷新（读包时每写一行 read_log 都会推）。
+
+### 14.3 读包（worker，队列 `import.read`）
+
+- 任务参数：`singletonKey` = 导入 id（stately），心跳，最多 60 分钟；读包自己跑满 55 分钟就记为没读成。进程挂了 pg-boss 重试时从头读。
+- 步骤（每步 read_log 一行）：解压（流式写盘；`node_modules`、`.git`、`__pycache__`、`venv`、`site-packages`、`dist`、`build`、`.cache` 这类依赖和缓存目录不解开）→ 找明文密钥 → 读包 agent → 对照现有配置 → 翻译规则（每条一行）→ 整理成导入方案。
+- 读包 agent 的工具（都只读）：`list_files { dir, depth }`（分层，默认根目录下两层，大目录折叠成一行）、`list_skills { dir }`（全部 SKILL.md 的元数据；超过 150 个先按目录给个数）、`read_file { path, from_line, max_lines }`（挪过密钥的文字，一次约 4 万字，整个读包约 60 万字）、`submit_plan`（扁平、全部必填的格式，代码转成 `ImportPlan`；不合格的把问题还给它改，最多改 2 次）。最多 150 步，花费上限 `HEYAGENT_IMPORT_MAX_COST_USD`（默认 5 美元）。
+- 读完：状态 `review`，通知上传的人（链接 `#/imports?id=IM-n`）；没读成：`failed`，`error` 写原因，同样通知。
+
+### 14.4 导入建了什么（`result`）
+
+顺序：密钥 → 工具 → 技能 → 共用记忆 → 规则 → 任务 → 任务记忆 → 附件。
+
+- 密钥：勾上的新工具引用的每个 `{{名字}}`：已有全局密钥 `reused`；这次导入有值 `created`（存成 `scope = http_tool` 的全局密钥）；都没有 `missing`。
+- 工具：`http` 新建（允许引用还没有值的密钥）；`mcp` 新建服务器（未连接、没有工具，环境变量值原样加密存，`{{名字}}` 运行时替换）；`builtin` / `existing` 直接用（existing 是 MCP 服务器时用它现有的全部工具）。`result.tools[].id` 是工具 id 或服务器 id。
+- 技能：`new` / `save_as_new` 新建并发布；`new_version` 存成已有技能的新一版（原来的工具留着，再加上包里的），`fromVersion` 是之前那版；`use_existing` 用已有的。任务用到的已有技能没发布的会发布（审计里写了原因）。
+- 规则：翻译过、文字没改过、不要新工具的新建并直接确认生效（`confirmed = true`）；其余新建不确认（导入后翻译确认，任务里已经选上了，确认后自动生效）；`existing` 用已有的。
+- 任务：全部校验同手动新建；`PlanTask.enabled === false` 的建成停用。任务记忆每个任务不超过 100 条。附件：文字文件存挪过密钥的版本，其他存原文件。
+- 每一样东西的审计 detail 里都带 `importId`；最后记 `import.commit`。
+
+### 14.5 撤销
+
+没跑过的任务删掉（任务记忆、附件跟着删，磁盘文件也删）；跑过的只停用（`kept`：「已经跑过 N 次，只停用，运行记录留着」）。新建的规则、技能、共用记忆没有任务再用就删，还被用着的留下并写原因；新建的 HTTP 工具、MCP 服务器没有任务、规则、技能再用就删；`new_version` 的技能再存一版，内容恢复成导入前那一版；新建的全局密钥没有工具模板、MCP 环境变量、通知渠道再引用就删。记 `import.undo`。
+
+### 14.6 还要人做的事（`followUps`）
+
+| kind | 什么时候有 | done | 去哪 / 按钮 |
+|---|---|---|---|
+| `login` | 任务的 `logins` 里 missing 的（同一个域名合成一件） | 每个用它的任务所选的 Chrome（空 = 全部）里这个平台有账号了 | `link` = `#/browsers?id=<第一个 Chrome>` |
+| `secret` | `result.secrets` 里 missing 的 | 全局密钥有了 | `#/tools` |
+| `mcp_connect` | 新建的 MCP 服务器 | 已连接、有工具（地址是本机的，说明里提醒先改地址） | `#/tools?id=<服务器 id>` |
+| `mcp_tools` | 服务器连上以后，方案里有任务用它 | 这些任务都选了它的工具 | `action = attach_mcp_tools`、`serverId` |
+| `rule_confirm` | 导入时没确认的新规则 | 规则已生效 | `#/rules?id=<规则 id>` |
+| `try_run` | 每个导入的任务 | 有过运行 | 启用的任务 `action = run_task`、`taskId`；停用的没有按钮，`link` = `#/tasks?id=<任务 id>`（`engine.runNow` 不跑停用的任务） |
