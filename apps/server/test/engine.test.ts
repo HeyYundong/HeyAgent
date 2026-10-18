@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net"
 import { fileURLToPath } from "node:url"
 import { setTimeout as sleep } from "node:timers/promises"
 
+import { cronSessionId, fmtDate } from "@heyagent/shared"
 import { and, eq, sql } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
@@ -12,6 +13,7 @@ import * as t from "../src/db/schema.js"
 import { syncTaskSchedule, syncTodo } from "../src/engine/api.js"
 import { sha256Hex } from "../src/engine/http.js"
 import { QUEUES } from "../src/engine/queue.js"
+import { onTaskCron } from "../src/engine/schedule.js"
 import { lineDiff } from "../src/engine/tools/builtin.js"
 import { login, query } from "./helpers.js"
 import {
@@ -895,6 +897,38 @@ describe("场景 10：cron 触发新 session", () => {
     expect(
       await ctx.worker.boss.getSchedule(QUEUES.taskCron, taskId)
     ).toBeNull()
+  }, 120_000)
+})
+
+describe("场景 10b：同一个任务一天定时触发很多次", () => {
+  it("连续 25 次都能开出 session，编号 R-<任务号>-<MMDD>[-k] 连续不重复；并发触发也不撞号", async () => {
+    useScript(
+      "test/s10b",
+      new Script(Array.from({ length: 40 }, () => step([text("做完了")])))
+    )
+    const taskId = await createTask(ctx.db, {
+      modelId: "test/s10b",
+      scheduleCron: "* * * * *",
+    })
+    const ids: string[] = []
+    for (let i = 0; i < 25; i++) {
+      const id = await onTaskCron(ctx.db, { taskId })
+      ids.push(id!)
+    }
+    const mmdd = fmtDate(new Date()).slice(5).replace("-", "")
+    expect(ids).toEqual(
+      Array.from({ length: 25 }, (_, i) => cronSessionId(taskId, mmdd, i + 1))
+    )
+
+    const burst = await Promise.all(
+      Array.from({ length: 5 }, () => onTaskCron(ctx.db, { taskId }))
+    )
+    expect([...burst].sort()).toEqual(
+      Array.from({ length: 5 }, (_, i) =>
+        cronSessionId(taskId, mmdd, 26 + i)
+      ).sort()
+    )
+    for (const id of [...ids, ...burst]) await waitStatus(ctx.db, id!, "done")
   }, 120_000)
 })
 

@@ -1,5 +1,5 @@
 // 新建一次运行：冻结任务配置（快照）、建检查点、关联附件、写第一条消息、排进 session.run。
-import { and, asc, count, eq, inArray } from "drizzle-orm"
+import { and, asc, count, eq, inArray, like, or } from "drizzle-orm"
 import {
   ALWAYS_ON_BUILTIN_TOOLS,
   BROWSER_TOOL_ID,
@@ -247,8 +247,26 @@ async function nextSessionId(
   attempt: number
 ): Promise<string> {
   if (source === "cron") {
+    // 当天已有的定时 session（R-<任务号>-<MMDD>、R-<任务号>-<MMDD>-k）里取最大的序号 +1。
+    // 并发撞号时外面重试，新事务能看到对方已提交的那条，自然往后排，不跳号
     const mmdd = fmtDate(now).slice(5).replace("-", "")
-    return cronSessionId(taskId, mmdd, attempt + 1)
+    const first = cronSessionId(taskId, mmdd)
+    const rows = await tx
+      .select({ id: t.sessions.id })
+      .from(t.sessions)
+      .where(
+        and(
+          eq(t.sessions.taskId, taskId),
+          or(eq(t.sessions.id, first), like(t.sessions.id, `${first}-%`))
+        )
+      )
+    const last = Math.max(
+      0,
+      ...rows.map((row) =>
+        row.id === first ? 1 : Number(row.id.slice(first.length + 1)) || 0
+      )
+    )
+    return cronSessionId(taskId, mmdd, last + 1)
   }
   const [row] = await tx
     .select({ n: count() })
@@ -402,7 +420,7 @@ export async function startSessionImpl(
       })
       return { sessionId }
     } catch (error) {
-      // 主键撞号（并发触发、同一天第二次 cron）：序号 +1 重试
+      // 主键撞号（并发触发）：序号 +1 重试
       if (isSessionIdConflict(error)) continue
       throw error
     }
