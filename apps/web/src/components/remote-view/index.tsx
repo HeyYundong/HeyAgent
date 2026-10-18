@@ -3,6 +3,7 @@
 // 工具栏 Button + InputGroup（地址栏，连接状态放在它右端）、标签页 Tabs、网页弹框 AlertDialog、加载 Spinner、关闭后 Empty；agent 的虚拟光标见 agent-cursor.tsx。
 // - 坐标按 meta.width/height（页面视口的 CSS 像素）换算；
 // - 键盘和输入法：焦点放在一个看不见的 textarea 上，组好的中文和粘贴的文字发 { t: "text" }，其余按键发 key 消息；
+// - 空白页（about:blank）：地址栏第一次自动拿到焦点，画面上提示先输网址；
 // - 没有操作权限（meta.canControl = false）时只读：不发任何输入，按钮和标签页都禁用，地址栏只读（还能选中复制）。
 import * as React from "react"
 import { ArrowLeftIcon, ArrowRightIcon, EyeIcon, MonitorOffIcon, MousePointerClickIcon, RotateCwIcon, UnplugIcon, XIcon } from "lucide-react"
@@ -72,6 +73,9 @@ export function RemoteView({ browserId, className, onClosed, viewOnly }: RemoteV
 
 type View = ReturnType<typeof useRemoteView>
 
+/** Chrome 刚打开、还没去任何网址：画面上没有能输入的地方，要先在地址栏输网址 */
+const isBlankPage = (url?: string) => !url || url === "about:blank"
+
 const STATUS_TEXT: Record<RemoteViewState["status"], string> = { connecting: "连接中", open: "已连接", reconnecting: "重连中", closed: "已断开" }
 
 /** 连接状态：图标 + 文字，放在地址栏右端 */
@@ -90,6 +94,16 @@ function Toolbar({ view, canControl }: { view: View; canControl: boolean }) {
   const url = view.meta?.url ?? ""
   const [draft, setDraft] = React.useState(url)
   const [editing, setEditing] = React.useState(false)
+  const addressRef = React.useRef<HTMLInputElement | null>(null)
+  const autoFocused = React.useRef(false)
+  // 是空白页就把焦点放到地址栏（选中原来的字，直接打就替换掉）；只在第一次连上时做，不抢人后来的焦点
+  const blank = canControl && view.hasFrame && isBlankPage(view.meta?.url)
+  React.useEffect(() => {
+    if (!blank || autoFocused.current) return
+    autoFocused.current = true
+    addressRef.current?.focus()
+    addressRef.current?.select()
+  }, [blank])
   // 没在改的时候，地址栏跟着页面走
   if (!editing && draft !== url) setDraft(url)
 
@@ -120,7 +134,9 @@ function Toolbar({ view, canControl }: { view: View; canControl: boolean }) {
       <form onSubmit={go} className="min-w-0 flex-1">
         <InputGroup>
           <InputGroupInput
+            ref={addressRef}
             aria-label="地址栏"
+            placeholder="输入网址，回车打开"
             className="font-mono"
             spellCheck={false}
             value={draft}
@@ -321,6 +337,12 @@ function Screen({ view, canvasRef, canControl, closedReason }: { view: View; can
         }}
       />
       <AgentCursor onAgent={view.onAgent} width={meta?.width} height={meta?.height} canControl={canControl} />
+      {view.hasFrame && canControl && !closedReason && isBlankPage(meta?.url) && (
+        // 不挡鼠标：点画面照样能操作
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-4">
+          <p className="border bg-background px-4 py-3 text-sm text-muted-foreground">现在是空白页，没有能输入的地方。先在上面的地址栏输入网址，回车打开。</p>
+        </div>
+      )}
       {!view.hasFrame && !closedReason && (
         <div className="absolute inset-0 flex items-center justify-center gap-2 text-sm text-muted-foreground">
           <Spinner />
