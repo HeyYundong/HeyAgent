@@ -1,7 +1,6 @@
 import * as React from "react"
 import {
   BookOpenIcon,
-  BotIcon,
   BrainIcon,
   ChevronsUpDownIcon,
   CpuIcon,
@@ -39,7 +38,6 @@ import {
   SidebarFooter,
   SidebarGroup,
   SidebarGroupLabel,
-  SidebarHeader,
   SidebarMenu,
   SidebarMenuBadge,
   SidebarMenuButton,
@@ -113,20 +111,6 @@ export function AppSidebar({ onSignOut }: { onSignOut: () => void }) {
 
   return (
     <Sidebar collapsible="icon">
-      <SidebarHeader>
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton size="lg" render={<a href={href("tasks")} />}>
-              <BrandMark />
-              <div className="grid flex-1 text-left leading-tight">
-                <span className="truncate text-sm font-medium">HeyAgent</span>
-                <span className="truncate text-xs text-muted-foreground">控制台</span>
-              </div>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
-      </SidebarHeader>
-
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupLabel>工作</SidebarGroupLabel>
@@ -191,18 +175,4 @@ export function AppSidebar({ onSignOut }: { onSignOut: () => void }) {
       <ChangePasswordDialog key={changingPassword ? "open" : "closed"} open={changingPassword} onOpenChange={setChangingPassword} />
     </Sidebar>
   )
-}
-
-/** 系统 logo：public/logo-64.png（由 logo.png 缩出来的）；图片加载失败时显示机器人图标 */
-function BrandMark() {
-  const [failed, setFailed] = React.useState(false)
-
-  if (failed) {
-    return (
-      <div className="flex aspect-square size-8 items-center justify-center bg-sidebar-primary text-sidebar-primary-foreground">
-        <BotIcon className="size-4" />
-      </div>
-    )
-  }
-  return <img src="./logo-64.png" alt="HeyAgent" className="aspect-square size-8 object-cover" onError={() => setFailed(true)} />
 }
