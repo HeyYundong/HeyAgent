@@ -54,15 +54,18 @@ interface NavItem {
   id: PageId
   title: string
   icon: LucideIcon
-  /** 只有主管看得见 */
-  adminOnly?: boolean
 }
 
 export const NAV_WORK: NavItem[] = [
   { id: "tasks", title: "任务", icon: LayoutGridIcon },
   { id: "todos", title: "待办", icon: KanbanIcon },
   { id: "sessions", title: "Session", icon: HistoryIcon },
+]
+
+/** agent 干活时用的东西：图片、浏览器 */
+export const NAV_RESOURCES: NavItem[] = [
   { id: "gallery", title: "图库", icon: ImagesIcon },
+  { id: "browsers", title: "浏览器", icon: GlobeIcon },
 ]
 
 export const NAV_CONFIG: NavItem[] = [
@@ -70,15 +73,18 @@ export const NAV_CONFIG: NavItem[] = [
   { id: "skills", title: "技能", icon: BookOpenIcon },
   { id: "rules", title: "规则", icon: ShieldCheckIcon },
   { id: "tools", title: "工具", icon: WrenchIcon },
-  { id: "browsers", title: "浏览器", icon: GlobeIcon },
   { id: "models", title: "模型", icon: CpuIcon },
-  { id: "users", title: "用户", icon: UsersIcon, adminOnly: true },
-  { id: "settings", title: "设置", icon: SettingsIcon, adminOnly: true },
+]
+
+/** 只有主管看得见，员工那里整组不显示 */
+export const NAV_ADMIN: NavItem[] = [
+  { id: "users", title: "用户", icon: UsersIcon },
+  { id: "settings", title: "设置", icon: SettingsIcon },
 ]
 
 export const NAV_LEARN: NavItem = { id: "learn", title: "看懂架构", icon: LightbulbIcon }
 
-export const NAV_ALL: NavItem[] = [...NAV_WORK, ...NAV_CONFIG, NAV_LEARN]
+export const NAV_ALL: NavItem[] = [...NAV_WORK, ...NAV_RESOURCES, ...NAV_CONFIG, ...NAV_ADMIN, NAV_LEARN]
 
 export function AppSidebar({ onSignOut }: { onSignOut: () => void }) {
   const { page } = useRoute()
@@ -120,9 +126,19 @@ export function AppSidebar({ onSignOut }: { onSignOut: () => void }) {
           <SidebarMenu>{NAV_WORK.map((item) => renderItem(item, item.id === "todos" ? needsMe : undefined))}</SidebarMenu>
         </SidebarGroup>
         <SidebarGroup>
-          <SidebarGroupLabel>配置</SidebarGroupLabel>
-          <SidebarMenu>{NAV_CONFIG.filter((item) => !item.adminOnly || isAdmin).map((item) => renderItem(item))}</SidebarMenu>
+          <SidebarGroupLabel>资源</SidebarGroupLabel>
+          <SidebarMenu>{NAV_RESOURCES.map((item) => renderItem(item))}</SidebarMenu>
         </SidebarGroup>
+        <SidebarGroup>
+          <SidebarGroupLabel>配置</SidebarGroupLabel>
+          <SidebarMenu>{NAV_CONFIG.map((item) => renderItem(item))}</SidebarMenu>
+        </SidebarGroup>
+        {isAdmin && (
+          <SidebarGroup>
+            <SidebarGroupLabel>管理</SidebarGroupLabel>
+            <SidebarMenu>{NAV_ADMIN.map((item) => renderItem(item))}</SidebarMenu>
+          </SidebarGroup>
+        )}
         <SidebarGroup>
           <SidebarGroupLabel>帮助</SidebarGroupLabel>
           <SidebarMenu>{renderItem(NAV_LEARN)}</SidebarMenu>

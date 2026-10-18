@@ -44,6 +44,8 @@ export default function ModelsPage() {
   const [confirmDelete, setConfirmDelete] = React.useState(false)
   const id = params.get("id")
   const selected = findById(providers, id)
+  // 进来时（没选东西）右边直接显示默认设置；窄屏照样先看列表，所以 hasSelection 不算这种情况
+  const showDefaults = id === "defaults" || !id
   const models = providers.flatMap((p) => p.models)
   const nameOf = (modelId: string) => models.find((m) => m.id === modelId)?.name ?? modelId
 
@@ -97,7 +99,7 @@ export default function ModelsPage() {
           list={
             <>
               <PickGroup>
-                <PickItem to={href("models", { id: "defaults" })} selected={id === "defaults"} title="默认设置"
+                <PickItem to={href("models", { id: "defaults" })} selected={showDefaults} title="默认设置"
                   description={`执行 ${nameOf(defaults.run)} · 验收 ${nameOf(defaults.verify)}`} />
               </PickGroup>
               <PickGroup label="模型服务">
@@ -110,7 +112,7 @@ export default function ModelsPage() {
             </>
           }
           detail={
-            id === "defaults" ? (
+            showDefaults ? (
               <DetailPanel title="默认设置" meta={`新建任务时预先选好的模型，建任务时还能改。${isAdmin ? "" : "只有主管能改默认设置。"}`}>
                 <DefaultsSection key={Object.values(defaults).join()} providers={providers} defaults={defaults} readOnly={!isAdmin} nameOf={nameOf}
                   saving={saveDefaults.isPending} onSave={(next) => saveDefaults.mutate(next)} />

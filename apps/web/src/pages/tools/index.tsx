@@ -50,9 +50,10 @@ export default function ToolsPage() {
   // MCP 服务器也能直接选中（还没读取工具的服务器，列表里只有它自己）
   const selectedServer = findById(servers, selected?.serverId ?? id)
   const groups = [
-    ...servers.map((s) => ({ label: `MCP · ${s.name}`, server: s, items: list.filter((t) => t.serverId === s.id) })),
-    { label: "HTTP 接口", server: undefined, items: list.filter((t) => t.source === "http") },
-    { label: "内置 · 系统提供", server: undefined, items: list.filter((t) => t.source === "builtin") },
+    ...servers.map((s) => ({ key: s.id, label: `MCP · ${s.name}`, server: s, items: list.filter((t) => t.serverId === s.id) })),
+    { key: "http", label: "HTTP 接口", server: undefined, items: list.filter((t) => t.source === "http") },
+    // 内置工具不加组标题（用户要求），说明在详情里
+    { key: "builtin", label: undefined, server: undefined, items: list.filter((t) => t.source === "builtin") },
   ].filter((group) => group.items.length > 0 || group.server)
   const empty = list.length === 0 && servers.length === 0
 
@@ -90,7 +91,7 @@ export default function ToolsPage() {
         <MasterDetail
           hasSelection={!!selected || !!selectedServer}
           list={groups.map((group) => (
-            <PickGroup key={group.label} label={group.label}>
+            <PickGroup key={group.key} label={group.label}>
               {group.server && group.items.length === 0 && (
                 <PickItem to={href("tools", { id: group.server.id })} selected={id === group.server.id} title={group.server.name} description="还没读取工具" badge={<Badge variant="outline">服务器</Badge>} />
               )}
