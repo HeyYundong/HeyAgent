@@ -5,7 +5,7 @@ import { basename } from "node:path"
 import { readFile } from "node:fs/promises"
 
 import { and, eq } from "drizzle-orm"
-import { checkCompiledRule, planMemoryIncluded, planProblems, taskInputSchema, type ImportPlan, type ImportResult } from "@heyagent/shared"
+import { checkCompiledRule, cronText, planMemoryIncluded, planProblems, taskInputSchema, type ImportPlan, type ImportResult } from "@heyagent/shared"
 
 import { audit, badRequest, conflict, findSecret, notFound, putSecret, type Tx, type WriteCtx } from "../data/config/common.js"
 import { insertMemory } from "../data/config/memories.js"
@@ -191,7 +191,8 @@ async function commitInTx(tx: Tx, ctx: WriteCtx, importId: string, written: stri
       steps: task.steps.map((step) => ({ text: step.text, wait: step.wait, ...(step.checkpoint ? { checkpoint: step.checkpoint } : {}) })),
       modelId: task.modelId ?? undefined,
       ownerId: task.ownerId,
-      schedule: task.schedule,
+      // 已经读好的方案里可能还是 AI 写的说法：导入时统一换成系统按 cron 生成的
+      schedule: task.schedule ? { cron: task.schedule.cron, text: cronText(task.schedule.cron) ?? task.schedule.cron } : null,
       // 包里写了默认关闭自动执行的：建成停用的任务
       enabled: task.enabled ?? true,
       memoryIds: task.memoryKeys.flatMap((key) => memoryIdByKey.get(key) ?? []),

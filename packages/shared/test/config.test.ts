@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { applySkillDiff, can, hasPlainSecret, isValidCron, moveSecrets, nextCronRun, secretNameSchema, taskInputSchema, templatePlaceholders } from "../src/index.js"
+import { applySkillDiff, can, cronText, hasPlainSecret, isValidCron, moveSecrets, nextCronRun, secretNameSchema, taskInputSchema, templatePlaceholders } from "../src/index.js"
 
 describe("明文密钥识别", () => {
   it("请求头、URL 参数、JSON 里的密钥都能认出来，换成 {{名字}}", () => {
@@ -68,5 +68,16 @@ describe("新加的权限", () => {
     expect(can({ id: "a", isAdmin: true }, "user.manage", {})).toBe(true)
     expect(can({ id: "b", isAdmin: false }, "user.manage", {})).toBe(false)
     expect(can({ id: "b", isAdmin: false }, "settings.manage", {})).toBe(false)
+  })
+})
+
+describe("cronText", () => {
+  it("translates common schedules", () => {
+    expect(cronText("0 10 * * 1-5")).toBe("每个工作日 10:00")
+    expect(cronText("0 9 * * *")).toBe("每天 09:00")
+    expect(cronText("* 9-11,13-17 * * 1-5")).toBe("每个工作日 09:00–12:00、13:00–18:00 每分钟")
+    expect(cronText("*/5 9-17 * * *")).toBe("每天 09:00–18:00 每 5 分钟")
+    expect(cronText("*/30 * * * *")).toBe("每 30 分钟")
+    expect(cronText("bad")).toBeNull()
   })
 })

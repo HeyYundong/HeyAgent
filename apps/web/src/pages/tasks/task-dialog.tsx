@@ -79,12 +79,12 @@ function usePickOptions(picked: Partial<Record<PickKey, string[]>>, originalRule
   }
 }
 
-export function MultiPick({ id, label, options, value, onChange, description, notes }: { id: string; label: string; options: Option[]; value: string[]; onChange: (value: string[]) => void; description?: string; notes?: string[] }) {
+export function MultiPick({ id, label, options, value, onChange, description, notes, hideLabel = false }: { id: string; label: string; options: Option[]; value: string[]; onChange: (value: string[]) => void; description?: string; notes?: string[]; /** 外面已经有标题时（例如导入向导的任务卡片）只给读屏用 */ hideLabel?: boolean }) {
   const anchor = useComboboxAnchor()
   const labelOf = (v: string) => options.find((o) => o.value === v)?.label ?? v
   return (
     <Field>
-      <FieldLabel htmlFor={id}>{label}</FieldLabel>
+      <FieldLabel htmlFor={id} className={hideLabel ? "sr-only" : undefined}>{label}</FieldLabel>
       {/* Base UI 默认按 Esc 会清空全部已选，这里忽略，免得关下拉时把选好的丢掉 */}
       <Combobox multiple items={options.map((o) => o.value)} value={value} onValueChange={(next: string[], details) => details.reason !== "escape-key" && onChange(next)} itemToStringLabel={labelOf}>
         <ComboboxChips ref={anchor}>

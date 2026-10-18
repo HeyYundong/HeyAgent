@@ -15,7 +15,6 @@ import {
   FileTextIcon,
   GlobeIcon,
   KeyRoundIcon,
-  LanguagesIcon,
   LayoutGridIcon,
   PackageCheckIcon,
   PaperclipIcon,
@@ -52,6 +51,9 @@ import { toast } from "@/components/ui/toast"
 import { useBrowsersQuery, useModels, useStaffName, useStaffQuery, useToolsQuery } from "@/lib/data"
 import { errorMessage, useAction } from "@/lib/mutations"
 import { trpc, trpcClient } from "@/lib/trpc"
+
+import { cronText } from "@/pages/tasks/cron"
+import { MultiPick } from "@/pages/tasks/task-dialog"
 
 import { RuleEditDialog, SkillDiffDialog, SkillEditDialog, syncSecrets, TaskEditDialog, ToolEditDialog } from "./edit-dialogs"
 import { baseName, memoryOn, missingLogins, planCounts, STEP_LABEL, stepsOf, taskUsesBrowser, toolTitle } from "./parts"
@@ -314,11 +316,19 @@ function useProfileLabel() {
   return (ids: string[]) => (ids.length ? ids.map((id) => profiles.find((profile) => profile.id === id)?.name ?? id).join("、") : "全部 Chrome")
 }
 
+/** 任务卡片上选 Chrome：不选 = 全部都能用 */
+function ChromePick({ task, onChange }: { task: PlanTask; onChange: (ids: string[]) => void }) {
+  const profiles = useBrowsersQuery().data ?? []
+  const options = profiles.map((profile) => ({ value: profile.id, label: profile.name, hint: profile.description }))
+  return <MultiPick id={`import-chrome-${task.key}`} label="Chrome 配置" hideLabel options={options} value={task.browserProfileIds} onChange={onChange} />
+}
+
 function TasksStep({ plan, updatePlan }: { plan: ImportPlan; updatePlan: UpdatePlan }) {
   const [editing, setEditing] = React.useState<PlanTask | null>(null)
   const staff = useStaffQuery().data ?? []
   const { models, defaults, modelName } = useModels()
   const profileLabel = useProfileLabel()
+  const profiles = useBrowsersQuery().data
   const setTask = (key: string, patch: Partial<PlanTask>) => updatePlan((current) => ({ ...current, tasks: current.tasks.map((task) => (task.key === key ? { ...task, ...patch } : task)) }))
   const ownerItems = staff.map((person) => ({ value: person.id, label: person.title ? `${person.name}（${person.title}）` : person.name }))
 
@@ -326,7 +336,7 @@ function TasksStep({ plan, updatePlan }: { plan: ImportPlan; updatePlan: UpdateP
     <>
       {plan.tasks.map((task) => {
         const browser = taskUsesBrowser(plan, task) || task.browserProfileIds.length > 0 || task.allowedDomains.length > 0
-        const missing = missingLogins(task)
+        const missing = missingLogins(task, profiles)
         return (
           <Card key={task.key} size="sm">
             <CardHeader>
@@ -385,7 +395,7 @@ function TasksStep({ plan, updatePlan }: { plan: ImportPlan; updatePlan: UpdateP
                 <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
                   <Meta label="运行" hint={task.schedule ? `cron ${task.schedule.cron}` : undefined}>
                     <span className="flex flex-col gap-2">
-                      <span>{task.schedule ? `定时：${task.schedule.text}` : "按需运行（点「立即运行」才跑）"}</span>
+                      <span>{task.schedule ? `定时：${cronText(task.schedule.cron) ?? task.schedule.cron}` : "按需运行（点「立即运行」才跑）"}</span>
                       <Field orientation="horizontal" className="w-auto">
                         <Checkbox id={`import-enable-${task.key}`} checked={taskEnabled(task)} onCheckedChange={(checked) => setTask(task.key, { enabled: Boolean(checked) })} />
                         <FieldLabel htmlFor={`import-enable-${task.key}`} className="font-normal">
@@ -423,8 +433,11 @@ function TasksStep({ plan, updatePlan }: { plan: ImportPlan; updatePlan: UpdateP
                     />
                   </Meta>
                   {browser && (
-                    <Meta label="浏览器">
-                      {profileLabel(task.browserProfileIds)} · {task.allowedDomains.length ? `只许打开 ${task.allowedDomains.join("、")}` : "网址不限"}
+                    <Meta label="浏览器" hint="不选 = 全部 Chrome 都能用，agent 按每个配置的说明自己选。网址白名单在「修改」里设。">
+                      <span className="flex flex-col gap-1">
+                        <ChromePick task={task} onChange={(ids) => setTask(task.key, { browserProfileIds: ids })} />
+                        <span className="text-xs text-muted-foreground">{task.allowedDomains.length ? `只许打开 ${task.allowedDomains.join("、")}` : "网址不限"}</span>
+                      </span>
                     </Meta>
                   )}
                   <Meta label="用到的配置" hint="在后面几步确认。哪一项不导入，这里就跟着去掉。">
@@ -849,12 +862,11 @@ function Understood({ plan, rule }: { plan: ImportPlan; rule: PlanRule }) {
   const stale = rule.compile && (rule.compile.trigger !== rule.trigger || rule.compile.action !== rule.action)
   if (!rule.needsNewTools && rule.compile && !stale) return null
   return (
-    <p className="mt-1 flex items-start gap-1.5 text-sm text-muted-foreground">
-      <LanguagesIcon className="mt-0.5 size-3.5 shrink-0" />
+    <ItemDescription className="line-clamp-none">
       {rule.needsNewTools
-        ? `要用到这次才导入的工具（${rule.toolKeys.map((key) => toolTitle(plan, key)).join("、")}），导入前翻译不了。导入后到「规则」页翻译、确认，确认前不生效。`
-        : `${stale ? "文字改过，还没重新翻译。" : "还没翻译。"}点「修改」翻译一次；不翻译也能导入，导入后到「规则」页确认。`}
-    </p>
+        ? `用到这次才导入的工具（${rule.toolKeys.map((key) => toolTitle(plan, key)).join("、")}），导入后到「规则」页确认才生效。`
+        : `${stale ? "文字改过，还没重新翻译" : "还没翻译"}：点「修改」翻译，或者导入后到「规则」页确认。`}
+    </ItemDescription>
   )
 }
 
@@ -1305,7 +1317,7 @@ function useFollowUpPreview(plan: ImportPlan): FollowUpPreview[] {
 
   const logins = new Map<string, { profile: string; name: string; tasks: number }>()
   for (const task of tasks)
-    for (const login of missingLogins(task)) {
+    for (const login of missingLogins(task, profiles)) {
       const key = `${profileLabel(task.browserProfileIds)}|${login.name}`
       const current = logins.get(key)
       logins.set(key, { profile: profileLabel(task.browserProfileIds), name: login.name, tasks: (current?.tasks ?? 0) + 1 })

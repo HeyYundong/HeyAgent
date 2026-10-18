@@ -14,7 +14,7 @@ import {
   type PlanTool,
   type PlanWarning,
 } from "@heyagent/shared"
-import { isValidCron } from "@heyagent/shared"
+import { cronText, isValidCron } from "@heyagent/shared"
 
 import type { ImportCatalog } from "./catalog.js"
 import { diffNote, lineDiff } from "./diff.js"
@@ -229,7 +229,8 @@ export function organizePlan(input: ImportPlan, ctx: OrganizeContext): ImportPla
       task.modelId = null
     }
     if (task.schedule) {
-      if (isValidCron(task.schedule.cron)) task.schedule = { cron: task.schedule.cron.trim(), text: task.schedule.text.trim() || task.schedule.cron.trim() }
+      // 说法用系统按 cron 生成的（和任务页一致），不用读包 AI 自己写的
+      if (isValidCron(task.schedule.cron)) task.schedule = { cron: task.schedule.cron.trim(), text: cronText(task.schedule.cron) ?? task.schedule.cron.trim() }
       else {
         warn(`任务「${task.title.slice(0, 40)}」没设定时`, `原来的定时「${task.schedule.cron}」看不懂（要 5 段 cron）。导入后到任务里设。`)
         task.schedule = null

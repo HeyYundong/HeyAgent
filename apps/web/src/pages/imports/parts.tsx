@@ -116,8 +116,13 @@ export const taskUsesBrowser = (plan: ImportPlan, task: PlanTask) =>
 /** 包内路径只显示文件名 */
 export const baseName = (path: string) => path.split("/").filter(Boolean).pop() ?? path
 
-/** 「logins 里缺的平台」：所选 Chrome 里还没有这个平台的账号 */
-export const missingLogins = (task: PlanTask) => task.logins.filter((login) => login.missing)
+/** 「logins 里缺的平台」：所选 Chrome（没选 = 全部）里还没有这个平台的账号。
+ * 给了 Chrome 列表就按现在选的重新算（人在向导里换了 Chrome）；没给就用读包时算好的 missing */
+export function missingLogins(task: PlanTask, profiles?: { id: string; sites: { platformId: string }[] }[]) {
+  if (!profiles) return task.logins.filter((login) => login.missing)
+  const chosen = task.browserProfileIds.length ? profiles.filter((profile) => task.browserProfileIds.includes(profile.id)) : profiles
+  return task.logins.filter((login) => !login.platformId || !chosen.some((profile) => profile.sites.some((site) => site.platformId === login.platformId)))
+}
 
 // ---------- 打包说明 ----------
 
