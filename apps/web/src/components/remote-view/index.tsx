@@ -46,6 +46,7 @@ export function RemoteView({ browserId, className, onClosed, viewOnly }: RemoteV
   const { status, meta, send } = view
   const canControl = status === "open" && Boolean(meta?.canControl)
   const closedReason = status === "closed" ? (view.reason ?? "远程画面已断开") : undefined
+  const opening = useOpening(meta?.url)
 
   React.useEffect(() => {
     if (closedReason) onClosed?.(closedReason)
@@ -53,9 +54,9 @@ export function RemoteView({ browserId, className, onClosed, viewOnly }: RemoteV
 
   return (
     <div className={cn("flex min-w-0 flex-col gap-2", className)}>
-      <Toolbar view={view} canControl={canControl} />
+      <Toolbar view={view} canControl={canControl} opening={opening} />
       {meta && meta.tabs.length > 1 && <BrowserTabs view={view} canControl={canControl} />}
-      <Screen view={view} canvasRef={canvasRef} canControl={canControl} closedReason={closedReason} />
+      <Screen view={view} canvasRef={canvasRef} canControl={canControl} closedReason={closedReason} openingUrl={opening.url} />
       <p className="text-xs text-muted-foreground">
         {canControl
           ? "点一下画面就能直接操作：打字、回车、滚动都会发到服务器上的 Chrome。中文用本机输入法，粘贴用 Ctrl+V。看不到 Chrome 自己的地址栏，用上面的地址栏。"
@@ -73,13 +74,30 @@ export function RemoteView({ browserId, className, onClosed, viewOnly }: RemoteV
 
 type View = ReturnType<typeof useRemoteView>
 
+/** 地址栏回车以后到页面地址变了之前算「正在打开」（慢的网站要好几秒，不然人不知道有没有在动）；30 秒还没变就不再显示 */
+function useOpening(currentUrl?: string) {
+  const [opening, setOpening] = React.useState<{ url: string; from?: string } | null>(null)
+  if (opening && currentUrl !== opening.from) setOpening(null)
+  React.useEffect(() => {
+    if (!opening) return
+    const timer = setTimeout(() => setOpening(null), 30_000)
+    return () => clearTimeout(timer)
+  }, [opening])
+  return {
+    url: opening?.url,
+    start: React.useCallback((url: string) => setOpening({ url, from: currentUrl }), [currentUrl]),
+  }
+}
+type Opening = ReturnType<typeof useOpening>
+
 /** Chrome 刚打开、还没去任何网址：画面上没有能输入的地方，要先在地址栏输网址 */
 const isBlankPage = (url?: string) => !url || url === "about:blank"
 
 const STATUS_TEXT: Record<RemoteViewState["status"], string> = { connecting: "连接中", open: "已连接", reconnecting: "重连中", closed: "已断开" }
 
 /** 连接状态：图标 + 文字，放在地址栏右端 */
-function StatusText({ view, canControl }: { view: View; canControl: boolean }) {
+function StatusText({ view, canControl, opening }: { view: View; canControl: boolean; opening: boolean }) {
+  if (view.status === "open" && opening) return <InputGroupText><Spinner />打开中</InputGroupText>
   if (view.status === "open" && view.meta && !view.meta.canControl)
     return <InputGroupText><EyeIcon />只读</InputGroupText>
   if (view.status === "connecting" || view.status === "reconnecting")
@@ -90,7 +108,7 @@ function StatusText({ view, canControl }: { view: View; canControl: boolean }) {
 }
 
 /** 后退 / 前进 / 刷新 + 地址栏 + 连接状态 */
-function Toolbar({ view, canControl }: { view: View; canControl: boolean }) {
+function Toolbar({ view, canControl, opening }: { view: View; canControl: boolean; opening: Opening }) {
   const url = view.meta?.url ?? ""
   const [draft, setDraft] = React.useState(url)
   const [editing, setEditing] = React.useState(false)
@@ -101,17 +119,23 @@ function Toolbar({ view, canControl }: { view: View; canControl: boolean }) {
   React.useEffect(() => {
     if (!blank || autoFocused.current) return
     autoFocused.current = true
+    // 这时 focus 事件里拿到的 canControl 还是旧的，直接在这里进入编辑
+    setEditing(true)
     addressRef.current?.focus()
     addressRef.current?.select()
   }, [blank])
-  // 没在改的时候，地址栏跟着页面走
-  if (!editing && draft !== url) setDraft(url)
+  // 没在改、也没在打开的时候，地址栏跟着页面走（打开中显示刚输的网址）
+  if (!editing && !opening.url && draft !== url) setDraft(url)
 
   function go(event: React.FormEvent) {
     event.preventDefault()
     if (!canControl) return
     const next = normalizeAddress(draft)
-    if (next) view.send({ t: "nav", action: "goto", url: next })
+    if (next) {
+      view.send({ t: "nav", action: "goto", url: next })
+      opening.start(next)
+      setDraft(next)
+    }
     setEditing(false)
     ;(document.activeElement as HTMLElement | null)?.blur()
   }
@@ -153,7 +177,7 @@ function Toolbar({ view, canControl }: { view: View; canControl: boolean }) {
             }}
           />
           <InputGroupAddon align="inline-end">
-            <StatusText view={view} canControl={canControl} />
+            <StatusText view={view} canControl={canControl} opening={Boolean(opening.url)} />
           </InputGroupAddon>
         </InputGroup>
       </form>
@@ -189,7 +213,7 @@ function BrowserTabs({ view, canControl }: { view: View; canControl: boolean }) 
 }
 
 /** 画面 + 输入：鼠标在 canvas 上，键盘和输入法在看不见的 textarea 上 */
-function Screen({ view, canvasRef, canControl, closedReason }: { view: View; canvasRef: React.RefObject<HTMLCanvasElement | null>; canControl: boolean; closedReason?: string }) {
+function Screen({ view, canvasRef, canControl, closedReason, openingUrl }: { view: View; canvasRef: React.RefObject<HTMLCanvasElement | null>; canControl: boolean; closedReason?: string; openingUrl?: string }) {
   const { send, meta } = view
   const stageRef = React.useRef<HTMLDivElement | null>(null)
   const imeRef = React.useRef<HTMLTextAreaElement | null>(null)
@@ -340,7 +364,9 @@ function Screen({ view, canvasRef, canControl, closedReason }: { view: View; can
       {view.hasFrame && canControl && !closedReason && isBlankPage(meta?.url) && (
         // 不挡鼠标：点画面照样能操作
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-4">
-          <p className="border bg-background px-4 py-3 text-sm text-muted-foreground">现在是空白页，没有能输入的地方。先在上面的地址栏输入网址，回车打开。</p>
+          <p className="flex items-center gap-2 border bg-background px-4 py-3 text-sm text-muted-foreground">
+            {openingUrl ? <><Spinner />正在打开 {openingUrl} …</> : "现在是空白页，没有能输入的地方。先在上面的地址栏输入网址，回车打开。"}
+          </p>
         </div>
       )}
       {!view.hasFrame && !closedReason && (
