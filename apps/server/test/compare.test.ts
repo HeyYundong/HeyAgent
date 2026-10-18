@@ -10,7 +10,7 @@ import type { SessionSnapshot } from "@heyagent/shared"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
 import { recoverRunningComparisons } from "../src/compare/run.js"
-import { compareLimits, configureCompare, ensureDefaultStandard } from "../src/compare/service.js"
+import { compareLimits, configureCompare, DEFAULT_COMPARE_MODEL, ensureDefaultStandard } from "../src/compare/service.js"
 import { compareToolEntries } from "../src/compare/tools.js"
 import * as t from "../src/db/schema.js"
 import { QUEUES } from "../src/engine/queue.js"
@@ -133,6 +133,19 @@ describe("默认标准", () => {
     const { data } = await query(ctx.app, "compare.standards", wang)
     expect(data).toEqual([expect.objectContaining({ id: "std-same-item", name: "同款判断", passScore: 95, modelId: VISION, isDefault: true })])
     expect(data[0].prompt).toContain("同一款")
+  })
+
+  it("有推荐的模型（Gemini 3.1 Flash Lite）时默认标准用它，哪怕不是最便宜的", async () => {
+    const preferred = `openrouter/${DEFAULT_COMPARE_MODEL}`
+    await ctx.db.insert(t.models).values({ id: preferred, providerId: "openrouter", name: "Gemini Lite", contextK: 128, priceIn: 0.25, priceOut: 1.5, vision: true, kind: "chat" }).onConflictDoNothing()
+    await ctx.db.delete(t.compareStandards)
+    expect(await ensureDefaultStandard(ctx.db)).toBe(true)
+    const [standard] = await ctx.db.select().from(t.compareStandards)
+    expect(standard).toMatchObject({ id: "std-same-item", modelId: preferred })
+    // 还原：后面的测试按最便宜的假模型跑
+    await ctx.db.delete(t.compareStandards)
+    await ctx.db.delete(t.models).where(eq(t.models.id, preferred))
+    expect(await ensureDefaultStandard(ctx.db)).toBe(true)
   })
 
   it("视觉模型列表：只有能看图的聊天模型，便宜的在前，没有批处理线路", async () => {

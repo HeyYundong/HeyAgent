@@ -1141,5 +1141,5 @@ claude mcp add --transport http heyagent-compare http://<host>:8080/api/compare/
 
 ### 15.8 默认标准和数据库（迁移 0016）
 
-- 一个比对标准都没有、库里有视觉聊天模型时，自动建「同款判断」（id `std-same-item`，合格线 95，要求文字在 `compare/defaults.ts`，模型 = 最便宜的视觉模型）：API 启动时（`bootstrap`）、后台重试接上 OpenRouter 时、worker 启动时、查标准或新比对时都会检查一次。还没有视觉模型就先不建。
+- 一个比对标准都没有、库里有视觉聊天模型时，自动建「同款判断」（id `std-same-item`，合格线 95，要求文字在 `compare/defaults.ts`，模型 = Gemini 3.1 Flash Lite，库里没有时用最便宜的视觉模型）：API 启动时（`bootstrap`）、后台重试接上 OpenRouter 时、worker 启动时、查标准或新比对时都会检查一次。还没有视觉模型就先不建。
 - 迁移 0016：表 `compare_standards`（名字唯一索引、`is_default` 部分唯一索引）、`comparisons`（`dedupe_key` + `created_at` 索引、`session_id` 索引）、枚举 `compare_status` `compare_confidence` `compare_via`、序列 `compare_no_seq` `compare_standard_no_seq`，两张表的实时推送触发器。`files.kind` 多了 `compare`。

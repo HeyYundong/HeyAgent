@@ -165,11 +165,19 @@ export async function listVisionModels(db: DbOrTx): Promise<CompareModel[]> {
 }
 
 /**
- * 默认标准用的模型：最便宜的「正经」视觉模型。跳过免费线路（:free，限流、常下线）、预览版、别名（~ 开头，指向会变）
- * 和没标价的；都没有时退回列表第一个
+ * 默认标准优先用的模型（OpenRouter 上的名字，用户 2026-10-18 定的）：实测同款判断最准、约 $0.001 一次、3～8 秒（docs/dev/compare.md 6.6）。
+ * 任何服务里名字以它结尾的都算；没有时退回最便宜的「正经」视觉模型
+ */
+export const DEFAULT_COMPARE_MODEL = "google/gemini-3.1-flash-lite"
+
+/**
+ * 默认标准用的模型：有推荐的用推荐的；否则最便宜的「正经」视觉模型。跳过免费线路（:free，限流、常下线）、预览版、
+ * 别名（~ 开头，指向会变）和没标价的；都没有时退回列表第一个
  */
 async function cheapestVisionModel(db: DbOrTx): Promise<string | undefined> {
   const models = await listVisionModels(db)
+  const preferred = models.find((model) => model.id.endsWith(`/${DEFAULT_COMPARE_MODEL}`))
+  if (preferred) return preferred.id
   const stable = models.find((model) => model.priceIn > 0 && !/:free$/.test(model.id) && !/preview/i.test(model.id) && !model.id.split("/").some((part) => part.startsWith("~")))
   return (stable ?? models[0])?.id
 }
