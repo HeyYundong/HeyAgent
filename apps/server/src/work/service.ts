@@ -1,0 +1,232 @@
+// 派活（docs/dev/dispatch-p1.md）：派活单的读取（列表、详情、任务的名额数字）。
+// 监工写好的读取部分；派活、领单、结束回写、清扫、重办、不办了、改参数由包 A 写（engine/dispatch/ 和这里）。
+import {
+  TIME_ZONE,
+  type WorkItem,
+  type WorkItemDetail,
+  type WorkListInput,
+  type WorkPage,
+  type WorkRun,
+  type WorkTaskStats,
+  workListInputSchema,
+} from "@heyagent/shared"
+import { and, asc, count, desc, eq, gte, ilike, inArray, isNotNull, lt, or, sql, type SQL } from "drizzle-orm"
+
+import type { DbOrTx } from "../data/config/common.js"
+import * as t from "../db/schema.js"
+
+type WorkItemRow = typeof t.workItems.$inferSelect
+
+export class WorkError extends Error {
+  readonly code: "NOT_FOUND" | "BAD_REQUEST" | "FORBIDDEN" | "CONFLICT"
+  constructor(code: WorkError["code"], message: string) {
+    super(message)
+    this.code = code
+  }
+}
+
+const iso = (value: Date) => value.toISOString()
+const isoOrNull = (value: Date | null) => (value ? value.toISOString() : null)
+
+/**
+ * 占名额的运行（SQL 条件，用在 sessions 上）：派活触发的、执行中 / 验收中，或者挂起但等的是浏览器（browser.lease: / browser.profile:）。
+ * agent 自己挂起（session.wait）、等人处理不占。领单（包 A）和页面上的数字都用它，口径一致
+ */
+export function occupiesSlotSql(): SQL {
+  return sql`(${t.sessions.status} in ('running', 'verifying') or (${t.sessions.status} = 'waiting' and exists (
+    select 1 from ${t.sessionWaits} w where w.session_id = ${t.sessions.id} and w.status = 'waiting' and w.event like 'browser.%'
+  )))`
+}
+
+/** 某个任务现在占着名额的运行数 */
+export async function occupiedSlots(db: DbOrTx, taskId: string): Promise<number> {
+  const [row] = await db
+    .select({ n: count() })
+    .from(t.sessions)
+    .where(and(eq(t.sessions.taskId, taskId), isNotNull(t.sessions.workItemId), occupiesSlotSql()))
+  return row?.n ?? 0
+}
+
+/** 行 → 接口形状。taskTitle 等关联字段由调用方一次查好传进来 */
+function toWorkItem(
+  row: WorkItemRow,
+  extra: { taskTitles: Map<string, string>; sessionStatus: Map<string, WorkItem["sessionStatus"]>; queuePosition: Map<string, number> }
+): WorkItem {
+  return {
+    id: row.id,
+    taskId: row.taskId,
+    taskTitle: extra.taskTitles.get(row.taskId) ?? row.taskId,
+    key: row.key,
+    title: row.title,
+    params: row.params,
+    note: row.note,
+    status: row.status,
+    sessionId: row.sessionId,
+    sessionStatus: row.status === "running" && row.sessionId ? (extra.sessionStatus.get(row.sessionId) ?? null) : null,
+    attempts: row.attempts,
+    via: row.via,
+    fromTaskId: row.fromTaskId,
+    fromTaskTitle: row.fromTaskId ? (extra.taskTitles.get(row.fromTaskId) ?? row.fromTaskId) : null,
+    fromSessionId: row.fromSessionId,
+    fromUserId: row.fromUserId,
+    depth: row.depth,
+    result: row.result ?? null,
+    error: row.error,
+    queuePosition: row.status === "queued" ? (extra.queuePosition.get(row.id) ?? null) : null,
+    createdAt: iso(row.createdAt),
+    startedAt: isoOrNull(row.startedAt),
+    finishedAt: isoOrNull(row.finishedAt),
+    updatedAt: iso(row.updatedAt),
+  }
+}
+
+/** 一批行的关联字段：任务标题、在办运行的状态、排队位次（按任务、创建时间先后） */
+async function enrich(db: DbOrTx, rows: WorkItemRow[]) {
+  const taskIds = [...new Set(rows.flatMap((row) => [row.taskId, row.fromTaskId].filter((id): id is string => Boolean(id))))]
+  const sessionIds = rows.filter((row) => row.status === "running" && row.sessionId).map((row) => row.sessionId!)
+  const queuedTasks = [...new Set(rows.filter((row) => row.status === "queued").map((row) => row.taskId))]
+  const [tasks, sessions, queued] = await Promise.all([
+    taskIds.length ? db.select({ id: t.tasks.id, title: t.tasks.title }).from(t.tasks).where(inArray(t.tasks.id, taskIds)) : [],
+    sessionIds.length ? db.select({ id: t.sessions.id, status: t.sessions.status }).from(t.sessions).where(inArray(t.sessions.id, sessionIds)) : [],
+    queuedTasks.length
+      ? db
+          .select({ id: t.workItems.id, taskId: t.workItems.taskId })
+          .from(t.workItems)
+          .where(and(eq(t.workItems.status, "queued"), inArray(t.workItems.taskId, queuedTasks)))
+          .orderBy(asc(t.workItems.createdAt), asc(t.workItems.id))
+      : [],
+  ])
+  const queuePosition = new Map<string, number>()
+  const seen = new Map<string, number>()
+  for (const row of queued) {
+    const n = (seen.get(row.taskId) ?? 0) + 1
+    seen.set(row.taskId, n)
+    queuePosition.set(row.id, n)
+  }
+  return {
+    taskTitles: new Map(tasks.map((row) => [row.id, row.title])),
+    sessionStatus: new Map(sessions.map((row) => [row.id, row.status])),
+    queuePosition,
+  }
+}
+
+export async function toWorkItems(db: DbOrTx, rows: WorkItemRow[]): Promise<WorkItem[]> {
+  const extra = await enrich(db, rows)
+  return rows.map((row) => toWorkItem(row, extra))
+}
+
+/** 派活页左边的列表：新派的在前；同样的筛选（不算状态）下各状态的张数 */
+export async function listWorkItems(db: DbOrTx, rawInput: WorkListInput): Promise<WorkPage> {
+  const input = workListInputSchema.parse(rawInput)
+  const base: SQL[] = []
+  if (input.taskId) base.push(eq(t.workItems.taskId, input.taskId))
+  if (input.fromTaskId) base.push(eq(t.workItems.fromTaskId, input.fromTaskId))
+  if (input.fromSessionId) base.push(eq(t.workItems.fromSessionId, input.fromSessionId))
+  if (input.q) {
+    const like = `%${input.q.replace(/[%_\\]/g, (c) => `\\${c}`)}%`
+    base.push(or(ilike(t.workItems.id, like), ilike(t.workItems.title, like), ilike(t.workItems.key, like), sql`${t.workItems.params}::text ilike ${like}`)!)
+  } else if (input.days > 0) {
+    base.push(gte(t.workItems.createdAt, new Date(Date.now() - input.days * 24 * 3600_000)))
+  }
+
+  const where: SQL[] = [...base]
+  if (input.status) where.push(eq(t.workItems.status, input.status))
+  if (input.cursor) {
+    const [cursor] = await db.select({ createdAt: t.workItems.createdAt, id: t.workItems.id }).from(t.workItems).where(eq(t.workItems.id, input.cursor))
+    if (cursor) where.push(or(lt(t.workItems.createdAt, cursor.createdAt), and(eq(t.workItems.createdAt, cursor.createdAt), lt(t.workItems.id, cursor.id)))!)
+  }
+
+  const [rows, grouped] = await Promise.all([
+    db
+      .select()
+      .from(t.workItems)
+      .where(where.length ? and(...where) : undefined)
+      .orderBy(desc(t.workItems.createdAt), desc(t.workItems.id))
+      .limit(input.limit + 1),
+    db
+      .select({ status: t.workItems.status, n: count() })
+      .from(t.workItems)
+      .where(base.length ? and(...base) : undefined)
+      .groupBy(t.workItems.status),
+  ])
+  const page = rows.slice(0, input.limit)
+  const counts = { all: 0, queued: 0, running: 0, done: 0, failed: 0, cancelled: 0 }
+  for (const row of grouped) {
+    counts[row.status] = row.n
+    counts.all += row.n
+  }
+  return { items: await toWorkItems(db, page), nextCursor: rows.length > input.limit ? page[page.length - 1]!.id : null, counts }
+}
+
+/** 派活单详情：处理记录、每次运行、被派任务的参数声明 */
+export async function getWorkItem(db: DbOrTx, id: string): Promise<WorkItemDetail> {
+  const [row] = await db.select().from(t.workItems).where(eq(t.workItems.id, id))
+  if (!row) throw new WorkError("NOT_FOUND", `没有派活单 ${id}`)
+  const [[item], [task], sessions] = await Promise.all([
+    toWorkItems(db, [row]),
+    db.select({ dispatch: t.tasks.dispatch, enabled: t.tasks.enabled, ownerId: t.tasks.ownerId }).from(t.tasks).where(eq(t.tasks.id, row.taskId)),
+    db
+      .select({ id: t.sessions.id, status: t.sessions.status, startedAt: t.sessions.startedAt, endedAt: t.sessions.endedAt, costUsd: t.sessions.costUsd, error: t.sessions.error })
+      .from(t.sessions)
+      .where(eq(t.sessions.workItemId, id))
+      .orderBy(asc(t.sessions.startedAt), asc(t.sessions.id)),
+  ])
+  const sessionIds = sessions.map((session) => session.id)
+  const [checkpoints, waits] = sessionIds.length
+    ? await Promise.all([
+        db
+          .select({ sessionId: t.checkpoints.sessionId, total: count(), done: sql<number>`count(*) filter (where ${t.checkpoints.status} = 'done')::int` })
+          .from(t.checkpoints)
+          .where(inArray(t.checkpoints.sessionId, sessionIds))
+          .groupBy(t.checkpoints.sessionId),
+        db
+          .select({ sessionId: t.sessionWaits.sessionId, what: t.sessionWaits.what })
+          .from(t.sessionWaits)
+          .where(and(inArray(t.sessionWaits.sessionId, sessionIds), eq(t.sessionWaits.status, "waiting"))),
+      ])
+    : [[], []]
+  const checkpointBy = new Map(checkpoints.map((cp) => [cp.sessionId, cp]))
+  const waitBy = new Map(waits.map((wait) => [wait.sessionId, wait.what]))
+  const runs: WorkRun[] = sessions.map((session) => ({
+    sessionId: session.id,
+    status: session.status,
+    startedAt: iso(session.startedAt),
+    endedAt: isoOrNull(session.endedAt),
+    costUsd: session.costUsd,
+    checkpointsDone: checkpointBy.get(session.id)?.done ?? 0,
+    checkpointsTotal: checkpointBy.get(session.id)?.total ?? 0,
+    waitingWhat: session.status === "waiting" ? (waitBy.get(session.id) ?? null) : null,
+    error: session.error,
+  }))
+  return { ...item!, log: row.log, runs, taskDispatch: task?.dispatch ?? null, taskEnabled: task?.enabled ?? false, taskOwnerId: task?.ownerId ?? "" }
+}
+
+/** 上海时间今天 0 点 */
+export function startOfTodayShanghai(now = new Date()): Date {
+  const day = new Intl.DateTimeFormat("en-CA", { timeZone: TIME_ZONE, year: "numeric", month: "2-digit", day: "2-digit" }).format(now)
+  return new Date(`${day}T00:00:00+08:00`)
+}
+
+/** 被派任务的一行数字：排队、在办、占名额、今天办完、没办成 */
+export async function workTaskStats(db: DbOrTx, taskId: string): Promise<WorkTaskStats> {
+  const [[task], grouped, [doneToday], occupied] = await Promise.all([
+    db.select({ dispatch: t.tasks.dispatch }).from(t.tasks).where(eq(t.tasks.id, taskId)),
+    db.select({ status: t.workItems.status, n: count() }).from(t.workItems).where(eq(t.workItems.taskId, taskId)).groupBy(t.workItems.status),
+    db
+      .select({ n: count() })
+      .from(t.workItems)
+      .where(and(eq(t.workItems.taskId, taskId), eq(t.workItems.status, "done"), gte(t.workItems.finishedAt, startOfTodayShanghai()))),
+    occupiedSlots(db, taskId),
+  ])
+  if (!task) throw new WorkError("NOT_FOUND", `没有任务 ${taskId}`)
+  const by = new Map(grouped.map((row) => [row.status, row.n]))
+  return {
+    taskId,
+    queued: by.get("queued") ?? 0,
+    running: by.get("running") ?? 0,
+    occupied,
+    maxRunning: task.dispatch?.maxRunning ?? 0,
+    doneToday: doneToday?.n ?? 0,
+    failed: by.get("failed") ?? 0,
+  }
+}

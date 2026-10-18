@@ -87,7 +87,32 @@ export const sessionSnapshotSchema = z.object({
   ),
   /** 额外的一句话（例如人加的待办的标题） */
   note: z.string().optional(),
-  source: z.enum(["manual", "cron", "todo", "event"]),
+  source: z.enum(["manual", "cron", "todo", "event", "dispatch"]),
+  /** 派活：这次运行是被派来办一件事的（派活单、参数、谁派的）。参数在第一条消息里交给 agent */
+  dispatch: z
+    .object({
+      itemId: z.string(),
+      key: z.string(),
+      title: z.string(),
+      note: z.string().optional(),
+      params: z.record(z.string(), z.string()),
+      depth: z.number().int(),
+      from: z.object({ taskId: z.string(), taskTitle: z.string(), sessionId: z.string() }).optional(),
+      /** 人在派活页派的：谁（第一条消息里写「某某在派活页派的」） */
+      fromUser: z.object({ id: z.string(), name: z.string() }).optional(),
+    })
+    .optional(),
+  /** 派活：选了内置工具「派活」时，能派给哪些任务、各要什么参数（开始运行时算好冻进来） */
+  dispatchTargets: z
+    .array(
+      z.object({
+        taskId: z.string(),
+        title: z.string(),
+        enabled: z.boolean(),
+        params: z.array(z.object({ name: z.string(), description: z.string(), required: z.boolean(), dedupe: z.boolean() })),
+      })
+    )
+    .optional(),
   /** M2：任务选了「浏览器」工具时才有：允许的 Chrome 配置（含给 agent 看的说明）、网址白名单、是否允许执行脚本 */
   browser: z
     .object({
@@ -241,6 +266,29 @@ export const builtinToolInputs = {
       .min(0)
       .optional()
       .describe("文本文件从第几个字符开始读（默认 0，长文件分段读）"),
+  }),
+  "work.dispatch": z.object({
+    task: z.string().min(1).describe("派给哪个任务：任务 id，见系统提示里「可以派活给」"),
+    items: z
+      .array(
+        z.object({
+          title: z.string().min(1).max(120).describe("一句话：这件事是什么，给人看的"),
+          params: z.record(z.string(), z.string()).describe("参数，按对方任务要求的填"),
+          key: z
+            .string()
+            .max(200)
+            .optional()
+            .describe("去重键：对方任务没有标「去重」的参数时必填，同一件事每次都填同一个值"),
+          note: z.string().max(1000).optional(),
+        })
+      )
+      .min(1)
+      .max(50)
+      .describe("要派的事，一件一张，一次最多 50 张"),
+    ifExists: z
+      .enum(["skip", "update"])
+      .optional()
+      .describe("同一件事已经派过：skip = 不动（默认）；update = 还在排队的话用这次的参数覆盖"),
   }),
   "plan.set": z.object({
     steps: z

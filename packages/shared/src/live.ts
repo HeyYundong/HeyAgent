@@ -5,13 +5,14 @@ export const LIVE_CHANNEL = "heyagent_changes"
 
 export const liveQueriesByTable: Record<string, string[]> = {
   users: ["me.get", "staff.list", "users.list"],
-  tasks: ["tasks.list"],
+  tasks: ["tasks.list", "work.taskStats"],
   task_memories: ["tasks.list"],
   task_skills: ["tasks.list"],
   task_tools: ["tasks.list"],
   task_rules: ["tasks.list"],
   task_memory_entries: ["taskMemory.list"],
-  sessions: ["sessions.list", "sessions.get"],
+  // 被派的运行状态变了，派活单的徽章（sessionStatus）和名额数跟着变
+  sessions: ["sessions.list", "sessions.get", "work.list", "work.get", "work.taskStats"],
   session_events: ["sessions.list", "sessions.get"],
   checkpoints: ["sessions.list", "sessions.get"],
   checkpoint_records: ["sessions.list", "sessions.get"],
@@ -50,6 +51,8 @@ export const liveQueriesByTable: Record<string, string[]> = {
   compare_standards: ["compare.standards"],
   // 导入：读包进度、方案、导入后的状态
   imports: ["imports.list", "imports.get"],
+  // 派活：派活单的增删改（排队 → 在办 → 办完）
+  work_items: ["work.list", "work.get", "work.taskStats", "work.lookup"],
 }
 
 /** 某张表变了要重新拉的查询；不认识的表（或 "*"）返回 null，表示全部重新拉 */

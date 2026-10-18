@@ -6,7 +6,7 @@ import { syncTaskScheduleImpl, syncTodoImpl } from "./schedule.js"
 import { startSessionImpl } from "./sessions.js"
 
 /** 一次运行是怎么触发的 */
-export type SessionSource = "manual" | "cron" | "todo" | "event"
+export type SessionSource = "manual" | "cron" | "todo" | "event" | "dispatch"
 
 export interface StartSessionInput {
   taskId: string

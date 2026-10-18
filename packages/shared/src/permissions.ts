@@ -41,6 +41,8 @@ export interface ActionResources {
   "compare.create": Record<string, never>
   /** 删除一条比对记录：发起的人（API 密钥发起的算密钥的创建人）；比对标准是配置，用 config.manage */
   "compare.manage": { createdById: string }
+  /** 派活单的重办、不办了、改参数：被派任务的负责人（人手动派一张用被派任务的 task.manage） */
+  "work.manage": { taskOwnerId: string }
 }
 
 export type Action = keyof ActionResources
@@ -76,6 +78,8 @@ export function can<A extends Action>(user: Actor, action: A, resource: ActionRe
       return (resource as ActionResources["gallery.manage"]).createdById === user.id
     case "compare.manage":
       return (resource as ActionResources["compare.manage"]).createdById === user.id
+    case "work.manage":
+      return (resource as ActionResources["work.manage"]).taskOwnerId === user.id
     default:
       // 新加的操作忘了写规则时，员工默认不能做
       return false

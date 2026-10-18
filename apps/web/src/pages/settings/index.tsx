@@ -1,7 +1,7 @@
-// 设置页（主管专用）：一列内容，六张卡片——运行上限、agent（验收轮数、上下文压缩）、浏览器、外部事件令牌、API 密钥、通知渠道。
+// 设置页（主管专用）：一列内容，七张卡片——运行上限、agent（验收轮数、上下文压缩）、派活（四个上限）、浏览器、外部事件令牌、API 密钥、通知渠道。
 import { useQuery } from "@tanstack/react-query"
 import { SettingsIcon, ShieldOffIcon } from "lucide-react"
-import { can } from "@heyagent/shared"
+import { can, type SettingsView } from "@heyagent/shared"
 
 import { EmptyState, PageFrame, SimpleHeader } from "@/components/shell/simple-page"
 
@@ -12,10 +12,11 @@ import { AgentSection } from "./agent-section"
 import { ApiKeysSection } from "./api-keys-section"
 import { BrowserSection } from "./browser-section"
 import { ChannelsSection } from "./channels-section"
+import { DispatchSection } from "./dispatch-section"
 import { LimitsSection } from "./limits-section"
 import { TokenSection } from "./token-section"
 
-const DESCRIPTION = "全局生效的几项设置：agent 跑多久要停下来问人、验收问几轮、上下文多长就压缩、浏览器开多少、外部系统怎么发事件进来和调接口、通知推到哪里。"
+const DESCRIPTION = "全局生效的几项设置：agent 跑多久要停下来问人、验收问几轮、上下文多长就压缩、派活的上限、浏览器开多少、外部系统怎么发事件进来和调接口、通知推到哪里。"
 
 export default function SettingsPage() {
   const { user } = useMe()
@@ -48,6 +49,7 @@ function SettingsManager() {
             limits={{ maxCostUsd: settings.maxCostUsd, maxSteps: settings.maxSteps, eventFallbackDays: settings.eventFallbackDays }}
           />
           <AgentSection values={settings.agent} />
+          <DispatchSection values={dispatchOf(settings)} />
           <BrowserSection values={settings.browser} />
           <TokenSection token={settings.eventToken} />
           <ApiKeysSection />
@@ -57,3 +59,6 @@ function SettingsManager() {
     </PageFrame>
   )
 }
+
+/** settings.get 里的「派活」四个数（读不到就用默认值） */
+const dispatchOf = (settings: SettingsView) => settings.dispatch

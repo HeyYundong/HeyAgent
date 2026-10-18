@@ -66,6 +66,22 @@ export async function onTaskCron(db: Db, data: { taskId: string }) {
     .from(t.tasks)
     .where(eq(t.tasks.id, data.taskId))
   if (!task || !task.enabled || !task.scheduleCron) return null
+  // 上一次还没跑完（执行中 / 验收中）就跳过这次；挂起等待、等人处理的不算没跑完。任务上可以关
+  if (task.cronSkipIfRunning) {
+    const [busy] = await db
+      .select({ id: t.sessions.id, status: t.sessions.status })
+      .from(t.sessions)
+      .where(and(eq(t.sessions.taskId, task.id), inArray(t.sessions.status, ["running", "verifying"])))
+      .limit(1)
+    if (busy) {
+      console.log(`[engine] ${task.id} 定时到点，上一次 ${busy.id} 还${busy.status === "running" ? "在执行" : "在验收"}，跳过这次`)
+      await db
+        .update(t.tasks)
+        .set({ nextRunAt: await nextOccurrence(db, task.scheduleCron) })
+        .where(eq(t.tasks.id, task.id))
+      return null
+    }
+  }
   const { sessionId } = await startSessionImpl(db, {
     taskId: task.id,
     source: "cron",

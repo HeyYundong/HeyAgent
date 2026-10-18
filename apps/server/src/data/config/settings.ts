@@ -12,6 +12,7 @@ import {
   type NotifyChannel,
   type SettingsAgentInput,
   type SettingsBrowserInput,
+  type SettingsDispatchInput,
   type SettingsLimitsInput,
   type SettingsView,
 } from "@heyagent/shared"
@@ -74,6 +75,10 @@ export async function ensureDefaultSettings(db: DbOrTx) {
     [SETTING_KEYS.browserHumanHoldMinutes, SETTINGS_DEFAULTS.browserHumanHoldMinutes],
     [SETTING_KEYS.verifyMaxRounds, SETTINGS_DEFAULTS.verifyMaxRounds],
     [SETTING_KEYS.compactMaxTokens, SETTINGS_DEFAULTS.compactMaxTokens],
+    [SETTING_KEYS.dispatchMaxDepth, SETTINGS_DEFAULTS.dispatchMaxDepth],
+    [SETTING_KEYS.dispatchMaxPerSession, SETTINGS_DEFAULTS.dispatchMaxPerSession],
+    [SETTING_KEYS.dispatchMaxPerTaskPerDay, SETTINGS_DEFAULTS.dispatchMaxPerTaskPerDay],
+    [SETTING_KEYS.dispatchMaxQueued, SETTINGS_DEFAULTS.dispatchMaxQueued],
   ]
   for (const [key, value] of defaults) await db.insert(t.settings).values({ key, value }).onConflictDoNothing()
 }
@@ -92,7 +97,8 @@ export async function getSettings(ctx: WriteCtx): Promise<SettingsView> {
   )
   const browser = await readBrowserSettings(ctx.db)
   const agent = await readAgentSettings(ctx.db)
-  return { ...limits, browser, agent, ...(token ? { eventToken: { hint: token.hint, createdAt: token.createdAt } } : {}), channels: withMask }
+  const dispatch = await readDispatchSettings(ctx.db)
+  return { ...limits, browser, agent, dispatch, ...(token ? { eventToken: { hint: token.hint, createdAt: token.createdAt } } : {}), channels: withMask }
 }
 
 /** agent 相关的设置（M3）：验收最多几轮、压缩上下文的 token 上限。引擎每次用到时重新读 */
@@ -112,6 +118,31 @@ export async function updateAgentSettings(ctx: WriteCtx, input: SettingsAgentInp
     await writeKey(tx, SETTING_KEYS.verifyMaxRounds, input.verifyMaxRounds, ctx.actor.id)
     await writeKey(tx, SETTING_KEYS.compactMaxTokens, input.compactMaxTokens, ctx.actor.id)
     await audit(tx, ctx.actor.id, "settings.agent.update", "settings", "agent", { before, after: input })
+    return input
+  })
+}
+
+/** 派活的四个上限（层数、一次运行最多派几张、一个任务每天最多被派几张、最多排队几张）。派活时每次重新读，读不到用默认值 */
+export async function readDispatchSettings(db: DbOrTx): Promise<SettingsDispatchInput> {
+  const values = await readKeys(db, [SETTING_KEYS.dispatchMaxDepth, SETTING_KEYS.dispatchMaxPerSession, SETTING_KEYS.dispatchMaxPerTaskPerDay, SETTING_KEYS.dispatchMaxQueued])
+  const positiveInt = (value: unknown, fallback: number) => (typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback)
+  return {
+    maxDepth: positiveInt(values.get(SETTING_KEYS.dispatchMaxDepth), SETTINGS_DEFAULTS.dispatchMaxDepth),
+    maxPerSession: positiveInt(values.get(SETTING_KEYS.dispatchMaxPerSession), SETTINGS_DEFAULTS.dispatchMaxPerSession),
+    maxPerTaskPerDay: positiveInt(values.get(SETTING_KEYS.dispatchMaxPerTaskPerDay), SETTINGS_DEFAULTS.dispatchMaxPerTaskPerDay),
+    maxQueued: positiveInt(values.get(SETTING_KEYS.dispatchMaxQueued), SETTINGS_DEFAULTS.dispatchMaxQueued),
+  }
+}
+
+export async function updateDispatchSettings(ctx: WriteCtx, input: SettingsDispatchInput) {
+  assertCan(ctx.actor, "settings.manage", {}, "只有主管能改全局设置")
+  return ctx.db.transaction(async (tx) => {
+    const before = await readDispatchSettings(tx)
+    await writeKey(tx, SETTING_KEYS.dispatchMaxDepth, input.maxDepth, ctx.actor.id)
+    await writeKey(tx, SETTING_KEYS.dispatchMaxPerSession, input.maxPerSession, ctx.actor.id)
+    await writeKey(tx, SETTING_KEYS.dispatchMaxPerTaskPerDay, input.maxPerTaskPerDay, ctx.actor.id)
+    await writeKey(tx, SETTING_KEYS.dispatchMaxQueued, input.maxQueued, ctx.actor.id)
+    await audit(tx, ctx.actor.id, "settings.dispatch.update", "settings", "dispatch", { before, after: input })
     return input
   })
 }

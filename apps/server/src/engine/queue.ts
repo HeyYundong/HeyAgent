@@ -31,6 +31,10 @@ export const QUEUES = {
   importRead: "import.read",
   /** 比图：一次比对（两张图交给视觉模型）；singletonKey = 比对 id */
   compareRun: "compare.run",
+  /** 派活：给一个被派任务领单（按名额开运行）；singletonKey = 任务 id，同一个任务同时最多一个在领、一个在排 */
+  workPump: "work.pump",
+  /** 派活：每分钟清扫（补写漏掉的结束、给有排队单的任务发 work.pump） */
+  workSweep: "work.sweep",
 } as const
 
 export const SCHEDULE_TZ = "Asia/Shanghai"
@@ -87,6 +91,11 @@ export function compareRunJobOptions(comparisonId: string): SendOptions {
   }
 }
 
+/** work.pump 的任务参数：同一个任务的领单合并成一个（stately + singletonKey）；领单只是几条 SQL，出错重试几次 */
+export function workPumpJobOptions(taskId: string): SendOptions {
+  return { singletonKey: taskId, expireInSeconds: 300, retryLimit: 5, retryDelay: 5 }
+}
+
 const QUEUE_SETUP: { name: string; policy: "standard" | "stately" }[] = [
   { name: QUEUES.run, policy: "stately" },
   { name: QUEUES.wake, policy: "standard" },
@@ -97,6 +106,8 @@ const QUEUE_SETUP: { name: string; policy: "standard" | "stately" }[] = [
   { name: QUEUES.todoCron, policy: "standard" },
   { name: QUEUES.importRead, policy: "stately" },
   { name: QUEUES.compareRun, policy: "stately" },
+  { name: QUEUES.workPump, policy: "stately" },
+  { name: QUEUES.workSweep, policy: "standard" },
 ]
 
 export async function ensureQueues(boss: PgBoss) {

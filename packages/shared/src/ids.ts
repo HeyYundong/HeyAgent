@@ -57,6 +57,9 @@ export const apiKeyId = (n: number) => `ak-${n}`
 /** 导入（别的 agent 打的 zip 包）：IM-3。序列 import_no_seq */
 export const importId = (n: number) => `IM-${n}`
 
+/** 派活单：W-57。序列 work_item_no_seq */
+export const workItemId = (n: number) => `W-${n}`
+
 /** 比图：一次比对 cmp-12（序列 compare_no_seq）；比对标准 std-3（序列 compare_standard_no_seq），自带的是 std-same-item */
 export const comparisonId = (n: number) => `cmp-${n}`
 export const compareStandardId = (n: number) => `std-${n}`

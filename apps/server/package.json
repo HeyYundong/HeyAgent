@@ -21,6 +21,7 @@
     "db:migrate": "tsx --conditions=@heyagent/source src/db/migrate-cli.ts",
     "db:seed": "tsx --conditions=@heyagent/source src/seed/cli.ts",
     "dev:compare-fixture": "tsx --conditions=@heyagent/source src/seed/compare-fixture-cli.ts",
+    "dev:work-fixture": "tsx --conditions=@heyagent/source src/seed/work-fixture-cli.ts",
     "dev:import-fixture": "tsx --conditions=@heyagent/source src/seed/import-fixture-cli.ts",
     "dev:notify": "tsx --conditions=@heyagent/source src/scripts/dev-notify.ts",
     "kek:rotate": "tsx --conditions=@heyagent/source src/scripts/kek-rotate.ts"

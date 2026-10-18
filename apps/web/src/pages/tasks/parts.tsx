@@ -7,13 +7,20 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import { Spinner } from "@/components/ui/spinner"
-import { fmtShort, runStatusLabel } from "@heyagent/shared"
-import type { RunCheckpoint, RunStatus, SessionRun } from "@heyagent/shared"
+import { fmtShort, nextRunText as sharedNextRunText, runStatusLabel } from "@heyagent/shared"
+import type { RunCheckpoint, RunStatus, SessionRun, TaskDef } from "@heyagent/shared"
 
 import { useRunNow } from "@/lib/data"
 
 // 「一次运行此刻的一句话」「检查点完成几条」「预计下次运行」已经搬到 shared，这里转出去，页面照旧从这里拿
-export { checkpointSummary, nextRunText } from "@heyagent/shared"
+export { checkpointSummary } from "@heyagent/shared"
+
+/** 预计下次运行。能被派活、不定时的任务：有派活单就开始；停用时派来的单先排着 */
+export function nextRunText(task: TaskDef, latest?: SessionRun) {
+  if (task.dispatch && !task.enabled) return "已停用：派来的单先排着"
+  if (task.dispatch && !task.schedule) return "有派活单就开始"
+  return sharedNextRunText(task, latest)
+}
 
 /** 分档：执行中 = 实心主色 + 转圈（全墙唯一红色实心、唯一会动的）；等人处理 = 实心灰；失败 = 浅红底；等待中 / 验收中 = 描边；已完成 = 无框 */
 export function RunStatusBadge({ status }: { status: RunStatus }) {

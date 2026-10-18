@@ -40,6 +40,8 @@ import {
   runStatusSchema,
   skillStatusSchema,
   toolSourceSchema,
+  workItemStatusSchema,
+  workViaSchema,
   type HttpSpec,
   type HumanDetail,
   type ImportPlan,
@@ -48,8 +50,11 @@ import {
   type RuleCompileResult,
   type SessionDigest,
   type SessionSnapshot,
+  type TaskDispatch,
   type TaskStep,
   type Verification,
+  type WorkLogEntry,
+  type WorkResult,
 } from "@heyagent/shared"
 
 import type { Envelope } from "../lib/crypto.js"
@@ -133,6 +138,8 @@ export const importStatusEnum = pgEnum("import_status", values(importStatusSchem
 export const compareStatusEnum = pgEnum("compare_status", values(compareStatusSchema.options))
 export const compareConfidenceEnum = pgEnum("compare_confidence", values(compareConfidenceSchema.options))
 export const compareViaEnum = pgEnum("compare_via", values(compareViaSchema.options))
+export const workItemStatusEnum = pgEnum("work_item_status", values(workItemStatusSchema.options))
+export const workViaEnum = pgEnum("work_via", values(workViaSchema.options))
 
 // ---------- 新 id 用的序列（规则见 shared/ids.ts） ----------
 
@@ -147,6 +154,7 @@ export const apiKeyNoSeq = pgSequence("api_key_no_seq", { startWith: 1 })
 export const importNoSeq = pgSequence("import_no_seq", { startWith: 1 })
 export const compareNoSeq = pgSequence("compare_no_seq", { startWith: 1 })
 export const compareStandardNoSeq = pgSequence("compare_standard_no_seq", { startWith: 1 })
+export const workItemNoSeq = pgSequence("work_item_no_seq", { startWith: 1 })
 
 // ---------- 账号（better-auth 的 4 张表，字段名照 better-auth 1.7.10 + admin 插件的要求） ----------
 
@@ -484,6 +492,10 @@ export const tasks = pgTable(
     allowBrowserEvaluate: boolean("allow_browser_evaluate").notNull().default(false),
     /** M3：这个任务自己选的三方验收模型；为空用默认验收模型 */
     verifyModelId: text("verify_model_id"),
+    /** 派活：能被派活时的参数声明和名额；为空 = 不能被派活 */
+    dispatch: jsonb("dispatch").$type<TaskDispatch>(),
+    /** 定时到点时上一次还没跑完（执行中 / 验收中）就跳过这次 */
+    cronSkipIfRunning: boolean("cron_skip_if_running").notNull().default(true),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -513,6 +525,20 @@ export const taskMemories = taskLink("task_memories", "memory_id", (): AnyPgColu
 export const taskSkills = taskLink("task_skills", "skill_id", (): AnyPgColumn => skills.id)
 export const taskTools = taskLink("task_tools", "tool_id", () => tools.id)
 export const taskRules = taskLink("task_rules", "rule_id", () => rules.id)
+
+/** 派活：谁能派活给这个任务（task_id 是被派的，source_task_id 是派活的）。删任务时级联清掉 */
+export const taskDispatchSources = pgTable(
+  "task_dispatch_sources",
+  {
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    sourceTaskId: text("source_task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+  },
+  (t) => [primaryKey({ columns: [t.taskId, t.sourceTaskId] }), index("task_dispatch_sources_source_idx").on(t.sourceTaskId)]
+)
 
 /**
  * 任务记忆：每个任务自己的经验，一条一行，按 id 排序。负责人和主管能直接写、改、删；
@@ -583,6 +609,8 @@ export const sessions = pgTable(
     ruleState: jsonb("rule_state").$type<SessionRuleState>().notNull().default({}),
     /** 运行结束后三方 AI 的总结和任务记忆候选（人点「总结」才有；审核通过的记进 task_memory_entries） */
     digest: jsonb("digest").$type<SessionDigest>(),
+    /** 派活触发的运行：哪张派活单（parent_session_id 同时写派活的那次运行） */
+    workItemId: text("work_item_id").references((): AnyPgColumn => workItems.id, { onDelete: "set null" }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -590,6 +618,7 @@ export const sessions = pgTable(
     index("sessions_task_id_started_at_idx").on(t.taskId, t.startedAt.desc()),
     index("sessions_status_idx").on(t.status),
     index("sessions_parent_session_id_idx").on(t.parentSessionId),
+    index("sessions_work_item_id_idx").on(t.workItemId),
   ]
 )
 
@@ -1223,5 +1252,50 @@ export const comparisons = pgTable(
     index("comparisons_created_idx").on(t.createdAt.desc(), t.id.desc()),
     index("comparisons_dedupe_idx").on(t.dedupeKey, t.createdAt.desc()),
     index("comparisons_session_idx").on(t.sessionId),
+  ]
+)
+
+// ---------- 派活（2026-10-18） ----------
+
+/** 派活单：一件事一张，同一个任务下同一个去重键只有一张（重办是同一张单再开一次运行） */
+export const workItems = pgTable(
+  "work_items",
+  {
+    /** W-<序号>（序列 work_item_no_seq） */
+    id: text("id").primaryKey(),
+    /** 被派的任务 */
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id),
+    /** 去重键（去掉首尾空白） */
+    key: text("key").notNull(),
+    title: text("title").notNull(),
+    params: jsonb("params").$type<Record<string, string>>().notNull().default({}),
+    note: text("note").notNull().default(""),
+    status: workItemStatusEnum("status").notNull(),
+    /** 当前（最近一次）在办的运行 */
+    sessionId: text("session_id").references((): AnyPgColumn => sessions.id, { onDelete: "set null" }),
+    attempts: integer("attempts").notNull().default(0),
+    via: workViaEnum("via").notNull(),
+    fromTaskId: text("from_task_id").references(() => tasks.id, { onDelete: "set null" }),
+    fromSessionId: text("from_session_id").references((): AnyPgColumn => sessions.id, { onDelete: "set null" }),
+    fromUserId: text("from_user_id").references(() => users.id, { onDelete: "set null" }),
+    depth: integer("depth").notNull().default(1),
+    result: jsonb("result").$type<WorkResult>(),
+    error: text("error"),
+    /** 处理记录：派进来、开运行、运行结束、重办、改参数、不办了 */
+    log: jsonb("log").$type<WorkLogEntry[]>().notNull().default([]),
+    createdAt: createdAt(),
+    startedAt: ts("started_at"),
+    finishedAt: ts("finished_at"),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("work_items_task_key_idx").on(t.taskId, t.key),
+    index("work_items_task_status_idx").on(t.taskId, t.status, t.createdAt),
+    index("work_items_created_idx").on(t.createdAt.desc(), t.id.desc()),
+    index("work_items_from_session_idx").on(t.fromSessionId),
+    index("work_items_from_task_idx").on(t.fromTaskId),
+    index("work_items_session_idx").on(t.sessionId),
   ]
 )

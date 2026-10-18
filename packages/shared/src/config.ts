@@ -6,6 +6,7 @@ import { z } from "zod"
 
 import { domainSchema } from "./browser-runtime.js"
 import { canonicalLocale, canonicalTimeZone } from "./browsers.js"
+import { taskDispatchSchema } from "./dispatch.js"
 import { httpMethodSchema, httpSpecSchema, modelProviderKindSchema, riskSchema, skillStatusSchema, taskStepSchema, type ModelProviderKind } from "./schemas.js"
 import { TIME_ZONE } from "./time.js"
 
@@ -137,6 +138,12 @@ export const taskInputSchema = z.object({
   allowBrowserEvaluate: z.boolean().default(false),
   /** 三方验收模型（M3）；不填（或空串）用默认验收模型。必须和执行模型不是同一家 */
   verifyModelId: z.string().optional(),
+  /** 派活：能被派活（参数声明 + 名额）；null = 不能被派活 */
+  dispatch: taskDispatchSchema.nullable().default(null),
+  /** 派活：谁能派活给这个任务（任务 id） */
+  dispatchFrom: ids.default([]),
+  /** 定时到点时上一次还没跑完就跳过这次（默认跳过） */
+  cronSkipIfRunning: z.boolean().default(true),
 })
 export type TaskInput = z.input<typeof taskInputSchema>
 export const taskUpdateSchema = taskInputSchema.extend({ id: z.string().min(1) })
@@ -502,6 +509,14 @@ export const SETTING_KEYS = {
   verifyMaxRounds: "verify.maxRounds",
   /** 发给模型的历史超过多少 token 就压缩（M3）；0 = 只按模型上下文的 60% */
   compactMaxTokens: "context.compactMaxTokens",
+  /** 派活：最多几层（被派的运行再派活算一层） */
+  dispatchMaxDepth: "dispatch.maxDepth",
+  /** 派活：一次运行最多派几张（已有的单再派一次不算） */
+  dispatchMaxPerSession: "dispatch.maxPerSession",
+  /** 派活：一个任务每天（上海时间）最多被派几张 */
+  dispatchMaxPerTaskPerDay: "dispatch.maxPerTaskPerDay",
+  /** 派活：一个任务最多排队几张 */
+  dispatchMaxQueued: "dispatch.maxQueued",
 } as const
 
 export const SETTINGS_DEFAULTS = {
@@ -513,7 +528,20 @@ export const SETTINGS_DEFAULTS = {
   browserHumanHoldMinutes: 30,
   verifyMaxRounds: 2,
   compactMaxTokens: 0,
+  dispatchMaxDepth: 3,
+  dispatchMaxPerSession: 100,
+  dispatchMaxPerTaskPerDay: 500,
+  dispatchMaxQueued: 1000,
 } as const
+
+/** 设置页「派活」一组 */
+export const settingsDispatchInputSchema = z.object({
+  maxDepth: z.number().int().min(1, "至少 1 层").max(10, "最多 10 层"),
+  maxPerSession: z.number().int().min(1, "至少 1 张").max(1000, "最多 1000 张"),
+  maxPerTaskPerDay: z.number().int().min(1, "至少 1 张").max(100_000, "最多 100000 张"),
+  maxQueued: z.number().int().min(1, "至少 1 张").max(100_000, "最多 100000 张"),
+})
+export type SettingsDispatchInput = z.infer<typeof settingsDispatchInputSchema>
 
 /** 视觉判断用的模型（OpenRouter 上便宜的视觉模型；有显卡后换内网的） */
 export const BROWSER_VISION_MODEL = "openrouter/qwen/qwen3.8-flash"
@@ -574,6 +602,8 @@ export const settingsViewSchema = settingsLimitsInputSchema.extend({
   browser: settingsBrowserInputSchema,
   /** M3：验收轮数、压缩上限（老前端不认也不影响） */
   agent: settingsAgentInputSchema.optional(),
+  /** 派活的四个上限（老前端不认也不影响） */
+  dispatch: settingsDispatchInputSchema.optional(),
   eventToken: z.object({ hint: z.string(), createdAt: z.string() }).optional(),
   channels: z.array(notifyChannelSchema.extend({ urlMasked: z.string().optional() })),
 })

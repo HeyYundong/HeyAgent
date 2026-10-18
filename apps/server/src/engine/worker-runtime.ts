@@ -9,11 +9,14 @@ import { ensureDefaultStandard } from "../compare/service.js"
 import { runImportRead } from "../imports/reader.js"
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
+import { pumpTask } from "./dispatch/pump.js"
+import { sweepWork } from "./dispatch/sweep.js"
 import { runSession } from "./loop.js"
 import {
   ensureQueues,
   QUEUES,
   registerBoss,
+  SCHEDULE_TZ,
   runJobOptions,
   unregisterBoss,
 } from "./queue.js"
@@ -192,6 +195,15 @@ export async function startEngineWorker(
       }
     }
   )
+  // 派活：领单（同一个任务的合并成一个）、每分钟清扫（pg-boss 的 schedule，按队列名覆盖，多个 worker 只注册一份）
+  await boss.work<{ taskId: string }>(
+    QUEUES.workPump,
+    { ...polling, localConcurrency: 2 },
+    async ([job]) => job && (await pumpTask(db, job.data.taskId))
+  )
+  await boss.work(QUEUES.workSweep, polling, async () => sweepWork(db))
+  await boss.schedule(QUEUES.workSweep, "* * * * *", {}, { tz: SCHEDULE_TZ })
+
   const comparisons = await recoverRunningComparisons(db, (name, data, options) => boss.send(name, data, options))
   if (comparisons) log(`有 ${comparisons} 条比对中的比图，已排队继续`)
 

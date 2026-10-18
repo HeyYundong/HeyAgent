@@ -23,6 +23,7 @@ import { cn } from "@/lib/utils"
 import { href, setParams, useRoute } from "@/lib/router"
 import { useMe } from "@/lib/session"
 import { trpc } from "@/lib/trpc"
+import { useWorkTaskStats } from "@/pages/work/parts"
 
 import { TaskDialog } from "./task-dialog"
 import { Elapsed, RunStatusBadge, nextRunText, type TasksState } from "./parts"
@@ -116,7 +117,7 @@ function TaskSheetBody({ task, runId, state, canEdit }: { task: TaskDef; runId: 
         </div>
         <SheetTitle>{task.title}</SheetTitle>
         <SheetDescription>
-          负责人 {staffName(task.ownerId)} · 创建于 {fmtDateTime(task.createdAt)} · {task.schedule ? `定时：${task.schedule.text}（${task.schedule.cron}）` : "只跑一次"} · 预计下次运行：{nextRunText(task, latest)}
+          负责人 {staffName(task.ownerId)} · 创建于 {fmtDateTime(task.createdAt)} · {task.schedule ? `定时：${task.schedule.text}（${task.schedule.cron}）` : task.dispatch ? "被派活，不定时" : "只跑一次"} · 预计下次运行：{nextRunText(task, latest)}
         </SheetDescription>
       </SheetHeader>
       <Separator />
@@ -138,6 +139,8 @@ function TaskSheetBody({ task, runId, state, canEdit }: { task: TaskDef; runId: 
 
 /** 卡片里的一行小字：定时 · 下次 · 步骤 */
 function metaLine(task: TaskDef) {
+  // 能被派活、不定时的：写名额，不写「只跑一次」
+  if (task.dispatch && !task.schedule) return [`被派活 · 同时最多 ${task.dispatch.maxRunning} 个`, !task.enabled && "已停用", task.steps.length ? `${task.steps.length} 步` : "agent 自己探索"].filter(Boolean).join(" · ")
   const next = !task.enabled ? "已停用" : task.nextRunAt ? `下次 ${fmtShort(task.nextRunAt)}` : task.schedule ? "下次按 cron 算" : ""
   const marks = task.steps.filter((step) => step.checkpoint).length
   const steps = task.steps.length ? `${task.steps.length} 步${marks ? ` · ${marks} 检查点` : ""}` : "agent 自己探索"
@@ -156,6 +159,7 @@ function TaskCard({ task, latest, canToggle, onToggle }: { task: TaskDef; latest
       <CardContent className="flex flex-1 flex-col gap-1.5">
         <div className="flex items-center gap-2 text-muted-foreground">
           {latest ? <RunStatusBadge status={latest.status} /> : <Badge variant="ghost">还没运行过</Badge>}
+          {task.dispatch && <QueuedBadge taskId={task.id} />}
           {running ? <span className="text-foreground"><Elapsed since={latest.startedAt} /></span> : latest && <span className="tabular-nums">{fmtShort(latest.startedAt)}</span>}
           <span className="ml-auto font-mono">{task.id}</span>
         </div>
@@ -189,4 +193,10 @@ function TaskCard({ task, latest, canToggle, onToggle }: { task: TaskDef; latest
       </CardContent>
     </Card>
   )
+}
+
+/** 能被派活的任务卡片上：有排队的单时「排队 N」 */
+function QueuedBadge({ taskId }: { taskId: string }) {
+  const queued = useWorkTaskStats(taskId).data?.queued ?? 0
+  return queued > 0 ? <Badge variant="outline">排队 {queued}</Badge> : null
 }

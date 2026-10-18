@@ -52,6 +52,7 @@ import {
   sessionRunSchema,
   settingsAgentInputSchema,
   settingsBrowserInputSchema,
+  settingsDispatchInputSchema,
   settingsLimitsInputSchema,
   settingsViewSchema,
   skillInputSchema,
@@ -97,6 +98,7 @@ import { browserRouter } from "./browser-router.js"
 import { engineRouter } from "./engine-router.js"
 import { apiKeysRouter, galleryRouter } from "./gallery-router.js"
 import { compareRouter } from "./compare-router.js"
+import { workRouter } from "./work-router.js"
 import { importsRouter } from "./imports-router.js"
 
 const idInput = z.object({ id: z.string().min(1) })
@@ -306,6 +308,8 @@ export const appRouter = router({
     updateBrowser: protectedProcedure.input(settingsBrowserInputSchema).mutation(({ ctx, input }) => settings.updateBrowserSettings(w(ctx), input)),
     /** M3：三方验收最多几轮、压缩上下文的 token 上限 */
     updateAgent: protectedProcedure.input(settingsAgentInputSchema).mutation(({ ctx, input }) => settings.updateAgentSettings(w(ctx), input)),
+    /** 派活的四个上限（层数、一次运行最多派几张、一个任务每天最多被派几张、最多排队几张） */
+    updateDispatch: protectedProcedure.input(settingsDispatchInputSchema).mutation(({ ctx, input }) => settings.updateDispatchSettings(w(ctx), input)),
     /** 生成新的外部事件令牌：原文只在这次返回 */
     regenerateEventToken: protectedProcedure.mutation(({ ctx }) => settings.regenerateEventToken(w(ctx))),
     clearEventToken: protectedProcedure.mutation(({ ctx }) => settings.clearEventToken(w(ctx))),
@@ -327,6 +331,8 @@ export const appRouter = router({
 
   /** 比图：两张图交给视觉模型按标准逐项打分（图片先走 /api/files 上传；外部系统用 /api/compare/* 和 MCP） */
   compare: compareRouter,
+  /** 派活：派活单的列表、详情、名额数字，人派一张、改参数、重办、不办了（agent 用内置工具 work.dispatch） */
+  work: workRouter,
 
   /** 导入（只有主管）：别的 agent 打的 zip 包，AI 读包整理成方案，确认后一次导入（上传 zip 走 HTTP 接口 /api/imports） */
   imports: importsRouter,

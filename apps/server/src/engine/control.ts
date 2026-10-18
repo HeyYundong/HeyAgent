@@ -4,72 +4,78 @@ import type { FireEventResult } from "@heyagent/shared"
 
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
+import { settleWorkItemInTx } from "./dispatch/settle.js"
+import type { Tx } from "./queue.js"
 import { appendEvent, writeAudit } from "./records.js"
 import { fireTodo, todosForEvent } from "./schedule.js"
 import { EngineError } from "./sessions.js"
 import { resume, waitsForEvent } from "./waits.js"
 
+export interface CancelSessionInput {
+  sessionId: string
+  actorId: string
+  actorName: string
+  reason?: string
+}
+
 /** 取消：标「失败」并写清原因；等待作废，没处理的事一并取消。正在跑的循环在下一步之前发现状态变了就停 */
-export async function cancelSessionImpl(
-  db: Db,
-  input: {
-    sessionId: string
-    actorId: string
-    actorName: string
-    reason?: string
-  }
-) {
-  return db.transaction(async (tx) => {
-    const reason = `${input.actorName}取消了这次运行${input.reason ? `：${input.reason}` : ""}`
-    const updated = await tx
-      .update(t.sessions)
-      .set({ status: "failed", endedAt: new Date(), error: reason })
-      .where(
-        and(
-          eq(t.sessions.id, input.sessionId),
-          notInArray(t.sessions.status, ["done", "failed"])
-        )
+export async function cancelSessionImpl(db: Db, input: CancelSessionInput) {
+  return db.transaction((tx) => cancelSessionInTx(db, tx, input))
+}
+
+/** 取消（在调用方的事务里）：派活页「不办了」要和派活单一起改 */
+export async function cancelSessionInTx(db: Db, tx: Tx, input: CancelSessionInput) {
+  const reason = `${input.actorName}取消了这次运行${input.reason ? `：${input.reason}` : ""}`
+  const updated = await tx
+    .update(t.sessions)
+    .set({ status: "failed", endedAt: new Date(), error: reason })
+    .where(
+      and(
+        eq(t.sessions.id, input.sessionId),
+        notInArray(t.sessions.status, ["done", "failed"])
       )
-      .returning({ id: t.sessions.id })
-    if (updated.length === 0)
-      throw new EngineError("CONFLICT", "这次运行已经结束了")
-    await tx
-      .update(t.sessionWaits)
-      .set({ status: "cancelled", firedCause: "cancel", firedAt: new Date() })
-      .where(
-        and(
-          eq(t.sessionWaits.sessionId, input.sessionId),
-          eq(t.sessionWaits.status, "waiting")
-        )
+    )
+    .returning({ id: t.sessions.id })
+  if (updated.length === 0)
+    throw new EngineError("CONFLICT", "这次运行已经结束了")
+  await tx
+    .update(t.sessionWaits)
+    .set({ status: "cancelled", firedCause: "cancel", firedAt: new Date() })
+    .where(
+      and(
+        eq(t.sessionWaits.sessionId, input.sessionId),
+        eq(t.sessionWaits.status, "waiting")
       )
-    await tx
-      .update(t.humanItems)
-      .set({
-        status: "cancelled",
-        resolvedById: input.actorId,
-        resolvedAt: new Date(),
-        resolution: { how: "cancelled", note: reason },
-      })
-      .where(
-        and(
-          eq(t.humanItems.sessionId, input.sessionId),
-          eq(t.humanItems.status, "open")
-        )
-      )
-    await appendEvent(tx, input.sessionId, {
-      kind: "error",
-      title: "已取消",
-      detail: reason,
+    )
+  await tx
+    .update(t.humanItems)
+    .set({
+      status: "cancelled",
+      resolvedById: input.actorId,
+      resolvedAt: new Date(),
+      resolution: { how: "cancelled", note: reason },
     })
-    await writeAudit(tx, {
-      actorId: input.actorId,
-      action: "session.cancel",
-      targetTable: "sessions",
-      targetId: input.sessionId,
-      detail: { reason: input.reason },
-    })
-    return { sessionId: input.sessionId }
+    .where(
+      and(
+        eq(t.humanItems.sessionId, input.sessionId),
+        eq(t.humanItems.status, "open")
+      )
+    )
+  await appendEvent(tx, input.sessionId, {
+    kind: "error",
+    title: "已取消",
+    detail: reason,
   })
+  await writeAudit(tx, {
+    actorId: input.actorId,
+    action: "session.cancel",
+    targetTable: "sessions",
+    targetId: input.sessionId,
+    detail: { reason: input.reason },
+  })
+  // 被派的运行：派活单跟着记「没办成」（人在派活页点「不办了」时单已经先改成不办了，这里不动它）
+  await settleWorkItemInTx(db, tx, input.sessionId, { status: "failed", error: reason })
+  return { sessionId: input.sessionId }
 }
 
 /** 立即继续：只对挂起等待中的 session（等人处理的要先处理那件事） */

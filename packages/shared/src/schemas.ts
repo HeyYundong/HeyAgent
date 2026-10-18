@@ -342,6 +342,17 @@ export const taskSchema = z.object({
   allowBrowserEvaluate: z.boolean(),
   /** M3：这个任务自己选的三方验收模型；没有就用默认验收模型。必须和执行模型不是同一家 */
   verifyModelId: z.string().optional(),
+  /** 派活：能被派活时的参数声明和名额；没有 = 不能被派活 */
+  dispatch: z
+    .object({
+      params: z.array(z.object({ name: z.string(), description: z.string(), required: z.boolean(), dedupe: z.boolean() })),
+      maxRunning: z.number().int(),
+    })
+    .optional(),
+  /** 派活：谁能派活给这个任务（任务 id） */
+  dispatchFrom: z.array(z.string()),
+  /** 定时到点时上一次还没跑完（执行中 / 验收中）就跳过这次；默认跳过 */
+  cronSkipIfRunning: z.boolean(),
 })
 export type TaskDef = z.infer<typeof taskSchema>
 
@@ -473,8 +484,12 @@ export type SessionDigest = z.infer<typeof sessionDigestSchema>
 export const sessionRunSchema = z.object({
   id: z.string(),
   taskId: z.string(),
-  /** 新增：父 session（v1.1 子 agent 用，现在都没有） */
+  /** 父 session：派活触发的运行 = 派活的那次运行 */
   parentSessionId: z.string().optional(),
+  /** 派活触发的运行：哪张派活单 */
+  workItemId: z.string().optional(),
+  /** 怎么触发的：manual / cron / todo / event / dispatch（旧数据可能没有） */
+  source: z.string().optional(),
   startedAt: isoTime,
   endedAt: isoTime.optional(),
   status: runStatusSchema,

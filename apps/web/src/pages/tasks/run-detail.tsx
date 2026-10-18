@@ -1,8 +1,10 @@
 // 某次运行的 session 详情：标题卡 + 检查点 / 验收 / 总结和记忆（结束后）/ agent 的步骤 / 附件和产物 / 过程。
 // M3：过程里标出规则命中、agent 写下步骤（plan.set）、上下文压缩；验收逐条显示结论和理由；agent 的步骤可以「存为任务步骤」（tasks.saveStepsFromSession）。
+// 派活：meta 前面写怎么开始的（派活触发写清哪张单、谁派的）；被派来的加「派来的活」，派过活的加「派出去的活」（docs/dev/dispatch.md 9.4 节）。
 // 不带页面级布局和返回链接，放进任何 768px 宽的抽屉都能用（任务页、Session 页的抽屉都直接放它）。
 import * as React from "react"
-import { BrainIcon, CircleCheckIcon, CircleStopIcon, FlagIcon, FoldVerticalIcon, ListTreeIcon, PauseIcon, PlayIcon, SaveIcon, ScanSearchIcon, SearchXIcon, ShieldIcon, TriangleAlertIcon, UserIcon, WrenchIcon, type LucideIcon } from "lucide-react"
+import { useQuery } from "@tanstack/react-query"
+import { BrainIcon, ChevronRightIcon, CircleCheckIcon, CircleStopIcon, FlagIcon, FoldVerticalIcon, ListTreeIcon, PauseIcon, PlayIcon, SaveIcon, ScanSearchIcon, SearchXIcon, SendIcon, ShieldIcon, TriangleAlertIcon, UserIcon, WrenchIcon, type LucideIcon } from "lucide-react"
 
 import { DetailPanel, DetailSection, EmptyState } from "@/components/shell/simple-page"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -10,18 +12,20 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { CodeBlock, CodeBlockContent, CodeBlockHeader, CodeBlockTitle } from "@/components/ui/code-block"
+import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "@/components/ui/item"
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker"
 import { Spinner } from "@/components/ui/spinner"
 import { Trace, TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigger, TraceDescription, TraceIcon, TraceLine, TraceTitle } from "@/components/ui/trace"
-import { can, eventTimeText, fmtDateTime } from "@heyagent/shared"
+import { can, eventTimeText, fmtDateTime, WORK_DISPATCH_TOOL_ID } from "@heyagent/shared"
 import type { RunEvent, RunEventKind, SessionRun, TaskDef, Verification } from "@heyagent/shared"
 
 import { MarkdownView } from "@/components/markdown"
-import { useHumanItems, useModels, useToolName } from "@/lib/data"
+import { useHumanItems, useModels, useStaffName, useToolName } from "@/lib/data"
 import { useAction } from "@/lib/mutations"
 import { href } from "@/lib/router"
 import { useMe } from "@/lib/session"
 import { trpc } from "@/lib/trpc"
+import { ParamsTable, WorkStatusBadge, shortName, timeText } from "@/pages/work/parts"
 
 import { VerificationReport } from "./verification"
 import { CheckpointGrid, Elapsed, RunStatusBadge, StepList, WaitingAlert, checkpointSummary, money } from "./parts"
@@ -51,7 +55,7 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionRun }) {
     <DetailPanel
       title={`${run.id} · ${task.title}`}
       badges={<><RunStatusBadge status={run.status} />{run.status === "running" && <span className="text-xs text-muted-foreground"><Elapsed since={run.startedAt} /></span>}</>}
-      meta={`模型 ${modelName(run.modelId)} · 输入 ${num(run.tokensIn)} / 输出 ${num(run.tokensOut)} token · 花费 ${money(run.costUsd)} · 开始 ${fmtDateTime(run.startedAt)} · ${run.endedAt ? `结束 ${fmtDateTime(run.endedAt)}` : "还没结束"}`}
+      meta={<RunMeta run={run} rest={`模型 ${modelName(run.modelId)} · 输入 ${num(run.tokensIn)} / 输出 ${num(run.tokensOut)} token · 花费 ${money(run.costUsd)} · 开始 ${fmtDateTime(run.startedAt)} · ${run.endedAt ? `结束 ${fmtDateTime(run.endedAt)}` : "还没结束"}`} />}
       actions={<>
         <RunBrowserButton run={run} />
         {run.status === "waiting" && can(user, "session.resume", { taskOwnerId: task.ownerId }) && <ResumeButton run={run} size="sm" />}
@@ -69,6 +73,8 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionRun }) {
           {error.detail && <AlertDescription>{error.detail}</AlertDescription>}
         </Alert>
       )}
+      {run.workItemId && <DispatchedIn run={run} itemId={run.workItemId} />}
+      {task.toolIds.includes(WORK_DISPATCH_TOOL_ID) && <DispatchedOut run={run} />}
       <DetailSection title={`检查点 · ${checkpointSummary(run.checkpoints)}`}>
         <CheckpointGrid run={run} />
       </DetailSection>
@@ -211,6 +217,99 @@ function VerificationSection({ run, verification }: { run: SessionRun; verificat
       action={item && <Button variant="outline" size="sm" nativeButton={false} render={<a href={href("todos", { id: item.id })} />}>去待办处理 →</Button>}
     >
       <VerificationReport verification={verification} />
+    </DetailSection>
+  )
+}
+
+// ---------- 派活 ----------
+
+const SOURCE_TEXT: Record<string, string> = { manual: "手动触发", cron: "定时触发", todo: "待办触发", event: "外部事件触发", dispatch: "派活触发" }
+
+/** meta 一行：怎么开始的（派活触发写清是哪张单、谁派的，两个都是链接）+ 原来的模型、token、花费、时间 */
+function RunMeta({ run, rest }: { run: SessionRun; rest: string }) {
+  const staffName = useStaffName()
+  const item = useQuery(trpc.work.get.queryOptions({ id: run.workItemId ?? "" }, { enabled: Boolean(run.workItemId) })).data
+  const source = run.source && SOURCE_TEXT[run.source]
+  if (!run.workItemId) return <>{source ? `${source} · ` : ""}{rest}</>
+  return (
+    <span className="inline-flex flex-wrap items-center gap-x-1">
+      <SendIcon className="size-3" />
+      派活触发 ·
+      <a className="font-mono underline underline-offset-4" href={href("work", { id: run.workItemId })}>{run.workItemId}</a>
+      {item && (item.via === "agent" && item.fromTaskId ? (
+        <>
+          · 来自「{shortName(item.fromTaskTitle)}」
+          {item.fromSessionId && <a className="font-mono underline underline-offset-4" href={href("sessions", { id: item.fromSessionId })}>{item.fromSessionId}</a>}
+        </>
+      ) : (
+        <>· {staffName(item.fromUserId ?? undefined)}手动派的</>
+      ))}
+      <span>· {rest}</span>
+    </span>
+  )
+}
+
+/** 被派来的运行：派来的活（单号、标题、状态、参数表），在检查点上面 */
+function DispatchedIn({ run, itemId }: { run: SessionRun; itemId: string }) {
+  const detail = useQuery(trpc.work.get.queryOptions({ id: itemId }))
+  const item = detail.data
+  const nth = item ? item.runs.findIndex((each) => each.sessionId === run.id) + 1 : 0
+  return (
+    <DetailSection
+      title="派来的活"
+      description="这次运行是别的任务派来办一件事的，参数在第一条消息里交给了 agent。办完的总结会写回派活单。"
+      action={<Button variant="outline" size="sm" nativeButton={false} render={<a href={href("work", { id: itemId })} />}>看派活单 {itemId}</Button>}
+    >
+      {detail.isPending ? (
+        <Spinner />
+      ) : !item ? (
+        <p className="text-muted-foreground">派活单 {itemId} 没取到，稍后再试。</p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          <p className="flex flex-wrap items-center gap-2">
+            <span className="font-mono">{item.id}</span>
+            {item.title}
+            <WorkStatusBadge item={item} />
+            {item.runs.length >= 2 && nth > 0 && <Badge variant="outline">这是第 {nth} 次</Badge>}
+          </p>
+          <ParamsTable declared={item.taskDispatch?.params ?? []} values={item.params} />
+          {item.note && <p><span className="text-muted-foreground">补充说明：</span>{item.note}</p>}
+        </div>
+      )}
+    </DetailSection>
+  )
+}
+
+/** 派过活的运行：派出去的活，每行一张单，点了去派活页 */
+function DispatchedOut({ run }: { run: SessionRun }) {
+  const page = useQuery(trpc.work.list.queryOptions({ fromSessionId: run.id, days: 0, limit: 200 }))
+  const list = page.data?.items ?? []
+  const called = run.events.some((event) => event.toolId === WORK_DISPATCH_TOOL_ID)
+  return (
+    <DetailSection
+      title={`派出去的活（新建 ${page.data?.counts.all ?? list.length} 张）`}
+      description="这次运行用内置工具「派活」派出去的单。已经有单的同一件事不会重复建，只在过程里的「派活」调用返回现状。"
+    >
+      {page.isPending ? (
+        <Spinner />
+      ) : list.length ? (
+        <ItemGroup className="gap-2">
+          {list.map((item) => (
+            <Item key={item.id} variant="outline" size="sm" render={<a href={href("work", { id: item.id })} />}>
+              <ItemContent className="min-w-0">
+                <ItemTitle><span className="font-mono">{item.id}</span>{item.title}</ItemTitle>
+                <ItemDescription className="line-clamp-1">派给「{item.taskTitle}」 · {timeText(item.createdAt)}</ItemDescription>
+              </ItemContent>
+              <ItemActions>
+                <WorkStatusBadge item={item} />
+                <ChevronRightIcon className="size-4 text-muted-foreground" />
+              </ItemActions>
+            </Item>
+          ))}
+        </ItemGroup>
+      ) : (
+        <p className="text-muted-foreground">{called ? "这次没有新派的单：查到的单都已经有了（见过程里「派活」那一步的输出）。" : "这次没有派活。"}</p>
+      )}
     </DetailSection>
   )
 }

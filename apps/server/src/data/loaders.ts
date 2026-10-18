@@ -78,11 +78,12 @@ export async function listTasks(db: Db, ids?: string[]): Promise<TaskDef[]> {
     .where(ids ? inArray(t.tasks.id, ids) : undefined)
     .orderBy(desc(t.tasks.createdAt))
   const taskIds = rows.map((row) => row.id)
-  const [memoryIds, skillIds, toolIds, ruleIds] = await Promise.all([
+  const [memoryIds, skillIds, toolIds, ruleIds, dispatchFrom] = await Promise.all([
     linksByTask(db, t.taskMemories, taskIds),
     linksByTask(db, t.taskSkills, taskIds),
     linksByTask(db, t.taskTools, taskIds),
     linksByTask(db, t.taskRules, taskIds),
+    dispatchSourcesByTask(db, taskIds),
   ])
   return rows.map((row) =>
     compact({
@@ -104,8 +105,20 @@ export async function listTasks(db: Db, ids?: string[]): Promise<TaskDef[]> {
       allowedDomains: row.allowedDomains,
       allowBrowserEvaluate: row.allowBrowserEvaluate,
       verifyModelId: opt(row.verifyModelId),
+      dispatch: row.dispatch ?? undefined,
+      dispatchFrom: dispatchFrom.get(row.id) ?? [],
+      cronSkipIfRunning: row.cronSkipIfRunning,
     })
   )
+}
+
+/** 派活：谁能派活给这些任务（task_id → source_task_id[]，按 id 排序） */
+async function dispatchSourcesByTask(db: Db, taskIds: string[]) {
+  const map = new Map<string, string[]>()
+  if (taskIds.length === 0) return map
+  const rows = await db.select().from(t.taskDispatchSources).where(inArray(t.taskDispatchSources.taskId, taskIds)).orderBy(asc(t.taskDispatchSources.sourceTaskId))
+  for (const row of rows) map.set(row.taskId, [...(map.get(row.taskId) ?? []), row.sourceTaskId])
+  return map
 }
 
 // ---------- 运行（session） ----------
@@ -169,6 +182,8 @@ export async function listSessions(db: Db, filter: { ids?: string[]; taskId?: st
       id: row.id,
       taskId: row.taskId,
       parentSessionId: opt(row.parentSessionId),
+      workItemId: opt(row.workItemId),
+      source: opt(row.triggeredBy),
       startedAt: iso(row.startedAt),
       endedAt: isoOpt(row.endedAt),
       status: row.status,

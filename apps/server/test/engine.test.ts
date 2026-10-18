@@ -910,6 +910,11 @@ describe("场景 10b：同一个任务一天定时触发很多次", () => {
       modelId: "test/s10b",
       scheduleCron: "* * * * *",
     })
+    // 这里测编号：关掉「上一次还没跑完就跳过」（默认开着，开着的话第 2 次起都会被跳过，见 dispatch.test.ts）
+    await ctx.db
+      .update(t.tasks)
+      .set({ cronSkipIfRunning: false })
+      .where(eq(t.tasks.id, taskId))
     const ids: string[] = []
     for (let i = 0; i < 25; i++) {
       const id = await onTaskCron(ctx.db, { taskId })
@@ -1474,6 +1479,7 @@ describe("其他接口", () => {
       "session.wait",
       "skill.load",
       "skill.propose",
+      "work.dispatch",
     ])
     expect(
       builtin

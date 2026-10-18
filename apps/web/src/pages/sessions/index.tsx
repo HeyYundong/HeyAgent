@@ -6,6 +6,7 @@ import { ArrowRightIcon, HistoryIcon, SearchIcon, SearchXIcon } from "lucide-rea
 import { EmptyState, PageFrame, SimpleHeader } from "@/components/shell/simple-page"
 import { Button } from "@/components/ui/button"
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
@@ -16,12 +17,16 @@ import { useBoardQuery, useModelsQuery, useSessionsQuery, useStaffQuery, useTask
 import { money } from "@/pages/tasks/parts"
 import { RunDetail } from "@/pages/tasks/run-detail"
 
-import { SessionItems, SessionTable } from "./list"
+import { SOURCE_LABEL, SessionItems, SessionTable } from "./list"
+
+const SOURCE_ITEMS = [{ value: "all", label: "全部来源" }, ...Object.entries(SOURCE_LABEL).map(([value, label]) => ({ value, label }))]
 
 export default function SessionsPage() {
   const { params } = useRoute()
   const [group, setGroup] = React.useState<Group>("all")
   const [query, setQuery] = React.useState(() => params.get("q") ?? "") // 别的页面可以带 ?q= 过来
+  // 来源：手动 / 定时 / 待办 / 事件 / 派活（派活加的，可以只看派活触发的）
+  const [source, setSource] = React.useState(() => params.get("source") ?? "all")
 
   const sessionsQuery = useSessionsQuery()
   const tasksQuery = useTasksQuery()
@@ -35,9 +40,10 @@ export default function SessionsPage() {
   const q = query.trim().toLowerCase()
   const shownList = allRuns.filter((run) => {
     if (group !== "all" && groupOf(run) !== group) return false
+    if (source !== "all" && run.source !== source) return false
     if (!q) return true
     const title = findById(tasks, run.taskId)?.title ?? ""
-    return run.id.toLowerCase().includes(q) || run.taskId.toLowerCase().includes(q) || title.toLowerCase().includes(q)
+    return run.id.toLowerCase().includes(q) || run.taskId.toLowerCase().includes(q) || title.toLowerCase().includes(q) || Boolean(run.workItemId?.toLowerCase().includes(q))
   })
   const spentToday = allRuns.filter(isToday).reduce((sum, run) => sum + run.costUsd, 0)
 
@@ -49,6 +55,7 @@ export default function SessionsPage() {
   const task = run && findById(tasks, run.taskId)
   const clear = () => {
     setGroup("all")
+    setSource("all")
     setQuery("")
   }
 
@@ -74,9 +81,15 @@ export default function SessionsPage() {
                 </ToggleGroupItem>
               ))}
             </ToggleGroup>
+            <Select items={SOURCE_ITEMS} value={source} onValueChange={(value) => value && setSource(String(value))}>
+              <SelectTrigger className="w-32" aria-label="按来源筛选"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {SOURCE_ITEMS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}
+              </SelectContent>
+            </Select>
             <InputGroup className="w-full sm:w-72">
               <InputGroupAddon><SearchIcon /></InputGroupAddon>
-              <InputGroupInput value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜 session 编号或任务名" aria-label="搜索 session" />
+              <InputGroupInput value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜 session 编号、任务名或派活单号" aria-label="搜索 session" />
             </InputGroup>
             <p className="text-xs tabular-nums text-muted-foreground lg:ml-auto">
               进行中 {count("active")} · 挂起 {count("paused")} · 今天花了 {money(spentToday)}

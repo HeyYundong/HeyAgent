@@ -6,6 +6,7 @@ import type { z } from "zod"
 import type { Db } from "../../db/client.js"
 import * as t from "../../db/schema.js"
 import { syncTaskSchedule } from "../../engine/api.js"
+import { sendPumpInTx } from "../../engine/dispatch/signal.js"
 import { assertCan, audit, badRequest, conflict, nextNo, notFound, type DbOrTx, type Tx, type WriteCtx } from "./common.js"
 
 export type TaskInput = z.output<typeof taskInputSchema>
@@ -19,7 +20,7 @@ async function defaultModel(db: DbOrTx, role: "run" | "verify") {
  * 检查模型和关联的配置都存在；执行模型不许和验收模型同一家。
  * 规则（M3）：新选上的规则必须已经生效（人确认过翻译）；原来就选着的规则保留（文字改过还没重新确认的，运行时照旧版本执行）
  */
-async function checkTask(db: DbOrTx, input: TaskInput, previousRuleIds: string[] = []) {
+async function checkTask(db: DbOrTx, input: TaskInput, previousRuleIds: string[] = [], selfId?: string) {
   const modelId = input.modelId || (await defaultModel(db, "run"))
   if (!modelId) throw badRequest("还没有可用的模型：先去「模型」页接入模型服务并设置默认模型")
   const [model] = await db.select({ id: t.models.id, name: t.models.name, kind: t.models.kind }).from(t.models).where(eq(t.models.id, modelId))
@@ -37,6 +38,14 @@ async function checkTask(db: DbOrTx, input: TaskInput, previousRuleIds: string[]
     if (verify && sameFamily(modelId, verify)) {
       throw badRequest(`执行模型和三方验收模型是同一家（${modelFamily(modelId)}），验收就不算第三方了。换一个执行模型，或去「模型」页换验收模型。`)
     }
+  }
+  // 派活：谁能派活给它（必须存在、不能是自己）
+  const dispatchFrom = [...new Set(input.dispatchFrom)]
+  if (selfId && dispatchFrom.includes(selfId)) throw badRequest("「谁能派活给它」里不能选这个任务自己")
+  if (dispatchFrom.length) {
+    const rows = await db.select({ id: t.tasks.id }).from(t.tasks).where(inArray(t.tasks.id, dispatchFrom))
+    const missing = dispatchFrom.filter((id) => !rows.some((row) => row.id === id))
+    if (missing.length) throw badRequest(`「谁能派活给它」里的任务不存在：${missing.join("、")}`)
   }
   const exist = async (table: typeof t.memories | typeof t.skills | typeof t.rules | typeof t.tools, list: string[], what: string) => {
     if (list.length === 0) return
@@ -68,7 +77,7 @@ async function checkTask(db: DbOrTx, input: TaskInput, previousRuleIds: string[]
   const alwaysOn = input.toolIds.length
     ? (await db.select({ id: t.tools.id }).from(t.tools).where(and(inArray(t.tools.id, input.toolIds), eq(t.tools.alwaysOn, true)))).map((row) => row.id)
     : []
-  return { modelId, verifyModelId, toolIds: input.toolIds.filter((id) => !alwaysOn.includes(id)) }
+  return { modelId, verifyModelId, toolIds: input.toolIds.filter((id) => !alwaysOn.includes(id)), dispatchFrom }
 }
 
 function columns(input: TaskInput, modelId: string, verifyModelId: string | null) {
@@ -98,10 +107,13 @@ function columns(input: TaskInput, modelId: string, verifyModelId: string | null
     allowedDomains: [...new Set(input.allowedDomains)],
     allowBrowserEvaluate: input.allowBrowserEvaluate,
     verifyModelId,
+    // 派活：参数声明和名额（已经按 shared 的 taskDispatchSchema 校验过：参数名不重复）；null = 不能被派活
+    dispatch: input.dispatch ?? null,
+    cronSkipIfRunning: input.cronSkipIfRunning,
   }
 }
 
-async function writeLinks(tx: Tx, id: string, input: { memoryIds: string[]; skillIds: string[]; toolIds: string[]; ruleIds: string[] }) {
+async function writeLinks(tx: Tx, id: string, input: { memoryIds: string[]; skillIds: string[]; toolIds: string[]; ruleIds: string[]; dispatchFrom: string[] }) {
   const links = [
     [t.taskMemories, input.memoryIds],
     [t.taskSkills, input.skillIds],
@@ -113,6 +125,8 @@ async function writeLinks(tx: Tx, id: string, input: { memoryIds: string[]; skil
     const unique = [...new Set(list)]
     if (unique.length) await tx.insert(table).values(unique.map((refId, position) => ({ taskId: id, refId, position })))
   }
+  await tx.delete(t.taskDispatchSources).where(eq(t.taskDispatchSources.taskId, id))
+  if (input.dispatchFrom.length) await tx.insert(t.taskDispatchSources).values(input.dispatchFrom.map((sourceTaskId) => ({ taskId: id, sourceTaskId })))
 }
 
 async function loadTask(db: DbOrTx, id: string) {
@@ -128,12 +142,12 @@ async function loadTask(db: DbOrTx, id: string) {
  */
 export async function insertTask(tx: Tx, actor: Actor, input: TaskInput, options: { allowInactiveRuleIds?: string[]; audit?: Record<string, unknown> } = {}): Promise<string> {
   const ownerId = input.ownerId || actor.id
-  const { modelId, verifyModelId, toolIds } = await checkTask(tx, input, options.allowInactiveRuleIds ?? [])
+  const { modelId, verifyModelId, toolIds, dispatchFrom } = await checkTask(tx, input, options.allowInactiveRuleIds ?? [])
   const [owner] = await tx.select({ id: t.users.id }).from(t.users).where(eq(t.users.id, ownerId))
   if (!owner) throw badRequest("负责人不存在")
   const id = taskId(await nextNo(tx, "task_no_seq"))
   await tx.insert(t.tasks).values({ id, ownerId, ...columns(input, modelId, verifyModelId) })
-  await writeLinks(tx, id, { ...input, toolIds })
+  await writeLinks(tx, id, { ...input, toolIds, dispatchFrom })
   await audit(tx, actor.id, "task.create", "tasks", id, { title: input.title, ownerId, modelId, ...options.audit })
   return id
 }
@@ -152,10 +166,12 @@ export async function updateTask(ctx: WriteCtx, input: TaskInput & { id: string 
     // 员工不能把任务转给别人
     const ownerId = ctx.actor.isAdmin && input.ownerId ? input.ownerId : before.ownerId
     const previousRuleIds = (await tx.select({ id: t.taskRules.refId }).from(t.taskRules).where(eq(t.taskRules.taskId, input.id))).map((row) => row.id)
-    const { modelId, verifyModelId, toolIds } = await checkTask(tx, input, previousRuleIds)
+    const { modelId, verifyModelId, toolIds, dispatchFrom } = await checkTask(tx, input, previousRuleIds, input.id)
     const next = columns(input, modelId, verifyModelId)
     await tx.update(t.tasks).set({ ...next, ownerId }).where(eq(t.tasks.id, input.id))
-    await writeLinks(tx, input.id, { ...input, toolIds })
+    await writeLinks(tx, input.id, { ...input, toolIds, dispatchFrom })
+    // 能被派活（刚打开、调大名额、改了别的）：领一次单。关掉时排着的单留着不动，重新打开接着领
+    if (next.dispatch && next.enabled) await sendPumpInTx(ctx.db, tx, input.id)
     const changed = (Object.keys(next) as (keyof typeof next)[]).filter((key) => JSON.stringify(before[key]) !== JSON.stringify(next[key]))
     await audit(tx, ctx.actor.id, "task.update", "tasks", input.id, { changed: [...changed, ...(ownerId !== before.ownerId ? ["ownerId"] : [])] })
   })
@@ -169,6 +185,8 @@ export async function setTaskEnabled(ctx: WriteCtx, input: { id: string; enabled
     assertCan(ctx.actor, "task.manage", { ownerId: before.ownerId }, "只有负责人和主管能启停这个任务")
     const nextRunAt = input.enabled && before.scheduleCron ? new Date(nextCronRun(before.scheduleCron) ?? Date.now()) : null
     await tx.update(t.tasks).set({ enabled: input.enabled, nextRunAt }).where(eq(t.tasks.id, input.id))
+    // 重新启用能被派活的任务：接着领排着的单
+    if (input.enabled && before.dispatch) await sendPumpInTx(ctx.db, tx, input.id)
     await audit(tx, ctx.actor.id, input.enabled ? "task.enable" : "task.disable", "tasks", input.id)
   })
   await syncTaskSchedule(ctx.db, input.id)
@@ -194,11 +212,13 @@ export async function saveStepsFromSession(ctx: WriteCtx, input: { sessionId: st
   })
 }
 
-/** 有运行记录的不能删（运行记录要留着查），只能停用 */
+/** 有运行记录、有派活单（作为被派的）的不能删（记录要留着查），只能停用 */
 export async function deleteTask(ctx: WriteCtx, input: { id: string }) {
   await ctx.db.transaction(async (tx) => {
     const before = await loadTask(tx, input.id)
     assertCan(ctx.actor, "task.manage", { ownerId: before.ownerId }, "只有负责人和主管能删这个任务")
+    const [items] = await tx.select({ n: count() }).from(t.workItems).where(eq(t.workItems.taskId, input.id))
+    if ((items?.n ?? 0) > 0) throw conflict("这个任务有派活单，只能停用")
     const [runs] = await tx.select({ n: count() }).from(t.sessions).where(eq(t.sessions.taskId, input.id))
     if ((runs?.n ?? 0) > 0) throw conflict(`这个任务已经有 ${runs!.n} 次运行记录，不能删除（运行记录要留着查）。不想让它再运行，就把它停用。`)
     await tx.delete(t.tasks).where(eq(t.tasks.id, input.id))

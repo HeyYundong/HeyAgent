@@ -19,6 +19,7 @@ import type { PendingToolCalls } from "../db/schema.js"
 import { notifyUsers, TODOS_LINK } from "./notify.js"
 import type { Tx } from "./queue.js"
 import { appendEvent, writeAudit } from "./records.js"
+import { settleWorkItemInTx } from "./dispatch/settle.js"
 import { EngineError } from "./sessions.js"
 import { loadEngineSettings } from "./settings.js"
 import { resumeInTx, suspendInTx } from "./waits.js"
@@ -236,16 +237,15 @@ export async function resolveHumanItemImpl(
         title: "负责人决定不继续，运行结束",
         detail: note ?? null,
       })
+      const error = limit
+        ? `${limit === "cost" ? "花费" : "步数"}到了上限，${input.actorName}决定不继续`
+        : `${item.title}：${input.actorName}决定不继续`
       await tx
         .update(t.sessions)
-        .set({
-          status: "failed",
-          endedAt: new Date(),
-          error: limit
-            ? `${limit === "cost" ? "花费" : "步数"}到了上限，${input.actorName}决定不继续`
-            : `${item.title}：${input.actorName}决定不继续`,
-        })
+        .set({ status: "failed", endedAt: new Date(), error })
         .where(eq(t.sessions.id, item.sessionId))
+      // 被派的运行：派活单跟着记「没办成」
+      await settleWorkItemInTx(db, tx, item.sessionId, { status: "failed", error })
       return { endedSessionId: item.sessionId }
     }
     let sessionPatch: Partial<typeof t.sessions.$inferInsert> | undefined
@@ -417,7 +417,15 @@ export async function resolveVerifyDisputeImpl(
         and(eq(t.sessions.id, sessionId), eq(t.sessions.status, "needs_human"))
       )
       .returning({ id: t.sessions.id })
-    return done.length ? { endedSessionId: sessionId } : {}
+    if (done.length === 0) return {}
+    // 被派的运行：判通过 = 派活单办完（总结取 agent 最后那段），判失败 = 没办成
+    await settleWorkItemInTx(
+      db,
+      tx,
+      sessionId,
+      input.how === "pass" ? { status: "done" } : { status: "failed", error: `验收没通过，${input.actorName}判定失败${note ? `：${note}` : ""}` }
+    )
+    return { endedSessionId: sessionId }
   })
 }
 

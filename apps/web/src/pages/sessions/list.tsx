@@ -18,6 +18,12 @@ export function NowText({ run }: { run: SessionRun }) {
 
 const link = (run: SessionRun) => href("sessions", { id: run.id })
 
+/** 来源（怎么开始的）：手动 / 定时 / 待办 / 事件 / 派活。老数据没有来源 */
+export const SOURCE_LABEL: Record<string, string> = { manual: "手动", cron: "定时", todo: "待办", event: "事件", dispatch: "派活" }
+
+/** 「定时」「派活 W-57」 */
+export const sourceText = (run: SessionRun) => `${(run.source && SOURCE_LABEL[run.source]) || "—"}${run.workItemId ? ` ${run.workItemId}` : ""}`
+
 interface ListProps {
   list: SessionRun[]
   tasks: TaskDef[]
@@ -36,6 +42,7 @@ export function SessionTable({ list, tasks, selectedId }: ListProps) {
             <TableHead>状态</TableHead>
             <TableHead>Session</TableHead>
             <TableHead>任务</TableHead>
+            <TableHead>来源</TableHead>
             <TableHead>负责人</TableHead>
             <TableHead>模型</TableHead>
             <TableHead>开始</TableHead>
@@ -55,6 +62,7 @@ export function SessionTable({ list, tasks, selectedId }: ListProps) {
                   <a href={link(run)} className="after:absolute after:inset-0 hover:underline">{run.id}</a>
                 </TableCell>
                 <TableCell className="max-w-64 truncate" title={task?.title}>{task?.title ?? run.taskId}</TableCell>
+                <TableCell className="text-muted-foreground">{sourceText(run)}</TableCell>
                 <TableCell>{staffName(task?.ownerId)}</TableCell>
                 <TableCell className="text-muted-foreground">{shortModel(run.modelId)}</TableCell>
                 <TableCell className="tabular-nums text-muted-foreground">{startText(run.startedAt)}</TableCell>
@@ -86,7 +94,7 @@ export function SessionItems({ list, tasks, selectedId }: ListProps) {
               </ItemTitle>
               <ItemDescription className="line-clamp-1"><NowText run={run} /></ItemDescription>
               <ItemDescription className="tabular-nums">
-                {staffName(task?.ownerId)} · {startText(run.startedAt)} · {money(run.costUsd)}
+                {sourceText(run)} · {staffName(task?.ownerId)} · {startText(run.startedAt)} · {money(run.costUsd)}
               </ItemDescription>
             </ItemContent>
             <ItemActions className="self-start"><RunStatusBadge status={run.status} /></ItemActions>

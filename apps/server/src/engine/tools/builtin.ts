@@ -27,6 +27,7 @@ import {
   notifyAssignee,
   type CreateHumanItemInput,
 } from "../humans.js"
+import { dispatchFromAgent } from "../dispatch/dispatch.js"
 import { notifyUsers, sessionLink } from "../notify.js"
 import { appendEvent } from "../records.js"
 import { loadEngineSettings } from "../settings.js"
@@ -434,6 +435,10 @@ const handlers: {
     }
   },
 
+  // 派活：检查、去重、上限、返回文字都在 engine/dispatch/dispatch.ts
+  async "work.dispatch"(ctx, input) {
+    return dispatchFromAgent(ctx, input)
+  },
   async "plan.set"(ctx, input) {
     const steps = input.steps.map((step) => step.trim()).filter(Boolean)
     if (steps.length === 0) return fail("至少写一步")

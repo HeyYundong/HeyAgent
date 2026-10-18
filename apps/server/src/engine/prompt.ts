@@ -4,6 +4,7 @@ import {
   checkpointKindLabel,
   compiledRuleSchema,
   riskLabel,
+  WORK_DISPATCH_TOOL_ID,
   type SessionSnapshot,
 } from "@heyagent/shared"
 
@@ -24,6 +25,10 @@ export function buildSystemPrompt(
   sections.push(
     `## 任务\n${task.title}\n\n## 目标（做到什么算完成）\n${task.goal}`
   )
+
+  // 被派来的运行：只加一句固定的话（所有被派的运行都一样，前缀缓存才有用），参数在第一条消息里
+  if (snapshot.dispatch)
+    sections.push("## 派来的活\n这次运行是被派来办一件事的，参数在第一条消息里。")
 
   if (task.steps.length) {
     const lines = task.steps.map(
@@ -79,6 +84,25 @@ export function buildSystemPrompt(
       `- ${toolNames.get(tool.id) ?? tool.id}（${tool.name}，${riskLabel[tool.risk]}）：${tool.summary}`
   )
   sections.push(`## 工具\n${toolLines.join("\n")}`)
+
+  if (snapshot.tools.some((tool) => tool.id === WORK_DISPATCH_TOOL_ID)) {
+    const name = toolNames.get(WORK_DISPATCH_TOOL_ID) ?? "work_dispatch"
+    const targets = snapshot.dispatchTargets ?? []
+    const paramText = (param: NonNullable<SessionSnapshot["dispatchTargets"]>[number]["params"][number]) =>
+      `${param.name}（${[param.required ? "必填" : "可选", param.dedupe ? "去重" : ""].filter(Boolean).join("，")}${param.description ? `：${param.description}` : ""}）`
+    sections.push(
+      targets.length
+        ? [
+            "## 可以派活给",
+            `用 ${name} 把要办的事派给下面的任务，一件事一张单，同一件事重复派不会重复办。标了「去重」的参数决定是不是同一件事；没有去重参数的任务要自己填 key。`,
+            ...targets.map(
+              (target) =>
+                `- ${target.taskId}「${target.title}」${target.enabled ? "" : "（停用中，派了先排着）"}：${target.params.length ? `参数 ${target.params.map(paramText).join("、")}` : "没有参数"}`
+            ),
+          ].join("\n")
+        : `## 可以派活给\n现在没有任务允许你派活（要对方任务的负责人在「谁能派活给它」里加上这个任务），不要调 ${name}。`
+    )
+  }
 
   if (snapshot.browser) {
     const { profiles, allowedDomains, allowEvaluate } = snapshot.browser

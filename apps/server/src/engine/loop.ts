@@ -35,6 +35,7 @@ import { runtime } from "./runtime.js"
 import { maskSecretFields } from "./secrets.js"
 import { loadEngineSettings } from "./settings.js"
 import type { SessionRow, ToolOutcome } from "./tools/builtin.js"
+import { settleWorkItemInTx } from "./dispatch/settle.js"
 import { suspendInTx } from "./waits.js"
 
 export type RunOutcome =
@@ -147,6 +148,8 @@ async function failSession(
       title: "运行失败",
       detail: reason,
     })
+    // 被派的运行：派活单跟着记「没办成」，原因同运行的
+    await settleWorkItemInTx(db, tx, session.id, { status: "failed", error: reason.slice(0, 2000) })
     return true
   })
   if (!failed) return
@@ -724,9 +727,13 @@ export async function runSession(
             title: verified ? "验收通过，运行完成" : "agent 说做完了",
             detail: result.text || null,
           })
+          // 被派的运行：派活单跟着记「办完」，这段总结写回单上
+          await settleWorkItemInTx(db, tx, sessionId, { status: "done", summary: result.text || "" })
           return true
         })
         if (!finished) return "stopped"
+        // 被派的运行一天可能几十上百次：完成时不发站内通知（派活页能看全部结果）；失败照常通知
+        if (live.workItemId) return "done"
         await notifyUsers(db, {
           userIds: [snapshot.task.ownerId],
           title: `${snapshot.task.title}：运行完成`,
