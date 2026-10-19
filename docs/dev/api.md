@@ -616,7 +616,7 @@ curl -s -X POST http://localhost:3100/api/events \
 |---|---|---|
 | `platforms.create` 输入 / `Platform` 输出 | `domains: string[]` | 平台域名（含子域名）。输入按 `domainSchema` 规整：去协议、路径、端口、开头的 `*.`，转小写（`https://Shop.Example.com/x` → `shop.example.com`），不合法 `BAD_REQUEST`。session 打开这些域名下的网址时，按「这个 Chrome 配置在该平台的账号」申请租约 |
 | 新接口 `platforms.update` | `{ id, name, domains }` | 主管。审计 `platform.update`；推 `platforms` |
-| 任务输入 / `TaskDef` 输出 | `browserProfileIds: string[]`（默认 `[]` = 全部 Chrome 配置）、`allowedDomains: string[]`（默认 `[]` = 不限制，同样规整）、`allowBrowserEvaluate: boolean`（默认 `false`） | 只在任务选了内置工具 `browser` 时起作用。`browserProfileIds` 里的 id 要存在，否则 `BAD_REQUEST`。三项都冻结进 session 快照（`snapshot.browser = { profiles: [{id,name,description}], allowedDomains, allowEvaluate }`） |
+| 任务输入 / `TaskDef` 输出 | `browserProfileIds: string[]`（默认 `[]` = 全部 Chrome 配置）、`allowedDomains: string[]`（默认 `[]` = 不限制，同样规整）、`allowBrowserEvaluate: boolean`（默认 `false`）、`allowBrowserVision: boolean`（默认 `false`，在线表格开发说明 `online-sheets.md`） | 只在任务选了内置工具 `browser` 时起作用。`browserProfileIds` 里的 id 要存在，否则 `BAD_REQUEST`。都冻结进 session 快照（`snapshot.browser = { profiles: [{id,name,description}], allowedDomains, allowEvaluate, allowVision }`） |
 | 内置工具 | `browser`（来源 `builtin`，「浏览器」） | 由 worker / bootstrap 同步进 `tools` 表，任务的 `toolIds` 里选它 |
 | `settings.get` 输出 | `browser: { maxPerWorker, visionCheck, visionModel, captchaSolve, humanHoldMinutes }` | 默认 4、false、`openrouter/qwen/qwen3.8-flash`、true、30（`visionModel`、`captchaSolve` 2026-10-19 加） |
 | 新接口 `settings.updateBrowser` | `{ maxPerWorker(1-32), visionCheck, visionModel, captchaSolve, humanHoldMinutes(1-1440) }` | 主管。`visionModel` 换了才查：要是库里能看图的聊天模型（同 `compare.models` 的列表），否则 `BAD_REQUEST`。审计 `settings.browser.update`；worker 每次用到时重新读 |
@@ -648,7 +648,7 @@ curl -s -X POST http://localhost:3100/api/events \
 
 ### 10.4 agent 看到的浏览器工具
 
-任务选了 `browser`：`browser_use({ profileId })`（可选，只能在还没分到 Chrome 时指定；一般由系统自动分配空闲的）+ Playwright MCP 0.0.83 的工具（`browser_navigate`、`browser_snapshot`、`browser_click`……，过程记录里 `toolId` 是 `browser.navigate` 这样的形式）。屏蔽 `browser_run_code_unsafe`；`browser_evaluate` 只在 `allowBrowserEvaluate` 时给；`browser_file_upload` / `browser_drop` 的参数是 `fileIds`（session 文件 id），网关换成路径；其余工具去掉了 `filename` 参数（截图除外）。截图存成 session 文件（`kind = screenshot`），`browser_navigate` 之后自动截一张。
+任务选了 `browser`：`browser_use({ profileId })`（可选，只能在还没分到 Chrome 时指定；一般由系统自动分配空闲的）+ Playwright MCP 0.0.83 的工具（`browser_navigate`、`browser_snapshot`、`browser_click`……，过程记录里 `toolId` 是 `browser.navigate` 这样的形式）。屏蔽 `browser_run_code_unsafe`；`browser_evaluate` 只在 `allowBrowserEvaluate` 时给；坐标工具（`browser_mouse_click_xy` 等，MCP 加了 `--caps vision`）和 `browser_look`（截当前画面作为图片发给模型）只在 `allowBrowserVision` 时给；剪贴板工具 `browser_copy_image({ element, target } | { element, x, y })`、`browser_clipboard_read({ copy?, offset? })`、`browser_clipboard_paste({ text } | { table } | { fileId })` 一直有（存的文件 `kind = clipboard`）；`browser_file_upload` / `browser_drop` 的参数是 `fileIds`（session 文件 id），网关换成路径；其余工具去掉了 `filename` 参数（截图除外）。截图存成 session 文件（`kind = screenshot`），`browser_navigate` 之后自动截一张。
 
 ### 10.5 worker 的内部控制接口
 
