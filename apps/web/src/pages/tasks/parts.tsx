@@ -5,6 +5,8 @@ import { CircleCheckIcon, CircleDashedIcon, CircleDotIcon, CircleMinusIcon, Circ
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
+import { Item, ItemActions, ItemContent, ItemTitle } from "@/components/ui/item"
 import { Progress } from "@/components/ui/progress"
 import { Spinner } from "@/components/ui/spinner"
 import { fmtShort, nextRunText as sharedNextRunText, runStatusLabel } from "@heyagent/shared"
@@ -71,9 +73,42 @@ export function focusedCheckpoint(run: Pick<SessionRun, "status" | "events">): n
   return undefined
 }
 
-function CheckpointCard({ cp, doing }: { cp: RunCheckpoint; doing: boolean }) {
-  const status = doing && cp.status === "open" ? { icon: CircleDotIcon, label: "正在做", variant: "secondary" as const } : STATUS[cp.status]
+function checkpointStatus(cp: RunCheckpoint, doing: boolean) {
+  return doing && cp.status === "open" ? { icon: CircleDotIcon, label: "正在做", variant: "secondary" as const } : STATUS[cp.status]
+}
+
+/** 一个检查点的进度、记录（每条先一行时间，下面一行内容）和跳过理由 */
+function CheckpointDetail({ cp }: { cp: RunCheckpoint }) {
   const progress = cp.target ? `${cp.progress ?? 0}/${cp.target}` : undefined
+  return (
+    <>
+      {progress && (
+        <Progress value={Math.min(100, ((cp.progress ?? 0) / cp.target!) * 100)} aria-label={`进度 ${progress}`}>
+          <span className="text-xs tabular-nums text-muted-foreground">进度 {progress}</span>
+        </Progress>
+      )}
+      {cp.records.length > 0 ? (
+        <ul className="flex flex-col gap-2 text-xs">
+          {cp.records.map((record, index) => (
+            <li key={index} className="flex flex-col gap-0.5">
+              <span className="flex items-center gap-2 tabular-nums text-muted-foreground">
+                {fmtShort(record.at)}
+                {record.synced && <Badge variant="secondary">自动</Badge>}
+              </span>
+              <span className="wrap-break-word">{record.text}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-xs text-muted-foreground">还没有记录</p>
+      )}
+      {cp.skipReason && <p className="border-t pt-2 text-xs">跳过理由：{cp.skipReason}</p>}
+    </>
+  )
+}
+
+function CheckpointCard({ cp, doing }: { cp: RunCheckpoint; doing: boolean }) {
+  const status = checkpointStatus(cp, doing)
   return (
     <Card size="sm">
       <CardHeader>
@@ -84,27 +119,7 @@ function CheckpointCard({ cp, doing }: { cp: RunCheckpoint; doing: boolean }) {
         </CardAction>
       </CardHeader>
       <CardContent className="flex flex-col gap-2">
-        {progress && (
-          <Progress value={Math.min(100, ((cp.progress ?? 0) / cp.target!) * 100)} aria-label={`进度 ${progress}`}>
-            <span className="text-xs tabular-nums text-muted-foreground">进度 {progress}</span>
-          </Progress>
-        )}
-        {cp.records.length > 0 ? (
-          <ul className="flex flex-col gap-2 text-xs">
-            {cp.records.map((record, index) => (
-              <li key={index} className="flex flex-col gap-0.5">
-                <span className="flex items-center gap-2 tabular-nums text-muted-foreground">
-                  {fmtShort(record.at)}
-                  {record.synced && <Badge variant="secondary">自动</Badge>}
-                </span>
-                <span className="wrap-break-word">{record.text}</span>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="text-xs text-muted-foreground">还没有记录</p>
-        )}
-        {cp.skipReason && <p className="border-t pt-2 text-xs">跳过理由：{cp.skipReason}</p>}
+        <CheckpointDetail cp={cp} />
       </CardContent>
     </Card>
   )
@@ -123,6 +138,40 @@ export function CheckpointGrid({ run }: { run: SessionRun }) {
       {checkpoints.some((cp) => cp.records.some((record) => record.synced)) && (
         <p className="text-xs text-muted-foreground">标「自动」的记录是规则在工具调用后按工具类别自动写的（访问网页、对外发消息、存文件），agent 改不了。</p>
       )}
+    </div>
+  )
+}
+
+/** 检查点的紧凑列表：每条一行（标题、状态、最近一条记录的时间），记录等详情鼠标放上去才显示。Session 详情用 */
+export function CheckpointList({ run }: { run: SessionRun }) {
+  const { checkpoints } = run
+  const focused = focusedCheckpoint(run)
+  if (checkpoints.length === 0) return <p className="text-muted-foreground">这次运行还没有检查点。没写步骤的任务，agent 会边做边加。</p>
+  return (
+    <div className="flex flex-col gap-1">
+      {checkpoints.map((cp, index) => {
+        const status = checkpointStatus(cp, index === focused)
+        const last = cp.records.at(-1)
+        return (
+          <HoverCard key={cp.title}>
+            <HoverCardTrigger render={<Item variant="outline" size="xs" tabIndex={0} />}>
+              <ItemContent className="min-w-0">
+                <ItemTitle className="w-full truncate">{cp.title}</ItemTitle>
+              </ItemContent>
+              <ItemActions>
+                {cp.target && <span className="tabular-nums text-muted-foreground">{cp.progress ?? 0}/{cp.target}</span>}
+                <Badge variant={status.variant}><status.icon data-icon="inline-start" />{status.label}</Badge>
+                <span className="w-24 text-right tabular-nums text-muted-foreground">{last ? fmtShort(last.at) : "—"}</span>
+              </ItemActions>
+            </HoverCardTrigger>
+            <HoverCardContent side="left" align="start" className="flex max-h-96 w-80 flex-col gap-2 overflow-y-auto">
+              <p className="font-medium wrap-break-word">{cp.title}</p>
+              {!cp.stepId && <p className="text-muted-foreground">agent 自己加的检查点</p>}
+              <CheckpointDetail cp={cp} />
+            </HoverCardContent>
+          </HoverCard>
+        )
+      })}
     </div>
   )
 }

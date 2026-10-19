@@ -28,7 +28,7 @@ import { trpc } from "@/lib/trpc"
 import { ParamsTable, WorkStatusBadge, shortName, timeText } from "@/pages/work/parts"
 
 import { VerificationReport } from "./verification"
-import { CheckpointGrid, Elapsed, RunStatusBadge, StepList, WaitingAlert, checkpointSummary, money } from "./parts"
+import { CheckpointList, Elapsed, RunStatusBadge, StepList, WaitingAlert, checkpointSummary, money } from "./parts"
 import { CancelRunDialog, isActive, ResumeButton, SessionFiles } from "./run-actions"
 import { RunBrowserButton } from "./run-browser"
 import { RunDigestSection } from "./run-digest"
@@ -76,7 +76,7 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionRun }) {
       {run.workItemId && <DispatchedIn run={run} itemId={run.workItemId} />}
       {task.toolIds.includes(WORK_DISPATCH_TOOL_ID) && <DispatchedOut run={run} />}
       <DetailSection title={`检查点 · ${checkpointSummary(run.checkpoints)}`}>
-        <CheckpointGrid run={run} />
+        <CheckpointList run={run} />
       </DetailSection>
       {run.verification && <VerificationSection run={run} verification={run.verification} />}
       {(run.status === "done" || run.status === "failed") && <RunDigestSection task={task} run={run} canEdit={can(user, "task.manage", { ownerId: task.ownerId })} />}
