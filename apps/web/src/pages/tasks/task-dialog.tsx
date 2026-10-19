@@ -147,7 +147,7 @@ export function BrowserFields({ control, domainText, domainError, onDomainText, 
   return (
     <FieldSet className="sm:col-span-2">
       <FieldLegend variant="label">浏览器</FieldLegend>
-      <FieldDescription>选了「浏览器」工具才有这几项。agent 用服务器上的 Chrome 操作网页；遇到验证码、登录页会停下来交给负责人。</FieldDescription>
+      <FieldDescription>选了「浏览器」工具才有这几项。agent 用服务器上的 Chrome 操作网页；遇到简单的验证码先自己试着过（「设置 → 浏览器」里能关），过不了的验证码和登录页停下来交给负责人。</FieldDescription>
       <div className="grid gap-4 sm:grid-cols-2">
         <Controller
           control={control}

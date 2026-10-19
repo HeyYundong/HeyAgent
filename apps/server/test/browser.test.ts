@@ -2,7 +2,7 @@
 import type { Server } from "node:http"
 
 import { serve } from "@hono/node-server"
-import { and, eq, isNull } from "drizzle-orm"
+import { and, eq, inArray, isNull } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import WebSocket from "ws"
 import { leaseEventName, profileEventName, SETTING_KEYS } from "@heyagent/shared"
@@ -15,6 +15,7 @@ import type { GostPool } from "../src/browser/gost.js"
 import { BrowserInstance, ProfileFullError } from "../src/browser/instance.js"
 import { accountForHost, acquireLease, profileSessionCount, releaseLeases, sweepLeases, wakeLeaseWaiters, wakeProfileWaiters } from "../src/browser/leases.js"
 import { fillCredentials, loadAccountPassword, passwordHosts } from "../src/browser/auto-login.js"
+import { captchaPrompt, parseCaptchaPlan } from "../src/browser/captcha.js"
 import { listBrowserMcpTools } from "../src/browser/mcp.js"
 import { attachBrowserViewRelay } from "../src/browser/view-relay.js"
 import { casWrite, loadVault, mergeStates, writeBackMerged, type StorageState, type StoredCookie } from "../src/browser/vault.js"
@@ -75,6 +76,29 @@ describe("纯函数", () => {
     expect(probeLooksLoggedIn({ url: "https://site.test/login?next=/me", hasPasswordInput: true }, "https://site.test/me").ok).toBe(false)
     expect(parseVisionAnswer('好的：{"captcha": true, "login": false, "reason": "滑块"}')).toEqual({ captcha: true, login: false, reason: "滑块" })
     expect(parseVisionAnswer("不知道")).toBeUndefined()
+  })
+
+  it("自动过验证码：给模型的元素列表、模型回答的解析", () => {
+    const prompt = captchaPrompt(
+      [
+        { id: 1, role: "image", tag: "img", text: "captcha.png", hint: true, x: 10, y: 20, w: 100, h: 40 },
+        { id: 2, role: "input", tag: "input", text: "验证码", hint: true, filled: false, x: 10, y: 70, w: 200, h: 30 },
+        { id: 3, role: "button", tag: "button", text: "提交", hint: false, x: 10, y: 110, w: 80, h: 30 },
+      ],
+      true
+    )
+    expect(prompt).toContain("#1 图片 <img> 「captcha.png」")
+    expect(prompt).toContain("#2 输入框 <input> 「验证码」（空）")
+    expect(prompt).toContain('"submit"')
+    expect(captchaPrompt([], false)).not.toContain('"submit"')
+    expect(parseCaptchaPlan('好的 {"type": "text", "image": 1, "input": "#2", "answer": " x7K2 ", "submit": 3}')).toEqual({ type: "text", image: 1, input: 2, answer: "x7K2", submit: 3 })
+    expect(parseCaptchaPlan('{"type": "text", "input": 2, "answer": 42, "submit": null}')).toEqual({ type: "text", input: 2, answer: "42", image: undefined, submit: undefined })
+    expect(parseCaptchaPlan('{"type": "click", "target": 5}')).toEqual({ type: "click", target: 5 })
+    expect(parseCaptchaPlan('{"type": "other", "reason": "滑块拼图"}')).toEqual({ type: "other", reason: "滑块拼图" })
+    // 缺输入框、答案太长、格式不对：看不懂
+    expect(parseCaptchaPlan('{"type": "text", "answer": "abcd"}')).toBeUndefined()
+    expect(parseCaptchaPlan(`{"type": "text", "input": 2, "answer": "${"a".repeat(17)}"}`)).toBeUndefined()
+    expect(parseCaptchaPlan("看不清")).toBeUndefined()
   })
 
   it("Chrome 参数：有代理时防 DNS 泄漏，不关 sandbox、不加自动化标记", () => {
@@ -167,14 +191,41 @@ describe("配置：新字段的读写和快照", () => {
     expect(snapshot.browser).toMatchObject({ allowedDomains: ["example.com"], allowEvaluate: true })
     expect(snapshot.browser!.profiles.map((profile) => profile.id)).toEqual(["br-us"])
 
+    const defaults = { maxPerWorker: 4, visionCheck: false, visionModel: "openrouter/qwen/qwen3.8-flash", captchaSolve: true, humanHoldMinutes: 30 }
     const settings = await query(ctx.app, "settings.get", lin)
-    expect(settings.data.browser).toEqual({ maxPerWorker: 4, visionCheck: false, humanHoldMinutes: 30 })
-    expect((await mutate(ctx.app, "settings.updateBrowser", lin, { maxPerWorker: 2, visionCheck: true, humanHoldMinutes: 5 })).error).toBeUndefined()
-    expect((await query(ctx.app, "settings.get", lin)).data.browser).toEqual({ maxPerWorker: 2, visionCheck: true, humanHoldMinutes: 5 })
-    expect((await mutate(ctx.app, "settings.updateBrowser", wang, { maxPerWorker: 2, visionCheck: true, humanHoldMinutes: 5 })).error?.data?.code).toBe("FORBIDDEN")
-    await mutate(ctx.app, "settings.updateBrowser", lin, { maxPerWorker: 4, visionCheck: false, humanHoldMinutes: 30 })
+    expect(settings.data.browser).toEqual(defaults)
+    const changed = { maxPerWorker: 2, visionCheck: true, visionModel: "openrouter/google/gemini-3.8-flash", captchaSolve: false, humanHoldMinutes: 5 }
+    expect((await mutate(ctx.app, "settings.updateBrowser", lin, changed)).error).toBeUndefined()
+    expect((await query(ctx.app, "settings.get", lin)).data.browser).toEqual(changed)
+    expect((await mutate(ctx.app, "settings.updateBrowser", wang, changed)).error?.data?.code).toBe("FORBIDDEN")
+    await mutate(ctx.app, "settings.updateBrowser", lin, defaults)
     const [row] = await ctx.db.select().from(t.settings).where(eq(t.settings.key, SETTING_KEYS.browserMaxPerWorker))
     expect(row?.value).toBe(4)
+  })
+
+  it("浏览器的视觉模型：换的时候要是库里能看图的聊天模型；没换不查（默认模型还没刷新进库也能存别的设置）", async () => {
+    const lin = await login(ctx.app, "linzhou@heyagent.local")
+    const base = { maxPerWorker: 4, visionCheck: false, visionModel: "openrouter/qwen/qwen3.8-flash", captchaSolve: true, humanHoldMinutes: 30 }
+    await ctx.db.insert(t.models).values([
+      { id: "openrouter/test/text-only", providerId: "openrouter", name: "只能读字", contextK: 128, vision: false },
+      { id: "openrouter/test/embed-img", providerId: "openrouter", name: "图片向量", contextK: 8, vision: true, kind: "embedding" },
+    ])
+    const bad = async (visionModel: string) => (await mutate(ctx.app, "settings.updateBrowser", lin, { ...base, visionModel })).error
+    expect((await bad("openrouter/test/text-only"))?.message).toContain("不能看图")
+    expect((await bad("openrouter/test/embed-img"))?.message).toContain("不能看图")
+    expect((await bad("openrouter/nope/missing"))?.message).toContain("不在模型列表里")
+    expect((await bad(""))?.data?.code).toBe("BAD_REQUEST")
+    expect((await query(ctx.app, "settings.get", lin)).data.browser.visionModel).toBe("openrouter/qwen/qwen3.8-flash")
+    // 列表里的就是能选的
+    const listed = (await query(ctx.app, "compare.models", lin)).data.map((model: { id: string }) => model.id)
+    expect(listed).toContain("openrouter/qwen/qwen3.8-flash")
+    expect(listed).not.toContain("openrouter/test/text-only")
+    expect(listed).not.toContain("openrouter/test/embed-img")
+    // 存着的模型不在库里（还没刷新）：没换模型照样能存别的
+    await ctx.db.insert(t.settings).values({ key: SETTING_KEYS.browserVisionModel, value: "openrouter/later/vision" }).onConflictDoUpdate({ target: t.settings.key, set: { value: "openrouter/later/vision" } })
+    expect((await mutate(ctx.app, "settings.updateBrowser", lin, { ...base, visionModel: "openrouter/later/vision", maxPerWorker: 3 })).error).toBeUndefined()
+    await mutate(ctx.app, "settings.updateBrowser", lin, base)
+    await ctx.db.delete(t.models).where(inArray(t.models.id, ["openrouter/test/text-only", "openrouter/test/embed-img"]))
   })
 })
 
@@ -363,13 +414,14 @@ describe("工具网关：浏览器工具组", () => {
     const sessionId = res.data.sessionId as string
     await waitStatus(ctx.db, sessionId, "done", 60_000)
     const names = (script.prompts[0]!.tools ?? []).map((tool) => tool.name)
-    expect(names).toEqual(expect.arrayContaining(["browser_use", "browser_navigate", "browser_snapshot", "browser_click", "browser_file_upload"]))
+    expect(names).toEqual(expect.arrayContaining(["browser_use", "browser_fill_captcha", "browser_navigate", "browser_snapshot", "browser_click", "browser_file_upload"]))
     expect(names).not.toContain("browser_run_code_unsafe")
     expect(names).not.toContain("browser_evaluate")
     const system = JSON.stringify(script.prompts[0]!.prompt[0])
     expect(system).toContain("## 浏览器")
     expect(system).toContain("depth")
     expect(system).toContain("example.com")
+    expect(system).toContain("browser_fill_captcha")
     expect(script.promptText(1)).toContain("不允许用 Chrome 配置 br-nope")
     // 只允许一个 Chrome 配置：自动选上；白名单在调工具前就拦下
     expect(script.promptText(2)).toContain("blocked.test 不在本任务的网址白名单里")

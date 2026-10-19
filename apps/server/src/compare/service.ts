@@ -9,7 +9,6 @@ import {
   type Actor,
   type CompareCreateInput,
   type CompareListInput,
-  type CompareModel,
   type ComparePage,
   type CompareStandard,
   type CompareStandardInput,
@@ -20,6 +19,7 @@ import {
 import { and, asc, count, desc, eq, gt, ilike, inArray, isNull, lt, ne, notExists, or, sql, type SQL } from "drizzle-orm"
 
 import { audit, nextNo, type DbOrTx } from "../data/config/common.js"
+import { listVisionModels, visionModelProblem } from "../data/config/models.js"
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
 import { compareRunJobOptions, QUEUES, sendInTx } from "../engine/queue.js"
@@ -153,16 +153,8 @@ export async function waitForComparison(db: Db, id: string, options: ViewOptions
 
 // ---------- 视觉模型 ----------
 
-/** 能比物的模型：库里 vision = true 的聊天模型，便宜的在前 */
-export async function listVisionModels(db: DbOrTx): Promise<CompareModel[]> {
-  const rows = await db
-    .select({ id: t.models.id, name: t.models.name, priceIn: t.models.priceIn, priceOut: t.models.priceOut })
-    .from(t.models)
-    .where(and(eq(t.models.vision, true), eq(t.models.kind, "chat")))
-    .orderBy(asc(t.models.priceIn), asc(t.models.priceOut), asc(t.models.id))
-  // 「:batch」是批处理线路，聊天接口用不了（实测报错）
-  return rows.filter((row) => !row.id.endsWith(":batch"))
-}
+/** 能比物的模型：和浏览器的视觉模型同一个列表（库里能看图的聊天模型，便宜的在前） */
+export { listVisionModels }
 
 /**
  * 默认标准优先用的模型（OpenRouter 上的名字，用户 2026-10-18 定的）：实测同款判断最准、约 $0.001 一次、3～8 秒（docs/dev/compare.md 6.6）。
@@ -184,9 +176,8 @@ async function cheapestVisionModel(db: DbOrTx): Promise<string | undefined> {
 
 /** 模型必须是库里能看图的聊天模型 */
 async function assertVisionModel(db: DbOrTx, modelId: string, context = "") {
-  const [model] = await db.select({ name: t.models.name, vision: t.models.vision, kind: t.models.kind }).from(t.models).where(eq(t.models.id, modelId))
-  if (!model) throw new CompareError("bad_request", `${context}模型 ${modelId} 不在模型列表里（模型服务刷新后可能没了）：换一个能看图的模型`)
-  if (model.kind !== "chat" || !model.vision) throw new CompareError("bad_request", `${context}${model.name}（${modelId}）不能看图：比物要用能看图的聊天模型`)
+  const problem = await visionModelProblem(db, modelId, "比物")
+  if (problem) throw new CompareError("bad_request", `${context}${problem}`)
 }
 
 // ---------- 比对标准 ----------

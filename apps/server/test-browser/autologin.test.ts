@@ -6,9 +6,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import type { BrowserManager } from "../src/browser/manager.js"
 import { loadVault } from "../src/browser/vault.js"
 import * as t from "../src/db/schema.js"
-import { call, createTask, eventsOf, Script, setupEngine, step, text, useScript, waitFor, waitStatus, type EngineTestContext } from "../test/engine-helpers.js"
+import { call, createTask, eventsOf, Script, setupEngine, step, text, useScript, waitFor, waitStatus, type CallOptions, type EngineTestContext } from "../test/engine-helpers.js"
 import { login, mutate } from "../test/helpers.js"
-import { createAccount, createProfile, LOGIN2, setAccountPassword, startSite, type TestSite } from "./fixtures.js"
+import { createAccount, createProfile, LOGIN2, setAccountPassword, startSite, TEXTCAP_CODE, type TestSite } from "./fixtures.js"
 
 let ctx: EngineTestContext
 let site: TestSite
@@ -148,5 +148,57 @@ describe("运行中遇到登录页", () => {
     const events = await eventsOf(ctx.db, sessionId)
     expect(events.some((event) => event.title.includes("自动登录了"))).toBe(true)
     expect((await accountRow(accountId)).status).toBe("ok")
+  })
+
+  it("登录表单里有图片验证码：登录小 agent 调 login_fill_captcha，设置里的视觉模型认出来填好，登录成功接着做", async () => {
+    const domain = "auth-cap.localhost"
+    const accountId = await createAccount(ctx.db, { profileId, domain, probeUrl: site.url(domain, "/login3"), account: LOGIN2.user })
+    await setAccountPassword(ctx.db, ctx.keyring, accountId, LOGIN2.password)
+    const lin = await login(ctx.app, "linzhou@heyagent.local")
+    const settings = { maxPerWorker: 4, visionCheck: false, visionModel: "openrouter/qwen/qwen3.8-flash", captchaSolve: true, humanHoldMinutes: 30 }
+    expect((await mutate(ctx.app, "settings.updateBrowser", lin, settings)).error).toBeUndefined()
+    const vision = useScript(
+      settings.visionModel,
+      new Script([
+        (options: CallOptions) => {
+          const input = Number(/#(\d+) 输入框 <input> 「验证码/.exec(JSON.stringify(options.prompt))?.[1])
+          return step([text(JSON.stringify({ type: "text", image: 1, input, answer: TEXTCAP_CODE }))], 0.0003)
+        },
+      ])
+    )
+    const loginAgent = useScript(
+      loginModel,
+      new Script([
+        step([call("browser_snapshot", {})]),
+        step([
+          call("browser_fill_form", {
+            fields: [
+              { name: "账号", type: "textbox", target: "#user", value: "{{username}}" },
+              { name: "密码", type: "textbox", target: "#pw", value: "{{password}}" },
+            ],
+          }),
+        ]),
+        step([call("login_fill_captcha", {})]),
+        step([call("browser_click", { target: "#submit", element: "提交" })]),
+        step([call("login_done", { note: "好了" })]),
+      ])
+    )
+    const runScript = useScript(
+      "test/autologin-cap",
+      new Script([step([call("browser.navigate", { url: site.url(domain, "/login3") })]), step([call("browser.snapshot", {})]), step([text("拿到暗号了")])])
+    )
+    const taskId = await createTask(ctx.db, { modelId: "test/autologin-cap", toolIds: ["browser"], ownerId: "u-wang" })
+    await ctx.db.update(t.tasks).set({ browserProfileIds: [profileId] }).where(eq(t.tasks.id, taskId))
+    const res = await mutate(ctx.app, "engine.runNow", wang, { taskId })
+    const sessionId = res.data.sessionId as string
+    await waitStatus(ctx.db, sessionId, "done", 120_000)
+    expect((loginAgent.prompts[0]!.tools ?? []).map((each) => each.name)).toContain("login_fill_captcha")
+    expect(loginAgent.promptText(3)).toContain(`认出验证码 ${TEXTCAP_CODE}`)
+    expect(vision.prompts).toHaveLength(1)
+    expect(runScript.promptText(1)).toContain("自动登录")
+    expect(runScript.promptText(2)).toContain("暗号：金色海豚")
+    expect(await ctx.db.select().from(t.humanItems).where(eq(t.humanItems.sessionId, sessionId))).toEqual([])
+    const titles = (await eventsOf(ctx.db, sessionId)).map((event) => event.title)
+    expect(titles).toContain("登录时自动过验证码（第 1 次）：填好了")
   })
 })

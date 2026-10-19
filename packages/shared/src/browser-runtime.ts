@@ -255,6 +255,8 @@ const ACTION_TAGS: Record<string, string> = {
   browser_emulate_media: "Resize",
   /** 不是 MCP 工具：用存的密码自动登录（登录小 agent） */
   browser_login: "Login",
+  /** 不是 MCP 工具：视觉模型认验证码、填进去（自动过验证码） */
+  browser_captcha: "Captcha",
   browser_console_messages: "Inspect",
   browser_network_requests: "Inspect",
   browser_network_request: "Inspect",

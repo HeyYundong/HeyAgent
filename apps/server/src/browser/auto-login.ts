@@ -1,7 +1,9 @@
 // 用存的账号密码自动登录：一个只会登录的小 agent。浏览器页「立刻登录」和运行中遇到登录页都用它。
 // - 模型只看到 {{username}}、{{password}} 两个占位符，调工具填进网页时才换成真的；工具返回里出现密码原文换成 [已隐藏]；
 // - 密码只填到这个账号的平台域名、登录网址所在的网站上，别的网站一律拒绝（防止被引到别处把密码填出去）；
-// - 遇到验证码、短信码、扫码等要人的，模型调 login_need_human，或者检测到验证码页，就停下交给人；步数用完算失败。
+// - 设置里开了「遇到验证码先自己试着过」：登录表单里的图片验证码，模型调 login_fill_captcha 让视觉模型认、填进去（不提交）；
+//   中途检测到验证码页先自己试着过（captcha.ts），一次登录合计最多试 CAPTCHA_MAX_TRIES 次；
+// - 过不了的验证码、短信码、扫码等要人的，模型调 login_need_human，或者检测到验证码页没过，就停下交给人；步数用完算失败。
 import { and, eq } from "drizzle-orm"
 import { browserActionLabel, hostMatches, hostOf } from "@heyagent/shared"
 import { jsonSchema, tool, type ModelMessage, type ToolResultPart, type ToolSet } from "ai"
@@ -12,6 +14,8 @@ import { callModel, resolveModel } from "../engine/model.js"
 import type { ToolOutcome } from "../engine/tools/builtin.js"
 import { executeMcpTool, type McpConnection } from "../engine/tools/mcp.js"
 import { decryptText, type Keyring } from "../lib/crypto.js"
+import { CAPTCHA_MAX_TRIES, solveCaptcha, type CaptchaTry } from "./captcha.js"
+import { judgePage } from "./detect.js"
 import type { BrowserInstance } from "./instance.js"
 import type { PlatformAccount } from "./leases.js"
 import { listBrowserMcpTools } from "./mcp.js"
@@ -34,6 +38,7 @@ const LOGIN_TOOLS = new Set([
 const READ_ONLY = new Set(["browser_snapshot", "browser_wait_for"])
 const DONE_TOOL = "login_done"
 const HUMAN_TOOL = "login_need_human"
+const CAPTCHA_TOOL = "login_fill_captcha"
 export const AUTO_LOGIN_MAX_STEPS = 15
 /** 模型没调工具、只回了话：提醒几次 */
 const MAX_NUDGES = 2
@@ -93,7 +98,7 @@ export function fillCredentials(value: unknown, credentials: { username: string;
   return { value: walk(value), usedPassword }
 }
 
-const system = (account: PlatformAccount, hosts: string[]) =>
+const system = (account: PlatformAccount, hosts: string[], captcha: boolean) =>
   [
     `你是登录助手，只负责用给定的账号密码登录「${account.platformName}」，不做别的事。`,
     "- 账号写 {{username}}，密码写 {{password}}：在 browser_type 的 text、browser_fill_form 的 value 里原样写这两个占位符，系统填进网页时换成真的。你看不到真的密码，也不要猜。",
@@ -101,10 +106,15 @@ const system = (account: PlatformAccount, hosts: string[]) =>
     "- 动作类工具不返回页面内容，做完一步要看页面就再调 browser_snapshot。",
     `- 密码只能填到这些网站：${hosts.join("、") || "（没有）"}。不要打开别的网站。`,
     "- 不要点「忘记密码」「注册」，不要改任何设置；有「记住我」「保持登录」可以勾上。",
-    `- 遇到验证码、滑块、短信或邮箱验证码、扫码、人机验证、要在别的设备上确认，或者页面说账号密码不对、账号被锁，调用 ${HUMAN_TOOL} 写清原因。`,
+    captcha
+      ? `- 登录表单里有图片验证码（字母、数字）时，先填好账号密码，再调 ${CAPTCHA_TOOL} 让系统认出来、填进验证码框，然后点登录；提示验证码不对就再调一次（合计最多 ${CAPTCHA_MAX_TRIES} 次）。不要自己猜验证码。`
+      : "",
+    `- 遇到${captcha ? "过不了的验证码（" : "验证码、"}滑块、短信或邮箱验证码、扫码、人机验证${captcha ? "）" : ""}、要在别的设备上确认，或者页面说账号密码不对、账号被锁，调用 ${HUMAN_TOOL} 写清原因。`,
     `- 登录成功（已经离开登录页，看得到登录后的页面）就调用 ${DONE_TOOL}。`,
     `- 最多 ${AUTO_LOGIN_MAX_STEPS} 步。`,
-  ].join("\n")
+  ]
+    .filter(Boolean)
+    .join("\n")
 
 const toolResult = (toolCallId: string, toolName: string, output: string, isError?: boolean): ModelMessage => ({
   role: "tool",
@@ -118,7 +128,7 @@ const toolResult = (toolCallId: string, toolName: string, output: string, isErro
   ],
 })
 
-async function toolSet(): Promise<ToolSet> {
+async function toolSet(captcha: boolean): Promise<ToolSet> {
   const mcpTools = (await listBrowserMcpTools()).filter((each) => LOGIN_TOOLS.has(each.name))
   const tools: ToolSet = {}
   for (const each of mcpTools) {
@@ -132,6 +142,11 @@ async function toolSet(): Promise<ToolSet> {
     description: "已经登录成功（离开了登录页，看得到登录后的页面）时调用",
     inputSchema: jsonSchema({ type: "object", properties: { note: { type: "string", description: "一句话说明看到了什么" } }, additionalProperties: false }),
   })
+  if (captcha)
+    tools[CAPTCHA_TOOL] = tool({
+      description: "登录表单里有图片验证码（字母、数字）时调用：系统认出验证码、填进验证码输入框（不点登录）。先填好账号密码再调",
+      inputSchema: jsonSchema({ type: "object", properties: {}, additionalProperties: false }),
+    })
   tools[HUMAN_TOOL] = tool({
     description: "需要人处理时调用：验证码、滑块、短信 / 邮箱验证码、扫码、人机验证、账号密码不对、账号被锁等",
     inputSchema: jsonSchema({ type: "object", properties: { reason: { type: "string", description: "原因，给人看的" } }, required: ["reason"], additionalProperties: false }),
@@ -147,7 +162,14 @@ export interface AutoLoginInput {
   modelId: string
   /** 先打开账号的登录网址（「立刻登录」开的 Chrome 已经在那了，运行中遇到的登录页就在当前页面，都不用） */
   open?: boolean
+  /** 设置里开了「遇到验证码先自己试着过」：用哪个视觉模型、每试一次记过程（花费算在结果里） */
+  captcha?: AutoLoginCaptcha
   signal?: AbortSignal
+}
+
+export interface AutoLoginCaptcha {
+  modelId: string
+  onTry?: (each: CaptchaTry, index: number) => Promise<void>
 }
 
 export async function autoLogin(input: AutoLoginInput): Promise<AutoLoginResult> {
@@ -167,7 +189,34 @@ export async function autoLogin(input: AutoLoginInput): Promise<AutoLoginResult>
   const startUrl = instance.currentPage()?.url() ?? account.probeUrl ?? ""
   const hosts = passwordHosts(account, startUrl)
   const resolved = await resolveModel(db, input.modelId)
-  const tools = await toolSet()
+  const tools = await toolSet(Boolean(input.captcha))
+  let captchaTries = 0
+  /** 过验证码（submit：检测到验证码页时填好就提交；否则只填）。花费算进结果；返回结果的一句话，次数用完返回 undefined */
+  const passCaptcha = async (submit: boolean) => {
+    const page = instance.currentPage()
+    if (!input.captcha || !page || captchaTries >= CAPTCHA_MAX_TRIES) return undefined
+    const captcha = input.captcha
+    const solved = await solveCaptcha({
+      db,
+      instance,
+      page,
+      modelId: captcha.modelId,
+      submit,
+      maxTries: CAPTCHA_MAX_TRIES - captchaTries,
+      stillCaptcha: async () => {
+        const facts = await instance.pageFacts(page)
+        return !facts || judgePage(facts).kind === "captcha"
+      },
+      onTry: async (each) => {
+        result.tokensIn += each.tokensIn
+        result.tokensOut += each.tokensOut
+        result.costUsd += each.costUsd
+        await captcha.onTry?.(each, captchaTries++)
+      },
+    }).catch((error: unknown) => ({ ok: false, unsupported: undefined, detail: `出错了：${(error as Error).message}` }))
+    if (solved.unsupported) captchaTries = CAPTCHA_MAX_TRIES
+    return solved
+  }
   const messages: ModelMessage[] = [
     {
       role: "user",
@@ -185,7 +234,7 @@ export async function autoLogin(input: AutoLoginInput): Promise<AutoLoginResult>
     if (input.signal?.aborted) return finish(false, false, "被取消了")
     result.steps++
     instance.touch()
-    const reply = await callModel(resolved, { system: system(account, hosts), messages, tools, abortSignal: input.signal })
+    const reply = await callModel(resolved, { system: system(account, hosts, Boolean(input.captcha)), messages, tools, abortSignal: input.signal })
     result.tokensIn += reply.tokensIn
     result.tokensOut += reply.tokensOut
     result.costUsd += reply.costUsd
@@ -202,10 +251,22 @@ export async function autoLogin(input: AutoLoginInput): Promise<AutoLoginResult>
         continue
       }
       if (call.toolName === HUMAN_TOOL) return finish(false, true, String(args.reason ?? "要人处理"))
+      if (call.toolName === CAPTCHA_TOOL) {
+        const solved = await passCaptcha(false)
+        if (!solved) messages.push(toolResult(call.toolCallId, call.toolName, `验证码已经自动试过 ${CAPTCHA_MAX_TRIES} 次了，调用 ${HUMAN_TOOL} 交给人`, true))
+        else if (solved.ok) messages.push(toolResult(call.toolCallId, call.toolName, `${solved.detail}。接着点登录。`))
+        else messages.push(toolResult(call.toolCallId, call.toolName, `没认出验证码：${solved.detail}。${solved.unsupported ? `调用 ${HUMAN_TOOL} 交给人。` : ""}`, true))
+        continue
+      }
       if (call.toolName === DONE_TOOL) {
-        // 确认一下：还像登录页就让它接着弄（最多两次），验证码页交给人
+        // 确认一下：还像登录页就让它接着弄（最多两次），验证码页先试着过，过不了交给人
         const found = await instance.detect()
-        if (found?.verdict.kind === "captcha") return finish(false, true, `遇到验证码：${found.verdict.reason}`)
+        if (found?.verdict.kind === "captcha") {
+          const solved = await passCaptcha(true)
+          if (!solved?.ok) return finish(false, true, `遇到验证码：${found.verdict.reason}${solved ? `；自动过验证码没成功：${solved.detail}` : ""}`)
+          messages.push(toolResult(call.toolCallId, call.toolName, `遇到验证码页，系统已经自动过了（${solved.detail}）。先用 browser_snapshot 看看是不是登录好了。`, true))
+          continue
+        }
         if (found?.verdict.kind === "login" && ++stillLogin <= 2) {
           messages.push(toolResult(call.toolCallId, call.toolName, `看起来还在登录页（${found.verdict.reason}），先用 browser_snapshot 看看页面。`, true))
           continue
@@ -218,11 +279,16 @@ export async function autoLogin(input: AutoLoginInput): Promise<AutoLoginResult>
         continue
       }
       const outcome = await runTool(connection, instance, call.toolName, args, credentials, hosts)
-      messages.push(toolResult(call.toolCallId, call.toolName, outcome.output, outcome.isError))
+      let output = outcome.output
       if (!READ_ONLY.has(call.toolName)) {
         const found = await instance.detect()
-        if (found?.verdict.kind === "captcha") return finish(false, true, `遇到验证码：${found.verdict.reason}`)
+        if (found?.verdict.kind === "captcha") {
+          const solved = await passCaptcha(true)
+          if (!solved?.ok) return finish(false, true, `遇到验证码：${found.verdict.reason}${solved ? `；自动过验证码没成功：${solved.detail}` : ""}`)
+          output += `\n（遇到验证码页，系统已经自动过了：${solved.detail}。先用 browser_snapshot 看看页面）`
+        }
       }
+      messages.push(toolResult(call.toolCallId, call.toolName, output, outcome.isError))
     }
   }
   return finish(false, false, `${AUTO_LOGIN_MAX_STEPS} 步还没登录上`)

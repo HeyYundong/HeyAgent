@@ -1,8 +1,8 @@
 // 模型的写操作：模型服务（OpenRouter / Ollama / 直连 Claude、OpenAI、DeepSeek；key 进 secrets）、刷新模型列表、测试连接、各角色的默认模型（含图库的 embedding 模型）。
 // 不调模型：OpenRouter 的模型列表用公开的 GET /models 和 GET /embeddings/models（不需要 key、不花钱）；测试连接另外用 GET /key 核对 key 有效（也不花钱）。
 // 直连厂商时列模型要带 key（同时就核对了 key）；厂商的列表不给价格，按模型名到 OpenRouter 的公开目录查。
-import { desc, eq, inArray, notInArray, sql } from "drizzle-orm"
-import { defaultsAfterRemove, modelFamily, OPENROUTER_DEFAULT_URL, providerKindLabel, providerNeedsKey, sameFamily, type ModelDefaults, type ModelProviderKind, type ModelRole, type ProviderCheck } from "@heyagent/shared"
+import { and, asc, desc, eq, inArray, notInArray, sql } from "drizzle-orm"
+import { defaultsAfterRemove, modelFamily, OPENROUTER_DEFAULT_URL, providerKindLabel, providerNeedsKey, sameFamily, type CompareModel, type ModelDefaults, type ModelProviderKind, type ModelRole, type ProviderCheck } from "@heyagent/shared"
 
 import type { Db } from "../../db/client.js"
 import * as t from "../../db/schema.js"
@@ -544,3 +544,24 @@ export async function setModelDefaults(ctx: WriteCtx, input: ModelDefaults) {
   return after
 }
 
+
+// ---------- 视觉模型（比物、浏览器共用） ----------
+
+/** 能看图的模型：库里 vision = true 的聊天模型，便宜的在前 */
+export async function listVisionModels(db: DbOrTx): Promise<CompareModel[]> {
+  const rows = await db
+    .select({ id: t.models.id, name: t.models.name, priceIn: t.models.priceIn, priceOut: t.models.priceOut })
+    .from(t.models)
+    .where(and(eq(t.models.vision, true), eq(t.models.kind, "chat")))
+    .orderBy(asc(t.models.priceIn), asc(t.models.priceOut), asc(t.models.id))
+  // 「:batch」是批处理线路，聊天接口用不了（实测报错）
+  return rows.filter((row) => !row.id.endsWith(":batch"))
+}
+
+/** 不是库里能看图的聊天模型时返回原因（给人看的），是就返回 undefined。use：哪里要用，例如「比物」 */
+export async function visionModelProblem(db: DbOrTx, modelId: string, use: string): Promise<string | undefined> {
+  const [model] = await db.select({ name: t.models.name, vision: t.models.vision, kind: t.models.kind }).from(t.models).where(eq(t.models.id, modelId))
+  if (!model) return `模型 ${modelId} 不在模型列表里（模型服务刷新后可能没了）：换一个能看图的模型`
+  if (model.kind !== "chat" || !model.vision || modelId.endsWith(":batch")) return `${model.name}（${modelId}）不能看图：${use}要用能看图的聊天模型`
+  return undefined
+}

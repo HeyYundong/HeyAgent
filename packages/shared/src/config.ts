@@ -503,6 +503,10 @@ export const SETTING_KEYS = {
   browserMaxPerWorker: "browser.maxPerWorker",
   /** 验证码 / 登录页规则拿不准时，交给便宜的视觉模型看截图（M2，默认关） */
   browserVisionCheck: "browser.visionCheck",
+  /** 浏览器用的视觉模型：拿不准时看截图、自动过验证码都用它（2026-10-19） */
+  browserVisionModel: "browser.visionModel",
+  /** 遇到验证码先自己试着过（图片字符、「我不是机器人」这类简单的），过不了再交给人（2026-10-19，默认开） */
+  browserCaptchaSolve: "browser.captchaSolve",
   /** 遇到验证码等人处理时，Chrome 最多保留多少分钟（M2） */
   browserHumanHoldMinutes: "browser.humanHoldMinutes",
   /** 三方验收最多几轮（M3）：前几轮有不通过或存疑就反问执行的 agent，到最后一轮还说不清就交给负责人 */
@@ -525,6 +529,8 @@ export const SETTINGS_DEFAULTS = {
   eventFallbackDays: 7,
   browserMaxPerWorker: 4,
   browserVisionCheck: false,
+  browserVisionModel: "openrouter/qwen/qwen3.8-flash",
+  browserCaptchaSolve: true,
   browserHumanHoldMinutes: 30,
   verifyMaxRounds: 2,
   compactMaxTokens: 0,
@@ -543,8 +549,8 @@ export const settingsDispatchInputSchema = z.object({
 })
 export type SettingsDispatchInput = z.infer<typeof settingsDispatchInputSchema>
 
-/** 视觉判断用的模型（OpenRouter 上便宜的视觉模型；有显卡后换内网的） */
-export const BROWSER_VISION_MODEL = "openrouter/qwen/qwen3.8-flash"
+/** 浏览器视觉模型的默认值（OpenRouter 上便宜的视觉模型）；设置页「浏览器」里可以换 */
+export const BROWSER_VISION_MODEL = SETTINGS_DEFAULTS.browserVisionModel
 
 export const notifyChannelSchema = z.object({
   id: z.string(),
@@ -586,6 +592,10 @@ export type NotifyChannelInput = z.input<typeof notifyChannelInputSchema>
 export const settingsBrowserInputSchema = z.object({
   maxPerWorker: z.number().int().min(1, "至少 1 个").max(32, "最多 32 个"),
   visionCheck: z.boolean(),
+  /** 视觉模型：拿不准时看截图、自动过验证码都用它；要是能看图的聊天模型 */
+  visionModel: z.string().trim().min(1, "选一个能看图的模型"),
+  /** 遇到验证码先自己试着过 */
+  captchaSolve: z.boolean(),
   humanHoldMinutes: z.number().int().min(1, "至少 1 分钟").max(24 * 60, "最多 1440 分钟"),
 })
 export type SettingsBrowserInput = z.infer<typeof settingsBrowserInputSchema>

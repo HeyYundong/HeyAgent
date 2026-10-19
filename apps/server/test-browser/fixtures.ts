@@ -26,6 +26,26 @@ export const LOGIN2 = { user: "alice", password: "s3cret-密码-9" }
 const login2Form = (extra = "") =>
   `<form method="post" action="/login2"><input id="user" name="user" placeholder="账号"><input id="pw" type="password" name="pw" placeholder="密码"><button id="go" type="submit">登录</button></form>${extra}`
 
+/** /textcap、/login3 图片验证码的答案（图是 /textcap.svg） */
+export const TEXTCAP_CODE = "7K3P"
+const textcapForm = (action: string, fields: string, extra = "") =>
+  `<form method="post" action="${action}">${fields}<img id="capimg" src="/textcap.svg" alt="验证码" width="120" height="44"><input id="code" name="code" placeholder="验证码"><button id="submit" type="submit">提交</button></form>${extra}`
+/** 像老系统的验证码图：字符歪一点、几条干扰线和噪点（真模型的端到端检查也用它） */
+const textcapSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="120" height="44" viewBox="0 0 120 44"><rect width="120" height="44" fill="#eef3e8"/>${[...TEXTCAP_CODE]
+  .map((char, index) => `<text x="${12 + index * 26}" y="32" font-family="serif" font-size="27" font-weight="bold" fill="${["#2a4d8f", "#8f2a5a", "#2a7f4f", "#7f5a2a"][index % 4]}" transform="rotate(${[-12, 9, -6, 14][index % 4]} ${22 + index * 26} 22)">${char}</text>`)
+  .join("")}<path d="M0 30 Q40 5 80 28 T120 14 M0 12 L120 36" stroke="#888" stroke-width="1.2" fill="none"/>${Array.from({ length: 30 }, (_, index) => `<circle cx="${(index * 37) % 120}" cy="${(index * 17) % 44}" r="1" fill="#999"/>`).join("")}</svg>`
+
+const queryFields = `<input id="q" name="q" placeholder="单号">`
+const login3Fields =`<input id="user" name="user" placeholder="账号"><input id="pw" type="password" name="pw" placeholder="密码">`
+
+function readForm(req: IncomingMessage): Promise<URLSearchParams> {
+  return new Promise((resolve) => {
+    let body = ""
+    req.on("data", (chunk) => (body += chunk))
+    req.on("end", () => resolve(new URLSearchParams(body)))
+  })
+}
+
 const html = (title: string, body: string) =>
   `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>${title}</title></head><body>${body}</body></html>`
 
@@ -95,6 +115,40 @@ export async function startSite(): Promise<TestSite> {
             `<h1>请完成安全验证</h1><p>拖动滑块或点击下面的按钮</p><button id="human" style="width:300px;height:80px" onclick="document.cookie='passed=1; path=/'; location.href='/secret'">我不是机器人</button>`
           )
         )
+      case "/textcap.svg":
+        res.writeHead(200, { "content-type": "image/svg+xml", "cache-control": "no-store" })
+        return res.end(textcapSvg)
+      case "/textcap":
+        // 图片验证码挡在前面的页面：填对了才放行
+        if (req.method === "POST") {
+          void readForm(req).then((form) =>
+            form.get("code") === TEXTCAP_CODE ? redirect("/secret") : send(200, html("安全验证", `<h1>请完成安全验证</h1>${textcapForm("/textcap", "", `<p id="err">验证码不对</p>`)}`))
+          )
+          return
+        }
+        return send(200, html("安全验证", `<h1>请完成安全验证</h1>${textcapForm("/textcap", "")}`))
+      case "/query":
+        // 表单里带图片验证码的查询页：单号、验证码都填对才出结果
+        if (req.method === "POST") {
+          void readForm(req).then((form) =>
+            form.get("code") === TEXTCAP_CODE && form.get("q")
+              ? send(200, html("查询结果", `<p id="result">查询结果：${form.get("q")}</p>`))
+              : send(200, html("安全验证", textcapForm("/query", queryFields, `<p id="err">验证码不对</p>`)))
+          )
+          return
+        }
+        return send(200, html("安全验证", textcapForm("/query", queryFields)))
+      case "/login3":
+        // 带图片验证码的登录页（账号密码同 /login2）
+        if (req.method === "POST") {
+          void readForm(req).then((form) => {
+            if (form.get("code") !== TEXTCAP_CODE) return send(200, html("登录", textcapForm("/login3", login3Fields, `<p id="err">验证码不对</p>`)))
+            if (form.get("user") === LOGIN2.user && form.get("pw") === LOGIN2.password) return redirect("/me2", { "set-cookie": `sid=${newSid()}; Path=/; HttpOnly` })
+            return send(200, html("登录", textcapForm("/login3", login3Fields, `<p id="err">账号或密码不对</p>`)))
+          })
+          return
+        }
+        return send(200, html("登录", textcapForm("/login3", login3Fields)))
       case "/secret":
         return send(200, html("通过了", `<p id="code">暗号：蓝色海豚</p>`))
       case "/upload":

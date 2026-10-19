@@ -1,10 +1,13 @@
-// 「浏览器」分区（M2）：每个 worker 同时最多开几个 Chrome、遇到验证码时 Chrome 保留多久、拿不准时要不要让视觉模型看截图。
+// 「浏览器」分区（M2）：每个 worker 同时最多开几个 Chrome、遇到验证码时 Chrome 保留多久、视觉模型（只列能看图的，和比物同一个列表）、
+// 遇到验证码先自己试着过、拿不准时要不要让视觉模型看截图。
 // 表单：React Hook Form + shared 的 settingsBrowserInputSchema；worker 每次用到时重新读，保存后马上生效。
 import { zodResolver } from "@hookform/resolvers/zod"
+import { useQuery } from "@tanstack/react-query"
 import { SaveIcon } from "lucide-react"
 import { Controller, useForm, type FieldError as FormFieldError } from "react-hook-form"
 import { settingsBrowserInputSchema, type SettingsBrowserInput } from "@heyagent/shared"
 
+import { ModelCombobox } from "@/components/shell/model-combobox"
 import { DetailSection } from "@/components/shell/simple-page"
 import { Button } from "@/components/ui/button"
 import { Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field"
@@ -33,8 +36,23 @@ const NUMBERS: { name: "maxPerWorker" | "humanHoldMinutes"; label: string; unit:
   },
 ]
 
+const SWITCHES: { name: "captchaSolve" | "visionCheck"; label: string; hint: string }[] = [
+  {
+    name: "captchaSolve",
+    label: "遇到验证码先自己试着过",
+    hint: "所有网站都一样。图片里的字母数字、「我不是机器人」这类点一下的，让上面的视觉模型认出来、填好提交，每个页面最多试 3 次（每次花一点钱）；滑块、拼图、短信验证码这类，或者试完还没过，交给负责人在远程画面里处理。",
+  },
+  {
+    name: "visionCheck",
+    label: "拿不准时让视觉模型看截图",
+    hint: "每次操作网页后先按规则判断是不是验证码页、登录页；规则拿不准时，把截图交给上面的视觉模型再判断一次（每次花一点钱）。",
+  },
+]
+
 export function BrowserSection({ values }: { values: SettingsBrowserInput }) {
   const form = useForm<SettingsBrowserInput>({ resolver: zodResolver(settingsBrowserInputSchema), defaultValues: values })
+  const modelsQuery = useQuery({ ...trpc.compare.models.queryOptions(), retry: false })
+  const models = (modelsQuery.data ?? []).map((model) => ({ ...model, note: "", contextK: 0, vision: true }))
   const { errors, isDirty } = form.formState
   const save = useAction(trpc.settings.updateBrowser.mutationOptions(), { success: "浏览器设置已保存" })
 
@@ -43,7 +61,7 @@ export function BrowserSection({ values }: { values: SettingsBrowserInput }) {
   })
 
   return (
-    <DetailSection title="浏览器" description="服务器上的 Chrome 开多少、等人处理验证码时留多久。">
+    <DetailSection title="浏览器" description="服务器上的 Chrome 开多少、验证码怎么过、等人处理时留多久。">
       <form onSubmit={submit} className="flex flex-col gap-4">
         <FieldGroup>
           {NUMBERS.map((item) => {
@@ -65,19 +83,40 @@ export function BrowserSection({ values }: { values: SettingsBrowserInput }) {
           })}
           <Controller
             control={form.control}
-            name="visionCheck"
+            name="visionModel"
             render={({ field }) => (
-              <Field orientation="horizontal">
-                <Switch id="browser-visionCheck" checked={field.value} onCheckedChange={(on) => field.onChange(Boolean(on))} />
-                <FieldContent>
-                  <FieldLabel htmlFor="browser-visionCheck">拿不准时让视觉模型看截图</FieldLabel>
-                  <FieldDescription>
-                    每次操作网页后先按规则判断是不是验证码页、登录页；规则拿不准时，把截图交给便宜的视觉模型再判断一次（每次花一点钱）。只检测，不破解。
-                  </FieldDescription>
-                </FieldContent>
+              <Field data-invalid={!!errors.visionModel}>
+                <FieldLabel htmlFor="browser-visionModel">视觉模型</FieldLabel>
+                <ModelCombobox
+                  id="browser-visionModel"
+                  className="w-full sm:w-96"
+                  models={models}
+                  value={field.value}
+                  onValueChange={field.onChange}
+                  aria-invalid={!!errors.visionModel}
+                  placeholder={modelsQuery.isPending ? "正在取模型列表" : models.length ? "搜模型名" : "还没有能看图的模型：先去「模型」页接入"}
+                />
+                <FieldDescription>{modelsQuery.isError ? "视觉模型列表没取到。" : "过验证码、拿不准时看截图都用它。只列能看图的模型，便宜的在前。"}</FieldDescription>
+                <FieldError errors={[errors.visionModel]} />
               </Field>
             )}
           />
+          {SWITCHES.map((item) => (
+            <Controller
+              key={item.name}
+              control={form.control}
+              name={item.name}
+              render={({ field }) => (
+                <Field orientation="horizontal">
+                  <Switch id={`browser-${item.name}`} checked={field.value} onCheckedChange={(on) => field.onChange(Boolean(on))} />
+                  <FieldContent>
+                    <FieldLabel htmlFor={`browser-${item.name}`}>{item.label}</FieldLabel>
+                    <FieldDescription>{item.hint}</FieldDescription>
+                  </FieldContent>
+                </Field>
+              )}
+            />
+          ))}
         </FieldGroup>
         <div className="flex flex-wrap items-center gap-2">
           <Button type="submit" disabled={!isDirty || save.isPending}>

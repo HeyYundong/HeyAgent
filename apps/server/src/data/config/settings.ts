@@ -20,6 +20,7 @@ import { z } from "zod"
 
 import * as t from "../../db/schema.js"
 import { assertCan, audit, badRequest, deleteSecret, findSecret, notFound, putSecret, type DbOrTx, type WriteCtx } from "./common.js"
+import { visionModelProblem } from "./models.js"
 
 const channelsSchema = z.array(notifyChannelSchema)
 
@@ -46,14 +47,26 @@ export async function readLimits(db: DbOrTx): Promise<SettingsLimitsInput> {
   }
 }
 
-/** 浏览器设置（M2）：每个 worker 最多几个 Chrome、拿不准时用视觉模型、等人时 Chrome 保留多久。worker 每次用到时重新读 */
+/**
+ * 浏览器设置（M2）：每个 worker 最多几个 Chrome、拿不准时用视觉模型、视觉模型是哪个、遇到验证码先自己试着过、等人时 Chrome 保留多久。
+ * worker 每次用到时重新读
+ */
 export async function readBrowserSettings(db: DbOrTx): Promise<SettingsBrowserInput> {
-  const values = await readKeys(db, [SETTING_KEYS.browserMaxPerWorker, SETTING_KEYS.browserVisionCheck, SETTING_KEYS.browserHumanHoldMinutes])
+  const values = await readKeys(db, [
+    SETTING_KEYS.browserMaxPerWorker,
+    SETTING_KEYS.browserVisionCheck,
+    SETTING_KEYS.browserVisionModel,
+    SETTING_KEYS.browserCaptchaSolve,
+    SETTING_KEYS.browserHumanHoldMinutes,
+  ])
   const positiveInt = (value: unknown, fallback: number) => (typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback)
-  const vision = values.get(SETTING_KEYS.browserVisionCheck)
+  const bool = (value: unknown, fallback: boolean) => (typeof value === "boolean" ? value : fallback)
+  const model = values.get(SETTING_KEYS.browserVisionModel)
   return {
     maxPerWorker: positiveInt(values.get(SETTING_KEYS.browserMaxPerWorker), SETTINGS_DEFAULTS.browserMaxPerWorker),
-    visionCheck: typeof vision === "boolean" ? vision : SETTINGS_DEFAULTS.browserVisionCheck,
+    visionCheck: bool(values.get(SETTING_KEYS.browserVisionCheck), SETTINGS_DEFAULTS.browserVisionCheck),
+    visionModel: typeof model === "string" && model ? model : SETTINGS_DEFAULTS.browserVisionModel,
+    captchaSolve: bool(values.get(SETTING_KEYS.browserCaptchaSolve), SETTINGS_DEFAULTS.browserCaptchaSolve),
     humanHoldMinutes: positiveInt(values.get(SETTING_KEYS.browserHumanHoldMinutes), SETTINGS_DEFAULTS.browserHumanHoldMinutes),
   }
 }
@@ -72,6 +85,8 @@ export async function ensureDefaultSettings(db: DbOrTx) {
     [SETTING_KEYS.notifyChannels, []],
     [SETTING_KEYS.browserMaxPerWorker, SETTINGS_DEFAULTS.browserMaxPerWorker],
     [SETTING_KEYS.browserVisionCheck, SETTINGS_DEFAULTS.browserVisionCheck],
+    [SETTING_KEYS.browserVisionModel, SETTINGS_DEFAULTS.browserVisionModel],
+    [SETTING_KEYS.browserCaptchaSolve, SETTINGS_DEFAULTS.browserCaptchaSolve],
     [SETTING_KEYS.browserHumanHoldMinutes, SETTINGS_DEFAULTS.browserHumanHoldMinutes],
     [SETTING_KEYS.verifyMaxRounds, SETTINGS_DEFAULTS.verifyMaxRounds],
     [SETTING_KEYS.compactMaxTokens, SETTINGS_DEFAULTS.compactMaxTokens],
@@ -151,8 +166,15 @@ export async function updateBrowserSettings(ctx: WriteCtx, input: SettingsBrowse
   assertCan(ctx.actor, "settings.manage", {}, "只有主管能改全局设置")
   return ctx.db.transaction(async (tx) => {
     const before = await readBrowserSettings(tx)
+    // 换了模型才查（没刷新模型列表时默认模型可能还不在库里，不能因此存不了别的设置）
+    if (input.visionModel !== before.visionModel) {
+      const problem = await visionModelProblem(tx, input.visionModel, "浏览器")
+      if (problem) throw badRequest(problem)
+    }
     await writeKey(tx, SETTING_KEYS.browserMaxPerWorker, input.maxPerWorker, ctx.actor.id)
     await writeKey(tx, SETTING_KEYS.browserVisionCheck, input.visionCheck, ctx.actor.id)
+    await writeKey(tx, SETTING_KEYS.browserVisionModel, input.visionModel, ctx.actor.id)
+    await writeKey(tx, SETTING_KEYS.browserCaptchaSolve, input.captchaSolve, ctx.actor.id)
     await writeKey(tx, SETTING_KEYS.browserHumanHoldMinutes, input.humanHoldMinutes, ctx.actor.id)
     await audit(tx, ctx.actor.id, "settings.browser.update", "settings", "browser", { before, after: input })
     return input

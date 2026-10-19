@@ -3,13 +3,13 @@
 // - Playwright MCP 的工具，browser_xxx 统一换成 browser.xxx（给模型的名字把点换成下划线，又变回 browser_xxx）；
 //   一律屏蔽 browser_run_code_unsafe，browser_evaluate 要任务里打开「允许执行脚本」才给。
 // 每次调用：调之前查导航参数（白名单、账号租约）→ 交给 MCP → 调完后兜底扫一遍页面、取走被拦下的导航、
-// 截图存成 session 文件、检测验证码和登录页（命中就截图、生成「登录」类要人办的事、session 等人处理，Chrome 保留着）。
+// 截图存成 session 文件、检测验证码和登录页。验证码先自己试着过（设置里的开关，captcha.ts），
+// 过不了的和登录页（存了密码的先自动登录）截图、生成「登录」类要人办的事、session 等人处理，Chrome 保留着。
 import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { extname, join } from "node:path"
 
 import { eq, lt, sql } from "drizzle-orm"
 import {
-  BROWSER_VISION_MODEL,
   browserActionLabel,
   browserActionTag,
   hostOf,
@@ -34,8 +34,9 @@ import { getKeyring } from "../engine/runtime.js"
 import { loadEngineSettings } from "../engine/settings.js"
 import type { SessionRow, ToolOutcome } from "../engine/tools/builtin.js"
 import { executeMcpTool, type McpConnection } from "../engine/tools/mcp.js"
-import { parseVisionAnswer, VISION_PROMPT, type Verdict } from "./detect.js"
-import { autoLogin, loadAccountPassword, loginModelId } from "./auto-login.js"
+import { judgePage, parseVisionAnswer, VISION_PROMPT, type Verdict } from "./detect.js"
+import { autoLogin, loadAccountPassword, loginModelId, type AutoLoginCaptcha } from "./auto-login.js"
+import { CAPTCHA_MAX_TRIES, solveCaptcha, type CaptchaResult, type CaptchaTry } from "./captcha.js"
 import { ProfileFullError, type BlockedNavigation, type BrowserInstance } from "./instance.js"
 import { accountForHost } from "./leases.js"
 import { getBrowserManager } from "./manager.js"
@@ -56,6 +57,22 @@ interface Ctx {
 }
 
 const fail = (output: string): ToolOutcome => ({ output, isError: true })
+
+type Hit = NonNullable<Awaited<ReturnType<BrowserInstance["detect"]>>>
+/** 检测到的验证码 / 登录页；byVision：规则拿不准、视觉模型判断的 */
+type HumanHit = Omit<Hit, "verdict"> & { verdict: Exclude<Verdict, { kind: "none" | "uncertain" }>; byVision?: boolean }
+
+const FILL_CAPTCHA_TOOL = "browser.fill_captcha"
+
+/** 同一个页面（主机名 + 路径）：自动过验证码按页面数次数 */
+function pageKey(url: string) {
+  try {
+    const parsed = new URL(url)
+    return `${parsed.host}${parsed.pathname}`
+  } catch {
+    return url
+  }
+}
 
 /** 会改变页面、调完要截图存档的工具 */
 const NAVIGATION_TOOLS = new Set(["browser_navigate", "browser_navigate_back"])
@@ -131,6 +148,10 @@ export class BrowserTools {
   private selected?: string
   private instance?: BrowserInstance
   private proxyWarned = false
+  /** 每个页面自动过验证码试了几次（问一次视觉模型算一次） */
+  private readonly captchaTries = new Map<string, number>()
+  /** 验证码在表单里的页面：等 agent 填好别的再调 browser_fill_captcha，检测到时不再自己提交、也不交给人 */
+  private readonly captchaForms = new Set<string>()
   /** 遇到验证码 / 登录页挂起时：Chrome 保留多少分钟（gateway 关闭时交给 manager） */
   holdMinutes?: number
 
@@ -192,6 +213,20 @@ export class BrowserTools {
         execute: (input) => this.use((input as { profileId: string }).profileId),
       },
     ]
+    entries.push({
+      id: FILL_CAPTCHA_TOOL,
+      def: {
+        id: FILL_CAPTCHA_TOOL,
+        name: "浏览器：填验证码",
+        summary: "让系统认出页面上的图片验证码（字母、数字）并填进验证码输入框，不提交",
+        description: `页面表单里有图片验证码（字母、数字、简单算式）时调用：系统让视觉模型认出来，填进验证码输入框（不提交）；「我不是机器人」这类点一下的也能点。先填好表单的别的项，调完再点提交。提交后提示验证码不对就再调一次，每个页面最多 ${CAPTCHA_MAX_TRIES} 次；滑块、拼图、短信验证码这类过不了的会交给人处理。`,
+        source: "builtin",
+        risk: "external",
+      },
+      jsonSchema: { type: "object", properties: {}, additionalProperties: false },
+      validator: z.object({}).passthrough(),
+      execute: () => this.fillCaptcha(),
+    })
     for (const tool of this.mcpTools) {
       if (BLOCKED_MCP_TOOLS.has(tool.name)) continue
       if (tool.name === EVALUATE_TOOL && !browser?.allowEvaluate) continue
@@ -420,12 +455,27 @@ export class BrowserTools {
       if (page) facts = { url: page.url(), title: await page.title().catch(() => "") }
     }
 
-    const hit = await this.detect(instance)
+    let hit = await this.detect(instance)
+    let captchaNote: string | undefined
+    if (hit?.verdict.kind === "captcha") {
+      // 验证码：先自己试着过（设置里开着时），过了再看一遍页面（过了可能是登录页）；再遇到验证码就不试了，交给人
+      const solved = await this.trySolveCaptcha(instance, hit, true)
+      if (solved?.ok) {
+        lines.push(`检测到验证码（${hit.verdict.reason}），已自动过了：${solved.detail}。现在的页面：${hit.page.url()}。接着做之前先看一下页面。`)
+        hit = await this.detect(instance)
+      } else if (solved?.form)
+        return {
+          output: [...lines, `页面上有验证码（${hit.verdict.reason}），和别的输入框在一个表单里：先填好别的项，再调 browser_fill_captcha 让系统认出验证码、填进去，然后提交。`].join("\n"),
+          isError: result.isError,
+          facts,
+        }
+      else if (solved) captchaNote = `自动过验证码没成功：${solved.detail}`
+    }
     if (hit) {
       // 登录页：账号存了密码就先让登录小 agent 用它登录，登不上再交给人
       const login = hit.verdict.kind === "login" ? await this.tryAutoLogin(instance, hit) : undefined
       if (login?.ok) return { output: [...lines, login.text].join("\n"), isError: result.isError, facts }
-      return { ...(await this.humanOutcome(instance, hit, lines.join("\n"), login?.text)), facts }
+      return { ...(await this.humanOutcome(instance, hit, lines.join("\n"), login?.text ?? captchaNote)), facts }
     }
     return { output: lines.join("\n"), isError: result.isError, facts }
   }
@@ -440,14 +490,38 @@ export class BrowserTools {
       .catch((error) => console.warn(`[browser] 操作历史没记上：${(error as Error).message}`))
   }
 
+  /** 视觉判断、自动登录、自动过验证码的花费算进这次运行 */
+  private async addCost(usage: { tokensIn: number; tokensOut: number; costUsd: number }) {
+    await this.ctx.db
+      .update(t.sessions)
+      .set({
+        tokensIn: sql`${t.sessions.tokensIn} + ${usage.tokensIn}`,
+        tokensOut: sql`${t.sessions.tokensOut} + ${usage.tokensOut}`,
+        costUsd: sql`${t.sessions.costUsd} + ${usage.costUsd}`,
+      })
+      .where(eq(t.sessions.id, this.ctx.session.id))
+  }
+
+  /** 自动过验证码的一次尝试记一条过程（答案也写在里面，给人看） */
+  private async recordCaptchaTry(each: CaptchaTry, index: number, url: string | undefined, where = "") {
+    await appendEvent(this.ctx.db, this.ctx.session.id, {
+      kind: "plan",
+      title: `${where}自动过验证码（第 ${index + 1} 次）：${each.ok ? (each.fillOnly ? "填好了" : "过了") : each.fillOnly ? "没填上" : "没过"}`,
+      detail: each.detail,
+      tokensIn: each.tokensIn,
+      tokensOut: each.tokensOut,
+      ms: each.ms,
+      output: `花费 ${each.costUsd.toFixed(6)} 美元`,
+    })
+    await this.record("browser_captcha", !each.ok, url)
+  }
+
   /**
    * 运行中遇到登录页：这个网站对应的账号存了密码，就用登录小 agent 登录（模型只看到占位符）。
    * 没存密码、没设默认模型时返回 undefined（照旧交给人）；花费算进这次运行，过程里记一条。
+   * 设置里开了「遇到验证码先自己试着过」时，登录表单里的验证码它也能填。
    */
-  private async tryAutoLogin(
-    instance: BrowserInstance,
-    hit: { facts: { url: string }; verdict: { reason: string } }
-  ): Promise<{ ok: boolean; text: string } | undefined> {
+  private async tryAutoLogin(instance: BrowserInstance, hit: { facts: { url: string }; verdict: { reason: string } }): Promise<{ ok: boolean; text: string } | undefined> {
     const host = hostOf(hit.facts.url) ?? ""
     // 平台没填域名时，按账号的登录网址认
     const account = accountForHost(instance.accounts, host) ?? instance.accounts.find((each) => each.probeUrl && hostOf(each.probeUrl) === host)
@@ -457,8 +531,12 @@ export class BrowserTools {
     const modelId = password ? await loginModelId(db) : undefined
     if (!password || !modelId) return undefined
     const who = `${account.platformName} 账号 ${account.account}`
+    const settings = await readBrowserSettings(db)
+    const captcha: AutoLoginCaptcha | undefined = settings.captchaSolve
+      ? { modelId: settings.visionModel, onTry: (each, index) => this.recordCaptchaTry(each, index, instance.currentPage()?.url(), "登录时") }
+      : undefined
     const started = Date.now()
-    const result = await autoLogin({ db, instance, account, credentials: { username: account.account, password }, modelId }).catch((error: unknown) => ({
+    const result = await autoLogin({ db, instance, account, credentials: { username: account.account, password }, modelId, captcha }).catch((error: unknown) => ({
       ok: false,
       needHuman: false,
       detail: `出错了：${(error as Error).message}`,
@@ -467,14 +545,8 @@ export class BrowserTools {
       tokensOut: 0,
       costUsd: 0,
     }))
-    await db
-      .update(t.sessions)
-      .set({
-        tokensIn: sql`${t.sessions.tokensIn} + ${result.tokensIn}`,
-        tokensOut: sql`${t.sessions.tokensOut} + ${result.tokensOut}`,
-        costUsd: sql`${t.sessions.costUsd} + ${result.costUsd}`,
-      })
-      .where(eq(t.sessions.id, session.id))
+    // 登录时过验证码的花费也在 result 里
+    await this.addCost(result)
     await appendEvent(db, session.id, {
       kind: "plan",
       title: result.ok ? `遇到登录页，用存的密码自动登录了 ${who}` : `遇到登录页，自动登录 ${who} 没成功`,
@@ -493,41 +565,34 @@ export class BrowserTools {
   }
 
   /** 检测验证码 / 登录页；规则拿不准时（设置打开了视觉判断）交给视觉模型 */
-  private async detect(instance: BrowserInstance) {
+  private async detect(instance: BrowserInstance): Promise<HumanHit | undefined> {
     const found = await instance.detect()
     if (!found) return undefined
-    if (found.verdict.kind === "captcha" || found.verdict.kind === "login") return found as typeof found & { verdict: Exclude<Verdict, { kind: "none" | "uncertain" }> }
+    if (found.verdict.kind === "captcha" || found.verdict.kind === "login") return found as HumanHit
     const settings = await readBrowserSettings(this.ctx.db)
     if (!settings.visionCheck) return undefined
-    const answer = await this.askVision(instance, found.page).catch((error) => {
+    const answer = await this.askVision(instance, found.page, settings.visionModel).catch((error) => {
       console.warn(`[browser] 视觉判断失败：${(error as Error).message}`)
       return undefined
     })
     if (!answer || (!answer.captcha && !answer.login)) return undefined
     return {
       ...found,
+      byVision: true,
       verdict: { kind: answer.captcha ? ("captcha" as const) : ("login" as const), reason: `视觉模型判断${answer.captcha ? "是验证码页" : "是登录页"}：${answer.reason}（规则拿不准：${"reason" in found.verdict ? found.verdict.reason : ""}）` },
     }
   }
 
-  private async askVision(instance: BrowserInstance, page: Parameters<BrowserInstance["screenshot"]>[0]) {
+  private async askVision(instance: BrowserInstance, page: Parameters<BrowserInstance["screenshot"]>[0], modelId: string) {
     const shot = await instance.screenshot(page)
     if (!shot) return undefined
-    const resolved = await resolveModel(this.ctx.db, BROWSER_VISION_MODEL)
+    const resolved = await resolveModel(this.ctx.db, modelId)
     const result = await callModel(resolved, {
       system: "你是网页分类器，只输出 JSON。",
       messages: [{ role: "user", content: [{ type: "text", text: VISION_PROMPT }, { type: "file", data: shot.toString("base64"), mediaType: "image/jpeg" }] }],
       tools: {},
     })
-    // 视觉判断的花费也算进这次运行
-    await this.ctx.db
-      .update(t.sessions)
-      .set({
-        tokensIn: sql`${t.sessions.tokensIn} + ${result.tokensIn}`,
-        tokensOut: sql`${t.sessions.tokensOut} + ${result.tokensOut}`,
-        costUsd: sql`${t.sessions.costUsd} + ${result.costUsd}`,
-      })
-      .where(eq(t.sessions.id, this.ctx.session.id))
+    await this.addCost(result)
     await appendEvent(this.ctx.db, this.ctx.session.id, {
       kind: "think",
       title: "让视觉模型看截图：是不是验证码页或登录页",
@@ -538,6 +603,77 @@ export class BrowserTools {
       output: `花费 ${result.costUsd.toFixed(6)} 美元`,
     })
     return parseVisionAnswer(result.text)
+  }
+
+  /**
+   * 遇到验证码先自己试着过（设置里的开关，所有网站都一样）：视觉模型认图里的字符或找到要点的勾选框，填好、提交（submit）或只填（agent 调工具时）。
+   * 每个页面最多试 CAPTCHA_MAX_TRIES 次，每次记一条过程，花费算进这次运行。开关关着返回 undefined；
+   * 出错、次数用完、不是简单验证码都返回 ok: false（交给人）
+   */
+  private async trySolveCaptcha(instance: BrowserInstance, hit: Pick<HumanHit, "page" | "byVision">, submit: boolean): Promise<CaptchaResult | undefined> {
+    const settings = await readBrowserSettings(this.ctx.db)
+    if (!settings.captchaSolve) return undefined
+    const key = pageKey(hit.page.url())
+    const used = this.captchaTries.get(key) ?? 0
+    const empty: CaptchaResult = { ok: false, tries: [], detail: "", tokensIn: 0, tokensOut: 0, costUsd: 0 }
+    if (used >= CAPTCHA_MAX_TRIES) return { ...empty, detail: `这个页面已经自动试过 ${used} 次了` }
+    if (submit && this.captchaForms.has(key)) return { ...empty, form: true, detail: "验证码在表单里" }
+    // 提交后还是不是验证码页：规则说是就是；原来是视觉模型认出来的，规则拿不准时再问一次视觉模型
+    const stillCaptcha = async () => {
+      const facts = await instance.pageFacts(hit.page)
+      if (!facts) return true
+      const verdict = judgePage(facts)
+      if (verdict.kind === "captcha") return true
+      if (hit.byVision && verdict.kind === "uncertain") return Boolean((await this.askVision(instance, hit.page, settings.visionModel))?.captcha)
+      return false
+    }
+    instance.viewer.announce(browserActionLabel("browser_captcha", {}))
+    try {
+      const result = await solveCaptcha({
+        db: this.ctx.db,
+        instance,
+        page: hit.page,
+        modelId: settings.visionModel,
+        submit,
+        maxTries: CAPTCHA_MAX_TRIES - used,
+        stillCaptcha,
+        onTry: async (each, index) => {
+          this.captchaTries.set(key, used + index + 1)
+          await this.addCost(each)
+          await this.recordCaptchaTry(each, used + index, hit.page.url())
+        },
+      })
+      // 不是简单验证码：这个页面不用再试了
+      if (result.unsupported) this.captchaTries.set(key, CAPTCHA_MAX_TRIES)
+      if (result.form) this.captchaForms.add(key)
+      return result
+    } catch (error) {
+      const detail = `出错了：${(error as Error).message}`
+      await appendEvent(this.ctx.db, this.ctx.session.id, { kind: "plan", title: "自动过验证码没成功", detail })
+      return { ...empty, detail }
+    }
+  }
+
+  /** agent 调 browser_fill_captcha：认出当前页面的验证码、填进去（不提交）；关着开关、过不了的交给人 */
+  private async fillCaptcha(): Promise<ToolOutcome> {
+    const ready = await this.ensure()
+    if (!("id" in ready)) return ready
+    const instance = ready
+    instance.touch()
+    const page = instance.currentPage()
+    if (!page || page.url() === "about:blank") return fail("还没打开网页")
+    const hit = async (reason: string): Promise<HumanHit> => ({
+      page,
+      facts: { url: page.url(), title: await page.title().catch(() => ""), frameUrls: [], text: "", hasPasswordInput: false },
+      verdict: { kind: "captcha", reason },
+    })
+    const solved = await this.trySolveCaptcha(instance, { page }, false)
+    if (!solved) return this.humanOutcome(instance, await hit("agent 要填验证码，设置里没打开「遇到验证码先自己试着过」"), "")
+    if (solved.ok)
+      return { output: `${solved.detail}。接着提交（点提交或登录按钮）；提交后提示验证码不对就再调一次（每个页面最多 ${CAPTCHA_MAX_TRIES} 次）。` }
+    if (solved.unsupported || (this.captchaTries.get(pageKey(page.url())) ?? 0) >= CAPTCHA_MAX_TRIES)
+      return this.humanOutcome(instance, await hit("页面上的验证码要人过"), "", `自动过验证码没成功：${solved.detail}`)
+    return fail(`没认出验证码：${solved.detail}`)
   }
 
   /** 导航被拦下：白名单的告诉 agent 原因；账号租约满了的，session 挂起「等待浏览器」 */
@@ -574,8 +710,8 @@ export class BrowserTools {
     instance: BrowserInstance,
     hit: { page: NonNullable<ReturnType<BrowserInstance["currentPage"]>>; facts: { url: string; title: string }; verdict: { kind: "captcha" | "login"; reason: string } },
     prefix: string,
-    /** 自动登录试过但没成功：原因写给人看 */
-    autoLoginNote?: string
+    /** 自动登录、自动过验证码试过但没成功：原因写给人看 */
+    note?: string
   ): Promise<ToolOutcome> {
     const { db, session, snapshot } = this.ctx
     const shot = await instance.screenshot(hit.page)
@@ -591,7 +727,7 @@ export class BrowserTools {
     const summary = `运行 ${session.id} 打开 ${hit.facts.url} 时遇到${what}（${hit.verdict.reason}）。请打开这次运行的浏览器远程画面处理，好了点「已处理好了」，agent 会在同一个 Chrome 里接着做。Chrome 保留 ${settings.humanHoldMinutes} 分钟。`
     const detail: HumanDetail = {
       sections: [
-        { title: "为什么到了你这里", text: `${hit.verdict.reason}。${autoLoginNote ? `${autoLoginNote}。` : ""}系统只检测、不破解验证码，要人在远程画面里处理。` },
+        { title: "为什么到了你这里", text: `${hit.verdict.reason}。${note ? `${note}。` : ""}${hit.verdict.kind === "captcha" ? "系统过不了这个验证码" : "要登录"}，要人在远程画面里处理。` },
         { title: "网址", text: hit.facts.url },
         {
           title: "怎么处理",
@@ -613,7 +749,7 @@ export class BrowserTools {
       },
     }
     return {
-      output: `${prefix}\n\n检测到${what}：${hit.verdict.reason}。已交给负责人在远程画面里处理（系统不破解验证码），处理好后会叫你继续；继续后先看一下页面现状再接着做。${file ? `截图：${file.id}` : ""}`,
+      output: `${prefix ? `${prefix}\n\n` : ""}检测到${what}：${hit.verdict.reason}。${note ? `${note}。` : ""}已交给负责人在远程画面里处理，处理好后会叫你继续；继续后先看一下页面现状再接着做。${file ? `截图：${file.id}` : ""}`,
       signals: ["page_needs_human"],
       suspend: {
         kind: "human",

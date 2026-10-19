@@ -618,8 +618,8 @@ curl -s -X POST http://localhost:3100/api/events \
 | 新接口 `platforms.update` | `{ id, name, domains }` | 主管。审计 `platform.update`；推 `platforms` |
 | 任务输入 / `TaskDef` 输出 | `browserProfileIds: string[]`（默认 `[]` = 全部 Chrome 配置）、`allowedDomains: string[]`（默认 `[]` = 不限制，同样规整）、`allowBrowserEvaluate: boolean`（默认 `false`） | 只在任务选了内置工具 `browser` 时起作用。`browserProfileIds` 里的 id 要存在，否则 `BAD_REQUEST`。三项都冻结进 session 快照（`snapshot.browser = { profiles: [{id,name,description}], allowedDomains, allowEvaluate }`） |
 | 内置工具 | `browser`（来源 `builtin`，「浏览器」） | 由 worker / bootstrap 同步进 `tools` 表，任务的 `toolIds` 里选它 |
-| `settings.get` 输出 | `browser: { maxPerWorker, visionCheck, humanHoldMinutes }` | 默认 4、false、30 |
-| 新接口 `settings.updateBrowser` | `{ maxPerWorker(1-32), visionCheck, humanHoldMinutes(1-1440) }` | 主管。审计 `settings.browser.update`；worker 每次用到时重新读 |
+| `settings.get` 输出 | `browser: { maxPerWorker, visionCheck, visionModel, captchaSolve, humanHoldMinutes }` | 默认 4、false、`openrouter/qwen/qwen3.8-flash`、true、30（`visionModel`、`captchaSolve` 2026-10-19 加） |
+| 新接口 `settings.updateBrowser` | `{ maxPerWorker(1-32), visionCheck, visionModel, captchaSolve, humanHoldMinutes(1-1440) }` | 主管。`visionModel` 换了才查：要是库里能看图的聊天模型（同 `compare.models` 的列表），否则 `BAD_REQUEST`。审计 `settings.browser.update`；worker 每次用到时重新读 |
 | `HumanDetail` | `browser?: { browserId, sessionId, profileId, accountId?, url, reason, screenshotFileId? }`；`link: { page: "browsers", id: profileId }` | 遇到验证码 / 登录页时生成的「登录」类要人办的事（`kind = login`）带这个。主按钮「已处理好了」= `engine.resolveHumanItem(how: "done")` |
 | `sessions` 表 | `browser_profile_id` | 这次运行选用的 Chrome 配置（`browser.use` 选的，或只允许一个时自动选的） |
 

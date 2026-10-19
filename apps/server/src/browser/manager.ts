@@ -227,9 +227,12 @@ export class BrowserManager {
     if (!modelId) throw new AutoLoginUnavailableError("还没设默认的执行模型，先在「模型」页设好")
     const instance = await this.openForLogin(input)
     const account = instance.accounts.find((each) => each.accountId === input.accountId)!
+    // 设置里开了「遇到验证码先自己试着过」：登录表单里的简单验证码也自己填（花费算在结果里）
+    const settings = await readBrowserSettings(this.db)
+    const captcha = settings.captchaSolve ? { modelId: settings.visionModel } : undefined
     let result: AutoLoginResult
     try {
-      result = await autoLogin({ db: this.db, instance, account, credentials: { username: account.account, password }, modelId })
+      result = await autoLogin({ db: this.db, instance, account, credentials: { username: account.account, password }, modelId, captcha })
     } catch (error) {
       result = { ok: false, needHuman: false, detail: `自动登录出错：${(error as Error).message}`, steps: 0, tokensIn: 0, tokensOut: 0, costUsd: 0 }
     }
