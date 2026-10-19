@@ -18,6 +18,7 @@ import type { Keyring } from "../lib/crypto.js"
 import { startCdpTap, type CdpTap } from "./cdp-tap.js"
 import { BrowserUnavailableError, CHROME_BIN, chromeAvailable, killGroup, startChrome, startXvfb, type ChromeHandle, type XvfbHandle } from "./chrome.js"
 import { judgePage, probeLooksLoggedIn, type PageFacts } from "./detect.js"
+import { startDownloadCapture, type DownloadCapture } from "./downloads.js"
 import type { GostPool } from "./gost.js"
 import { accountForHost, acquireLease, profileAccounts, profileSessionCount, releaseLeases, type PlatformAccount } from "./leases.js"
 import { startBrowserMcp, type BrowserMcp } from "./mcp.js"
@@ -115,6 +116,8 @@ export class BrowserInstance {
   readonly touched = new Set<string>()
   blocked: BlockedNavigation[] = []
   context?: BrowserContext
+  /** 运行的 Chrome：下载的文件存成这次运行的文件（browser/downloads.ts） */
+  downloads?: DownloadCapture
 
   private readonly deps: InstanceDeps
   private dir?: string
@@ -252,6 +255,7 @@ export class BrowserInstance {
     await context.newPage()
     for (const page of startup) await page.close().catch(() => {})
     if (vault.state.cookies.length || vault.state.origins.length) await context.setStorageState(vault.state as Parameters<BrowserContext["setStorageState"]>[0])
+    if (this.kind === "session" && this.sessionId) this.downloads = await startDownloadCapture(this.browser, { db, sessionId: this.sessionId, dir: join(this.dir, "downloads") })
     this.browser.on("disconnected", () => {
       if (this.state !== "closing") void this.close({ writeBack: false, reason: "Chrome 意外退出了" })
     })
@@ -558,6 +562,7 @@ export class BrowserInstance {
     }
     this.viewer.close(options.reason)
     if (this.urlWrite) clearTimeout(this.urlWrite)
+    await this.downloads?.close()
     await this.mcp?.close()
     this.mcp = undefined
     await this.tap?.close()

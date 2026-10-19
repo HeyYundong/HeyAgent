@@ -37,6 +37,7 @@ design/         定稿原型，只读参考。不改、不提交（已在 .gitig
 - **TypeScript**：~6.0，strict，ESM。跨包引用走 workspace 包名（`@heyagent/shared`），运行时不依赖路径别名。前端沿用原型的 `@/` 别名。
 - **版本锁定**：方案第 3 节列出的运行时依赖写精确版本（不带 `^`），lockfile 提交。只装当前里程碑用得到的包。
   - hono 4.13.13、@hono/node-server 2.1.5、@trpc/server 和 @trpc/client 11.19.0、drizzle-orm 0.45.4、drizzle-kit 0.31.11、better-auth 1.7.10、zod 4.6.7、pg-boss 12.38.0、ai 7.0.142（7.0.143 发布不满 1 天）、@openrouter/ai-sdk-provider 3.1.0、@ai-sdk/anthropic 4.0.81、@ai-sdk/openai 4.0.95、@ai-sdk/deepseek 3.0.66（三个都和 ai 7.0.142 用同一版 @ai-sdk/provider、provider-utils）、@ai-sdk/mcp 2.0.77、cron-parser 5.10.2、react-hook-form 7.90.0、@hookform/resolvers 5.9.1、react-markdown 10.1.0、remark-gfm 4.0.1、@playwright/mcp 0.0.83、playwright-core 1.64.1、sharp 0.35.5、@modelcontextprotocol/server 2.3.1（图库，2026-10-17）。
+  - **xlsx = SheetJS 社区版 0.20.3**（2026-10-19，读写 Excel，只装在 `apps/server`，前端不引入）：从官方的 `https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz` 装（`package.json` 里写的就是这个网址，lockfile 记了 integrity，容器构建照样 `pnpm install --frozen-lockfile`，要能连 cdn.sheetjs.com）。**不要**装 npm 上的 `xlsx`：那边停在 0.18.5，有已知漏洞（原型污染、ReDoS），SheetJS 之后只在自己的 CDN 发版。社区版不能写样式（加粗、颜色）和冻结窗格，只设列宽；不要为此再加别的 Excel 库。代码在 `apps/server/src/files/sheets.ts`。
 - **测试**：vitest。和数据库有关的测试连真实的 PostgreSQL 18（开发数据库里的 `heyagent_test` 库），不用 mock 数据库。
 - **代码风格**：照原型的写法。标识符用英文；注释和界面文案用中文，注释写「为什么」，不写废话。prettier 配置沿用原型。
 

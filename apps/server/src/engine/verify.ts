@@ -18,6 +18,7 @@ import { z } from "zod"
 
 import * as t from "../db/schema.js"
 import { isTextMime, readFileData } from "../files/service.js"
+import { isPlainSheet, isSheetFile, loadBook, overviewText } from "../files/sheets.js"
 import type { FinishDecision, RunContext } from "./hooks.js"
 import { askHumanInTx, notifyAssignee } from "./humans.js"
 import { callStructured, resolveModel } from "./model.js"
@@ -126,6 +127,14 @@ async function loadEvidence(ctx: RunContext, vision: boolean) {
   for (const file of files
     .filter((row) => row.kind === "artifact")
     .slice(0, 6)) {
+    // Excel 等表格：给概览（每个工作表的范围和前几行）
+    if (isSheetFile(file.name, file.mime) && !isPlainSheet(file.name, file.mime)) {
+      const overview = await loadBook(file)
+        .then((book) => overviewText(book, file.name, 3000))
+        .catch(() => "（打不开）")
+      artifacts.push(`### 文件 ${file.id}「${file.name}」（表格，${file.size} 字节）\n${overview.slice(0, 3000)}`)
+      continue
+    }
     if (!isTextMime(file.mime)) {
       artifacts.push(
         `### 文件 ${file.id}「${file.name}」（${file.mime}，${file.size} 字节，不是文本）`

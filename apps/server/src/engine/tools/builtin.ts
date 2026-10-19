@@ -24,6 +24,17 @@ import {
   TEXT_SAVE_EXTENSIONS,
 } from "../../files/service.js"
 import {
+  buildWorkbook,
+  isPlainSheet,
+  isSheetFile,
+  loadBook,
+  overviewText,
+  rangeText,
+  SheetError,
+  XLS_MIME,
+  XLSX_MIME,
+} from "../../files/sheets.js"
+import {
   createHumanItem,
   notifyAssignee,
   type CreateHumanItemInput,
@@ -443,8 +454,39 @@ const handlers: {
 
   async "file.save"(ctx, input) {
     const ext = extname(input.name).toLowerCase()
+    if (input.sheets) {
+      // Excel：文件名的扩展名和 format 要对得上；没写扩展名就按 format 补上
+      const format = input.format ?? (ext === ".xls" ? "xls" : "xlsx")
+      if (ext && ext !== ".xlsx" && ext !== ".xls")
+        return fail(`给了 sheets 就是存 Excel，文件名要以 .xlsx 或 .xls 结尾（现在是 ${input.name}）`)
+      if (ext && ext !== `.${format}`)
+        return fail(`文件名是 ${ext}，format 却是 ${format}，两个要一致`)
+      const name = ext ? input.name : `${input.name}.${format}`
+      let data: Buffer
+      try {
+        data = buildWorkbook(input.sheets, format)
+      } catch (error) {
+        if (error instanceof SheetError) return fail(error.message)
+        throw error
+      }
+      const row = await saveFile(ctx.db, {
+        data,
+        name,
+        mime: format === "xls" ? XLS_MIME : XLSX_MIME,
+        kind: "artifact",
+        sessionId: ctx.session.id,
+      })
+      const rows = input.sheets.reduce((sum, sheet) => sum + sheet.rows.length, 0)
+      return {
+        output: `已保存 Excel 文件 ${row.name}（id ${row.id}，${input.sheets.length} 个工作表、共 ${rows} 行，${row.size} 字节），界面里能看能下载。`,
+        facts: { fileId: row.id, fileName: row.name },
+      }
+    }
+    if (ext === ".xlsx" || ext === ".xls")
+      return fail("存 Excel 要给 sheets（每个工作表的 name 和 rows），不用 content")
     if (!TEXT_SAVE_EXTENSIONS.includes(ext))
-      return fail(`只能存文本格式：${TEXT_SAVE_EXTENSIONS.join(" ")}`)
+      return fail(`只能存文本格式：${TEXT_SAVE_EXTENSIONS.join(" ")}；Excel 用 .xlsx 或 .xls 加 sheets`)
+    if (input.content === undefined) return fail("要给 content（文件内容）")
     const row = await saveFile(ctx.db, {
       data: Buffer.from(input.content, "utf8"),
       name: input.name,
@@ -514,8 +556,29 @@ const handlers: {
         ],
       }
     }
+    // 表格：按工作表读（csv / tsv 给了 offset 就照原文读）
+    const tableParams =
+      input.sheet !== undefined || input.startRow !== undefined || input.rows !== undefined
+    if (
+      isSheetFile(row.name, row.mime) &&
+      (tableParams || input.offset === undefined || !isPlainSheet(row.name, row.mime))
+    ) {
+      try {
+        const book = await loadBook(row)
+        return {
+          output: tableParams
+            ? rangeText(book, row.name, input, TEXT_READ_LIMIT)
+            : overviewText(book, row.name, TEXT_READ_LIMIT),
+        }
+      } catch (error) {
+        if (error instanceof SheetError) return fail(error.message)
+        return fail(`${row.name} 读不了：${(error as Error).message}`)
+      }
+    }
     if (!isTextMime(row.mime))
-      return fail(`${row.name}（${row.mime}）不是文本或图片，读不了内容`)
+      return fail(
+        `${row.name}（${row.mime}）不是文本、图片或表格，读不了内容（能读：文本、png/jpg/gif/webp、xlsx/xls/xlsm/xlsb/ods/csv/tsv）`
+      )
     const text = (await readFileData(row)).toString("utf8")
     const offset = input.offset ?? 0
     const part = text.slice(offset, offset + TEXT_READ_LIMIT)

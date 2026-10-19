@@ -424,6 +424,8 @@ export class BrowserTools {
     instance.viewer.announce(browserActionLabel(name, input))
     const result = await executeMcpTool(this.connection(instance, mcp.client), name, args)
     const lines: string[] = [result.output]
+    // 这次（或之前在后台）下载的文件已经存成运行的文件：告诉 agent（browser/downloads.ts）
+    const downloads = (await instance.downloads?.collect(name)) ?? []
     await this.record(name, Boolean(result.isError), instance.currentPage()?.url() ?? url)
     if (PROXY_ERROR.test(result.output)) await this.warnProxy(PROXY_ERROR.exec(result.output)![0])
 
@@ -439,6 +441,7 @@ export class BrowserTools {
       }
       lines.splice(0, lines.length, `截图已存为这次运行的文件 ${saved.join("、")}（只存档留证，没有发给你；要读页面内容用 browser_snapshot）。`)
     }
+    lines.push(...downloads)
 
     if (READ_ONLY_TOOLS.has(name)) return { ...result, output: lines.join("\n") }
 

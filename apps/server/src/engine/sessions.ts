@@ -181,11 +181,12 @@ export async function buildSnapshot(
   )
 
   // 选了技能却没选「读取技能」、带了附件却没选「读附件」，agent 就只看得到目录读不到内容：这两个跟着自动带上。
+  // 选了「浏览器」也带上「读附件」：在网页里下载的文件（例如导出的 Excel）要能读。
   // 派活第二期：选了「派活」自动带上「查派过的活」；被派来的运行自动带上「报结果」（这两个不能单独选）
   const publishedSkills = skills.filter((skill) => skill.status === "published")
   const implied: BuiltinToolId[] = []
   if (publishedSkills.length) implied.push("skill.load")
-  if (attachments.length) implied.push("file.read")
+  if (attachments.length || tools.some((tool) => tool.id === BROWSER_TOOL_ID)) implied.push("file.read")
   if (tools.some((tool) => tool.id === WORK_DISPATCH_TOOL_ID)) implied.push(WORK_LIST_TOOL_ID)
   if (extra.dispatch) implied.push(WORK_REPORT_TOOL_ID)
   for (const id of implied) {

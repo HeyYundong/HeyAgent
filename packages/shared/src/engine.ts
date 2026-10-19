@@ -249,9 +249,32 @@ export const builtinToolInputs = {
       .min(1)
       .max(200)
       .describe(
-        "文件名，带扩展名，例如 result.csv。支持 csv、tsv、md、json、txt、html、xml、yaml"
+        "文件名，带扩展名，例如 result.csv、报表.xlsx。文本支持 csv、tsv、md、json、txt、html、xml、yaml；Excel 用 .xlsx 或 .xls（要给 sheets）"
       ),
-    content: z.string().max(5_000_000).describe("文件内容（文本）"),
+    content: z
+      .string()
+      .max(5_000_000)
+      .optional()
+      .describe("文件内容（文本）。存 Excel 时不用给，给 sheets"),
+    sheets: z
+      .array(
+        z.object({
+          name: z
+            .string()
+            .describe("工作表名：最多 31 个字，不能有 [ ] : * ? / \\，不能重名"),
+          rows: z
+            .array(z.array(z.union([z.string(), z.number(), z.boolean(), z.null()])))
+            .describe("每行一个数组，第一行一般是表头；日期写成文字，例如 2026-01-02"),
+        })
+      )
+      .min(1)
+      .max(100)
+      .optional()
+      .describe("存 Excel：一个工作表一项。给了它就按 Excel 存，content 不用给"),
+    format: z
+      .enum(["xlsx", "xls"])
+      .optional()
+      .describe("Excel 格式：xlsx（默认）或 xls（老版本 Excel，最多 65536 行、256 列）"),
   }),
   "file.read": z.object({
     fileId: z
@@ -265,7 +288,24 @@ export const builtinToolInputs = {
       .int()
       .min(0)
       .optional()
-      .describe("文本文件从第几个字符开始读（默认 0，长文件分段读）"),
+      .describe("文本文件从第几个字符开始读（默认 0，长文件分段读）。csv / tsv 给了它就按原文读，不按表格读"),
+    sheet: z
+      .union([z.string(), z.number().int().min(1)])
+      .optional()
+      .describe("表格文件（xlsx、xls、csv 等）：读哪个工作表，名字或序号（从 1 开始）"),
+    startRow: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("表格文件：从第几行开始读（按表里的行号，从 1 开始）"),
+    rows: z
+      .number()
+      .int()
+      .min(1)
+      .max(500)
+      .optional()
+      .describe("表格文件：读多少行（默认 200，最多 500）"),
   }),
   "work.dispatch": z.object({
     task: z.string().min(1).describe("派给哪个任务：任务 id，见系统提示里「可以派活给」"),
@@ -373,13 +413,14 @@ export const sessionFileSchema = z.object({
   name: z.string(),
   mime: z.string(),
   size: z.number(),
-  /** attachment = 附件；artifact = agent 产出的文件；tool_output = 太长的工具输出全文；screenshot = 截图 */
+  /** attachment = 附件；artifact = agent 产出的文件；tool_output = 太长的工具输出全文；screenshot = 截图；download = 在浏览器里下载的文件 */
   kind: z.enum([
     "attachment",
     "artifact",
     "tool_output",
     "screenshot",
     "upload",
+    "download",
   ]),
   /** 任务附件（跨运行一直有效）还是只属于这次运行 */
   scope: z.enum(["task", "session"]),
@@ -388,6 +429,28 @@ export const sessionFileSchema = z.object({
   url: z.string(),
 })
 export type SessionFile = z.infer<typeof sessionFileSchema>
+
+/** 表格文件（xlsx、xls、csv 等）的预览：GET /api/files/:id/sheet，每个工作表只给前 rowLimit 行 */
+export const sheetPreviewSchema = z.object({
+  rowLimit: z.number(),
+  sheets: z.array(
+    z.object({
+      name: z.string(),
+      hidden: z.boolean(),
+      /** 第一行的行号（从 1 开始，和 Excel 里一样） */
+      firstRow: z.number(),
+      /** 列名：A、B、C… */
+      columns: z.array(z.string()),
+      /** 单元格都转成文字；每行的长度可能比 columns 短（后面是空格子） */
+      rows: z.array(z.array(z.string())),
+      totalRows: z.number(),
+      totalCols: z.number(),
+      /** 合并单元格的个数（值只在左上角那格） */
+      merged: z.number(),
+    })
+  ),
+})
+export type SheetPreview = z.infer<typeof sheetPreviewSchema>
 
 export const uploadedFileSchema = z.object({
   id: z.string(),

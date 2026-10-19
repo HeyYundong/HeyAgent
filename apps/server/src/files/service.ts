@@ -14,10 +14,11 @@ import { LocalDiskStorage, sha256Hex, type FileStorage } from "./storage.js"
 /**
  * gallery / gallery_thumb：图库的原图和缩略图（归 gallery_images 管，删图时一起删）；
  * compare：比物的两张图（归 comparisons 管，删记录时没人再用就一起删）；
- * import：要导入的 zip 包（归 imports 管，放弃导入时一起删；里面可能有明文密钥，只有主管能下载）
+ * import：要导入的 zip 包（归 imports 管，放弃导入时一起删；里面可能有明文密钥，只有主管能下载）；
+ * download：agent 在浏览器里下载的文件（browser/downloads.ts，属于那次运行）
  */
 export type FileKind =
-  "upload" | "attachment" | "artifact" | "tool_output" | "screenshot" | "gallery" | "gallery_thumb" | "import" | "compare"
+  "upload" | "attachment" | "artifact" | "tool_output" | "screenshot" | "gallery" | "gallery_thumb" | "import" | "compare" | "download"
 export type FileRow = typeof t.files.$inferSelect
 
 let storageInstance: { root: string; storage: FileStorage } | undefined
@@ -52,6 +53,10 @@ const MIME_BY_EXT: Record<string, string> = {
   ".pdf": "application/pdf",
   ".zip": "application/zip",
   ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
+  ".xlsb": "application/vnd.ms-excel.sheet.binary.macroEnabled.12",
+  ".xls": "application/vnd.ms-excel",
+  ".ods": "application/vnd.oasis.opendocument.spreadsheet",
   ".docx":
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 }
@@ -154,6 +159,7 @@ const toSessionFile = (
     "tool_output",
     "screenshot",
     "upload",
+    "download",
   ].includes(row.kind)
     ? row.kind
     : "attachment") as SessionFile["kind"],

@@ -1,6 +1,7 @@
 // 文件的 HTTP 接口（要求登录）：
 // - POST /api/files：上传（multipart，字段名 file），有大小上限；传上来先是「未使用」，立即运行或加到任务附件时再关联；
-// - GET /api/files/:id：下载。图片直接显示，其他一律作为附件下载（不在控制台的域名下渲染 HTML）。
+// - GET /api/files/:id：下载。图片直接显示，其他一律作为附件下载（不在控制台的域名下渲染 HTML）；
+// - GET /api/files/:id/sheet?rows=200：表格文件（xlsx、xls、csv 等）的预览，每个工作表前 rows 行（JSON，格子都是文字）。
 import type { Hono } from "hono"
 import { bodyLimit } from "hono/body-limit"
 
@@ -14,7 +15,9 @@ import {
   mimeFromName,
   readFileData,
   saveFile,
+  type FileRow,
 } from "./service.js"
+import { isSheetFile, loadBook, previewOf, SheetError } from "./sheets.js"
 
 export function registerFileRoutes(app: Hono, deps: { db: Db; auth: Auth }) {
   const userOf = async (headers: Headers) =>
@@ -77,12 +80,36 @@ export function registerFileRoutes(app: Hono, deps: { db: Db; auth: Auth }) {
     }
   )
 
-  app.get("/api/files/:id", async (c) => {
-    const user = await userOf(c.req.raw.headers)
-    if (!user) return c.json({ error: "请先登录" }, 401)
-    const row = await getFileRow(deps.db, c.req.param("id"))
+  /** 和下载一样的权限：登录就能看；要导入的 zip 只有主管能下 */
+  const visibleRow = async (headers: Headers, id: string): Promise<{ row: FileRow } | { status: 401 | 404; error: string }> => {
+    const user = await userOf(headers)
+    if (!user) return { status: 401, error: "请先登录" }
+    const row = await getFileRow(deps.db, id)
     // 要导入的 zip 里可能有明文密钥：只有主管能下（走 /api/imports/:id/file）
-    if (!row || (row.kind === "import" && user.role !== "admin")) return c.json({ error: "找不到文件" }, 404)
+    if (!row || (row.kind === "import" && user.role !== "admin")) return { status: 404, error: "找不到文件" }
+    return { row }
+  }
+
+  app.get("/api/files/:id/sheet", async (c) => {
+    const found = await visibleRow(c.req.raw.headers, c.req.param("id"))
+    if (!("row" in found)) return c.json({ error: found.error }, found.status)
+    const { row } = found
+    if (!isSheetFile(row.name, row.mime)) return c.json({ error: `${row.name} 不是表格文件` }, 415)
+    const asked = Number(c.req.query("rows") ?? 200)
+    const rows = Number.isInteger(asked) && asked > 0 ? Math.min(asked, 1000) : 200
+    try {
+      return c.json(previewOf(await loadBook(row), rows), 200, { "cache-control": "private, max-age=300" })
+    } catch (error) {
+      if (error instanceof SheetError) return c.json({ error: error.message }, 422)
+      const missing = (error as NodeJS.ErrnoException).code === "ENOENT"
+      return c.json({ error: missing ? "文件内容不见了" : `读不了：${(error as Error).message}` }, missing ? 410 : 500)
+    }
+  })
+
+  app.get("/api/files/:id", async (c) => {
+    const found = await visibleRow(c.req.raw.headers, c.req.param("id"))
+    if (!("row" in found)) return c.json({ error: found.error }, found.status)
+    const { row } = found
     const data = await readFileData(row).catch(() => null)
     if (!data) return c.json({ error: "文件内容不见了" }, 410)
     const inline = isImageMime(row.mime)

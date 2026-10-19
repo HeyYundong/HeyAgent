@@ -99,9 +99,9 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
     id: "file.save",
     name: "存文件",
     summary:
-      "产出一个文本文件（csv、md、json、txt 等），挂到这次运行上，界面里能看能下载",
+      "产出一个文件（文本：csv、md、json、txt 等；Excel：xlsx、xls），挂到这次运行上，界面里能看能下载",
     description:
-      "要交付表格、文档、数据时调用，内容是完整的文件文本。同名文件可以多次保存，每次都是新文件。返回文件 id。",
+      "要交付表格、文档、数据时调用。文本文件：content 是完整的文件文本。Excel：文件名用 .xlsx 或 .xls，给 sheets（每个工作表一项：name 和 rows，rows 每行一个数组，格子是文字、数字、true/false 或 null），不用给 content；第一行一般写表头，日期写成文字（例如 2026-01-02），列宽自动按内容定。xls 最多 65536 行、256 列，没有特别要求就用 xlsx。同名文件可以多次保存，每次都是新文件。返回文件 id。",
     risk: "write",
   },
   {
@@ -133,9 +133,9 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   {
     id: "file.read",
     name: "读附件",
-    summary: "读这次运行的附件或文件：文本直接返回内容，图片交给你看",
+    summary: "读这次运行的附件或文件：文本直接返回内容，图片交给你看，表格（xlsx、xls、csv 等）按行列返回",
     description:
-      "附件清单见系统提示（id、名字、类型）。文本文件返回内容（太长会截断），图片会作为图片发给你。",
+      "附件清单见系统提示（id、名字、类型），浏览器里下载的文件、存过的文件也能读。文本文件返回内容（太长会截断，用 offset 接着读），图片会作为图片发给你。表格文件（xlsx、xls、xlsm、xlsb、ods、csv、tsv）：只给 fileId 返回概览（每个工作表的名字、范围、前 20 行）；要看更多就加 sheet（名字或序号）、startRow（行号）、rows（默认 200，最多 500），输出末尾会告诉你下一段从哪行接着读。表格只给存着的值、不给公式，日期写成 YYYY-MM-DD。",
     risk: "read",
   },
 ]
