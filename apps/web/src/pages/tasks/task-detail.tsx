@@ -23,7 +23,7 @@ import { useWorkTaskStats } from "@/pages/work/parts"
 
 import { compileOf, ruleSelectable } from "@/pages/rules/compile"
 
-import { CheckpointGrid, RunStatusBadge, StepList, WaitingAlert, checkpointSummary, money, tokens, type TasksState } from "./parts"
+import { RunStatusBadge, StepList, WaitingAlert, money, tokens, type TasksState } from "./parts"
 import { CancelRunDialog, isActive, ResumeButton, RunWithFilesDialog, TaskAttachments, useStartRun } from "./run-actions"
 import { retryText } from "./dispatch-fields"
 import { TaskDialog } from "./task-dialog"
@@ -112,7 +112,8 @@ export function TaskActions({ task, state }: { task: TaskDef; state: TasksState 
   )
 }
 
-/** 抽屉里的任务详情：分区卡（目标和步骤 / 任务记忆 / 检查点 / 运行记录 / 附件 / 用到的配置）。标题和操作在抽屉的头和底。 */
+/** 抽屉里的任务详情：分区卡（目标和步骤 / 任务记忆 / 运行记录 / 附件 / 用到的配置）。标题和操作在抽屉的头和底。
+ * 检查点只在运行详情里看，这里不放最近一次运行的检查点（页面太乱） */
 export function TaskDetail({ task, state, canEdit }: { task: TaskDef; state: TasksState; canEdit: boolean }) {
   const taskRuns = state.runsOf(task.id)
   const latest = taskRuns[0]
@@ -124,9 +125,6 @@ export function TaskDetail({ task, state, canEdit }: { task: TaskDef; state: Tas
       {task.toolIds.includes(WORK_DISPATCH_TOOL_ID) && <DispatchOutSection task={task} />}
       <GoalAndSteps task={task} latest={latest} />
       <TaskMemorySection task={task} runs={taskRuns} canEdit={canEdit} />
-      <DetailSection title={latest ? `检查点 · ${checkpointSummary(latest.checkpoints)}` : "检查点"} description={latest && `最近一次运行 ${latest.id} 的检查点，每条一张卡`}>
-        {latest ? <CheckpointGrid run={latest} /> : <p className="text-muted-foreground">还没运行过。运行后，每个检查点的进度和记录会显示在这里。</p>}
-      </DetailSection>
       <DetailSection title={`运行记录（${taskRuns.length}）`} description="一次运行 = 一个 session：要等时挂起，等到了继续同一个 session；定时任务每次触发是一次新的运行。点一行看完整过程。">
         {taskRuns.length ? <RunList task={task} taskRuns={taskRuns} /> : <p className="text-muted-foreground">还没运行过。</p>}
       </DetailSection>
