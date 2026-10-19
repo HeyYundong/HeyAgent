@@ -3,7 +3,8 @@
 // - 这一步里有改的工具调用：不执行，校验、查权限后存成一张改动确认卡，这一轮停下，等人点「应用」或「不要」；
 // - 人处理卡（apply）：应用就按顺序一项项执行（每项单独成败），结果交回模型接着跑；不要就告诉模型人没同意；
 // - 有卡没处理又发了新消息：卡过期，它的调用回 { expired: true }，再接上新消息；
-// - 一次请求（发一条消息或处理一张卡之后）最多 maxSteps 步、maxCostUsd 美元（设置页能改），到了停下发提示；
+// - 模型：本对话设的 → 「模型」页的助手默认 → plan 默认（settings.ts）；
+// - 一次请求（发一条消息或处理一张卡之后）最多 maxSteps 步、maxCostUsd 美元（本对话设的 ?? 设置页的），到了停下发提示；
 // - 断线（浏览器中止请求）就停掉模型调用，已经存下的照常保留。
 // 每条 ModelMessage 原样存进 assistant_messages；面板上的记录由 store.ts 拼出来，和这里发出去的一致。
 import { setTimeout as sleep } from "node:timers/promises"
@@ -12,7 +13,6 @@ import type { AssistantApplyInput, AssistantChange, AssistantChatInput, Assistan
 import { jsonSchema, streamText, tool, zodSchema, type ModelMessage, type ToolResultPart, type ToolSet } from "ai"
 import { and, eq, sql } from "drizzle-orm"
 
-import { readAssistantSettings } from "../data/config/settings.js"
 import { runAsAssistant } from "../data/config/common.js"
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
@@ -20,6 +20,7 @@ import { costOf, isRetryable, ModelConfigError, providerOptionsFor, resolveModel
 import { runtime } from "../engine/runtime.js"
 import type { Keyring } from "../lib/crypto.js"
 import { systemPrompt } from "./prompt.js"
+import { effectiveLimits, modelProblem, pickModel } from "./settings.js"
 import {
   appendToolResults,
   chatTitle,
@@ -101,26 +102,6 @@ const MODEL_TOOLS: ToolSet = Object.fromEntries(
   })
 )
 
-/** 用哪个模型：这次临时换的 → 对话上次用的 → 「规划」默认模型；要是库里有的聊天模型 */
-async function pickModel(db: Db, requested: string | undefined, previous: string | null): Promise<{ modelId: string } | { error: string }> {
-  const usable = async (id: string) => {
-    const [model] = await db.select({ id: t.models.id, kind: t.models.kind }).from(t.models).where(eq(t.models.id, id))
-    if (!model) return `模型 ${id} 不存在（可能刷新模型列表后下架了），换一个`
-    if (model.kind !== "chat") return `${id} 是 embedding 模型，不能对话，换一个`
-    return undefined
-  }
-  if (requested?.trim()) {
-    const problem = await usable(requested.trim())
-    return problem ? { error: problem } : { modelId: requested.trim() }
-  }
-  // 对话上次用的模型下架了：回到 plan 默认模型
-  if (previous && !(await usable(previous))) return { modelId: previous }
-  const [plan] = await db.select({ modelId: t.modelDefaults.modelId }).from(t.modelDefaults).where(eq(t.modelDefaults.role, "plan"))
-  if (!plan) return { error: "还没有配模型，先到模型页设 plan 默认模型" }
-  const problem = await usable(plan.modelId)
-  return problem ? { error: `plan 默认模型用不了：${problem}` } : { modelId: plan.modelId }
-}
-
 interface Loop {
   deps: RunDeps
   chat: ChatRow
@@ -139,11 +120,11 @@ async function notice(loop: Loop, text: string, tone: NoticeMessage["tone"] = "i
   loop.deps.emit({ type: "entry", entry: { kind: "notice", id: entryIdOf(seq), text, tone, at: now() } })
 }
 
-/** 这次请求结束：对话累加花费、记下用的模型、updated_at 往前挪；发 done */
-async function finish(loop: Loop, modelId: string | null, pendingProposalId: string | null) {
+/** 这次请求结束：对话累加花费、updated_at 往前挪；发 done。用的模型不记（model_id 只存人在本对话设置里选的） */
+async function finish(loop: Loop, pendingProposalId: string | null) {
   await loop.deps.db
     .update(t.assistantChats)
-    .set({ costUsd: sql`${t.assistantChats.costUsd} + ${loop.spent}`, updatedAt: new Date(), ...(modelId ? { modelId } : {}) })
+    .set({ costUsd: sql`${t.assistantChats.costUsd} + ${loop.spent}`, updatedAt: new Date() })
     .where(eq(t.assistantChats.id, loop.chat.id))
   loop.deps.emit({ type: "done", costUsd: loop.spent, pendingProposalId })
 }
@@ -296,7 +277,7 @@ async function handleCalls(loop: Loop, calls: StepCall[]) {
  */
 async function runLoop(loop: Loop, modelId: string): Promise<string | null> {
   const { db, signal } = loop.deps
-  const settings = await readAssistantSettings(db)
+  const settings = await effectiveLimits(db, loop.chat)
   let resolved: ResolvedModel
   try {
     resolved = await resolveModel(db, modelId)
@@ -366,7 +347,7 @@ async function runAndFinish(loop: Loop, modelId: string) {
     if (!(error instanceof ModelFailed)) throw error
     await notice(loop, error.message, "error")
   }
-  await finish(loop, modelId, pending)
+  await finish(loop, pending)
 }
 
 /** 卡上的调用全部回一个同样的结果（不要 / 过期） */
@@ -383,7 +364,11 @@ export async function runChat(deps: RunDeps, input: AssistantChatInput) {
     if (!found) throw new AssistantError("找不到这段对话（可能已经删了），开一段新对话吧")
     chat = found
   } else {
-    chat = await createChat(db, { userId: actor.id, title: chatTitle(input.message), modelId: null })
+    // 新对话发第一句之前设好的本对话设置，建对话时一起存；选的模型用不了就不建，原话退回输入框
+    const settings = input.settings ?? { modelId: null, maxSteps: null, maxCostUsd: null }
+    const problem = settings.modelId ? await modelProblem(db, settings.modelId) : undefined
+    if (problem) throw new AssistantError(`本对话设的模型用不了：${problem}`)
+    chat = await createChat(db, { userId: actor.id, title: chatTitle(input.message), ...settings })
     await trimChats(db, actor.id)
   }
   await withChatLock(chat.id, async () => {
@@ -402,10 +387,10 @@ export async function runChat(deps: RunDeps, input: AssistantChatInput) {
     emit({ type: "entry", entry: { kind: "user", id: entryIdOf(userSeq), text: input.message, at: now() } })
     for (const proposal of expired) emit({ type: "update", entry: proposalEntry({ ...proposal, status: "expired" }) })
 
-    const model = await pickModel(db, input.modelId, chat.modelId)
+    const model = await pickModel(db, chat.modelId)
     if ("error" in model) {
       await notice(loop, model.error, "error")
-      await finish(loop, null, null)
+      await finish(loop, null)
       return
     }
     await runAndFinish(loop, model.modelId)
@@ -468,10 +453,10 @@ export async function runApply(deps: RunDeps, input: AssistantApplyInput) {
     await appendToolResults(db, chat.id, proposal.afterSeq, results)
 
     const loop: Loop = { deps, chat, context: input.context, spent: 0, seq: await nextSeq(db, chat.id) }
-    const model = await pickModel(db, undefined, chat.modelId)
+    const model = await pickModel(db, chat.modelId)
     if ("error" in model) {
       await notice(loop, model.error, "error")
-      await finish(loop, null, null)
+      await finish(loop, null)
       return
     }
     await runAndFinish(loop, model.modelId)

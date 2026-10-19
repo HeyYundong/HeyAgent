@@ -477,7 +477,7 @@ export const TOOLS: Record<string, ToolDef> = {
     },
   }),
   list_models: read({
-    description: "列模型（编号、名字、价格：每百万 token 美元）和各角色的默认模型（run 执行、plan 规划、verify 验收）。只读",
+    description: "列模型（编号、名字、价格：每百万 token 美元）和各角色的默认模型（run 执行、plan 规划、verify 验收、embed 图库、assistant 助手，后两个可能没配）。只读",
     input: queryInput,
     label: (input) => (input.query ? `查模型「${input.query}」` : "查模型"),
     run: async (ctx, input) => {

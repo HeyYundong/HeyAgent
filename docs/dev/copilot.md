@@ -209,3 +209,37 @@
 **检查**：`pnpm typecheck`、`pnpm lint`、`pnpm --filter @heyagent/web build` 通过；服务端测试 22 个文件 332 个通过，`assistant.test.ts` 17 个通过；`docs/ui-rules.md` 第 7 节的检查和业务词检查没有新命中。
 
 **没做 / 以后**：长对话不裁剪历史（越聊越长，花费跟着涨）；同一段对话一次只跑一个请求的锁在内存里（只有一个 API 进程时够用）；OpenAI 严格 JSON schema 模式下的可选字段没用真模型试过。
+
+---
+
+## 10. 第二轮：助手的默认模型、本对话的设置（2026-10-19）
+
+用户原话：「助手默认使用【模型】里面配置的模型。在历史旁边加一个设置按钮，点击进去可以调整本 chat 的模型，配置信息。」
+
+### 10.1 「模型」页加「助手」默认模型
+
+- `model_role` 加 `assistant`（照 `embed` 的写法：**可选**，不配时助手用 plan 默认模型）。`modelDefaultsSchema` / `modelDefaultsInputSchema` 加 `assistant?: string`；`models.setDefaults` 存它、清空时删掉那一行；模型页默认设置里加一行「助手」（`ModelCombobox`，可以清空，「?」提示：右下角助手用的模型，不选就用「规划」那个），只能选 `kind = chat` 的。
+- 选模型的顺序改成：本对话设的 → 「模型」页的助手默认 → plan 默认。**去掉**「对话上次用的」这一层：以后 `assistant_chats.model_id` 只存人在本对话设置里明确选的，没选是 null（跟着默认走，「模型」页改了默认，没单独设过的对话跟着变）。
+- 以前对话里存的 `model_id` 是自动记的，迁移里清成 null。
+
+### 10.2 本对话的设置
+
+- 标题栏去掉模型下拉。「以前的对话」旁边加一个设置按钮（lucide `Settings2Icon`，`ghost` / `icon-sm`，Tooltip「本对话的设置」），点开 `Popover`：
+  - **模型**：`ModelCombobox`，第一项是「跟默认走（xxx）」（xxx 是现在默认的模型名）；
+  - **一次最多几步**、**一次最多花多少美元**：数字输入，空着 = 跟「设置 → 助手」走（placeholder 显示现在的全局值）；
+  - 底部「保存」。用 `Field` + react-hook-form + zod（和设置页一样）。
+- 新对话还没发第一句时也能设：先存在前端，第一条消息时带上，服务器建对话时一起存。
+- 存储：`assistant_chats` 加 `max_steps integer null`、`max_cost_usd numeric(12,6) null`（迁移 0021）。上限有效值 = 本对话的 ?? 全局的；本对话的上限只能**在全局的范围内调**（不超过设置页的 schema 上限：100 步、10 美元）。
+- 接口：
+  - shared：`assistantChatSettingsSchema = { modelId: string | null, maxSteps: int 1..100 | null, maxCostUsd: number 0.01..10 | null }`；`assistantChatSummarySchema` 加 `maxSteps`、`maxCostUsd`（可为 null）；`assistantChatInputSchema` 的 `modelId` 换成可选的 `settings: assistantChatSettingsSchema`（只在新建对话时用）。
+  - tRPC：`assistant.updateSettings({ id, ...settings })`（只能改自己的对话）；`assistant.defaults` 返回 `{ modelId, modelName, maxSteps, maxCostUsd }`（助手现在实际会用的默认值，给设置面板的「跟默认走（xxx）」和 placeholder 用；任何登录的人都能读）。
+- 面板标题栏的模型名不再显示；对话里出了「没配模型」的提示时，提示文字改成「先到『模型』页设助手的默认模型（或规划的默认模型）」。
+
+### 10.3 实现记录（2026-10-19）
+
+- **shared**：`modelRoleSchema` 加 `assistant`，`modelDefaultsSchema` / `modelDefaultsInputSchema` 加可选的 `assistant`（不传不改、空字符串清掉，同 `embed`）；`modelRoles` 的类型排除 `assistant`（必配的还是三个）。`assistant.ts` 加 `assistantChatSettingsSchema`、`assistantUpdateSettingsInputSchema`、`assistantDefaultsSchema`，以及面板表单用的 `assistantChatSettingsFormSchema`（数字框是文字，空着 = null，校验后转成 `AssistantChatSettings`；web 不直接依赖 zod，所以放 shared）。
+- **迁移** `0021_assistant_settings.sql`：`ALTER TYPE model_role ADD VALUE 'assistant'`、两列、`UPDATE assistant_chats SET model_id = NULL`。新的枚举值在这次迁移里没被用到，所以和别的语句放在同一个事务里没问题（`pnpm db:migrate` 实测通过，同 0014 加 `embed`）。
+- **后端**：`assistant/settings.ts`（新）放选模型（`pickModel`：本对话设的 → 助手默认 → plan；哪一层的模型用不了就报哪一层，不偷偷换下一层）、有效上限（`effectiveLimits`）、`loadAssistantDefaults`。`run.ts` 用它们，`finish` 不再记用的模型；新对话第一句带的 `settings` 建对话时一起存，选的模型用不了就不建对话、发 `error`（原话退回输入框）；已有对话再带 `settings` 不管用。`store.ts` 加 `updateChatSettings`（改设置不动 `updated_at`，以前的对话里不往前挪）。tRPC `assistant.updateSettings`（不是自己的 NOT_FOUND，模型不是库里的聊天模型 BAD_REQUEST）、`assistant.defaults`。`models.ts`：`setDefaults` 存 / 清 `assistant`，要是聊天模型；删模型服务时助手默认在里面就不配了（回到 plan）。`loadModels` 的 defaults 带上 `assistant`。`list_models` 工具的说明里加上 embed / assistant 两个角色。
+- **前端**：`components/assistant/settings.tsx`（新）：`ChatSettingsButton` + Popover 表单（react-hook-form + `assistantChatSettingsFormSchema`）。「跟默认走（xxx）」是 `ModelCombobox` 列表里编号为空字符串的第一项，不用改 `ModelCombobox`。已有对话保存走 `updateSettings` 并把设置写进 `assistant.get` 的缓存；新对话存在 `use-assistant.ts` 的 `draftSettings`，第一条消息带上，服务器回 `chat` 事件后清掉。`index.tsx` 标题栏去掉模型下拉。模型页默认设置加「助手」一行（可清空，placeholder「不选（用规划：xxx）」，「?」提示），模型表格里多一个「默认助手」徽章，服务详情的「默认设置里」一句也带上。
+- **和 10.1 / 10.2 不同的地方**：没有。只是多了上面说的两处小事（模型表格的徽章、`list_models` 的说明）。
+- **检查**：服务端测试 22 个文件 338 个通过（`assistant.test.ts` 21 个：新加选模型顺序、`updateSettings` 只能改自己的和校验、本对话上限盖过全局、第一句带设置；`config.test.ts` 加助手默认模型的存 / 不改 / 清空 / 删服务）；`pnpm typecheck`、`pnpm lint`、`pnpm --filter @heyagent/web build` 通过；`docs/ui-rules.md` 第 7 节的检查和业务词检查没有新命中。界面用 worker 镜像的 Chrome 看过：标题栏、设置弹出层（暗色、亮色、窄屏、校验报错、模型下拉）、模型页的「助手」一行，在模型页存了助手默认模型、在一段已有对话里存了设置，库里读回来对得上。

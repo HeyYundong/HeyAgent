@@ -5,9 +5,9 @@
 // - 卡挂在它那条 assistant 消息后面；role = notice 的行是给人看的提示（到上限、没配模型），不发给模型。
 import { randomBytes } from "node:crypto"
 
-import { ASSISTANT_MAX_CHATS, type AssistantChat, type AssistantChatSummary, type AssistantEntry, type AssistantProposal } from "@heyagent/shared"
+import { ASSISTANT_MAX_CHATS, type AssistantChat, type AssistantChatSettings, type AssistantChatSummary, type AssistantEntry, type AssistantProposal } from "@heyagent/shared"
 import type { ModelMessage, ToolResultPart } from "ai"
-import { and, asc, desc, eq, inArray, max, notInArray } from "drizzle-orm"
+import { and, asc, desc, eq, inArray, max, notInArray, sql } from "drizzle-orm"
 
 import type { DbOrTx } from "../data/config/common.js"
 import type { Db } from "../db/client.js"
@@ -43,12 +43,23 @@ export async function loadChat(db: DbOrTx, id: string, userId: string): Promise<
   return row
 }
 
-export async function createChat(db: Db, input: { userId: string; title: string; modelId: string | null }): Promise<ChatRow> {
+export async function createChat(db: Db, input: { userId: string; title: string } & AssistantChatSettings): Promise<ChatRow> {
   const [row] = await db
     .insert(t.assistantChats)
-    .values({ id: newId("ac"), userId: input.userId, title: input.title || "新对话", modelId: input.modelId })
+    .values({ id: newId("ac"), userId: input.userId, title: input.title || "新对话", modelId: input.modelId, maxSteps: input.maxSteps, maxCostUsd: input.maxCostUsd })
     .returning()
   return row!
+}
+
+/** 改本人一段对话的设置（整份替换）；不是本人的、不存在的返回 undefined。不动 updated_at（改设置不算聊过） */
+export async function updateChatSettings(db: Db, userId: string, id: string, settings: AssistantChatSettings): Promise<AssistantChatSummary | undefined> {
+  const [row] = await db
+    .update(t.assistantChats)
+    // updated_at 有 $onUpdate，显式写回原值才不动
+    .set({ modelId: settings.modelId, maxSteps: settings.maxSteps, maxCostUsd: settings.maxCostUsd, updatedAt: sql`${t.assistantChats.updatedAt}` })
+    .where(and(eq(t.assistantChats.id, id), eq(t.assistantChats.userId, userId)))
+    .returning()
+  return row ? summaryOf(row) : undefined
 }
 
 /** 每人只留最近 ASSISTANT_MAX_CHATS 段，多的删掉最旧的（消息和卡跟着级联删掉） */
@@ -71,7 +82,9 @@ export async function trimChats(db: Db, userId: string) {
   )
 }
 
-const summaryOf = (row: ChatRow): AssistantChatSummary => ({ id: row.id, title: row.title, modelId: row.modelId, costUsd: row.costUsd, updatedAt: row.updatedAt.toISOString() })
+function summaryOf(row: ChatRow): AssistantChatSummary {
+  return { id: row.id, title: row.title, modelId: row.modelId, maxSteps: row.maxSteps, maxCostUsd: row.maxCostUsd, costUsd: row.costUsd, updatedAt: row.updatedAt.toISOString() }
+}
 
 export async function listChats(db: Db, userId: string): Promise<AssistantChatSummary[]> {
   const rows = await db

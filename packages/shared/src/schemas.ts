@@ -85,12 +85,12 @@ export const modelProviderSchema = z.object({
 })
 export type ModelProvider = z.infer<typeof modelProviderSchema>
 
-/** embed = 图库的 embedding 模型（以图搜图、比对、按描述找图） */
-export const modelRoleSchema = z.enum(["run", "plan", "verify", "embed"])
+/** embed = 图库的 embedding 模型（以图搜图、比对、按描述找图）；assistant = 右下角助手（可选，不配时用 plan） */
+export const modelRoleSchema = z.enum(["run", "plan", "verify", "embed", "assistant"])
 export type ModelRole = z.infer<typeof modelRoleSchema>
 
-/** 默认用哪个模型：执行任务 / 规划拆解 / 三方验收 / 图库的 embedding（没配时没有） */
-export const modelDefaultsSchema = z.object({ run: z.string(), plan: z.string(), verify: z.string(), embed: z.string().optional() })
+/** 默认用哪个模型：执行任务 / 规划拆解 / 三方验收 / 图库的 embedding（没配时没有）/ 右下角助手（没配时没有，助手用 plan） */
+export const modelDefaultsSchema = z.object({ run: z.string(), plan: z.string(), verify: z.string(), embed: z.string().optional(), assistant: z.string().optional() })
 export type ModelDefaults = z.infer<typeof modelDefaultsSchema>
 
 // ---------- 浏览器（Chrome） ----------

@@ -6,7 +6,6 @@ import * as React from "react"
 import { ArrowUpIcon, BotIcon, CircleAlertIcon, MinusIcon, SquareIcon, SquarePenIcon } from "lucide-react"
 import { ASSISTANT_MAX_MESSAGE } from "@heyagent/shared"
 
-import { ModelCombobox } from "@/components/shell/model-combobox"
 import { Alert, AlertAction, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { Card, CardAction, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
@@ -17,10 +16,10 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useIsMobile } from "@/hooks/use-mobile"
 
-import { useModels } from "@/lib/data"
 import { errorMessage } from "@/lib/mutations"
 
 import { HistoryButton } from "./history"
+import { ChatSettingsButton } from "./settings"
 import { useAssistant, useStoredOpen, type AssistantState } from "./use-assistant"
 
 // 记录（Markdown、代码块、滚动容器）按需加载：不打开面板就不下载
@@ -95,15 +94,13 @@ function LauncherButton({ ref, onClick }: { ref: React.Ref<HTMLButtonElement>; o
   )
 }
 
-/** 标题栏右边：模型、以前的对话、新对话、收起 */
+/** 标题栏右边：以前的对话、本对话的设置（模型、上限）、新对话、收起 */
 function HeaderActions({ assistant, onClose }: { assistant: AssistantState; onClose: () => void }) {
-  const { models, defaults } = useModels()
   const busy = !!assistant.busy
-  const modelId = assistant.modelOverride ?? assistant.chat?.modelId ?? defaults.plan
   return (
     <>
-      <ModelCombobox className="w-36" models={models} value={modelId} onValueChange={(id) => assistant.setModelOverride(id || null)} placeholder="选模型" disabled={busy} />
       <HistoryButton currentId={assistant.chatId} disabled={busy} onOpenChat={assistant.openChat} onDeleted={assistant.forget} />
+      <ChatSettingsButton key={assistant.chatId ?? "new"} chatId={assistant.chatId} settings={assistant.settings} disabled={busy} onDraft={assistant.setDraftSettings} />
       <Tooltip>
         <TooltipTrigger render={<Button variant="ghost" size="icon-sm" aria-label="新对话" disabled={busy || !assistant.chatId} onClick={assistant.newChat} />}>
           <SquarePenIcon />

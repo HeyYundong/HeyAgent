@@ -24,6 +24,56 @@ export const settingsAssistantInputSchema = z.object({
 })
 export type SettingsAssistantInput = z.infer<typeof settingsAssistantInputSchema>
 
+/**
+ * 一段对话自己的设置（面板「本对话的设置」）：都可以是 null = 跟默认走。
+ * 模型 null = 「模型」页的助手默认模型，没配用 plan 默认模型；上限 null = 设置页「助手」一组的全局值。
+ * 本对话的上限只能在设置页的范围内调（同 settingsAssistantInputSchema：1～100 步、0.01～10 美元）
+ */
+export const assistantChatSettingsSchema = z.object({
+  modelId: z.string().trim().min(1).max(200).nullable(),
+  maxSteps: z.number().int("填整数").min(1, "至少 1 步").max(100, "最多 100 步").nullable(),
+  maxCostUsd: z.number().min(0.01, "至少 0.01 美元").max(10, "最多 10 美元").nullable(),
+})
+export type AssistantChatSettings = z.infer<typeof assistantChatSettingsSchema>
+
+/** 数字框的文字：空着 = null（跟默认走），不然按 schema 校验 */
+const blankOrNumber = (schema: z.ZodNumber) =>
+  z
+    .string()
+    .trim()
+    .transform((text, ctx) => {
+      if (!text) return null
+      const value = Number(text)
+      const parsed = schema.safeParse(value)
+      if (parsed.success) return parsed.data
+      ctx.addIssue({ code: "custom", message: Number.isNaN(value) ? "填一个数字" : (parsed.error.issues[0]?.message ?? "不对") })
+      return z.NEVER
+    })
+
+/** 面板「本对话的设置」的表单：模型空字符串、数字框空着 = 跟默认走；提交时转成 AssistantChatSettings */
+export const assistantChatSettingsFormSchema = z
+  .object({
+    modelId: z.string().trim().max(200),
+    maxSteps: blankOrNumber(assistantChatSettingsSchema.shape.maxSteps.unwrap()),
+    maxCostUsd: blankOrNumber(assistantChatSettingsSchema.shape.maxCostUsd.unwrap()),
+  })
+  .transform((form): AssistantChatSettings => ({ modelId: form.modelId || null, maxSteps: form.maxSteps, maxCostUsd: form.maxCostUsd }))
+export type AssistantChatSettingsForm = z.input<typeof assistantChatSettingsFormSchema>
+
+/** assistant.updateSettings：改自己的一段对话的设置（整份替换） */
+export const assistantUpdateSettingsInputSchema = assistantChatSettingsSchema.extend({ id: z.string().max(64) })
+export type AssistantUpdateSettingsInput = z.infer<typeof assistantUpdateSettingsInputSchema>
+
+/** assistant.defaults：本对话没单独设时实际会用的值（设置面板里「跟默认走（xxx）」和数字框的 placeholder） */
+export const assistantDefaultsSchema = z.object({
+  /** 「模型」页的助手默认模型，没配时是 plan 默认模型；都没配是 null */
+  modelId: z.string().nullable(),
+  modelName: z.string().nullable(),
+  maxSteps: z.number(),
+  maxCostUsd: z.number(),
+})
+export type AssistantDefaults = z.infer<typeof assistantDefaultsSchema>
+
 // ---------- 请求 ----------
 
 /** 发消息时带上人现在在哪一页、选中了哪一项（前端 useRoute() 的 page 和 params），助手才知道「这个任务」是哪个 */
@@ -38,8 +88,8 @@ export const assistantChatInputSchema = z.object({
   chatId: z.string().max(64).optional(),
   message: z.string().trim().min(1, "说点什么").max(ASSISTANT_MAX_MESSAGE, `最多 ${ASSISTANT_MAX_MESSAGE} 字`),
   context: assistantPageContextSchema.optional(),
-  /** 临时换模型；不填用对话上次用的，再没有就用 plan 默认模型 */
-  modelId: z.string().max(200).optional(),
+  /** 新对话在发第一句之前就设好的本对话设置；只在新建对话（不带 chatId）时用，已有的对话改设置走 assistant.updateSettings */
+  settings: assistantChatSettingsSchema.optional(),
 })
 export type AssistantChatInput = z.infer<typeof assistantChatInputSchema>
 
@@ -127,7 +177,10 @@ export type AssistantEntry = z.infer<typeof assistantEntrySchema>
 export const assistantChatSummarySchema = z.object({
   id: z.string(),
   title: z.string(),
+  /** 本对话设的模型、上限；null = 跟默认走 */
   modelId: z.string().nullable(),
+  maxSteps: z.number().nullable(),
+  maxCostUsd: z.number().nullable(),
   costUsd: z.number(),
   updatedAt: isoTime,
 })

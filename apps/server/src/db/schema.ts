@@ -1322,8 +1322,11 @@ export const assistantChats = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     /** 第一条消息的前 30 个字 */
     title: text("title").notNull(),
-    /** 上次用的模型；不在了就回到 plan 默认模型 */
+    /** 本对话设置里人明确选的模型；null = 跟默认走（「模型」页的助手默认，没配用 plan） */
     modelId: text("model_id"),
+    /** 本对话的上限；null = 跟设置页「助手」一组的全局值 */
+    maxSteps: integer("max_steps"),
+    maxCostUsd: numeric("max_cost_usd", { precision: 12, scale: 6, mode: "number" }),
     costUsd: numeric("cost_usd", { precision: 12, scale: 6, mode: "number" }).notNull().default(0),
     createdAt: createdAt(),
     updatedAt: updatedAt(),

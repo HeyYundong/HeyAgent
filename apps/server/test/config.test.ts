@@ -457,11 +457,22 @@ describe("模型", () => {
     expect((await query(ctx.app, "models.overview", lin)).data.defaults).toEqual(defaults)
     expect(await lastAudit("model_defaults.update")).toMatchObject({ actorId: "u-lin" })
 
-    // 默认设置在用它的模型：删除时换成别家的
+    // 助手的默认模型（可选）：要是库里的聊天模型；不传不改，空字符串清掉
+    const assistant = `${id}/zeta/beta-2`
+    expect((await mutate(ctx.app, "models.setDefaults", lin, { ...defaults, assistant: "nope/none" })).error?.message).toContain("模型不存在")
+    expect((await mutate(ctx.app, "models.setDefaults", lin, { ...defaults, assistant })).data.assistant).toBe(assistant)
+    expect((await mutate(ctx.app, "models.setDefaults", lin, defaults)).data.assistant).toBe(assistant)
+    expect((await query(ctx.app, "models.overview", lin)).data.defaults.assistant).toBe(assistant)
+    expect((await mutate(ctx.app, "models.setDefaults", lin, { ...defaults, assistant: "" })).data.assistant).toBeUndefined()
+    expect((await query(ctx.app, "models.overview", lin)).data.defaults.assistant).toBeUndefined()
+    expect((await mutate(ctx.app, "models.setDefaults", lin, { ...defaults, assistant })).error).toBeUndefined()
+
+    // 默认设置在用它的模型：删除时换成别家的；助手的默认模型不配了（助手回到 plan）
     const removed = await mutate(ctx.app, "models.deleteProvider", lin, { id })
     expect(removed.error).toBeUndefined()
     const after = (await query(ctx.app, "models.overview", lin)).data.defaults
     expect(after.run.startsWith(`${id}/`)).toBe(false)
+    expect(after.assistant).toBeUndefined()
   })
 
   it("直连 Claude：列模型要带 key（不对就不存），价格到 OpenRouter 公开目录查，查不到的给提醒；刷新也带 key", async () => {

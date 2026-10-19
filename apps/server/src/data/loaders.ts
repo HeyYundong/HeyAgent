@@ -13,6 +13,7 @@ import {
   type Me,
   type MemoryRef,
   type ModelDefaults,
+  type ModelRole,
   type ModelProvider,
   type Platform,
   type RuleRef,
@@ -503,7 +504,7 @@ export async function loadModels(db: Db): Promise<{ providers: ModelProvider[]; 
     db.select().from(t.models).orderBy(asc(t.models.position)),
     db.select().from(t.modelDefaults),
   ])
-  const defaultOf = (role: "run" | "plan" | "verify" | "embed") => defaults.find((row) => row.role === role)?.modelId ?? ""
+  const defaultOf = (role: ModelRole) => defaults.find((row) => row.role === role)?.modelId ?? ""
   const modelsOf = (providerId: string, kind: "chat" | "embedding") =>
     models
       .filter((model) => model.providerId === providerId && model.kind === kind)
@@ -524,6 +525,6 @@ export async function loadModels(db: Db): Promise<{ providers: ModelProvider[]; 
         embeddingModels: embeddingModels.length ? embeddingModels : undefined,
       })
     }),
-    defaults: compact({ run: defaultOf("run"), plan: defaultOf("plan"), verify: defaultOf("verify"), embed: opt(defaultOf("embed") || null) }),
+    defaults: compact({ run: defaultOf("run"), plan: defaultOf("plan"), verify: defaultOf("verify"), embed: opt(defaultOf("embed") || null), assistant: opt(defaultOf("assistant") || null) }),
   }
 }

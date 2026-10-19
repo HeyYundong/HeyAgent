@@ -3,7 +3,7 @@
 // 结束后写回缓存。这样请求中途别处让查询重新拉（useAction 成功后会让全部查询失效），也不会冲掉正在接的文字。
 import * as React from "react"
 import { skipToken, useQuery } from "@tanstack/react-query"
-import type { AssistantChat, AssistantEntry, AssistantPageContext, AssistantStreamEvent } from "@heyagent/shared"
+import type { AssistantChat, AssistantChatSettings, AssistantEntry, AssistantPageContext, AssistantStreamEvent } from "@heyagent/shared"
 
 import { SESSION_QUERY_KEY } from "@/lib/auth"
 import { useRoute } from "@/lib/router"
@@ -70,7 +70,10 @@ function expirePending(chat: AssistantChat): AssistantChat {
   }
 }
 
-const emptyChat = (modelId: string | null): AssistantChat => ({ id: "", title: "新对话", modelId, costUsd: 0, updatedAt: now(), entries: [], pendingProposalId: null })
+/** 本对话的设置都跟默认走 */
+export const FOLLOW_DEFAULTS: AssistantChatSettings = { modelId: null, maxSteps: null, maxCostUsd: null }
+
+const emptyChat = (settings: AssistantChatSettings): AssistantChat => ({ id: "", title: "新对话", ...settings, costUsd: 0, updatedAt: now(), entries: [], pendingProposalId: null })
 
 /** 人现在在哪一页、选中了哪一项（URL 里的参数），超长的不带 */
 function pageContext(route: ReturnType<typeof useRoute>): AssistantPageContext {
@@ -87,7 +90,8 @@ export type SendResult = { ok: true } | { ok: false; restore: string }
 
 export function useAssistant() {
   const [chatId, setChatIdState] = React.useState<string | null>(() => readStored(CHAT_KEY))
-  const [modelOverride, setModelOverride] = React.useState<string | null>(null)
+  /** 新对话还没发第一句时设的本对话设置：先存在这里，第一条消息时带上 */
+  const [draftSettings, setDraftSettings] = React.useState<AssistantChatSettings | null>(null)
   const [busy, setBusy] = React.useState<null | "send" | "apply">(null)
   const [error, setError] = React.useState<string | null>(null)
   const [live, setLive] = React.useState<AssistantChat | null>(null)
@@ -142,6 +146,8 @@ export function useAssistant() {
           queryClient.setQueryData(trpc.assistant.get.queryKey({ id: event.chatId }), liveRef.current)
         }
         setChatId(event.chatId)
+        // 设置已经跟着新对话存到服务器了
+        setDraftSettings(null)
         break
       case "entry":
         mutateLive((current) => {
@@ -218,11 +224,11 @@ export function useAssistant() {
   async function send(text: string): Promise<SendResult> {
     const message = text.trim()
     if (!message || abortRef.current) return { ok: false, restore: text }
-    const base = chat && chatId ? expirePending(chat) : emptyChat(modelOverride)
+    const base = chat && chatId ? expirePending(chat) : emptyChat(draftSettings ?? FOLLOW_DEFAULTS)
     const signal = begin("send", { ...base, entries: [...base.entries, { kind: "user", id: LOCAL_USER_ID, text: message, at: now() }] })
     const outcome = await postAssistant(
       "/api/assistant/chat",
-      { chatId: chatId ?? undefined, message, context: pageContext(routeRef.current), modelId: modelOverride ?? undefined },
+      { chatId: chatId ?? undefined, message, context: pageContext(routeRef.current), ...(!chatId && draftSettings ? { settings: draftSettings } : {}) },
       signal,
       onEvent
     )
@@ -244,7 +250,7 @@ export function useAssistant() {
   function newChat() {
     if (abortRef.current) return
     setChatId(null)
-    setModelOverride(null)
+    setDraftSettings(null)
     setError(null)
     setViewKey((key) => key + 1)
   }
@@ -252,7 +258,7 @@ export function useAssistant() {
   function openChat(id: string) {
     if (abortRef.current) return
     setChatId(id)
-    setModelOverride(null)
+    setDraftSettings(null)
     setError(null)
     setViewKey((key) => key + 1)
   }
@@ -275,9 +281,10 @@ export function useAssistant() {
     busy,
     error,
     dismissError: () => setError(null),
-    /** 临时换的模型；null = 用对话上次用的 / plan 默认 */
-    modelOverride,
-    setModelOverride,
+    /** 本对话的设置（null 的项跟默认走）：已有的对话来自服务器，新对话来自还没发出去的 draftSettings */
+    settings: chatId ? (chat ? { modelId: chat.modelId, maxSteps: chat.maxSteps, maxCostUsd: chat.maxCostUsd } : null) : (draftSettings ?? FOLLOW_DEFAULTS),
+    /** 新对话发第一句之前改设置：先记在前端 */
+    setDraftSettings,
     send,
     decide,
     stop,

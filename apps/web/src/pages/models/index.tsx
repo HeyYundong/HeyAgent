@@ -2,7 +2,7 @@ import * as React from "react"
 import { CircleCheckIcon, CircleDashedIcon, CpuIcon, EllipsisIcon, PencilIcon, PlugZapIcon, PlusIcon, RefreshCwIcon, SaveIcon, SearchIcon, Trash2Icon, TriangleAlertIcon } from "lucide-react"
 
 import { ModelCombobox } from "@/components/shell/model-combobox"
-import { DetailPanel, DetailSection, EmptyState, MasterDetail, PageFrame, PickGroup, PickItem, SimpleHeader } from "@/components/shell/simple-page"
+import { DetailPanel, DetailSection, EmptyState, HelpTip, MasterDetail, PageFrame, PickGroup, PickItem, SimpleHeader } from "@/components/shell/simple-page"
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
@@ -156,11 +156,11 @@ function DefaultsSection({ providers, defaults, readOnly, nameOf, saving, onSave
   // 图库只能用能处理图片的 embedding 模型
   const embeddingModels = providers.flatMap((p) => p.embeddingModels ?? []).filter((m) => m.vision)
   const clash = sameFamily(draft.run, draft.verify)
-  const dirty = ROLES.some((role) => draft[role.id] !== defaults[role.id]) || (draft.embed ?? "") !== (defaults.embed ?? "")
+  const dirty = ROLES.some((role) => draft[role.id] !== defaults[role.id]) || (draft.embed ?? "") !== (defaults.embed ?? "") || (draft.assistant ?? "") !== (defaults.assistant ?? "")
   return (
     <DetailSection title="默认用哪个模型" description="三方验收不能和执行用同一家的模型：同一家容易犯同样的错，验收看不出来，就不算第三方了。"
       action={!readOnly && (
-        <Button size="sm" disabled={!dirty || clash || saving} onClick={() => onSave({ ...draft, embed: draft.embed ?? "" })}>
+        <Button size="sm" disabled={!dirty || clash || saving} onClick={() => onSave({ ...draft, embed: draft.embed ?? "", assistant: draft.assistant ?? "" })}>
           {saving ? <Spinner data-icon="inline-start" /> : <SaveIcon data-icon="inline-start" />}
           保存
         </Button>
@@ -182,6 +182,14 @@ function DefaultsSection({ providers, defaults, readOnly, nameOf, saving, onSave
             </Field>
           )
         })}
+        <Field>
+          <div className="flex items-center gap-1">
+            <FieldLabel htmlFor="default-assistant">助手</FieldLabel>
+            <HelpTip>右下角助手用的模型，不选就用「规划」那个。每段对话还可以在助手的「本对话的设置」里单独换。</HelpTip>
+          </div>
+          <ModelCombobox id="default-assistant" className="w-full sm:w-96" models={models} value={draft.assistant ?? ""} disabled={readOnly} clearable placeholder={`不选（用规划：${nameOf(draft.plan)}）`}
+            onValueChange={(next) => setDraft({ ...draft, assistant: next || undefined })} />
+        </Field>
         <Field>
           <FieldLabel htmlFor="default-embed">图库的 embedding 模型</FieldLabel>
           <ModelCombobox id="default-embed" className="w-full sm:w-96" models={embeddingModels} value={draft.embed ?? ""} disabled={readOnly} clearable placeholder="不用（图库不能以图搜图）"
@@ -223,6 +231,7 @@ function ProviderDetail({ provider, tasks, defaults, isAdmin, actions }: {
   const shown = matched.slice(0, TABLE_LIMIT)
   const embeddings = [...(provider.embeddingModels ?? [])].sort((a, b) => Number(b.vision ?? false) - Number(a.vision ?? false))
   const embedDefault = embeddings.find((m) => m.id === defaults.embed)
+  const assistantDefault = provider.models.find((m) => m.id === defaults.assistant)
 
   return (
     <DetailPanel
@@ -272,6 +281,7 @@ function ProviderDetail({ provider, tasks, defaults, isAdmin, actions }: {
                         <div className="flex flex-wrap items-center gap-1">
                           {m.name}
                           {ROLES.filter((role) => defaults[role.id] === m.id).map((role) => <Badge key={role.id} variant="secondary">默认{role.label}</Badge>)}
+                          {defaults.assistant === m.id && <Badge variant="secondary">默认助手</Badge>}
                         </div>
                       </TableCell>
                       <TableCell className="w-full max-w-0"><div className="truncate" title={m.note}>{m.note}</div></TableCell>
@@ -323,11 +333,12 @@ function ProviderDetail({ provider, tasks, defaults, isAdmin, actions }: {
               <span className="text-xs text-muted-foreground"> · {provider.models.find((m) => m.id === task.modelId)?.name}</span>
             </p>
           ))}
-          {(defaultRoles.length > 0 || embedDefault) && (
+          {(defaultRoles.length > 0 || embedDefault || assistantDefault) && (
             <p className="text-xs text-muted-foreground">
               默认设置里：
               {[
                 ...defaultRoles.map((role) => `${role.label}用 ${provider.models.find((m) => m.id === defaults[role.id])?.name}`),
+                ...(assistantDefault ? [`助手用 ${assistantDefault.name}`] : []),
                 ...(embedDefault ? [`图库用 ${embedDefault.name}`] : []),
               ].join("，")}
               。

@@ -1,6 +1,7 @@
 // 右下角助手（docs/dev/copilot.md 9.3）：连真实的测试库，模型用 AI SDK 的假模型（流式按剧本回复），不花钱。
 // 覆盖：查的工具直接执行；写的工具出卡、不改库；应用后库变了、审计带 via、模型拿到结果接着说；不要；新消息让旧卡过期；
 // 员工新建任务不进卡；update_task 只改给的字段；规则出卡时翻译、应用后已确认；超步数 / 超钱停下；get 拼出的记录和流里一致；只看得到自己的对话。
+// 第 10 节：选模型的顺序（本对话设的 → 助手默认 → plan 默认）；本对话的设置（只能改自己的、上限盖过全局、新对话第一句带上）；defaults 接口。
 import type { AssistantEntry, AssistantStreamEvent } from "@heyagent/shared"
 import { SETTING_KEYS } from "@heyagent/shared"
 import { convertArrayToReadableStream, MockLanguageModelV4 } from "ai/test"
@@ -16,6 +17,10 @@ const engine = vi.hoisted(() => ({ syncTaskSchedule: vi.fn(async () => {}), sync
 vi.mock("../src/engine/api.js", () => ({ ...engine, startSession: vi.fn() }))
 
 const MODEL = "openrouter/test-assistant"
+const MODEL_B = "openrouter/test-assistant-b"
+const MODEL_C = "openrouter/test-assistant-c"
+/** resolveModel 每次拿的模型编号（假模型不管编号，按这个看用的是哪个） */
+const usedModels: string[] = []
 
 type DoStream = Extract<NonNullable<ConstructorParameters<typeof MockLanguageModelV4>[0]>["doStream"], (...args: never[]) => unknown>
 type LanguageModelV4CallOptions = Parameters<DoStream>[0]
@@ -151,8 +156,19 @@ async function setSetting(key: string, value: unknown) {
 
 beforeAll(async () => {
   ctx = await setupApp()
-  configureEngine({ keyring: ctx.keyring, modelRetryBaseMs: 1, modelFactory: () => script.model })
-  await ctx.db.insert(t.models).values({ id: MODEL, providerId: "openrouter", name: "助手测试模型", contextK: 128 })
+  configureEngine({
+    keyring: ctx.keyring,
+    modelRetryBaseMs: 1,
+    modelFactory: ({ modelId }) => {
+      usedModels.push(modelId)
+      return script.model
+    },
+  })
+  await ctx.db.insert(t.models).values([
+    { id: MODEL, providerId: "openrouter", name: "助手测试模型", contextK: 128 },
+    { id: MODEL_B, providerId: "openrouter", name: "助手测试模型 B", contextK: 128 },
+    { id: MODEL_C, providerId: "openrouter", name: "助手测试模型 C", contextK: 128 },
+  ])
   await ctx.db.update(t.modelDefaults).set({ modelId: MODEL }).where(eq(t.modelDefaults.role, "plan"))
   lin = await login(ctx.app, "linzhou@heyagent.local")
   wang = await login(ctx.app, "wangyue@heyagent.local")
@@ -248,7 +264,9 @@ describe("右下角助手", () => {
     expect(got.error).toBeUndefined()
     expect(withoutAt(got.data.entries)).toEqual(withoutAt(replay([...first.events, ...applied.events])))
     expect(got.data.pendingProposalId).toBeNull()
-    expect(got.data.modelId).toBe(MODEL)
+    // 用的模型不记进对话：没在本对话设置里选过就是 null（跟默认走）
+    expect(got.data.modelId).toBeNull()
+    expect(usedModels.at(-1)).toBe(MODEL)
     expect(got.data.costUsd).toBeCloseTo(0.003)
     expect(got.data.title).toBe("把每日巡检改成每天早上 9 点")
 
@@ -432,18 +450,112 @@ describe("右下角助手", () => {
     expect(doneOf(failed.events)).toBeTruthy()
   })
 
-  it("没配模型：发提示「先到模型页设 plan 默认模型」", async () => {
+  it("没配模型：发提示「先到『模型』页设助手的默认模型」", async () => {
     const [plan] = await ctx.db.select().from(t.modelDefaults).where(eq(t.modelDefaults.role, "plan"))
     await ctx.db.delete(t.modelDefaults).where(eq(t.modelDefaults.role, "plan"))
     try {
       const res = await send(wang, { message: "你好" })
-      expect(replay(res.events).find((entry) => entry.kind === "notice")).toMatchObject({ text: "还没有配模型，先到模型页设 plan 默认模型", tone: "error" })
-      // 临时换的模型不存在
-      const bad = await send(wang, { message: "你好", modelId: "nope/none" })
-      expect(replay(bad.events).find((entry) => entry.kind === "notice")).toMatchObject({ tone: "error" })
+      expect(replay(res.events).find((entry) => entry.kind === "notice")).toMatchObject({ text: "还没有配模型，先到「模型」页设助手的默认模型（或规划的默认模型）", tone: "error" })
+      expect((await query(ctx.app, "assistant.defaults", wang)).data).toMatchObject({ modelId: null, modelName: null })
+      // 新对话第一句带上的模型不存在：不建对话，发 error
+      const before = (await ctx.db.select().from(t.assistantChats).where(eq(t.assistantChats.userId, "u-wang"))).length
+      const bad = await send(wang, { message: "你好", settings: { modelId: "nope/none", maxSteps: null, maxCostUsd: null } })
+      expect(of(bad.events, "error")[0]?.message).toContain("本对话设的模型用不了")
+      expect((await ctx.db.select().from(t.assistantChats).where(eq(t.assistantChats.userId, "u-wang"))).length).toBe(before)
     } finally {
       await ctx.db.insert(t.modelDefaults).values(plan!)
     }
+  })
+
+  it("选模型：本对话设的 → 「模型」页的助手默认 → plan 默认；defaults 接口跟着变", async () => {
+    // 员工也能读默认值
+    expect((await query(ctx.app, "assistant.defaults", wang)).data).toEqual({ modelId: MODEL, modelName: "助手测试模型", maxSteps: 20, maxCostUsd: 0.2 })
+    useScript([{ parts: [say("一")] }, { parts: [say("二")] }, { parts: [say("三")] }, { parts: [say("四")] }])
+    const first = await send(lin, { message: "用哪个模型" })
+    const chatId = chatIdOf(first.events)
+    expect(usedModels.at(-1)).toBe(MODEL)
+
+    await ctx.db.insert(t.modelDefaults).values({ role: "assistant", modelId: MODEL_B })
+    try {
+      expect((await query(ctx.app, "assistant.defaults", wang)).data).toMatchObject({ modelId: MODEL_B, modelName: "助手测试模型 B" })
+      // 没单独设过的对话跟着默认走
+      await send(lin, { chatId, message: "再说一句" })
+      expect(usedModels.at(-1)).toBe(MODEL_B)
+
+      const set = await mutate(ctx.app, "assistant.updateSettings", lin, { id: chatId, modelId: MODEL_C, maxSteps: null, maxCostUsd: null })
+      expect(set.error).toBeUndefined()
+      expect(set.data).toMatchObject({ id: chatId, modelId: MODEL_C, maxSteps: null, maxCostUsd: null })
+      await send(lin, { chatId, message: "换了模型" })
+      expect(usedModels.at(-1)).toBe(MODEL_C)
+      // 用过以后也不改本对话的设置
+      expect((await query(ctx.app, "assistant.get", lin, { id: chatId })).data.modelId).toBe(MODEL_C)
+
+      // 本对话设的模型下架了：不偷偷换，提示去设置里换
+      await ctx.db.update(t.models).set({ kind: "embedding" }).where(eq(t.models.id, MODEL_C))
+      const gone = await send(lin, { chatId, message: "模型没了" })
+      expect(replay(gone.events).find((entry) => entry.kind === "notice")).toMatchObject({ tone: "error", text: expect.stringContaining("本对话设的模型用不了") })
+      await ctx.db.update(t.models).set({ kind: "chat" }).where(eq(t.models.id, MODEL_C))
+
+      // 改回跟默认走
+      await mutate(ctx.app, "assistant.updateSettings", lin, { id: chatId, modelId: null, maxSteps: null, maxCostUsd: null })
+      await send(lin, { chatId, message: "跟默认走" })
+      expect(usedModels.at(-1)).toBe(MODEL_B)
+    } finally {
+      await ctx.db.delete(t.modelDefaults).where(eq(t.modelDefaults.role, "assistant"))
+    }
+  })
+
+  it("本对话的设置：只能改自己的；模型要是库里的聊天模型；上限在全局的范围内", async () => {
+    useScript([{ parts: [say("好")] }])
+    const chatId = chatIdOf((await send(lin, { message: "设置测试" })).events)
+    const [before] = await ctx.db.select().from(t.assistantChats).where(eq(t.assistantChats.id, chatId))
+    const settings = { id: chatId, modelId: null, maxSteps: 5, maxCostUsd: 0.5 }
+    expect((await mutate(ctx.app, "assistant.updateSettings", wang, settings)).error?.data?.code).toBe("NOT_FOUND")
+    expect((await mutate(ctx.app, "assistant.updateSettings", lin, { ...settings, modelId: "nope/none" })).error?.data?.code).toBe("BAD_REQUEST")
+    expect((await mutate(ctx.app, "assistant.updateSettings", lin, { ...settings, maxSteps: 101 })).error?.data?.code).toBe("BAD_REQUEST")
+    expect((await mutate(ctx.app, "assistant.updateSettings", lin, { ...settings, maxCostUsd: 11 })).error?.data?.code).toBe("BAD_REQUEST")
+    const [untouched] = await ctx.db.select().from(t.assistantChats).where(eq(t.assistantChats.id, chatId))
+    expect(untouched).toMatchObject({ modelId: null, maxSteps: null, maxCostUsd: null })
+
+    const ok = await mutate(ctx.app, "assistant.updateSettings", lin, settings)
+    expect(ok.data).toMatchObject({ maxSteps: 5, maxCostUsd: 0.5 })
+    const [after] = await ctx.db.select().from(t.assistantChats).where(eq(t.assistantChats.id, chatId))
+    // 改设置不算聊过：以前的对话里不往前挪
+    expect(after!.updatedAt.toISOString()).toBe(before!.updatedAt.toISOString())
+    expect((await query(ctx.app, "assistant.chats", lin)).data.find((chat: { id: string }) => chat.id === chatId)).toMatchObject({ maxSteps: 5, maxCostUsd: 0.5 })
+  })
+
+  it("本对话的上限盖过全局的", async () => {
+    useScript([{ parts: [say("好")] }])
+    const chatId = chatIdOf((await send(lin, { message: "上限测试" })).events)
+    await mutate(ctx.app, "assistant.updateSettings", lin, { id: chatId, modelId: null, maxSteps: 2, maxCostUsd: null })
+    useScript([{ parts: [use("list_tasks", {})] }, { parts: [use("list_rules", {})] }, { parts: [say("不该走到这里")] }])
+    const steps = await send(lin, { chatId, message: "查一圈" })
+    expect(script.prompts).toHaveLength(2)
+    expect(replay(steps.events).find((entry) => entry.kind === "notice")).toMatchObject({ text: expect.stringContaining("2 步") })
+
+    // 全局更紧时，本对话设的更宽也照本对话的
+    await setSetting(SETTING_KEYS.assistantMaxCostUsd, 0.01)
+    await mutate(ctx.app, "assistant.updateSettings", lin, { id: chatId, modelId: null, maxSteps: null, maxCostUsd: 1 })
+    useScript([{ parts: [use("list_tasks", {})], costUsd: 0.02 }, { parts: [say("到这里了")] }])
+    const cost = await send(lin, { chatId, message: "再查一圈" })
+    expect(script.prompts).toHaveLength(2)
+    expect(replay(cost.events).find((entry) => entry.kind === "notice")).toBeUndefined()
+  })
+
+  it("新对话第一句带上设置：建对话时一起存，这次请求就按它跑", async () => {
+    useScript([{ parts: [use("list_tasks", {})] }, { parts: [say("不该走到这里")] }])
+    const res = await send(lin, { message: "带设置的新对话", settings: { modelId: MODEL_B, maxSteps: 1, maxCostUsd: 0.5 } })
+    const chatId = chatIdOf(res.events)
+    expect(usedModels.at(-1)).toBe(MODEL_B)
+    expect(script.prompts).toHaveLength(1)
+    expect(replay(res.events).find((entry) => entry.kind === "notice")).toMatchObject({ text: expect.stringContaining("1 步") })
+    expect((await query(ctx.app, "assistant.get", lin, { id: chatId })).data).toMatchObject({ modelId: MODEL_B, maxSteps: 1, maxCostUsd: 0.5 })
+    // 已有的对话再带 settings 不管用（改设置走 updateSettings）
+    useScript([{ parts: [say("好")] }])
+    await send(lin, { chatId, message: "再来", settings: { modelId: MODEL_C, maxSteps: 3, maxCostUsd: null } })
+    expect(usedModels.at(-1)).toBe(MODEL_B)
+    expect((await query(ctx.app, "assistant.get", lin, { id: chatId })).data).toMatchObject({ modelId: MODEL_B, maxSteps: 1 })
   })
 
   it("只看得到自己的对话；删对话", async () => {

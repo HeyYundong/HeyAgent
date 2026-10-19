@@ -479,8 +479,10 @@ export async function deleteProvider(ctx: WriteCtx, input: { id: string }) {
     const next: ModelDefaults = defaultsAfterRemove(current, { models: chat(own) }, [{ models: chat(rest) }])
     const embed = current.embed && ownIds.includes(current.embed) ? rest.find((row) => row.kind === "embedding" && row.vision)?.id : current.embed
     if (embed) next.embed = embed
+    // 助手的默认模型是可选的：在删掉的服务里就不配了，助手回到 plan 默认模型
+    if (current.assistant && !ownIds.includes(current.assistant)) next.assistant = current.assistant
     await tx.delete(t.modelDefaults)
-    for (const role of ["run", "plan", "verify", "embed"] as const) {
+    for (const role of ["run", "plan", "verify", "embed", "assistant"] as const) {
       const modelId = next[role]
       if (modelId && !ownIds.includes(modelId)) await tx.insert(t.modelDefaults).values({ role, modelId, updatedById: ctx.actor.id })
     }
@@ -497,12 +499,14 @@ async function readDefaults(db: DbOrTx): Promise<ModelDefaults> {
   const rows = await db.select().from(t.modelDefaults)
   const of = (role: ModelRole) => rows.find((row) => row.role === role)?.modelId ?? ""
   const embed = of("embed")
-  return { run: of("run"), plan: of("plan"), verify: of("verify"), ...(embed ? { embed } : {}) }
+  const assistant = of("assistant")
+  return { run: of("run"), plan: of("plan"), verify: of("verify"), ...(embed ? { embed } : {}), ...(assistant ? { assistant } : {}) }
 }
 
 /**
  * 默认模型。执行 / 规划 / 验收要是聊天模型，验收不许和执行同一家（不算第三方）。
- * embed（图库的 embedding 模型）：不传不改，空字符串表示不用；要是能处理图片的 embedding 模型
+ * embed（图库的 embedding 模型）：不传不改，空字符串表示不用；要是能处理图片的 embedding 模型。
+ * assistant（右下角助手）：不传不改，空字符串表示不单独配（助手用 plan）；要是聊天模型
  */
 export async function writeDefaults(db: DbOrTx, actorId: string | null, input: ModelDefaults) {
   if (sameFamily(input.run, input.verify)) {
@@ -519,7 +523,14 @@ export async function writeDefaults(db: DbOrTx, actorId: string | null, input: M
     if (!embed) throw badRequest(`模型不存在：${input.embed}`)
     if (embed.kind !== "embedding" || !embed.vision) throw badRequest(`${input.embed} 不是能处理图片的 embedding 模型，图库用不了`)
   }
-  const roles = input.embed === undefined ? (["run", "plan", "verify"] as const) : input.embed ? (["run", "plan", "verify", "embed"] as const) : (["run", "plan", "verify"] as const)
+  if (input.assistant) {
+    const [assistant] = await db.select({ kind: t.models.kind }).from(t.models).where(eq(t.models.id, input.assistant))
+    if (!assistant) throw badRequest(`模型不存在：${input.assistant}`)
+    if (assistant.kind !== "chat") throw badRequest(`${input.assistant} 是 embedding 模型，助手用不了`)
+  }
+  const roles: ModelRole[] = ["run", "plan", "verify"]
+  if (input.embed) roles.push("embed")
+  if (input.assistant) roles.push("assistant")
   for (const role of roles) {
     const modelId = input[role]!
     await db
@@ -528,6 +539,7 @@ export async function writeDefaults(db: DbOrTx, actorId: string | null, input: M
       .onConflictDoUpdate({ target: t.modelDefaults.role, set: { modelId, updatedById: actorId, updatedAt: new Date() } })
   }
   if (input.embed === "") await db.delete(t.modelDefaults).where(eq(t.modelDefaults.role, "embed"))
+  if (input.assistant === "") await db.delete(t.modelDefaults).where(eq(t.modelDefaults.role, "assistant"))
 }
 
 export async function setModelDefaults(ctx: WriteCtx, input: ModelDefaults) {
