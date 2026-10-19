@@ -356,7 +356,8 @@ describe("规则执行：调模型前、调工具后、说做完了", () => {
     expect(item).toMatchObject({ kind: "approval", title: "花费超过 0.5 美元，要不要继续" })
     expect(item!.detail.pay).toBeDefined()
     await mutate(ctx.app, "engine.resolveHumanItem", wang, { itemId: item!.id, how: "approve" })
-    const done = await waitStatus(ctx.db, sessionId, "done")
+    // 检查点只标了在做、没勾就说完成：记「没完成」
+    const done = await waitStatus(ctx.db, sessionId, "incomplete")
     expect(done.ruleState).toMatchObject({ costFired: [expect.any(String)] })
     // 同意后没有再问第二次
     expect(await itemsOf(sessionId)).toHaveLength(1)
@@ -438,7 +439,8 @@ describe("检查点自动记录（sync_checkpoint）", () => {
     })
     await addRule(taskId, { trigger: { type: "after_tool", toolIds: [], anyTool: true }, actions: [{ type: "sync_checkpoint" }] }, "同步检查点")
     const sessionId = await runNow(taskId)
-    await waitStatus(ctx.db, sessionId, "done")
+    // 「表 A 已保存」没达成：记「没完成」
+    await waitStatus(ctx.db, sessionId, "incomplete")
     const run = (await query(ctx.app, "sessions.get", wang, { id: sessionId })).data
     expect(run.checkpoints.map((cp: { title: string; kind: string; status: string }) => [cp.title, cp.kind, cp.status])).toEqual([
       ["表 A 已保存", "artifact", "open"],

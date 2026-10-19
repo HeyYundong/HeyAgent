@@ -115,7 +115,7 @@ export async function buildSnapshot(
         .orderBy(asc(t.ruleTools.position))
     : []
 
-  // 每个任务都自带的 3 个内置工具 + 建任务时选的（内置工具的说明以代码为准）
+  // 每个任务都自带的内置工具 + 建任务时选的（内置工具的说明以代码为准）
   const tools: SnapshotTool[] = ALWAYS_ON_BUILTIN_TOOLS.map((id) =>
     builtinSnapshotTool(id)
   )

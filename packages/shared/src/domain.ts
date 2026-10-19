@@ -72,8 +72,8 @@ export function boardCards(data: { runs: readonly SessionRun[]; tasks: readonly 
   for (const run of runs) {
     const task = findById(tasks, run.taskId)
     if (!task) continue
-    // 等人处理的运行，由下面「要人办的事」的卡片代表，不重复放
-    if (run.status === "needs_human" || run.status === "failed") continue
+    // 等人处理的运行，由下面「要人办的事」的卡片代表，不重复放；失败、没完成的不上看板（在「Session」页看）
+    if (run.status === "needs_human" || run.status === "failed" || run.status === "incomplete") continue
     // 已完成的只放每个任务最近一次，更早的历史在「Session」页
     if (run.status === "done" && runs.some((other) => other.taskId === run.taskId && other.status === "done" && other.startedAt > run.startedAt)) continue
     cards.push({ kind: "run", id: run.id, column: run.status, run, task })
@@ -127,7 +127,14 @@ export function runNow(run: SessionRun, humanItems: readonly HumanItem[], staff:
   if (run.status === "verifying") return { label: "验收中", text: run.verification?.headline ?? "三方 AI 在核对检查点" }
   // M1 还没有三方验收（M3 做），没验收过的只写「完成」，不说「验收通过」
   if (run.status === "done") return { label: "结果", text: `${run.verification?.status === "passed" ? "验收通过" : "完成"} · ${run.endedAt ? fmtDateTime(run.endedAt) : ""}` }
+  if (run.status === "incomplete") return { label: "结果", text: `没完成 · ${incompleteReason(run) ?? "agent 没做成"}` }
   return { label: "结果", text: `失败 · ${run.events.findLast((event) => event.kind === "error")?.title ?? "运行失败"}` }
+}
+
+/** 没完成的原因：结束时写的那条 done 事件的说明（agent 报的原因，或者哪些检查点没达成） */
+export function incompleteReason(run: Pick<SessionRun, "status" | "events">): string | undefined {
+  if (run.status !== "incomplete") return undefined
+  return run.events.findLast((event) => event.kind === "done")?.detail
 }
 
 /** 「完成 3/5」；有跳过的写成「完成 2/3 · 跳过 1」 */

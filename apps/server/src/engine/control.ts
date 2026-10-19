@@ -1,6 +1,6 @@
 // 人对 session 的操作：取消、立即继续；外部事件（webhook 或控制台手动触发）。
 import { and, eq, notInArray } from "drizzle-orm"
-import type { FireEventResult } from "@heyagent/shared"
+import { ENDED_RUN_STATUSES, type FireEventResult } from "@heyagent/shared"
 
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
@@ -18,7 +18,7 @@ export interface CancelSessionInput {
   reason?: string
 }
 
-/** 取消：标「失败」并写清原因；等待作废，没处理的事一并取消。正在跑的循环在下一步之前发现状态变了就停 */
+/** 取消：标「失败」并写清原因（已经结束的：已完成、没完成、失败，不能取消）；等待作废，没处理的事一并取消。正在跑的循环在下一步之前发现状态变了就停 */
 export async function cancelSessionImpl(db: Db, input: CancelSessionInput) {
   return db.transaction((tx) => cancelSessionInTx(db, tx, input))
 }
@@ -32,7 +32,7 @@ export async function cancelSessionInTx(db: Db, tx: Tx, input: CancelSessionInpu
     .where(
       and(
         eq(t.sessions.id, input.sessionId),
-        notInArray(t.sessions.status, ["done", "failed"])
+        notInArray(t.sessions.status, [...ENDED_RUN_STATUSES])
       )
     )
     .returning({ id: t.sessions.id })

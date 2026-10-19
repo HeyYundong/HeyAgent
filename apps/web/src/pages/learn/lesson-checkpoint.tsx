@@ -98,7 +98,7 @@ export function CheckpointLesson() {
         ) : (
           <p>
             这次运行还没说做完（{run.waiting?.what ?? "还在跑"}），所以没到验收。到时三方 AI 会逐条核对：现在还有 {open} 条没完成，它会反问
-            agent 为什么，agent 要么补做，要么说明理由。
+            agent 为什么，agent 要么补做，要么说明理由。说做完了时检查点还有没勾的、或者全部跳过了（三方验收通过的除外），这次运行记「没完成」。
           </p>
         )}
       </DetailSection>

@@ -65,6 +65,8 @@ export interface ToolOutcome {
   isError?: boolean
   /** 这个工具要让 session 挂起（工具结果落库后，和挂起在同一个事务里做） */
   suspend?: SuspendPlan
+  /** 这个工具要让运行结束、记「没完成」（报没完成）：工具结果落库后，引擎按没完成收尾，不再调模型 */
+  incomplete?: { reason: string }
   /** 要交给模型看的图片（作为下一条用户消息） */
   images?: { name: string; mime: string; base64: string }[]
   /** 要从输出里隐藏的密钥原文 */
@@ -509,6 +511,12 @@ const handlers: {
   },
   async "work.report"(ctx, input) {
     return reportFromAgent(ctx, input)
+  },
+  // 报没完成：只把原因交给引擎，由引擎（loop.ts）在同一个事务里写最终状态、事件，被派的运行连带派活单
+  async "run.not_done"(_ctx, input) {
+    const reason = input.reason.trim()
+    if (!reason) return fail("要写 reason：为什么没做成")
+    return { output: `已记下：这次运行没完成（${reason}）。运行到此结束。`, incomplete: { reason } }
   },
   async "plan.set"(ctx, input) {
     const steps = input.steps.map((step) => step.trim()).filter(Boolean)

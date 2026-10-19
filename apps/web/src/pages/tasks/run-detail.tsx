@@ -4,7 +4,7 @@
 // 不带页面级布局和返回链接，放进任何 768px 宽的抽屉都能用（任务页、Session 页的抽屉都直接放它）。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
-import { BrainIcon, ChevronRightIcon, CircleCheckIcon, CircleStopIcon, FlagIcon, FoldVerticalIcon, ListTreeIcon, PauseIcon, PlayIcon, SaveIcon, ScanSearchIcon, SearchXIcon, SendIcon, ShieldIcon, TriangleAlertIcon, UserIcon, WrenchIcon, type LucideIcon } from "lucide-react"
+import { BrainIcon, ChevronRightIcon, CircleAlertIcon, CircleCheckIcon, CircleStopIcon, FlagIcon, FoldVerticalIcon, ListTreeIcon, PauseIcon, PlayIcon, SaveIcon, ScanSearchIcon, SearchXIcon, SendIcon, ShieldIcon, TriangleAlertIcon, UserIcon, WrenchIcon, type LucideIcon } from "lucide-react"
 
 import { DetailPanel, DetailSection, EmptyState } from "@/components/shell/simple-page"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -16,7 +16,7 @@ import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle }
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker"
 import { Spinner } from "@/components/ui/spinner"
 import { Trace, TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigger, TraceDescription, TraceIcon, TraceLine, TraceTitle } from "@/components/ui/trace"
-import { can, eventTimeText, fmtDateTime, WORK_DISPATCH_TOOL_ID } from "@heyagent/shared"
+import { can, eventTimeText, fmtDateTime, incompleteReason, isRunEnded, WORK_DISPATCH_TOOL_ID } from "@heyagent/shared"
 import type { RunEvent, RunEventKind, SessionRun, TaskDef, Verification } from "@heyagent/shared"
 
 import { MarkdownView } from "@/components/markdown"
@@ -51,6 +51,7 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionRun }) {
   const toolCalls = run.events.filter((event) => event.kind === "tool").length
   const ruleHits = run.events.filter((event) => event.kind === "rule").length
   const error = run.status === "failed" ? run.events.findLast((event) => event.kind === "error") : undefined
+  const notDone = incompleteReason(run)
   return (
     <DetailPanel
       title={`${run.id} · ${task.title}`}
@@ -73,13 +74,20 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionRun }) {
           {error.detail && <AlertDescription>{error.detail}</AlertDescription>}
         </Alert>
       )}
+      {run.status === "incomplete" && (
+        <Alert>
+          <CircleAlertIcon />
+          <AlertTitle>这次运行没完成</AlertTitle>
+          {notDone && <AlertDescription>{notDone}</AlertDescription>}
+        </Alert>
+      )}
       {run.workItemId && <DispatchedIn run={run} itemId={run.workItemId} />}
       {task.toolIds.includes(WORK_DISPATCH_TOOL_ID) && <DispatchedOut run={run} />}
       <DetailSection title={`检查点 · ${checkpointSummary(run.checkpoints)}`}>
         <CheckpointList run={run} />
       </DetailSection>
       {run.verification && <VerificationSection run={run} verification={run.verification} />}
-      {(run.status === "done" || run.status === "failed") && <RunDigestSection task={task} run={run} canEdit={can(user, "task.manage", { ownerId: task.ownerId })} />}
+      {isRunEnded(run.status) && <RunDigestSection task={task} run={run} canEdit={can(user, "task.manage", { ownerId: task.ownerId })} />}
       {run.exploredSteps && run.exploredSteps.length > 0 && (
         <AgentSteps task={task} run={run} steps={run.exploredSteps} canSave={can(user, "task.manage", { ownerId: task.ownerId })} />
       )}
@@ -107,7 +115,8 @@ function eventTag(event: RunEvent): { label: string; variant: "outline" | "secon
 
 function EventRow({ event, run, running }: { event: RunEvent; run: SessionRun; running: boolean }) {
   const toolName = useToolName()
-  const Icon = EVENT_ICON[event.kind]
+  // 没完成的运行：结束事件（kind = done）用感叹号，不用打勾
+  const Icon = event.kind === "done" && run.status === "incomplete" ? CircleAlertIcon : EVENT_ICON[event.kind]
   const at = eventTimeText(event.at, run)
   // 挂起 / 继续：用分隔线标出来，一眼看出 session 在哪停、在哪接着跑
   if (event.kind === "wait" || event.kind === "resume") {

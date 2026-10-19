@@ -4,6 +4,7 @@ import {
   checkpointKindLabel,
   compiledRuleSchema,
   riskLabel,
+  RUN_NOT_DONE_TOOL_ID,
   WORK_DISPATCH_TOOL_ID,
   WORK_LIST_TOOL_ID,
   WORK_REPORT_TOOL_ID,
@@ -92,6 +93,8 @@ export function buildSystemPrompt(
   }
 
   const hasCheckpoints = snapshot.checkpoints.length > 0
+  // 「报没完成」每个任务都自带；这个功能以前开始的运行快照里没有它，就不提
+  const notDoneName = snapshot.tools.some((tool) => tool.id === RUN_NOT_DONE_TOOL_ID) ? (toolNames.get(RUN_NOT_DONE_TOOL_ID) ?? "run_not_done") : undefined
   const toolLines = snapshot.tools.filter((tool) => !isCheckpointToolHidden(snapshot, tool.id)).map(
     (tool) =>
       `- ${toolNames.get(tool.id) ?? tool.id}（${tool.name}，${riskLabel[tool.risk]}）：${tool.summary}`
@@ -163,12 +166,17 @@ export function buildSystemPrompt(
       "- 工具输出太长时只给你开头部分，全文存成了文件，需要时用 file.read 读。",
       // 没有检查点的任务（例如被派来办一件事的）不提检查点：提了 agent 会去找、会在总结里写「检查点清单为空」
       hasCheckpoints
-        ? "- 全部做完后，直接回复一段总结（做了什么、结果在哪、哪些检查点没完成以及原因），不要再调工具。回复不调工具就表示你认为任务做完了。"
+        ? "- 全部做完后，直接回复一段总结（做了什么、结果在哪、哪些检查点没完成以及原因），不要再调工具。回复不调工具就表示你认为任务做完了；检查点有没勾的、或者全部跳过的，这次运行会记成「没完成」。"
         : "- 全部做完后，直接回复一段总结（做了什么、结果在哪、没做成的以及原因），不要再调工具。回复不调工具就表示你认为任务做完了。",
+      notDoneName
+        ? `- 做不成（试过了、能补救的也补救了，还是不行）就调用 ${notDoneName} 写清原因，这次运行记「没完成」并通知负责人；不要直接回复总结、把没做成说成做完了。`
+        : "",
       hasCheckpoints
         ? "- 如果有三方验收，验收员会逐条核对检查点和证据（记录、文件、截图）；被反问时如实说明原因，能补做的就补做。"
         : "- 如果有三方验收，验收员会按目标核对结果和证据（记录、文件、截图）；被反问时如实说明原因，能补做的就补做。",
-    ].join("\n")
+    ]
+      .filter(Boolean)
+      .join("\n")
   )
   return sections.join("\n\n")
 }

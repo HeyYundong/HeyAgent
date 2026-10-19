@@ -3,7 +3,7 @@
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
 import { CircleStopIcon, PlayIcon } from "lucide-react"
-import { type SessionRun, type TaskDef, type UploadedFile } from "@heyagent/shared"
+import { isRunEnded, type SessionRun, type TaskDef, type UploadedFile } from "@heyagent/shared"
 
 import { FileList, UploadButton } from "@/components/files"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
@@ -17,7 +17,7 @@ import { navigate } from "@/lib/router"
 import { trpc } from "@/lib/trpc"
 
 /** 还没结束的运行（可以取消） */
-export const isActive = (run?: SessionRun) => Boolean(run && !["done", "failed"].includes(run.status))
+export const isActive = (run?: SessionRun) => Boolean(run && !isRunEnded(run.status))
 
 /** 立即运行：成功后打开这次运行的过程，实时看事件 */
 export function useStartRun(task: TaskDef) {

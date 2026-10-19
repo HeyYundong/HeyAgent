@@ -77,6 +77,7 @@ export const runStatusLabel: Record<RunStatus, string> = {
   waiting: "等待中",
   verifying: "验收中",
   done: "已完成",
+  incomplete: "没完成",
   failed: "失败",
 }
 

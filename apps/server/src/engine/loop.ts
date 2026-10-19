@@ -1,6 +1,8 @@
 // agent 循环：读快照和完整消息历史 → 调模型 → 工具网关 → 落库 → 再调模型……
-// 直到模型给出最终答复（说做完了，有验收规则的先过三方验收）、某个工具让 session 挂起、规则要求审批、触发上限（转人工），
-// 或者出错（重试后标失败）。每一步都先落库再继续，进程随时被杀掉都能从库里接着跑（同一个 session id）。
+// 直到模型给出最终答复（说做完了，有验收规则的先过三方验收）、agent 报没完成（run.not_done）、某个工具让 session 挂起、
+// 规则要求审批、触发上限（转人工），或者出错（重试后标失败）。
+// 正常结束分两种：已完成；没完成（agent 报了没完成 / 被派的运行报了办不成 / 检查点没达成），没完成不算出错、不自动重试。
+// 每一步都先落库再继续，进程随时被杀掉都能从库里接着跑（同一个 session id）。
 // 结束时的顺序：最终结论确定后，先关资源（工具连接、Chrome），再写过程记录，最后写最终状态。
 import { setTimeout as sleep } from "node:timers/promises"
 
@@ -29,18 +31,18 @@ import {
 } from "./model.js"
 import { notifyUsers, sessionLink } from "./notify.js"
 import { buildSystemPrompt } from "./prompt.js"
-import { QUEUES, bossFor, runJobOptions } from "./queue.js"
+import { QUEUES, bossFor, runJobOptions, type Tx } from "./queue.js"
 import { appendEvent, appendMessage, loadMessages } from "./records.js"
 import { runtime } from "./runtime.js"
 import { maskSecretFields } from "./secrets.js"
 import { loadEngineSettings } from "./settings.js"
 import type { SessionRow, ToolOutcome } from "./tools/builtin.js"
 import { recheckWorkDoneAfterSuspend } from "./dispatch/notify.js"
-import { settleWorkItemInTx } from "./dispatch/settle.js"
+import { reportedIn, settleWorkItemInTx } from "./dispatch/settle.js"
 import { suspendInTx } from "./waits.js"
 
 export type RunOutcome =
-  "done" | "suspended" | "failed" | "handoff" | "stopped" | "skipped"
+  "done" | "incomplete" | "suspended" | "failed" | "handoff" | "stopped" | "skipped"
 
 export interface RunOptions {
   signal?: AbortSignal
@@ -176,6 +178,120 @@ async function failSession(
       sessionId: session.id,
     })
   }
+}
+
+/** 没完成的原因：事件标题 + 一句话原因（写进 sessions.error、通知、派活单） */
+interface Incomplete {
+  title: string
+  reason: string
+}
+
+/**
+ * agent 说做完了时，再看是不是其实没完成（在收尾的事务里）：
+ * 1. 被派的运行用 work.report 报了办不成（这次运行报的、单还归它）；
+ * 2. 检查点没达成：至少有一个检查点，而且有没勾的、或者全部跳过了。部分跳过（其余都勾了）算完成；没有检查点照旧算完成。
+ *    三方验收通过的不再按检查点判（验收员已经逐条核对过）。
+ */
+async function incompleteInTx(tx: Tx, sessionId: string, verified: boolean): Promise<Incomplete | undefined> {
+  const [row] = await tx.select({ workItemId: t.sessions.workItemId }).from(t.sessions).where(eq(t.sessions.id, sessionId))
+  if (row?.workItemId) {
+    const [item] = await tx
+      .select({ status: t.workItems.status, sessionId: t.workItems.sessionId, failKind: t.workItems.failKind, error: t.workItems.error, log: t.workItems.log })
+      .from(t.workItems)
+      .where(eq(t.workItems.id, row.workItemId))
+    if (item && item.status === "running" && item.sessionId === sessionId && item.failKind === "not_done" && reportedIn(item.log, sessionId))
+      return { title: "agent 报了办不成，运行没完成", reason: item.error ?? "agent 判断办不成" }
+  }
+  if (verified) return undefined
+  const checkpoints = await tx
+    .select({ title: t.checkpoints.title, status: t.checkpoints.status })
+    .from(t.checkpoints)
+    .where(eq(t.checkpoints.sessionId, sessionId))
+    .orderBy(t.checkpoints.position)
+  if (checkpoints.length === 0) return undefined
+  const open = checkpoints.filter((cp) => cp.status === "open")
+  if (open.length)
+    return { title: "检查点没达成，运行没完成", reason: `${open.length} 个检查点没达成：${open.map((cp) => cp.title).join("、")}` }
+  if (checkpoints.every((cp) => cp.status === "skipped"))
+    return { title: "检查点全部跳过，运行没完成", reason: `${checkpoints.length} 个检查点全部跳过，一个都没达成：${checkpoints.map((cp) => cp.title).join("、")}` }
+  return undefined
+}
+
+/**
+ * 正常收尾（agent 说做完了、或者调了「报没完成」）。调用前先关资源（工具连接、Chrome）；
+ * 过程记录和最终状态在同一个事务里写：读到「已完成 / 没完成」时，结束事件一定都在。
+ * forced = agent 报了没完成（直接记没完成）；否则按 incompleteInTx 判断。被派的运行：已完成 → 单办完；没完成 → 单没办成、不重试
+ */
+async function finishRun(
+  db: Db,
+  session: SessionRow,
+  snapshot: SessionSnapshot,
+  input: { text: string; verified: boolean; forced?: Incomplete; messages?: ModelMessage[] }
+): Promise<RunOutcome> {
+  const finished = await db.transaction(async (tx) => {
+    for (const message of input.messages ?? []) await appendMessage(tx, session.id, message)
+    const incomplete = input.forced ?? (await incompleteInTx(tx, session.id, input.verified))
+    const updated = await tx
+      .update(t.sessions)
+      .set(incomplete ? { status: "incomplete", endedAt: new Date(), error: incomplete.reason.slice(0, 2000) } : { status: "done", endedAt: new Date() })
+      .where(
+        and(
+          eq(t.sessions.id, session.id),
+          inArray(t.sessions.status, ["running", "verifying"])
+        )
+      )
+      .returning({ id: t.sessions.id })
+    if (updated.length === 0) throw new RollbackSignal()
+    if (incomplete) {
+      await appendEvent(tx, session.id, { kind: "done", title: incomplete.title, detail: incomplete.reason })
+      // 被派的运行：派活单记「没办成」（agent 判断办不成），不自动重试；agent 的总结照样写回单上
+      const settled = await settleWorkItemInTx(db, tx, session.id, {
+        status: "failed",
+        error: incomplete.reason.slice(0, 2000),
+        retryable: false,
+        failKind: "not_done",
+        summary: input.text,
+      })
+      return { incomplete, settled }
+    }
+    await appendEvent(tx, session.id, {
+      kind: "done",
+      title: input.verified ? "验收通过，运行完成" : "agent 说做完了",
+      detail: input.text || null,
+    })
+    // 被派的运行：派活单跟着记「办完」，这段总结写回单上
+    const settled = await settleWorkItemInTx(db, tx, session.id, { status: "done", summary: input.text })
+    return { incomplete: undefined, settled }
+  }).catch((error) => {
+    if (error instanceof RollbackSignal) return undefined
+    throw error
+  })
+  if (!finished) return "stopped"
+  const link = sessionLink(session.taskId, session.id)
+  // 没完成：和失败一样通知负责人（被派的也发：单没办成、不会重试）
+  if (finished.incomplete) {
+    await notifyUsers(db, {
+      userIds: [snapshot.task.ownerId],
+      title: `${snapshot.task.title}：没完成`,
+      body: finished.incomplete.reason.slice(0, 500),
+      link,
+      taskId: session.taskId,
+      sessionId: session.id,
+    })
+    return "incomplete"
+  }
+  // 被派的运行一天可能几十上百次：完成时不发站内通知（派活页能看全部结果）
+  if (session.workItemId) return "done"
+  await notifyUsers(db, {
+    userIds: [snapshot.task.ownerId],
+    title: `${snapshot.task.title}：运行完成`,
+    body: input.text.slice(0, 500),
+    link,
+    taskId: session.taskId,
+    sessionId: session.id,
+    push: false,
+  })
+  return "done"
 }
 
 /** 调模型，出错按退避重试；重试完还不行就抛出 */
@@ -465,6 +581,21 @@ export async function runSession(
           output,
           done.outcome.isError
         )
+        // 报没完成：这次结果和同一步里后面没执行的调用的结果，在收尾的事务里一起落库，运行记「没完成」，不再调模型
+        if (done.outcome.incomplete && !done.denied) {
+          const rest = calls
+            .slice(index + 1)
+            .map((other) =>
+              toolResult(other.toolCallId, other.toolName, "没有执行：前面已经报了没完成，运行结束了。", true)
+            )
+          await closeGateway()
+          return finishRun(db, live, snapshot, {
+            text: "",
+            verified: false,
+            forced: { title: "agent 报没完成", reason: done.outcome.incomplete.reason },
+            messages: [message, ...rest],
+          })
+        }
         if (done.outcome.suspend && !done.denied) {
           const rest = calls
             .slice(index + 1)
@@ -722,55 +853,11 @@ export async function runSession(
         const live = await loadSession(db, sessionId)
         if (!live || (live.status !== "running" && live.status !== "verifying"))
           return "stopped"
-        const verified = live.verification?.status === "passed"
         await closeGateway()
-        // 过程记录和最终状态同一个事务：读到「已完成」时，完成事件（以及关资源时写的记录）一定都在
-        const finished = await db.transaction(async (tx) => {
-          const updated = await tx
-            .update(t.sessions)
-            .set({ status: "done", endedAt: new Date() })
-            .where(
-              and(
-                eq(t.sessions.id, sessionId),
-                inArray(t.sessions.status, ["running", "verifying"])
-              )
-            )
-            .returning({ id: t.sessions.id })
-          if (updated.length === 0) return false
-          await appendEvent(tx, sessionId, {
-            kind: "done",
-            title: verified ? "验收通过，运行完成" : "agent 说做完了",
-            detail: result.text || null,
-          })
-          // 被派的运行：派活单跟着记「办完」，这段总结写回单上（agent 报过办不成的记「没办成」）
-          const settled = await settleWorkItemInTx(db, tx, sessionId, { status: "done", summary: result.text || "" })
-          return { settled }
+        return finishRun(db, live, snapshot, {
+          text: result.text || "",
+          verified: live.verification?.status === "passed",
         })
-        if (!finished) return "stopped"
-        // 被派的运行一天可能几十上百次：完成时不发站内通知（派活页能看全部结果）；失败照常通知。
-        // agent 判断办不成的：运行正常结束，但单没办成，照常给负责人发失败通知
-        if (live.workItemId) {
-          if (finished.settled?.kind === "failed")
-            await notifyUsers(db, {
-              userIds: [snapshot.task.ownerId],
-              title: `${snapshot.task.title}：没办成`,
-              body: finished.settled.error,
-              link: sessionLink(session.taskId, sessionId),
-              taskId: session.taskId,
-              sessionId,
-            })
-          return "done"
-        }
-        await notifyUsers(db, {
-          userIds: [snapshot.task.ownerId],
-          title: `${snapshot.task.title}：运行完成`,
-          body: (result.text || "").slice(0, 500),
-          link: sessionLink(session.taskId, sessionId),
-          taskId: session.taskId,
-          sessionId,
-          push: false,
-        })
-        return "done"
       }
 
       // 工具调用：依次交给网关

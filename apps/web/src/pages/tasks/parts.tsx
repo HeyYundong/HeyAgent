@@ -1,6 +1,6 @@
 // 任务页几处共用的小块：运行状态徽章、「现在在干什么 / 在等什么」、检查点卡片网格。Session 页也直接用这里的导出。
 import * as React from "react"
-import { CircleCheckIcon, CircleDashedIcon, CircleDotIcon, CircleMinusIcon, CircleXIcon, HandIcon, HourglassIcon, ScanSearchIcon } from "lucide-react"
+import { CircleAlertIcon, CircleCheckIcon, CircleDashedIcon, CircleDotIcon, CircleMinusIcon, CircleXIcon, HandIcon, HourglassIcon, ScanSearchIcon } from "lucide-react"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
@@ -9,7 +9,7 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/h
 import { Item, ItemActions, ItemContent, ItemTitle } from "@/components/ui/item"
 import { Progress } from "@/components/ui/progress"
 import { Spinner } from "@/components/ui/spinner"
-import { fmtShort, nextRunText as sharedNextRunText, runStatusLabel } from "@heyagent/shared"
+import { fmtShort, isRunEnded, nextRunText as sharedNextRunText, runStatusLabel } from "@heyagent/shared"
 import type { RunCheckpoint, RunStatus, SessionRun, TaskDef } from "@heyagent/shared"
 
 import { useRunNow } from "@/lib/data"
@@ -24,13 +24,14 @@ export function nextRunText(task: TaskDef, latest?: SessionRun) {
   return sharedNextRunText(task, latest)
 }
 
-/** 分档：执行中 = 实心主色 + 转圈（全墙唯一红色实心、唯一会动的）；等人处理 = 实心灰；失败 = 浅红底；等待中 / 验收中 = 描边；已完成 = 无框 */
+/** 分档：执行中 = 实心主色 + 转圈（全墙唯一红色实心、唯一会动的）；等人处理 = 实心灰；失败 = 浅红底、没完成 = 描边加感叹号（同一档：都要人看一眼）；等待中 / 验收中 = 描边；已完成 = 无框 */
 export function RunStatusBadge({ status }: { status: RunStatus }) {
   if (status === "running") return <Badge><Spinner data-icon="inline-start" />{runStatusLabel.running}</Badge>
   if (status === "needs_human") return <Badge variant="secondary"><HandIcon data-icon="inline-start" />{runStatusLabel.needs_human}</Badge>
   if (status === "waiting") return <Badge variant="outline"><HourglassIcon data-icon="inline-start" />{runStatusLabel.waiting}</Badge>
   if (status === "verifying") return <Badge variant="outline"><ScanSearchIcon data-icon="inline-start" />{runStatusLabel.verifying}</Badge>
   if (status === "done") return <Badge variant="ghost"><CircleCheckIcon data-icon="inline-start" />{runStatusLabel.done}</Badge>
+  if (status === "incomplete") return <Badge variant="outline"><CircleAlertIcon data-icon="inline-start" />{runStatusLabel.incomplete}</Badge>
   return <Badge variant="destructive"><CircleXIcon data-icon="inline-start" />{runStatusLabel.failed}</Badge>
 }
 
@@ -59,7 +60,7 @@ const STATUS = { done: { icon: CircleCheckIcon, label: "完成", variant: "outli
  * 同类型的检查点有好几个时，规则自动写的记录记到它上面（M3）。运行结束了就不算
  */
 export function focusedCheckpoint(run: Pick<SessionRun, "status" | "events">): number | undefined {
-  if (run.status === "done" || run.status === "failed") return undefined
+  if (isRunEnded(run.status)) return undefined
   for (let index = run.events.length - 1; index >= 0; index--) {
     const event = run.events[index]!
     if (event.kind !== "tool" || event.toolId !== "checkpoint.mark" || !event.input) continue

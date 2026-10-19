@@ -7,6 +7,7 @@ import { asc, eq, inArray } from "drizzle-orm"
 import {
   checkpointKindLabel,
   modelFamily,
+  isRunEnded,
   runStatusLabel,
   sameFamily,
 } from "@heyagent/shared"
@@ -153,7 +154,7 @@ export async function digestSession(
     .from(t.sessions)
     .where(eq(t.sessions.id, sessionId))
   if (!session) throw new EngineError("NOT_FOUND", `找不到运行 ${sessionId}`)
-  if (session.status !== "done" && session.status !== "failed")
+  if (!isRunEnded(session.status))
     throw new EngineError(
       "BAD_REQUEST",
       `运行 ${sessionId} 还没结束（${runStatusLabel[session.status]}），结束后才能总结`

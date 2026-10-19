@@ -593,7 +593,7 @@ export const sessions = pgTable(
     note: text("note"),
     /** 谁点的「立即运行」 */
     createdById: text("created_by_id").references(() => users.id, { onDelete: "set null" }),
-    /** 失败或取消的原因 */
+    /** 失败、取消或没完成的原因 */
     error: text("error"),
     /** 已经调了几次模型（步数上限按它算） */
     stepCount: integer("step_count").notNull().default(0),

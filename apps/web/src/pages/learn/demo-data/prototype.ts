@@ -636,7 +636,7 @@ export const tasks: TaskDef[] = [
 
 // ---------- 运行（session） ----------
 
-export type RunStatus = "running" | "needs_human" | "waiting" | "verifying" | "done" | "failed"
+export type RunStatus = "running" | "needs_human" | "waiting" | "verifying" | "done" | "incomplete" | "failed"
 
 export const runStatusLabel: Record<RunStatus, string> = {
   running: "执行中",
@@ -644,6 +644,7 @@ export const runStatusLabel: Record<RunStatus, string> = {
   waiting: "等待中",
   verifying: "验收中",
   done: "已完成",
+  incomplete: "没完成",
   failed: "失败",
 }
 
@@ -1141,7 +1142,7 @@ export function boardCards(): BoardCard[] {
     const task = findById(tasks, run.taskId)
     if (!task) continue
     // 等人处理的运行，由下面「要人办的事」的卡片代表，不重复放
-    if (run.status === "needs_human" || run.status === "failed") continue
+    if (run.status === "needs_human" || run.status === "failed" || run.status === "incomplete") continue
     // 已完成的只放每个任务最近一次，更早的历史在「Session」页
     if (run.status === "done" && runs.some((other) => other.taskId === run.taskId && other.status === "done" && other.startedAt > run.startedAt)) continue
     cards.push({ kind: "run", id: run.id, column: run.status, run, task })

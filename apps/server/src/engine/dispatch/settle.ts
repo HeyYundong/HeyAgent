@@ -1,8 +1,8 @@
 // 派活：被派的运行结束时，派活单跟着结束（办完 / 没办成），结果写回单上，再发 work.pump（空出名额）。
-// 运行结束的 5 处（loop.ts 写「已完成」、failSession，control.ts 取消，humans.ts 上限「不继续」、验收争议判通过 / 失败）
+// 运行结束的 5 处（loop.ts 写「已完成 / 没完成」、failSession，control.ts 取消，humans.ts 上限「不继续」、验收争议判通过 / 失败）
 // 都在自己的事务里调 settleWorkItemInTx；漏掉的由 work.sweep 补写（sweep.ts）。
 // 第二期：运行出错（retryable）且这一轮的自动重试还没用完 → 单回到排队、到点再领（not_before）；
-// agent 用 work.report 报了办不成 → 单记没办成（failKind = not_done），不重试；最终结束时发 work.notify 叫醒等结果的派活方。
+// agent 用 work.report 报了办不成、运行没完成（报没完成、检查点没达成）→ 单记没办成（failKind = not_done），不重试；最终结束时发 work.notify 叫醒等结果的派活方。
 import { WORK_RETRY_DELAY_DEFAULT, type WorkFailKind, type WorkLogEntry, type WorkResult } from "@heyagent/shared"
 import { and, asc, desc, eq, sql } from "drizzle-orm"
 
@@ -14,7 +14,7 @@ import { sendPumpInTx } from "./signal.js"
 
 export interface SettleOutcome {
   status: "done" | "failed"
-  /** 办完：agent 最后那段总结；不给就从消息历史里取最后一条 assistant 的文字 */
+  /** 办完、没完成：agent 最后那段总结；不给（或空）就从消息历史里取最后一条 assistant 的文字 */
   summary?: string
   /** 没办成：原因；不给就用运行上的 error */
   error?: string
@@ -142,7 +142,9 @@ export async function writeSettled(
     }
   }
   const failKind: WorkFailKind = outcome.failKind ?? (outcome.retryable ? "error" : "cancelled_run")
-  await finish({ status: "failed", result: null, error, failKind, notBefore: null, finishedAt: now }, [ended])
+  // 运行没完成（agent 判断办不成）：运行是正常结束的，agent 的总结、报的结果照样写回单上
+  const result = failKind === "not_done" && session ? await buildResult(tx, item, session, outcome.summary || undefined) : null
+  await finish({ status: "failed", result, error, failKind, notBefore: null, finishedAt: now }, [failKind === "not_done" ? { ...ended, note: "not_done" } : ended])
   await sendWorkDoneInTx(db, tx, item.id)
   return { kind: "failed", failKind, error, autoRetries: item.autoRetries }
 }

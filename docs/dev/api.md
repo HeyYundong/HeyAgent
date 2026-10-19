@@ -183,11 +183,12 @@ curl -s -b 'better-auth.session_token=<COOKIE>' -H 'content-type: application/js
 
 | 字段 | 说明 |
 |---|---|
-| `status` | `running`（执行中）、`waiting`（挂起等时间或事件）、`needs_human`（等人处理）、`verifying`、`done`、`failed` |
+| `status` | `running`（执行中）、`waiting`（挂起等时间或事件）、`needs_human`（等人处理）、`verifying`、`done`、`incomplete`（没完成：正常结束但事情没做成，见下面「没完成」）、`failed` |
 | `checkpoints[]` | `title kind target? stepId? status(done/open/skipped) progress? records[]{at text synced} skipReason?` |
 | `events[]` | 过程事件，按 `seq`（session 内从 1 递增）排。`kind`：`plan think tool checkpoint rule wait resume human verify done error`；工具调用带 `toolId input output ms tokensIn tokensOut`（输入输出各最多 5 万字符，更长的截断） |
 | `waiting` | 挂起时才有：`{ what, trigger, since }`，`trigger` 是 `time / cron / event / time_or_event` 之一（带 `at`、`event`、`fallbackDays` 等） |
 | 失败原因 | **没有单独的 `error` 字段**，在 `kind = "error"` 的事件里（取消、花费 / 步数上限被拒、模型出错都是这样） |
+| 没完成（`incomplete`，迁移 0022） | 运行正常结束、但事情没做成：① agent 调了自带的内置工具 `run.not_done`「报没完成」（参数 `reason`，调用后运行马上结束，不再调模型、不验收）；② 被派的运行用 `work.report` 报了 `not_done`；③ agent 说做完了（验收照常先跑），但至少有一个检查点、而且有没勾的或者全部跳过了（验收通过的不按检查点判；部分跳过、其余都勾了的算完成；没有检查点的照旧算完成）。原因在最后一条 `kind = "done"` 的事件的 `detail` 里（也写进 `sessions.error`）；负责人收到「<任务>：没完成」通知（被派的也发）；被派的运行的派活单记没办成（`failKind = not_done`），不自动重试 |
 | 触发来源 | 不在 `SessionRun` 里；快照里有 `source`（`manual / cron / todo / event`），第一条 `plan` 事件的 detail 里也写了 |
 
 `sessions.list` 一次返回**全部** session 和它们的全部事件（没有分页）。session 多了以后会变重，需要时按 `taskId` 筛，或另行加分页。
@@ -797,7 +798,7 @@ session 开始时把规则（含 `compiledTrigger`）冻结进快照，引擎只
 | `SETTING_KEYS` | `verifyMaxRounds: "verify.maxRounds"`、`compactMaxTokens: "context.compactMaxTokens"` |
 | `HumanDetail` | `toolCall?`（11.2）、`verification?`（11.5） |
 | 内置工具 | 新增 `plan.set`（每个任务都自带）；`checkpoint.mark` 的 `status` 多了 `doing` |
-| 结束的先后顺序（M2 留下的） | 说做完了：先验收；最终结论确定后，先关资源（工具连接、Chrome），再在**同一个事务**里写完成事件和 `done` 状态。失败也是「失败事件 + `failed` 状态」同一事务。读到「已完成 / 失败」时，对应的过程记录一定都在 |
+| 结束的先后顺序（M2 留下的） | 说做完了：先验收；最终结论确定后，先关资源（工具连接、Chrome），再在**同一个事务**里写完成事件和 `done` 状态。失败也是「失败事件 + `failed` 状态」同一事务。没完成也是「结束事件 + `incomplete` 状态」同一事务。读到「已完成 / 没完成 / 失败」时，对应的过程记录一定都在 |
 | 数据库（迁移 0007） | `rules.compiled_text / compile_draft / confirmed_by_id / confirmed_at`、`tasks.verify_model_id`、`sessions.rule_state`、`session_messages.summary`、`session_waits.pending`、`checkpoints.focused_at`。都是加列，没有新表 |
 | 审计 action | 新增 `rule.compile` `rule.confirm` `task.save_steps` `settings.agent.update` |
 | 记忆和技能的提议 | 和 M1 一样：生成 `kind = memory / skill` 的事，给任务负责人（技能给技能负责人），主管也能处理；用 `memories.approve/reject`、`skills.acceptSuggestion/rejectSuggestion` 处理。待办里点进去用 `memoryId` / `skillId` 跳到记忆页、技能页 |

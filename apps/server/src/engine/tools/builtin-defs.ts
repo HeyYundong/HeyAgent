@@ -64,6 +64,14 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
     risk: "write",
   },
   {
+    id: "run.not_done",
+    name: "报没完成",
+    summary: "做不成时调用并写清原因，这次运行结束、记成「没完成」",
+    description:
+      "试过了还是做不成（找不到、没权限、对方拒绝、条件不满足等）时调用，reason 写清卡在哪、试过哪些办法、还差什么。调用后这次运行马上结束，状态记「没完成」，负责人会收到通知。不要在没做成时直接回复总结说做完了；能补救的先补救（问人、等待），确实做不成再调它。",
+    risk: "read",
+  },
+  {
     id: "skill.load",
     name: "读取技能",
     summary: "按名字读取某个技能的全文",

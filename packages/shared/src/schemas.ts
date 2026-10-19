@@ -359,8 +359,13 @@ export type TaskDef = z.infer<typeof taskSchema>
 
 // ---------- 运行（session） ----------
 
-export const runStatusSchema = z.enum(["running", "needs_human", "waiting", "verifying", "done", "failed"])
+/** incomplete = 没完成：运行正常结束，但事情没做成（agent 报了没完成，或者检查点没达成）；failed = 出错、中断、验收不通过 */
+export const runStatusSchema = z.enum(["running", "needs_human", "waiting", "verifying", "done", "incomplete", "failed"])
 export type RunStatus = z.infer<typeof runStatusSchema>
+
+/** 已经结束的运行状态（已完成 / 没完成 / 失败） */
+export const ENDED_RUN_STATUSES = ["done", "incomplete", "failed"] as const satisfies readonly RunStatus[]
+export const isRunEnded = (status: RunStatus) => (ENDED_RUN_STATUSES as readonly RunStatus[]).includes(status)
 
 export const triggerSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("time"), at: isoTime }),

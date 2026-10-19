@@ -352,6 +352,10 @@ export const builtinToolInputs = {
       .describe("not_done = 这件事办不成（例如找不到、对方拒绝），写了这张单就记「没办成」，不会重试"),
     reason: z.string().max(1000).optional().describe("outcome = not_done 时必填：为什么办不成"),
   }),
+  // 报没完成（每个任务都自带）：做不成时调用，运行结束、状态记「没完成」
+  "run.not_done": z.object({
+    reason: z.string().min(1).max(2000).describe("为什么没做成：卡在哪、试过哪些办法、还差什么"),
+  }),
   "plan.set": z.object({
     steps: z
       .array(z.string().min(1).max(300))
@@ -363,12 +367,16 @@ export const builtinToolInputs = {
 
 export type BuiltinToolId = keyof typeof builtinToolInputs
 
+/** 「报没完成」：调用后运行结束，状态记「没完成」 */
+export const RUN_NOT_DONE_TOOL_ID = "run.not_done" satisfies BuiltinToolId
+
 /** 每个任务都自带的内置工具 */
 export const ALWAYS_ON_BUILTIN_TOOLS: readonly BuiltinToolId[] = [
   "checkpoint.mark",
   "session.wait",
   "ask.human",
   "plan.set",
+  RUN_NOT_DONE_TOOL_ID,
 ]
 
 // ---------- 引擎接口（engine-router）的输入输出 ----------

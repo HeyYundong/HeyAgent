@@ -1,6 +1,7 @@
 // 派活页上人的操作（tRPC work.*）：查有没有单、派一张、改参数、重办、不办了。报错用 WorkError（work-router 换成 tRPC 错误码），文字给人看。
 import {
   can,
+  isRunEnded,
   workDedupeKey,
   workDefaultTitle,
   workParamsProblem,
@@ -168,7 +169,7 @@ export async function cancelWorkItem(db: Db, actor: WorkActor, input: { id: stri
     if (item.status === "running" && item.sessionId) {
       const [session] = await tx.select({ status: t.sessions.status }).from(t.sessions).where(eq(t.sessions.id, item.sessionId))
       // 单已经先改成不办了，取消运行时的结束回写看到它不在办，不会再改
-      if (session && session.status !== "done" && session.status !== "failed")
+      if (session && !isRunEnded(session.status))
         await cancelSessionInTx(db, tx, { sessionId: item.sessionId, actorId: actor.id, actorName: actor.name, reason: `在派活单 ${item.id} 上点了不办了${input.reason ? `：${input.reason}` : ""}` })
       await sendPumpInTx(db, tx, item.taskId)
     }

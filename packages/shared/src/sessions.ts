@@ -19,6 +19,7 @@ const GROUP_OF: Record<RunStatus, Exclude<SessionGroup, "all">> = {
   waiting: "paused",
   needs_human: "paused",
   done: "ended",
+  incomplete: "ended",
   failed: "ended",
 }
 export const groupOf = (run: Pick<SessionRun, "status">) => GROUP_OF[run.status]

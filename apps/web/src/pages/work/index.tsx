@@ -11,6 +11,7 @@ import {
   BotIcon,
   CircleCheckIcon,
   CircleSlashIcon,
+  CircleAlertIcon,
   CircleXIcon,
   EllipsisIcon,
   HandIcon,
@@ -332,8 +333,8 @@ function QuotaLine({ task }: { task: TaskDef }) {
   )
 }
 
-const RUN_ICON: Record<RunStatus, typeof CircleCheckIcon> = { running: BotIcon, waiting: HourglassIcon, needs_human: HandIcon, verifying: ScanSearchIcon, done: CircleCheckIcon, failed: CircleXIcon }
-const RUN_TEXT: Record<RunStatus, string> = { ...runStatusLabel, waiting: "挂起等待", done: "办完", failed: "失败" }
+const RUN_ICON: Record<RunStatus, typeof CircleCheckIcon> = { running: BotIcon, waiting: HourglassIcon, needs_human: HandIcon, verifying: ScanSearchIcon, done: CircleCheckIcon, incomplete: CircleAlertIcon, failed: CircleXIcon }
+const RUN_TEXT: Record<RunStatus, string> = { ...runStatusLabel, waiting: "挂起等待", done: "办完", incomplete: "没完成", failed: "失败" }
 
 function WorkDetail({ id, onEdit, onCancel, onRedo }: { id: string; onEdit: (item: WorkItemDetail) => void; onCancel: (item: WorkItemDetail) => void; onRedo: (item: WorkItemDetail) => void }) {
   const { user } = useMe()
@@ -672,7 +673,7 @@ function History({ item }: { item: WorkItemDetail }) {
         if (entry.kind === "run_ended" || entry.kind === "reported") return null
         if (entry.kind === "run_started") {
           const run = runs.find((each) => each.sessionId === entry.sessionId)
-          // agent 报了「办不成」：运行正常结束，单记没办成
+          // agent 报了「办不成」：运行正常结束，单记没办成。现在这种运行记「没完成」（下面写原因）；有「没完成」以前的旧运行记的是「已完成」
           const notDone = item.failKind === "not_done" && run === runs.at(-1) && run?.status === "done"
           return run ? <RunLine key={index} run={run} attempt={runs.indexOf(run) + 1} notDone={notDone} /> : null
         }
@@ -747,7 +748,7 @@ function RunLine({ run, attempt, notDone = false }: { run: WorkRun; attempt: num
       </TraceLine>
       <span className="pl-5.5 text-xs text-muted-foreground">
         {run.checkpointsTotal ? `检查点 完成 ${run.checkpointsDone}/${run.checkpointsTotal}` : "没有检查点"} · 花费 {money(run.costUsd)}
-        {run.status === "failed" && run.error ? ` · ${run.error}` : ""}
+        {(run.status === "failed" || run.status === "incomplete") && run.error ? ` · ${run.error}` : ""}
         {run.waitingWhat ? ` · 在等：${run.waitingWhat.replace(/^等/, "")}` : ""}
       </span>
     </a>

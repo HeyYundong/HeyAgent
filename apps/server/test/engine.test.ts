@@ -167,7 +167,8 @@ describe("场景 1：调内置工具再结束", () => {
     const denied = await mutate(ctx.app, "engine.runNow", li, { taskId })
     expect(denied.error?.data?.code).toBe("FORBIDDEN")
     const sessionId = await runNow(taskId)
-    await waitStatus(ctx.db, sessionId, "done")
+    // 勾检查点的参数不对、检查点没勾上就结束：记「没完成」
+    await waitStatus(ctx.db, sessionId, "incomplete")
     const rules = (await eventsOf(ctx.db, sessionId)).filter(
       (event) => event.kind === "rule"
     )
@@ -1476,6 +1477,7 @@ describe("其他接口", () => {
       "memory.propose",
       "notify.staff",
       "plan.set",
+      "run.not_done",
       "session.wait",
       "skill.load",
       "skill.propose",
@@ -1486,6 +1488,6 @@ describe("其他接口", () => {
         .filter((tool) => tool.alwaysOn)
         .map((tool) => tool.id)
         .sort()
-    ).toEqual(["ask.human", "checkpoint.mark", "plan.set", "session.wait"])
+    ).toEqual(["ask.human", "checkpoint.mark", "plan.set", "run.not_done", "session.wait"])
   })
 })

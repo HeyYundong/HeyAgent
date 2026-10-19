@@ -596,7 +596,7 @@ describe("work.report：报结果", () => {
     expect(await ctx.db.select().from(t.tools).where(inArray(t.tools.id, ["work.list", "work.report"]))).toEqual([])
   })
 
-  it("真跑：agent 报办不成 → 运行完成，单记没办成（not_done），配了重试也不重试，照常通知负责人", async () => {
+  it("真跑：agent 报办不成 → 运行没完成，单记没办成（not_done），配了重试也不重试，照常通知负责人", async () => {
     responder("test/p2-notdone", (options) =>
       promptOf(options).includes("已记在派活单")
         ? step([text("办不成：14 个候选都不是同一个东西")])
@@ -609,9 +609,9 @@ describe("work.report：报结果", () => {
     expect(row).toMatchObject({ failKind: "not_done", autoRetries: 0, attempts: 1, error: "agent 判断办不成：14 个候选都不是同一个东西" })
     expect(row.result).toMatchObject({ summary: "办不成：14 个候选都不是同一个东西", data: { 候选数: 14 } })
     expect(row.log.map((entry) => entry.kind)).toEqual(["created", "run_started", "reported", "run_ended"])
-    expect((await sessionRow(ctx.db, row.sessionId!))!.status).toBe("done")
+    expect((await sessionRow(ctx.db, row.sessionId!))!).toMatchObject({ status: "incomplete", error: "agent 判断办不成：14 个候选都不是同一个东西" })
     const notes = await ctx.db.select().from(t.notifications).where(eq(t.notifications.sessionId, row.sessionId!))
-    expect(notes.map((note) => [note.title, note.body])).toEqual([[expect.stringContaining("：没办成"), "agent 判断办不成：14 个候选都不是同一个东西"]])
+    expect(notes.map((note) => [note.title, note.body])).toEqual([[expect.stringContaining("：没完成"), "agent 判断办不成：14 个候选都不是同一个东西"]])
     const detail = (await query(ctx.app, "work.get", wang, { id })).data
     expect(detail.failKind).toBe("not_done")
   })
@@ -719,7 +719,8 @@ describe("没有检查点就不提检查点", () => {
     const b = await createTask(ctx.db, { modelId: "test/p2-cp", steps: [{ id: "s1", text: "存一张表", wait: false, checkpoint: "表已经存好" }] })
     for (const taskId of [a, b]) {
       const res = await mutate(ctx.app, "engine.runNow", wang, { taskId })
-      await waitStatus(ctx.db, res.data.sessionId, "done")
+      // 有检查点的那个没勾就说做完了：记「没完成」
+      await waitStatus(ctx.db, res.data.sessionId, taskId === a ? "done" : "incomplete")
     }
     const toolNames = (script: Script) => (script.prompts[0]!.tools ?? []).map((each) => each.name)
     expect(toolNames(plain)).not.toContain("checkpoint_mark")
