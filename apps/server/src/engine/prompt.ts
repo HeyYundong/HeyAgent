@@ -125,8 +125,8 @@ export function buildSystemPrompt(
         "## 浏览器",
         "浏览器工具（browser_ 开头）操作的是服务器上有界面的 Chrome，Chrome 配置决定代理、登录态、时区和语言。",
         profiles.length === 1
-          ? `- 本任务只允许 Chrome「${profiles[0]!.name}」（${profiles[0]!.id}），第一次用浏览器工具时自动选上，不用调 browser_use。`
-          : `- 先用 browser_use 选一个 Chrome 配置，按说明挑合适的：\n${profiles.map((profile) => `  - ${profile.id}「${profile.name}」${profile.description ? `：${profile.description}` : ""}`).join("\n") || "  - （没有可用的 Chrome 配置）"}`,
+          ? `- 本任务只允许 Chrome「${profiles[0]!.name}」（${profiles[0]!.id}），第一次用浏览器工具时自动打开，不用调 browser_use。它正被别的运行用着时会先挂起，空出来再叫你继续。`
+          : `- 直接用浏览器工具就行：第一次用时系统从本任务允许的 Chrome 里自动分配一个空闲的（每个 Chrome 同一时间只给一个运行用），都被占着就先挂起，空出来再叫你继续。一次运行从头到尾只用一个 Chrome，分到以后不能再换。只有任务要求用某个特定的 Chrome 时才调 browser_use 指定，而且要在第一次用浏览器工具之前调。允许的 Chrome：\n${profiles.map((profile) => `  - ${profile.id}「${profile.name}」${profile.description ? `：${profile.description}` : ""}`).join("\n") || "  - （没有可用的 Chrome 配置）"}`,
         "- 看页面：browser_snapshot 一定带 depth（先 4～6）看结构，再用 target 传元素 ref 展开局部；找文字用 browser_find。不要不带 depth 拿整页快照（长页面有几十万字）。",
         "- 点击、输入这类动作用 target 传快照里的元素 ref（例如 e12）。动作类工具不返回页面内容，做完要看结果就再拿一次快照。",
         "- 截图只存档留证（存成这次运行的文件），不会发给你；要读内容用快照。",

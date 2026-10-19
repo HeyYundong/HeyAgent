@@ -105,8 +105,8 @@ export class BrowserManager {
     instance.onClosed(() => {
       this.instances.delete(instance.id)
       if (instance.sessionId && this.bySession.get(instance.sessionId) === instance) this.bySession.delete(instance.sessionId)
-      // session 的 Chrome 关了：这个配置空出一个名额，叫醒排队的
-      if (instance.kind === "session") void wakeProfileWaiters(this.db, instance.profileId).catch((error) => console.warn(`[browser] 叫醒等 Chrome 名额的 session 失败：${(error as Error).message}`))
+      // session 的 Chrome 关了：这个配置空出来了，叫醒排队等它（或等任一允许的 Chrome）的
+      if (instance.kind === "session") void wakeProfileWaiters(this.db, instance.profileId).catch((error) => console.warn(`[browser] 叫醒等 Chrome 的 session 失败：${(error as Error).message}`))
       this.pumpSlots()
     })
   }
@@ -135,7 +135,7 @@ export class BrowserManager {
   }
 
   /**
-   * session 要用 Chrome：已经有（包括等人处理时保留着的）就接着用；没有就起一个（满了排队）。
+   * session 要用 Chrome：已经有（包括等人处理时保留着的）就接着用；没有就起一个（满了排队）。一个运行只用一个 Chrome，不切换。
    * onQueued：要排队时调一次（给 session 写一条「等待浏览器」的过程事件）。
    */
   async acquireForSession(input: { sessionId: string; profileId: string; allowedDomains: string[]; onQueued?: (used: number, max: number) => Promise<void> }): Promise<BrowserInstance> {
@@ -144,7 +144,8 @@ export class BrowserManager {
       if (existing.state === "held") await this.claim(existing)
       return existing
     }
-    if (existing) await existing.close({ writeBack: true, reason: "换了 Chrome 配置" })
+    // 一个运行从头到尾只用一个 Chrome（BrowserTools 不会换），这里兜底不切换
+    if (existing) throw new Error(`一次运行只能用一个 Chrome：这次运行已经在用 ${existing.profileId}，不能换成 ${input.profileId}`)
     const instance = new BrowserInstance(
       { db: this.db, keyring: this.keyring, gost: this.gost, workerId: this.workerId },
       { kind: "session", profileId: input.profileId, sessionId: input.sessionId, allowedDomains: input.allowedDomains }
@@ -153,7 +154,7 @@ export class BrowserManager {
     const max = await this.maxPerWorker()
     const full = this.used() >= max
     try {
-      // 这个 Chrome 配置同时在用的运行满了：抛 ProfileFullError，session 挂起排队（不占这台 worker 的空位）
+      // 这个 Chrome 配置正在被别的运行用：抛 ProfileFullError，session 换一个空闲的或挂起排队（不占这台 worker 的空位）
       await instance.register(full ? "queued" : "starting")
     } catch (error) {
       await instance.close({ writeBack: false, reason: (error as Error).message })

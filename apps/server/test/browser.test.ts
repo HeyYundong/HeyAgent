@@ -5,7 +5,7 @@ import { serve } from "@hono/node-server"
 import { and, eq, inArray, isNull } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import WebSocket from "ws"
-import { leaseEventName, profileEventName, SETTING_KEYS } from "@heyagent/shared"
+import { ANY_PROFILE_EVENT, leaseEventName, profileEventName, SETTING_KEYS } from "@heyagent/shared"
 
 import { adaptSchema, browserToolId } from "../src/browser/tools.js"
 import { chromeArgs } from "../src/browser/chrome.js"
@@ -22,7 +22,7 @@ import { casWrite, loadVault, mergeStates, writeBackMerged, type StorageState, t
 import * as t from "../src/db/schema.js"
 import { buildSnapshot } from "../src/engine/sessions.js"
 import { suspendInTx } from "../src/engine/waits.js"
-import { call, createTask, Script, setupEngine, step, text, useScript, waitStatus, eventsOf, type EngineTestContext } from "./engine-helpers.js"
+import { call, createTask, Script, sessionRow, setupEngine, step, text, useScript, waitStatus, eventsOf, type EngineTestContext } from "./engine-helpers.js"
 import { login, mutate, query } from "./helpers.js"
 
 const cookie = (name: string, value: string, extra: Partial<StoredCookie> = {}): StoredCookie => ({
@@ -331,11 +331,11 @@ describe("账号租约", () => {
   })
 })
 
-describe("Chrome 配置的名额", () => {
-  it("同时用它的运行满了：登记时抛 ProfileFullError；人开的不占名额；关掉一个叫醒最早排队的", async () => {
+describe("每个 Chrome 同一时间只给一个运行用", () => {
+  it("已经有运行在用：登记时抛 ProfileFullError；人开的不占；关掉后叫醒排队的", async () => {
     const workerId = "w-slot-test"
     await ctx.db.insert(t.browserWorkers).values({ id: workerId, controlUrl: "http://127.0.0.1:9", maxBrowsers: 4 })
-    await ctx.db.insert(t.browserProfiles).values({ id: "br-slot", name: "名额测试", maxSessions: 1 })
+    await ctx.db.insert(t.browserProfiles).values({ id: "br-slot", name: "名额测试" })
     const taskId = await createTask(ctx.db, { modelId: "test/slot" })
     for (const id of ["R-S-1", "R-S-2"]) await ctx.db.insert(t.sessions).values({ id, taskId, status: "running", modelId: "test/slot", startedAt: new Date() })
     const deps = { db: ctx.db, keyring: () => ctx.keyring, gost: {} as GostPool, workerId }
@@ -343,14 +343,14 @@ describe("Chrome 配置的名额", () => {
       new BrowserInstance(deps, sessionId ? { kind: "session", profileId: "br-slot", sessionId, allowedDomains: [] } : { kind: "login", profileId: "br-slot", openedById: "u-wang", allowedDomains: [] })
     const first = open("R-S-1")
     await first.register("starting")
-    // 人「打开 Chrome」开的不占名额
+    // 人「打开 Chrome」开的不占
     await open().register("starting")
     expect(await profileSessionCount(ctx.db, "br-slot")).toBe(1)
     const error = await open("R-S-2").register("starting").catch((each: unknown) => each)
     expect(error).toBeInstanceOf(ProfileFullError)
-    expect(error).toMatchObject({ used: 1, max: 1, profileName: "名额测试" })
+    expect(error).toMatchObject({ profileName: "名额测试", message: "Chrome「名额测试」正在被别的运行用" })
     await ctx.db.transaction((tx) => suspendInTx(ctx.db, tx, { sessionId: "R-S-2", status: "waiting", what: "等待浏览器", triggerKind: "event", event: profileEventName("br-slot") }))
-    // 满着时叫不醒
+    // 占着时叫不醒
     expect(await wakeProfileWaiters(ctx.db, "br-slot")).toEqual([])
     // R-S-1 的 Chrome 关了（登记删掉）：R-S-2 被叫醒
     await ctx.db.delete(t.browserInstances).where(eq(t.browserInstances.id, first.id))
@@ -359,6 +359,118 @@ describe("Chrome 配置的名额", () => {
     await ctx.db.update(t.sessions).set({ status: "failed" }).where(eq(t.sessions.taskId, taskId))
     await ctx.db.delete(t.browserWorkers).where(eq(t.browserWorkers.id, workerId))
     await ctx.db.delete(t.browserProfiles).where(eq(t.browserProfiles.id, "br-slot"))
+  })
+
+  it("运行自动挑空闲的 Chrome，分到后绝不换；全被占着挂起等任一个，空出来叫醒；browser.use 指定被占的就等那一个，分到后不能再换", async () => {
+    // 这台机器没有 Chrome：挑中、登记成功后起 Chrome 会失败（「浏览器起不来」），够看出挑的是哪个
+    const workerId = "w-auto-test"
+    await ctx.db.insert(t.browserWorkers).values({ id: workerId, controlUrl: "http://127.0.0.1:9", maxBrowsers: 4 })
+    await ctx.db.insert(t.browserProfiles).values([
+      { id: "br-auto-1", name: "自动一", position: 1 },
+      { id: "br-auto-2", name: "自动二", position: 2 },
+      { id: "br-auto-3", name: "不在任务里", position: 3 },
+    ])
+    const holderTask = await createTask(ctx.db, { modelId: "test/auto-holder" })
+    for (const id of ["R-H-1", "R-H-2", "R-H-3", "R-H-4"]) await ctx.db.insert(t.sessions).values({ id, taskId: holderTask, status: "running", modelId: "test/auto-holder", startedAt: new Date() })
+    // 别的运行占着某个 Chrome（直接登记一行，像别的 worker 上开着的）
+    const occupy = async (id: string, profileId: string, sessionId: string) =>
+      ctx.db.insert(t.browserInstances).values({ id, workerId, kind: "session", profileId, sessionId, state: "running" })
+    const release = async (id: string) => ctx.db.delete(t.browserInstances).where(eq(t.browserInstances.id, id))
+    const newTask = async (modelId: string) => {
+      const taskId = await createTask(ctx.db, { modelId, toolIds: ["browser"] })
+      await ctx.db.update(t.tasks).set({ browserProfileIds: ["br-auto-1", "br-auto-2"], allowedDomains: [] }).where(eq(t.tasks.id, taskId))
+      return taskId
+    }
+    const run = async (taskId: string) => (await mutate(ctx.app, "engine.runNow", wang, { taskId })).data.sessionId as string
+    const waitOf = async (sessionId: string) =>
+      (await ctx.db.select().from(t.sessionWaits).where(and(eq(t.sessionWaits.sessionId, sessionId), eq(t.sessionWaits.status, "waiting"))))[0]
+
+    // 1) 自动一被占着：运行 B 自动挑到自动二，不挂起
+    await occupy("bw-auto-a", "br-auto-1", "R-H-1")
+    const scriptB = useScript(
+      "test/auto-b",
+      new Script([
+        step([call("browser.navigate", { url: "https://example.com/" })]),
+        // B 已经分到自动二。这时自动一空出来、自动二被别的运行占了：B 不换，挂起等自动二
+        async () => {
+          await release("bw-auto-a")
+          await occupy("bw-auto-x", "br-auto-2", "R-H-4")
+          return step([call("browser.navigate", { url: "https://example.com/" })])
+        },
+        step([text("结束")]),
+      ])
+    )
+    const b = await run(await newTask("test/auto-b"))
+    await waitStatus(ctx.db, b, "waiting", 60_000)
+    expect(scriptB.promptText(1)).toMatch(/浏览器起不来/)
+    expect((await sessionRow(ctx.db, b))!.browserProfileId).toBe("br-auto-2")
+    expect((await eventsOf(ctx.db, b)).filter((event) => event.title.includes("等待浏览器"))).toHaveLength(1)
+    expect(await waitOf(b)).toMatchObject({ event: profileEventName("br-auto-2"), what: "等待浏览器：Chrome「自动二」正在被别的运行用" })
+    // 自动一空着也叫不醒 B
+    expect(await wakeProfileWaiters(ctx.db, "br-auto-1")).toEqual([])
+    await release("bw-auto-x")
+    await wakeProfileWaiters(ctx.db, "br-auto-2")
+    await waitStatus(ctx.db, b, "done", 60_000)
+    expect(scriptB.promptText(2)).toContain("Chrome「自动二」空出来了")
+    expect((await sessionRow(ctx.db, b))!.browserProfileId).toBe("br-auto-2")
+    // 系统提示：不再要求先 browser_use
+    const systemB = JSON.stringify(scriptB.prompts[0]!.prompt[0])
+    expect(systemB).toContain("自动分配一个空闲的")
+    expect(systemB).not.toContain("先用 browser_use")
+
+    // 2) 两个都被占着：运行 C 挂起等任一个
+    await occupy("bw-auto-a", "br-auto-1", "R-H-1")
+    await occupy("bw-auto-b", "br-auto-2", "R-H-2")
+    const scriptC = useScript(
+      "test/auto-c",
+      new Script([step([call("browser.navigate", { url: "https://example.com/" })]), step([call("browser.navigate", { url: "https://example.com/" })]), step([text("结束")])])
+    )
+    const c = await run(await newTask("test/auto-c"))
+    await waitStatus(ctx.db, c, "waiting", 60_000)
+    expect(await waitOf(c)).toMatchObject({ event: ANY_PROFILE_EVENT, what: "等待浏览器：本任务允许的 2 个 Chrome 都在被别的运行用" })
+    // 空出来的 Chrome 不在 C 允许的里面：不叫醒
+    expect(await wakeProfileWaiters(ctx.db, "br-auto-3")).toEqual([])
+    expect((await sessionRow(ctx.db, c))!.status).toBe("waiting")
+    // 自动一空出来（A 的 Chrome 关了）：清扫时叫醒 C，C 先试空出来的自动一
+    await release("bw-auto-a")
+    await sweepLeases(ctx.db)
+    await waitStatus(ctx.db, c, "done", 60_000)
+    // 挂起前的工具结果和叫醒的消息在继续后的第一次调用里
+    expect(scriptC.promptText(1)).toContain("都在被别的运行用")
+    expect(scriptC.promptText(1)).toContain("Chrome「自动一」空出来了")
+    expect(scriptC.promptText(2)).toMatch(/浏览器起不来/)
+    expect((await sessionRow(ctx.db, c))!.browserProfileId).toBe("br-auto-1")
+
+    // 3) agent 指定被占着的自动一：挂起只等它，自动二空着也不换；分到以后再指定别的被拒绝
+    await release("bw-auto-b")
+    await occupy("bw-auto-c", "br-auto-1", "R-H-3")
+    const scriptD = useScript(
+      "test/auto-d",
+      new Script([
+        step([call("browser.use", { profileId: "br-auto-1" })]),
+        step([call("browser.navigate", { url: "https://example.com/" })]),
+        step([call("browser.navigate", { url: "https://example.com/" })]),
+        step([call("browser.use", { profileId: "br-auto-2" })]),
+        step([call("browser.use", { profileId: "br-auto-1" })]),
+        step([text("结束")]),
+      ])
+    )
+    const d = await run(await newTask("test/auto-d"))
+    await waitStatus(ctx.db, d, "waiting", 60_000)
+    expect(await waitOf(d)).toMatchObject({ event: profileEventName("br-auto-1"), what: "等待浏览器：Chrome「自动一」正在被别的运行用" })
+    expect((await sessionRow(ctx.db, d))!.browserProfileId).toBe("br-auto-1")
+    expect(await wakeProfileWaiters(ctx.db, "br-auto-2")).toEqual([])
+    await release("bw-auto-c")
+    await wakeProfileWaiters(ctx.db, "br-auto-1")
+    await waitStatus(ctx.db, d, "done", 60_000)
+    expect(scriptD.promptText(2)).toContain("Chrome「自动一」空出来了")
+    expect(scriptD.promptText(3)).toMatch(/浏览器起不来/)
+    expect(scriptD.promptText(4)).toContain("一次运行只能用一个 Chrome：这次运行已经在用 Chrome「自动一」（br-auto-1），不能换成 br-auto-2")
+    expect(scriptD.promptText(5)).toContain("这次运行已经在用 Chrome「自动一」")
+    expect((await sessionRow(ctx.db, d))!.browserProfileId).toBe("br-auto-1")
+
+    await ctx.db.update(t.sessions).set({ status: "failed" }).where(eq(t.sessions.taskId, holderTask))
+    await ctx.db.delete(t.browserWorkers).where(eq(t.browserWorkers.id, workerId))
   })
 })
 

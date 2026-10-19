@@ -2,10 +2,11 @@
 // - session 第一次打开某个平台域名下的网址时，用这个 Chrome 配置在该平台的账号申请租约；
 // - 满了：这次导航先拦下，session 挂起「等待浏览器」（等事件 browser.lease:<账号 id>）；有人释放租约时叫醒最早的那个；
 // - 租约带过期时间，持有的 worker 每 30 秒续一次；worker 死掉后过期的租约不再算数，定时清扫顺便叫醒排队的。
-// 另外每个 Chrome 配置同时最多 max_sessions 个运行在用（按开着的 session Chrome 数）：满了 session 挂起等事件
-// browser.profile:<配置 id>，有 session 的 Chrome 关掉时叫醒排队的。
-import { and, asc, count, eq, gt, inArray, isNull, lte, ne, sql } from "drizzle-orm"
-import { hostMatches, leaseEventName, profileEventName } from "@heyagent/shared"
+// 另外每个 Chrome 配置同一时间只给一个运行用（按开着的 session Chrome 算）。运行用浏览器时系统从任务允许的里挑空闲的；
+// 允许的全被占着，session 挂起等事件 browser.profile:any（agent 指定了某一个的，等 browser.profile:<配置 id>），
+// 有 session 的 Chrome 关掉时按挂起的先后叫醒一个。
+import { and, asc, count, eq, gt, inArray, isNull, lte, ne, or, sql } from "drizzle-orm"
+import { ANY_PROFILE_EVENT, hostMatches, leaseEventName, profileEventName } from "@heyagent/shared"
 
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
@@ -155,49 +156,65 @@ export async function wakeLeaseWaiters(db: Db, accountId: string): Promise<strin
   return woken
 }
 
-/** 这个 Chrome 配置现在开着几个 session 的 Chrome（不算正在关的、心跳超时的 worker 上的） */
+/** 开着 session Chrome 的条件：不算正在关的、心跳超时的 worker 上的 */
+const liveSessionInstance = () =>
+  and(eq(t.browserInstances.kind, "session"), ne(t.browserInstances.state, "closing"), gt(t.browserWorkers.heartbeatAt, new Date(Date.now() - 60_000)))
+
+/** 这个 Chrome 配置现在开着几个 session 的 Chrome（每个 Chrome 同时只给一个运行用，正常是 0 或 1） */
 export async function profileSessionCount(db: DbLike, profileId: string) {
   const [row] = await db
     .select({ n: count() })
     .from(t.browserInstances)
     .innerJoin(t.browserWorkers, eq(t.browserWorkers.id, t.browserInstances.workerId))
-    .where(
-      and(
-        eq(t.browserInstances.profileId, profileId),
-        eq(t.browserInstances.kind, "session"),
-        ne(t.browserInstances.state, "closing"),
-        gt(t.browserWorkers.heartbeatAt, new Date(Date.now() - 60_000))
-      )
-    )
+    .where(and(eq(t.browserInstances.profileId, profileId), liveSessionInstance()))
   return row?.n ?? 0
 }
 
-/** Chrome 配置有空名额时，按挂起的先后叫醒排队的 session（叫醒后它重新起 Chrome，抢不到就再排队） */
+/** 这些 Chrome 配置里，现在正被运行占着的（挑空闲的用；登记时还会锁行再查一次） */
+export async function busyProfileIds(db: DbLike, profileIds: string[]): Promise<Set<string>> {
+  if (profileIds.length === 0) return new Set()
+  const rows = await db
+    .selectDistinct({ id: t.browserInstances.profileId })
+    .from(t.browserInstances)
+    .innerJoin(t.browserWorkers, eq(t.browserWorkers.id, t.browserInstances.workerId))
+    .where(and(inArray(t.browserInstances.profileId, profileIds), liveSessionInstance()))
+  return new Set(rows.map((row) => row.id))
+}
+
+/**
+ * Chrome 配置空出来时，叫醒一个排队的 session：等这个 Chrome 的、和等「任一允许的 Chrome」且快照里允许这个的，
+ * 合在一起按挂起的先后叫醒最早的那个（一个 Chrome 只给一个运行用，所以只叫一个）。
+ * 等「任一」的（还没分到 Chrome）叫醒后重新挑空闲的，抢不到就再排队。
+ */
 export async function wakeProfileWaiters(db: Db, profileId: string): Promise<string[]> {
-  const [profile] = await db.select({ max: t.browserProfiles.maxSessions, name: t.browserProfiles.name }).from(t.browserProfiles).where(eq(t.browserProfiles.id, profileId))
+  const [profile] = await db.select({ name: t.browserProfiles.name }).from(t.browserProfiles).where(eq(t.browserProfiles.id, profileId))
   if (!profile) return []
-  let free = profile.max - (await profileSessionCount(db, profileId))
-  if (free <= 0) return []
+  if ((await profileSessionCount(db, profileId)) > 0) return []
   const waits = await db
-    .select({ id: t.sessionWaits.id })
+    .select({ id: t.sessionWaits.id, event: t.sessionWaits.event })
     .from(t.sessionWaits)
-    .where(and(eq(t.sessionWaits.status, "waiting"), eq(t.sessionWaits.event, profileEventName(profileId)), isNull(t.sessionWaits.humanItemId)))
+    .innerJoin(t.sessions, eq(t.sessions.id, t.sessionWaits.sessionId))
+    .where(
+      and(
+        eq(t.sessionWaits.status, "waiting"),
+        isNull(t.sessionWaits.humanItemId),
+        or(
+          eq(t.sessionWaits.event, profileEventName(profileId)),
+          and(eq(t.sessionWaits.event, ANY_PROFILE_EVENT), sql`${t.sessions.snapshot} -> 'browser' -> 'profiles' @> ${JSON.stringify([{ id: profileId }])}::jsonb`)
+        )
+      )
+    )
     .orderBy(asc(t.sessionWaits.createdAt), asc(t.sessionWaits.id))
-  const woken: string[] = []
   for (const wait of waits) {
-    if (free <= 0) break
     const resumed = await resume(db, {
       waitId: wait.id,
       cause: "event",
       title: `等到浏览器了：Chrome「${profile.name}」空出来了`,
-      message: `等到浏览器了：Chrome「${profile.name}」有空名额了。之前没打开的网页需要重新打开。`,
+      message: `等到浏览器了：Chrome「${profile.name}」空出来了。之前没打开的网页需要重新打开。`,
     })
-    if (resumed) {
-      woken.push(resumed)
-      free--
-    }
+    if (resumed) return [resumed]
   }
-  return woken
+  return []
 }
 
 /** 定时清扫：过期没释放的租约标成已释放；有空位的账号叫醒排队的（释放时没叫到的、worker 死掉留下的） */
@@ -215,13 +232,16 @@ export async function sweepLeases(db: Db) {
     const accountId = row.event?.slice("browser.lease:".length)
     if (accountId) await wakeLeaseWaiters(db, accountId).catch(() => {})
   }
-  // 等 Chrome 配置名额的：worker 死掉没叫到的、主管调大了上限的
-  const profiles = await db
+  // 等 Chrome 的：worker 死掉没叫到的、叫醒后没抢到又空着的。有等「任一」的就把每个 Chrome 都看一遍（配置不多）
+  const profileWaits = await db
     .selectDistinct({ event: t.sessionWaits.event })
     .from(t.sessionWaits)
     .where(and(eq(t.sessionWaits.status, "waiting"), sql`${t.sessionWaits.event} like 'browser.profile:%'`))
-  for (const row of profiles) {
-    const profileId = row.event?.slice("browser.profile:".length)
-    if (profileId) await wakeProfileWaiters(db, profileId).catch(() => {})
+  const profileIds = new Set<string>()
+  for (const row of profileWaits) if (row.event && row.event !== ANY_PROFILE_EVENT) profileIds.add(row.event.slice("browser.profile:".length))
+  if (profileWaits.some((row) => row.event === ANY_PROFILE_EVENT)) {
+    const all = await db.select({ id: t.browserProfiles.id }).from(t.browserProfiles).orderBy(asc(t.browserProfiles.position), asc(t.browserProfiles.createdAt))
+    for (const row of all) profileIds.add(row.id)
   }
+  for (const profileId of profileIds) await wakeProfileWaiters(db, profileId).catch(() => {})
 }

@@ -1,5 +1,8 @@
 // 「浏览器」工具组（m2.md 第 1、5、6、7 条）：任务选了系统自带的「浏览器」工具，工具网关就开放这一组：
-// - browser.use({ profileId })：选用哪个 Chrome 配置（只允许一个时第一次调浏览器工具自动选上）；
+// - Chrome 配置由系统分配：第一次调浏览器工具时从任务允许的里挑一个空闲的（每个 Chrome 同一时间只给一个运行用），
+//   全被占着就挂起「等待浏览器」，有一个空出来时按挂起的先后叫醒；
+// - 一个运行从头到尾只用一个 Chrome，绝不切换：分到以后（记在 sessions.browser_profile_id）挂起再继续时它被占着，就等它；
+// - browser.use({ profileId })：可选，只能在还没分到 Chrome 时调，任务要求用某个特定 Chrome 时才用（被占着就等它）；
 // - Playwright MCP 的工具，browser_xxx 统一换成 browser.xxx（给模型的名字把点换成下划线，又变回 browser_xxx）；
 //   一律屏蔽 browser_run_code_unsafe，browser_evaluate 要任务里打开「允许执行脚本」才给。
 // 每次调用：调之前查导航参数（白名单、账号租约）→ 交给 MCP → 调完后兜底扫一遍页面、取走被拦下的导航、
@@ -13,6 +16,7 @@ import {
   browserActionLabel,
   browserActionTag,
   hostOf,
+  ANY_PROFILE_EVENT,
   leaseEventName,
   profileEventName,
   urlAllowed,
@@ -38,7 +42,7 @@ import { judgePage, parseVisionAnswer, providerCaptchaNote, VISION_PROMPT, type 
 import { autoLogin, loadAccountPassword, loginModelId, type AutoLoginCaptcha } from "./auto-login.js"
 import { CAPTCHA_MAX_TRIES, solveCaptcha, type CaptchaResult, type CaptchaTry } from "./captcha.js"
 import { ProfileFullError, type BlockedNavigation, type BrowserInstance } from "./instance.js"
-import { accountForHost } from "./leases.js"
+import { accountForHost, busyProfileIds } from "./leases.js"
 import { getBrowserManager } from "./manager.js"
 import { BLOCKED_MCP_TOOLS, EVALUATE_TOOL, listBrowserMcpTools } from "./mcp.js"
 
@@ -145,7 +149,8 @@ function listImages(dir: string, out: string[] = []): string[] {
 export class BrowserTools {
   private readonly ctx: Ctx
   private readonly mcpTools: McpToolInfo[]
-  private selected?: string
+  /** 这次运行分到的 Chrome（系统挑的或 browser.use 指定的）。分到以后从头到尾只用它 */
+  private assigned?: string
   private instance?: BrowserInstance
   private proxyWarned = false
   /** 每个页面自动过验证码试了几次（问一次视觉模型算一次） */
@@ -160,7 +165,7 @@ export class BrowserTools {
   private constructor(ctx: Ctx, mcpTools: McpToolInfo[]) {
     this.ctx = ctx
     this.mcpTools = mcpTools
-    this.selected = ctx.session.browserProfileId ?? undefined
+    this.assigned = ctx.session.browserProfileId ?? undefined
   }
 
   static async create(ctx: Ctx): Promise<BrowserTools> {
@@ -173,6 +178,7 @@ export class BrowserTools {
     if (manager && held) {
       if (held.state === "held") await manager.claim(held)
       group.instance = held
+      group.assigned ??= held.profileId
     }
     return group
   }
@@ -205,9 +211,9 @@ export class BrowserTools {
         id: "browser.use",
         def: {
           id: "browser.use",
-          name: "浏览器：选用 Chrome",
-          summary: "选用哪个 Chrome 配置（代理、登录态、时区语言都跟着配置走）",
-          description: `选用哪个 Chrome 配置，之后的浏览器工具都在这个 Chrome 里操作。本任务允许的：${this.profiles.map((profile) => `${profile.id}「${profile.name}」${profile.description ? `：${profile.description}` : ""}`).join("；") || "无"}。只允许一个时不用调，第一次用浏览器工具会自动选上。`,
+          name: "浏览器：指定 Chrome",
+          summary: "指定用哪个 Chrome 配置（一般不用调，系统会自动分配一个空闲的）",
+          description: `一般不用调：第一次用浏览器工具时，系统会从本任务允许的 Chrome 里自动分配一个空闲的。只有任务要求用某个特定 Chrome 时才调，而且必须在第一次用浏览器工具之前调；它正被别的运行用着时会挂起，等它空出来。一次运行从头到尾只用一个 Chrome，分到（或指定）以后不能再换。本任务允许的：${this.profiles.map((profile) => `${profile.id}「${profile.name}」${profile.description ? `：${profile.description}` : ""}`).join("；") || "无"}。`,
           source: "builtin",
           risk: "read",
         },
@@ -257,77 +263,110 @@ export class BrowserTools {
   private async use(profileId: string): Promise<ToolOutcome> {
     if (!this.profiles.some((profile) => profile.id === profileId))
       return fail(`本任务不允许用 Chrome 配置 ${profileId}。可选：${this.profiles.map((profile) => profile.id).join("、") || "无"}`)
-    this.selected = profileId
+    // 一个运行从头到尾只用一个 Chrome：分到以后不再切换
+    if (this.assigned === profileId) return { output: `这次运行已经在用 Chrome「${this.profileName(profileId)}」（${profileId}），不用再指定。` }
+    if (this.assigned)
+      return fail(`一次运行只能用一个 Chrome：这次运行已经在用 Chrome「${this.profileName(this.assigned)}」（${this.assigned}），不能换成 ${profileId}。接着用现在这个就行。`)
+    await this.assign(profileId)
+    return { output: `已指定 Chrome「${this.profileName(profileId)}」（${profileId}），这次运行之后都用它。下一次调浏览器工具时打开；它正被别的运行用着的话会挂起等它。` }
+  }
+
+  /** 记下这次运行分到的 Chrome（页面显示用的哪个；挂起再继续时只用它） */
+  private async assign(profileId: string) {
+    if (this.assigned === profileId) return
+    this.assigned = profileId
     await this.ctx.db.update(t.sessions).set({ browserProfileId: profileId }).where(eq(t.sessions.id, this.ctx.session.id))
-    const switching = this.instance && this.instance.profileId !== profileId
-    return { output: `已选用 Chrome「${this.profileName(profileId)}」（${profileId}）。${switching ? "之前开着的 Chrome 会写回登录态后关掉，" : ""}下一次调浏览器工具时打开。` }
   }
 
-  /** 现在用哪个 Chrome 配置：选过的，或者只允许一个时自动选上（并记到 session 上） */
-  private async profileId(): Promise<string | undefined> {
-    if (this.selected) return this.selected
-    if (this.profiles.length === 1) {
-      this.selected = this.profiles[0]!.id
-      await this.ctx.db.update(t.sessions).set({ browserProfileId: this.selected }).where(eq(t.sessions.id, this.ctx.session.id))
-      return this.selected
-    }
-    return undefined
+  /** 还没分到 Chrome 时可以挑的：允许的里现在空闲的，按配置的顺序（position、创建时间）。空数组 = 都被占着 */
+  private async freeProfiles(): Promise<string[]> {
+    const ids = this.profiles.map((profile) => profile.id)
+    const busy = await busyProfileIds(this.ctx.db, ids)
+    return ids.filter((id) => !busy.has(id))
   }
 
-  /** 懒启动：第一次真正调浏览器工具时才起 Chrome 和 MCP */
+  /** 懒启动：第一次真正调浏览器工具时才分配 Chrome、起 Chrome 和 MCP */
   private async ensure(): Promise<BrowserInstance | ToolOutcome> {
-    const profileId = await this.profileId()
-    if (!profileId)
-      return fail(
-        this.profiles.length
-          ? `先用 browser_use 选一个 Chrome 配置。可选：${this.profiles.map((profile) => `${profile.id}「${profile.name}」`).join("、")}`
-          : "本任务没有可用的 Chrome 配置（任务里允许的 Chrome 配置都不在了），请让负责人检查任务设置"
-      )
+    if (!this.profiles.length) return fail("本任务没有可用的 Chrome 配置（任务里允许的 Chrome 配置都不在了），请让负责人检查任务设置")
     const manager = getBrowserManager()
     if (!manager) return fail("这个进程不能开浏览器（只有带 Chrome 的 worker 能开）")
-    if (this.instance && this.instance.state !== "closing" && this.instance.profileId === profileId) return this.instance
-    const { db, session, snapshot } = this.ctx
-    try {
-      const fresh = !manager.forSession(session.id)
-      this.instance = await manager.acquireForSession({
-        sessionId: session.id,
-        profileId,
-        allowedDomains: snapshot.browser?.allowedDomains ?? [],
-        onQueued: async (used, max) => {
-          await appendEvent(db, session.id, {
-            kind: "wait",
-            title: "等待浏览器",
-            detail: `这台 worker 同时最多开 ${max} 个 Chrome，现在已经开了 ${used} 个，排队等空位。`,
-          })
-        },
-      })
-      await this.instance.ensureMcp()
-      if (fresh)
-        await appendEvent(db, session.id, {
-          kind: "plan",
-          title: `打开了 Chrome「${this.profileName(profileId)}」`,
-          detail: `浏览器 ${this.instance.id}${snapshot.browser?.allowedDomains.length ? `；网址白名单：${snapshot.browser.allowedDomains.join("、")}` : ""}`,
-        })
-      return this.instance
-    } catch (error) {
-      if (error instanceof ProfileFullError) return this.profileFullOutcome(profileId, error)
-      const message = (error as Error).message
-      if (/gost|代理/.test(message)) await this.warnProxy(message)
-      return fail(`浏览器起不来：${message}`)
+    // 开着的（包括等人处理时保留着的）接着用
+    if (this.instance && this.instance.state !== "closing" && (!this.assigned || this.instance.profileId === this.assigned)) return this.instance
+    // 已经分到了：只用它，被别的运行占着就等它
+    if (this.assigned) {
+      const profileId = this.assigned
+      try {
+        return await this.open(manager, profileId)
+      } catch (error) {
+        if (error instanceof ProfileFullError) return this.busyOutcome(profileId)
+        return this.startFailed(error, profileId)
+      }
     }
+    // 第一次分配：按顺序挑空闲的；挑的时候还空着、登记时被别的运行抢先了，就换下一个（这时还没真正用上任何 Chrome）
+    for (const profileId of await this.freeProfiles()) {
+      try {
+        return await this.open(manager, profileId)
+      } catch (error) {
+        if (error instanceof ProfileFullError) continue
+        return this.startFailed(error, profileId)
+      }
+    }
+    // 都被占着：任务只允许一个就等它，否则等任一允许的空出来（叫醒后重新挑）
+    return this.busyOutcome(this.profiles.length === 1 ? this.profiles[0]!.id : undefined)
   }
 
-  /** 这个 Chrome 配置同时在用的运行满了：session 挂起「等待浏览器」，有运行用完关掉 Chrome 时叫醒 */
-  private async profileFullOutcome(profileId: string, error: ProfileFullError): Promise<ToolOutcome> {
+  /** 登记上了、Chrome 没起来：也算分到了这个 Chrome（下次还用它，不换） */
+  private async startFailed(error: unknown, profileId: string): Promise<ToolOutcome> {
+    await this.assign(profileId).catch(() => {})
+    const message = (error as Error).message
+    if (/gost|代理/.test(message)) await this.warnProxy(message, profileId)
+    return fail(`浏览器起不来：${message}`)
+  }
+
+  private async open(manager: NonNullable<ReturnType<typeof getBrowserManager>>, profileId: string): Promise<BrowserInstance> {
+    const { db, session, snapshot } = this.ctx
+    const fresh = !manager.forSession(session.id)
+    // 登记成功（没抛 ProfileFullError）就算分到了这个 Chrome：排队等 worker 空位时、起好以后都记下
+    this.instance = await manager.acquireForSession({
+      sessionId: session.id,
+      profileId,
+      allowedDomains: snapshot.browser?.allowedDomains ?? [],
+      onQueued: async (used, max) => {
+        await this.assign(profileId)
+        await appendEvent(db, session.id, {
+          kind: "wait",
+          title: "等待浏览器",
+          detail: `这台 worker 同时最多开 ${max} 个 Chrome，现在已经开了 ${used} 个，排队等空位。`,
+        })
+      },
+    })
+    await this.assign(profileId)
+    await this.instance.ensureMcp()
+    if (fresh)
+      await appendEvent(db, session.id, {
+        kind: "plan",
+        title: `打开了 Chrome「${this.profileName(profileId)}」`,
+        // 「Chrome 配置 <id>；」开头：浏览器页「最近用它的运行」按这个认（shared 的 recentRunsUsing）
+        detail: `Chrome 配置 ${profileId}；浏览器 ${this.instance.id}${snapshot.browser?.allowedDomains.length ? `；网址白名单：${snapshot.browser.allowedDomains.join("、")}` : ""}`,
+      })
+    return this.instance
+  }
+
+  /**
+   * Chrome 被别的运行占着：session 挂起「等待浏览器」，有 Chrome 空出来时按挂起的先后叫醒。
+   * profileId：只等这一个（agent 指定的、任务只允许一个）；不给就等任一允许的。
+   */
+  private async busyOutcome(profileId?: string): Promise<ToolOutcome> {
     const settings = await loadEngineSettings(this.ctx.db)
+    const what = profileId ? `Chrome「${this.profileName(profileId)}」正在被别的运行用` : `本任务允许的 ${this.profiles.length} 个 Chrome 都在被别的运行用`
     return {
-      output: `Chrome「${error.profileName}」同时最多 ${error.max} 个运行在用，现在已经满了，已排队等空位。先挂起，轮到时会叫你继续（网页需要重新打开）。`,
+      output: `${what}，已排队等它空出来。先挂起，轮到时会叫你继续（网页需要重新打开）。`,
       suspend: {
         kind: "wait",
         input: {
-          what: `等待浏览器：Chrome「${error.profileName}」同时最多 ${error.max} 个运行在用`,
+          what: `等待浏览器：${what}`,
           triggerKind: "event",
-          event: profileEventName(profileId),
+          event: profileId ? profileEventName(profileId) : ANY_PROFILE_EVENT,
           fallbackDays: settings.eventFallbackDays,
           deadlineAt: new Date(Date.now() + settings.eventFallbackDays * 24 * 60 * 60 * 1000),
         },
@@ -336,11 +375,11 @@ export class BrowserTools {
   }
 
   /** 代理挂了：报错 + 告警（通知任务负责人），绝不退回直连 */
-  private async warnProxy(detail: string) {
+  private async warnProxy(detail: string, profileId = this.instance?.profileId) {
     if (this.proxyWarned) return
     this.proxyWarned = true
     const { db, session, snapshot } = this.ctx
-    const name = this.selected ? this.profileName(this.selected) : ""
+    const name = profileId ? this.profileName(profileId) : ""
     await notifyUsers(db, {
       userIds: [snapshot.task.ownerId],
       title: `Chrome「${name}」的代理连不上`,
@@ -489,7 +528,7 @@ export class BrowserTools {
 
   /** 操作历史记一行（浏览器页看）。记不上不影响工具本身 */
   private async record(name: string, failed: boolean, url: string | undefined) {
-    const profileId = this.selected
+    const profileId = this.instance?.profileId ?? this.assigned
     if (!profileId || !url || url === "about:blank") return
     await this.ctx.db
       .insert(t.browserActions)

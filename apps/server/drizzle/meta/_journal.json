@@ -134,6 +134,13 @@
       "when": 1792330618202,
       "tag": "0018_dispatch_p2",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1792391560714,
+      "tag": "0019_browser_one_session",
+      "breakpoints": true
     }
   ]
 }

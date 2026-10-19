@@ -15,7 +15,6 @@ export interface BrowserProfileFields {
   exitIp?: string
   timezone?: string
   locale?: string
-  maxSessions?: number
 }
 
 async function activeLeases(db: DbOrTx, accountIds: string[]) {
@@ -56,7 +55,6 @@ export async function createBrowserProfile(ctx: WriteCtx, input: BrowserProfileF
       exitIp: input.exitIp ?? "",
       timezone: input.timezone || null,
       locale: input.locale || null,
-      ...(input.maxSessions ? { maxSessions: input.maxSessions } : {}),
     })
     const secretId = await saveProxyPassword(tx, ctx, id, input.proxy, null)
     if (secretId) await tx.update(t.browserProfiles).set({ proxyPasswordSecretId: secretId }).where(eq(t.browserProfiles.id, id))
@@ -82,11 +80,10 @@ export async function updateBrowserProfile(ctx: WriteCtx, input: BrowserProfileF
         ...(input.exitIp !== undefined ? { exitIp: input.exitIp } : {}),
         timezone: input.timezone || null,
         locale: input.locale || null,
-        ...(input.maxSessions ? { maxSessions: input.maxSessions } : {}),
       })
       .where(eq(t.browserProfiles.id, input.id))
     const passwordChange = input.proxy.kind === "socks5" && input.proxy.password ? "set" : secretId === null && before.proxyPasswordSecretId ? "cleared" : "kept"
-    await audit(tx, ctx.actor.id, "browser_profile.update", "browser_profiles", input.id, { proxy: input.proxy.kind, password: passwordChange, ...(input.maxSessions ? { maxSessions: input.maxSessions } : {}) })
+    await audit(tx, ctx.actor.id, "browser_profile.update", "browser_profiles", input.id, { proxy: input.proxy.kind, password: passwordChange })
     return { id: input.id }
   })
 }

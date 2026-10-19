@@ -621,7 +621,7 @@ curl -s -X POST http://localhost:3100/api/events \
 | `settings.get` 输出 | `browser: { maxPerWorker, visionCheck, visionModel, captchaSolve, humanHoldMinutes }` | 默认 4、false、`openrouter/qwen/qwen3.8-flash`、true、30（`visionModel`、`captchaSolve` 2026-10-19 加） |
 | 新接口 `settings.updateBrowser` | `{ maxPerWorker(1-32), visionCheck, visionModel, captchaSolve, humanHoldMinutes(1-1440) }` | 主管。`visionModel` 换了才查：要是库里能看图的聊天模型（同 `compare.models` 的列表），否则 `BAD_REQUEST`。审计 `settings.browser.update`；worker 每次用到时重新读 |
 | `HumanDetail` | `browser?: { browserId, sessionId, profileId, accountId?, url, reason, screenshotFileId? }`；`link: { page: "browsers", id: profileId }` | 遇到验证码 / 登录页时生成的「登录」类要人办的事（`kind = login`）带这个。主按钮「已处理好了」= `engine.resolveHumanItem(how: "done")` |
-| `sessions` 表 | `browser_profile_id` | 这次运行选用的 Chrome 配置（`browser.use` 选的，或只允许一个时自动选的） |
+| `sessions` 表 | `browser_profile_id` | 这次运行分到的 Chrome 配置（系统从允许的里挑的空闲的，或 agent 第一次用浏览器前用 `browser.use` 指定的）。分到以后不再变 |
 
 ### 10.2 `appRouter.browser`
 
@@ -648,7 +648,7 @@ curl -s -X POST http://localhost:3100/api/events \
 
 ### 10.4 agent 看到的浏览器工具
 
-任务选了 `browser`：`browser_use({ profileId })` + Playwright MCP 0.0.83 的工具（`browser_navigate`、`browser_snapshot`、`browser_click`……，过程记录里 `toolId` 是 `browser.navigate` 这样的形式）。屏蔽 `browser_run_code_unsafe`；`browser_evaluate` 只在 `allowBrowserEvaluate` 时给；`browser_file_upload` / `browser_drop` 的参数是 `fileIds`（session 文件 id），网关换成路径；其余工具去掉了 `filename` 参数（截图除外）。截图存成 session 文件（`kind = screenshot`），`browser_navigate` 之后自动截一张。
+任务选了 `browser`：`browser_use({ profileId })`（可选，只能在还没分到 Chrome 时指定；一般由系统自动分配空闲的）+ Playwright MCP 0.0.83 的工具（`browser_navigate`、`browser_snapshot`、`browser_click`……，过程记录里 `toolId` 是 `browser.navigate` 这样的形式）。屏蔽 `browser_run_code_unsafe`；`browser_evaluate` 只在 `allowBrowserEvaluate` 时给；`browser_file_upload` / `browser_drop` 的参数是 `fileIds`（session 文件 id），网关换成路径；其余工具去掉了 `filename` 参数（截图除外）。截图存成 session 文件（`kind = screenshot`），`browser_navigate` 之后自动截一张。
 
 ### 10.5 worker 的内部控制接口
 

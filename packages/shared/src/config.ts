@@ -329,8 +329,6 @@ export const browserProfileInputSchema = z.object({
   ]),
   /** 出口地：一句话，给人看的（例如「英国 · 伦敦」），系统不检测 */
   exitIp: optionalText(100).optional(),
-  /** 同时最多几个运行用这个 Chrome；不传 = 不改（新建时默认 3） */
-  maxSessions: z.number().int().min(1, "至少 1 个").max(20, "最多 20 个").optional(),
   /** IANA 时区，例如 Asia/Shanghai；空 = 用默认（上海） */
   timezone: optionalText(64)
     .refine((value) => !value || canonicalTimeZone(value), "不认识这个时区，从列表里选一个，例如 Asia/Shanghai")

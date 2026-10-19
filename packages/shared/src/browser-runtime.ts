@@ -80,8 +80,13 @@ export function urlAllowed(url: string, allowedDomains: readonly string[]): { ok
 
 /** 账号租约满了时 session 等的事件名（释放租约时叫醒最早的那个） */
 export const leaseEventName = (accountId: string) => `browser.lease:${accountId}`
-/** 等 Chrome 配置空出名额的事件（同时用它的运行满了时挂起等这个） */
+/** 等某一个 Chrome 配置空出来的事件（agent 指定的 Chrome、或任务只允许一个时，它被别的运行占着就挂起等这个） */
 export const profileEventName = (profileId: string) => `browser.profile:${profileId}`
+/**
+ * 等「任务允许的任何一个 Chrome」空出来（允许的全都被别的运行占着时挂起等这个）。
+ * 叫醒时看 session 快照里允许的 Chrome 有没有空出来的那个（配置 id 都是 br- 开头，不会和 any 撞）
+ */
+export const ANY_PROFILE_EVENT = "browser.profile:any"
 
 // ---------- 远程画面的消息（worker ⇄ API ⇄ 控制台，格式两段相同） ----------
 
@@ -205,7 +210,7 @@ export const sessionBrowserSchema = z.object({
   open: z.boolean(),
   browserId: z.string().optional(),
   state: browserStateSchema.optional(),
-  /** session 选用的 Chrome 配置（agent 调过 browser.use，或者任务只允许一个） */
+  /** session 用的 Chrome 配置（系统自动挑的空闲的，或者 agent 调 browser.use 指定的） */
   profileId: z.string().optional(),
   /** 当前操作的人能不能在远程画面里操作（负责人、被分配处理的人、主管） */
   canControl: z.boolean(),

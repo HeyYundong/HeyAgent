@@ -135,7 +135,7 @@ export default function BrowsersPage() {
                     badge={
                       <>
                         {problemCount(profile) > 0 && <Badge variant="destructive">{problemCount(profile)} 个要登录</Badge>}
-                        <SessionCount profile={profile} live={liveOf(profile.id)} />
+                        <SessionCount live={liveOf(profile.id)} />
                       </>
                     }
                   />
@@ -147,7 +147,7 @@ export default function BrowsersPage() {
             selected && (
               <DetailPanel
                 title={selected.name}
-                badges={<SessionCount profile={selected} live={selectedLive} />}
+                badges={<SessionCount live={selectedLive} />}
                 actions={
                   <>
                     <OpenLoginButton pending={login.pending && !login.pendingTarget?.accountId} onClick={() => void login.start({ profileId: selected.id })} />
@@ -266,10 +266,10 @@ function AgentNote({ profile }: { profile: Chrome }) {
   return (
     <DetailSection title="给 agent 的说明">
       <div className="flex flex-col gap-2">
-        <p>{profile.description || "（还没写说明，agent 不会主动选它）"}</p>
+        <p>{profile.description || "（还没写说明）"}</p>
         {recent.length > 0 && (
           <p className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
-            最近选用它的运行：
+            最近用它的运行：
             {recent.map(({ run, task }) => (
               <a key={run.id} href={href("tasks", { id: run.taskId, run: run.id })} className={LINK}>{run.id} {task?.title}</a>
             ))}
@@ -322,10 +322,10 @@ function History({ profileId }: { profileId: string }) {
   )
 }
 
-/** 现在有几个运行（session）在用这个 Chrome / 同时最多几个。人「打开 Chrome」开的不算 */
-function SessionCount({ profile, live }: { profile: Chrome; live: LiveBrowser[] }) {
-  const used = live.filter((each) => each.kind === "session" && each.state !== "closing").length
-  return <Badge variant={used ? "secondary" : "outline"}>{used}/{profile.maxSessions} 个 session 在用</Badge>
+/** 有没有运行（session）在用这个 Chrome（每个 Chrome 同一时间只给一个运行用）。人「打开 Chrome」开的不算 */
+function SessionCount({ live }: { live: LiveBrowser[] }) {
+  const used = live.some((each) => each.kind === "session" && each.state !== "closing")
+  return <Badge variant={used ? "secondary" : "outline"}>{used ? "在用" : "空闲"}</Badge>
 }
 
 /** 开着的一个 Chrome：哪个任务的哪次运行在用（点了去任务）或谁打开的、现在在哪个页面、状态、几个人在看 */

@@ -45,14 +45,15 @@ export function problemCount(profile: Pick<BrowserProfile, "sites">) {
 }
 
 /**
- * 最近选用了这个 Chrome 配置的运行：过程里工具调用的输入带着它的 id。
- * M2 起是 browser.use 的 {"profileId": "br-xx"}；更早的数据是 {"browser": "br-xx"}，两种都认（冒号前后有没有空格都行）
+ * 最近用了这个 Chrome 配置的运行：系统分配 Chrome 时记的「打开了 Chrome」过程（详情以「Chrome 配置 br-xx；」开头），
+ * 或者工具调用的输入带着它的 id：browser.use 的 {"profileId": "br-xx"}；更早的数据是 {"browser": "br-xx"}（冒号前后有没有空格都行）
  */
 export function recentRunsUsing(profileId: string, runs: readonly SessionRun[], tasks: readonly TaskDef[]) {
   const id = profileId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
   const pattern = new RegExp(`"(profileId|browser)"\\s*:\\s*"${id}"`)
+  const opened = `Chrome 配置 ${profileId}；`
   return runs
-    .filter((run) => run.events.some((event) => event.input && pattern.test(event.input)))
+    .filter((run) => run.events.some((event) => (event.input && pattern.test(event.input)) || (event.kind === "plan" && event.detail?.startsWith(opened))))
     .slice(0, 3)
     .map((run) => ({ run, task: findById(tasks, run.taskId) }))
 }

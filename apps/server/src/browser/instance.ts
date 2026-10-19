@@ -57,17 +57,13 @@ export interface ProbeResult {
   detail: string
 }
 
-/** 这个 Chrome 配置同时在用的运行满了 */
+/** 这个 Chrome 配置正在被别的运行用（每个 Chrome 同一时间只给一个运行用） */
 export class ProfileFullError extends Error {
   readonly profileName: string
-  readonly used: number
-  readonly max: number
 
-  constructor(profileName: string, used: number, max: number) {
-    super(`Chrome「${profileName}」同时最多 ${max} 个运行在用，现在已经 ${used} 个`)
+  constructor(profileName: string) {
+    super(`Chrome「${profileName}」正在被别的运行用`)
     this.profileName = profileName
-    this.used = used
-    this.max = max
   }
 }
 
@@ -154,10 +150,10 @@ export class BrowserInstance {
     return this.deps.db
   }
 
-  /** 先登记（排队的时候也要让页面看得到「等待浏览器」） */
   /**
-   * 登记到 browser_instances。session 的 Chrome 同时占这个配置的一个名额：锁住配置行再数，并发登记也不会超过 max_sessions；
-   * 满了抛 ProfileFullError（session 挂起排队）。人「打开 Chrome」开的不占名额。
+   * 先登记到 browser_instances（排队的时候也要让页面看得到「等待浏览器」）。每个 Chrome 配置同一时间只给一个运行用：
+   * 锁住配置行再数，两个运行并发登记也不会抢到同一个；已经有运行在用就抛 ProfileFullError（session 换一个或挂起排队）。
+   * 人「打开 Chrome」开的不占。
    */
   async register(state: InstanceState) {
     this.state = state
@@ -176,12 +172,9 @@ export class BrowserInstance {
       return
     }
     await this.db.transaction(async (tx) => {
-      const locked = await tx.execute<{ max_sessions: number; name: string }>(sql`select max_sessions, name from browser_profiles where id = ${this.profileId} for update`)
+      const locked = await tx.execute<{ name: string }>(sql`select name from browser_profiles where id = ${this.profileId} for update`)
       const profile = locked.rows[0]
-      if (profile) {
-        const used = await profileSessionCount(tx, this.profileId)
-        if (used >= profile.max_sessions) throw new ProfileFullError(profile.name, used, profile.max_sessions)
-      }
+      if (profile && (await profileSessionCount(tx, this.profileId)) > 0) throw new ProfileFullError(profile.name)
       await tx.insert(t.browserInstances).values(values)
     })
   }

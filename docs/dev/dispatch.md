@@ -32,7 +32,7 @@
 - **一次运行有 4 种触发来源**：`manual`、`cron`、`todo`、`event`（`packages/shared/src/engine.ts` 的 `sessionSnapshotSchema.source`）。其中 `event` 只在类型里有，**没有任何代码用它新开运行**：外部事件（`engine/control.ts` 的 `fireEventImpl`）只做两件事，继续正在等这个事件的 session，或者触发等这个事件的「人加的待办」。
 - **人加的待办**（`engine/schedule.ts` 的 `fireTodo`）：不是 cron 的待办只触发一次；触发时如果任务有挂起的 session，就继续**最近的那一个**（`sessions.ts` 的 `latestWaitingSession`），否则新开一次运行，只把待办标题作为附加说明，事件数据带不进去。
 - **定时**（`schedule.ts` 的 `onTaskCron`）：到点就新开一次运行，不看上一次跑完没有。
-- **并发**：只有两种限制，都是浏览器的：每个 Chrome 配置同时最多几个运行（`browser_profiles.max_sessions`，`browser/instance.ts` 锁配置行再数）、每个「平台 × 账号」同时最多几个运行（`account_leases`，`browser/leases.ts` 的 `acquireLease`）。**任务本身没有并发上限**；worker 进程上 `session.run` 的 `localConcurrency` 默认 4，是全局的。
+- **并发**：只有两种限制，都是浏览器的：每个 Chrome 配置同一时间只给一个运行用（2026-10-19 起固定为 1，`browser/instance.ts` 锁配置行再数；任务允许几个 Chrome 就最多几个运行同时用浏览器）、每个「平台 × 账号」同时最多几个运行（`account_leases`，`browser/leases.ts` 的 `acquireLease`）。**任务本身没有并发上限**；worker 进程上 `session.run` 的 `localConcurrency` 默认 4，是全局的。
 - `sessions.parent_session_id` 字段已经有了，注释写着「v1.1 规划 agent 拆给子 agent 时用」，现在只有读的地方（`data/loaders.ts`），没有写的地方。
 
 结论：t1 和 t2 之间缺一个「放单、领单、记谁在办」的地方。这个东西别的业务也会要：客服「巡检新工单 + 一单一单回」、物流「每天拉一批运单 + 一单一单查」、财务「拉一批待对账的流水 + 一笔一笔对」，都是同一个形状。所以做成平台的通用能力。

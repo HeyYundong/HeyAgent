@@ -62,7 +62,15 @@ describe("网址解析", () => {
   })
 })
 
-describe("最近选用了这个 Chrome 的运行", () => {
+describe("最近用了这个 Chrome 的运行", () => {
+  it("认系统分配时记的「打开了 Chrome」过程", async () => {
+    const { recentRunsUsing } = await import("../src/index.js")
+    const run = (id: string, detail: string) =>
+      ({ id, taskId: "T-1", events: [{ seq: 1, at: "2026-10-17T00:00:00.000Z", kind: "plan", title: "打开了 Chrome「a」", detail }] }) as never
+    const runs = [run("R-1", "Chrome 配置 br-a；浏览器 b-1"), run("R-2", "Chrome 配置 br-a-2；浏览器 b-2")]
+    expect(recentRunsUsing("br-a", runs, []).map((item) => item.run.id)).toEqual(["R-1"])
+  })
+
   it("认 browser.use 的 profileId，也认旧格式 browser", async () => {
     const { recentRunsUsing } = await import("../src/index.js")
     const run = (id: string, input: string) =>

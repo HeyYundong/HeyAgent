@@ -333,15 +333,12 @@ export const browserProfiles = pgTable(
     exitIp: text("exit_ip").notNull().default(""),
     timezone: text("timezone"),
     locale: text("locale"),
-    /** 同时最多几个运行（session）用这个 Chrome；满了的排队「等待浏览器」 */
-    maxSessions: integer("max_sessions").notNull().default(3),
     position: position(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (t) => [
     check("browser_profiles_proxy_check", sql`${t.proxyKind} = 'none' or (${t.proxyHost} is not null and ${t.proxyPort} is not null)`),
-    check("browser_profiles_max_sessions_check", sql`${t.maxSessions} >= 1`),
   ]
 )
 
@@ -604,7 +601,10 @@ export const sessions = pgTable(
     /** session_events / session_messages 的序号计数器：API 和 worker 都会追加，用行锁发号 */
     eventSeq: integer("event_seq").notNull().default(0),
     msgSeq: integer("msg_seq").notNull().default(0),
-    /** M2：这次运行选用的 Chrome 配置（agent 调 browser.use 选的，或者任务只允许一个时自动选的）。挂起再继续时沿用 */
+    /**
+     * M2：这次运行用的 Chrome 配置。第一次用浏览器时系统从任务允许的里自动挑一个空闲的（每个 Chrome 同时只给一个运行用），
+     * 或者 agent 先调 browser.use 指定。分到以后从头到尾只用它，绝不切换：挂起再继续时它被别的运行占着就等它
+     */
     browserProfileId: text("browser_profile_id"),
     /** M3：规则执行的状态（例如「花费超过 X」已经触发过的规则，不再重复触发） */
     ruleState: jsonb("rule_state").$type<SessionRuleState>().notNull().default({}),
