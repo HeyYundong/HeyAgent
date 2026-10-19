@@ -1,6 +1,6 @@
 // 任务页（v3.1）：卡片墙一直是主画面；点卡片从右边打开抽屉看任务详情（?id=），抽屉里再看某次运行的 session（?id=&run=）。
 // 卡片和抽屉只说明任务（目标、步骤、定时、负责人），不显示运行状态；运行记录在「会话」页看（抽屉头部「会话」按钮带上这个任务筛好）。
-// 执行中的仍排最前。
+// 卡片按创建时间排，新建的在最前。
 // 主管能新建任务、开关任务；员工能看全部任务，只能开关、运行自己负责的。
 // 新建、编辑、开关、删除接通后端（M1 P2）；立即运行（可带附件）、立即继续、取消、任务附件接引擎（M1 P3）。
 import * as React from "react"
@@ -12,7 +12,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Switch } from "@/components/ui/switch"
-import { can, fmtDateTime, fmtShort, runsOfTask, type RunStatus, type TaskDef } from "@heyagent/shared"
+import { can, fmtDateTime, fmtShort, runsOfTask, type TaskDef } from "@heyagent/shared"
 
 import {
   useBoardQuery, useMemoriesQuery, useModelsQuery, useRulesQuery, useSessionsQuery, useSkillsQuery, useStaffName, useStaffQuery, useTasksQuery, useToolsQuery,
@@ -26,9 +26,6 @@ import { TaskDialog } from "./task-dialog"
 import { nextRunText, type TasksState } from "./parts"
 import { RunDetail } from "./run-detail"
 import { TaskActions, TaskDetail } from "./task-detail"
-
-/** 卡片墙的顺序：执行中 → 等人处理 → 挂起等待 → 验收中 → 其他 */
-const ORDER: Partial<Record<RunStatus, number>> = { running: 0, needs_human: 1, waiting: 2, verifying: 3 }
 
 export default function TasksPage() {
   const { isAdmin, user } = useMe()
@@ -53,9 +50,8 @@ export default function TasksPage() {
   if (taskId && (taskId !== shown.id || runId !== shown.run)) setShown({ id: taskId, run: runId })
   const task = taskList.find((each) => each.id === (taskId ?? shown.id))
   const shownRun = taskId ? runId : shown.run
-  const latestOf = (id: string) => state.runsOf(id)[0]
-  const rank = (id: string) => ORDER[latestOf(id)?.status as RunStatus] ?? 9
-  const visible = taskList.toSorted((a, b) => rank(a.id) - rank(b.id))
+  // 卡片墙按创建时间，新建的排最前
+  const visible = taskList.toSorted((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
   // 员工能看全部任务，只能操作自己负责的；主管能操作全部
   const canManage = (each: TaskDef) => can(user, "task.manage", { ownerId: each.ownerId })
   const setEnabled = useAction(trpc.tasks.setEnabled.mutationOptions(), { success: (_data, vars) => (vars.enabled ? "任务已启动" : "任务已停用，不会再运行") })
