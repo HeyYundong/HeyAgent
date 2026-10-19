@@ -3,6 +3,7 @@ import {
   apiKeyCreatedSchema,
   apiKeyCreateSchema,
   apiKeySchema,
+  galleryEmbeddingSchema,
   galleryImageSchema,
   galleryListInputSchema,
   galleryPageSchema,
@@ -14,7 +15,7 @@ import { z } from "zod"
 
 import * as apiKeys from "../data/config/api-keys.js"
 import { GalleryError } from "../gallery/errors.js"
-import { deleteImage, galleryStats, galleryTags, getImage, searchImages, updateImage, type GalleryActor } from "../gallery/service.js"
+import { deleteImage, galleryStats, galleryTags, getImage, imageEmbedding, searchImages, updateImage, type GalleryActor } from "../gallery/service.js"
 import { protectedProcedure, router, type Context, type SessionUser } from "./init.js"
 
 const idInput = z.object({ id: z.string().min(1) })
@@ -48,6 +49,11 @@ export const galleryRouter = router({
     .input(idInput)
     .output(galleryImageSchema)
     .query(({ ctx, input }) => translate(() => getImage(ctx.db, input.id))),
+  /** 抽屉最下面的向量（1024 个数，只在点开一张图时取，不放进 get 和列表） */
+  embedding: protectedProcedure
+    .input(idInput)
+    .output(galleryEmbeddingSchema.nullable())
+    .query(({ ctx, input }) => translate(() => imageEmbedding(ctx.db, input.id))),
   stats: protectedProcedure.output(galleryStatsSchema).query(({ ctx }) => galleryStats(ctx.db)),
   tags: protectedProcedure.output(z.array(galleryTagCountSchema)).query(({ ctx }) => galleryTags(ctx.db)),
   update: protectedProcedure

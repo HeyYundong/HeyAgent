@@ -128,6 +128,7 @@ describe("模型：embedding 模型和图库的默认模型", () => {
     const res = await search({ image: { imageId: body.image.id } })
     expect(res.status).toBe(503)
     expect(res.body.error).toContain("「模型」页")
+    expect((await query(ctx.app, "gallery.embedding", wang, { id: body.image.id })).data).toBeNull()
     await ctx.app.request(`/api/gallery/images/${body.image.id}`, { method: "DELETE", headers: { cookie: wang } })
   })
 
@@ -177,6 +178,13 @@ describe("传图：图片 + 文本（JSON 对象）+ 标签（字符串数组）
     expect(Math.max(meta.width!, meta.height!)).toBe(400)
     const file = await ctx.app.request(`/api/gallery/images/${idA}/file`, { headers: { cookie: li } })
     expect(Buffer.from(await file.arrayBuffer()).equals(imgA)).toBe(true)
+  })
+
+  it("抽屉里的向量（tRPC gallery.embedding）：当前模型算的整个数组；没有这张图 404", async () => {
+    const { data } = await query(ctx.app, "gallery.embedding", li, { id: idA })
+    expect(data.model.id).toBe(EMBED)
+    expect(data.vector).toHaveLength(1024)
+    expect((await query(ctx.app, "gallery.embedding", li, { id: "img-999999" })).error?.data?.code).toBe("NOT_FOUND")
   })
 
   it("一模一样的文件再传：返回已有的那条（200，duplicate），不改它的文本和标签", async () => {

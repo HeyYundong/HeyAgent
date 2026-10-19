@@ -1,4 +1,4 @@
-// 图库右边的抽屉：大图、标签、文本（JSON），底部「找相似」「编辑」，更多里是下载原图、删除。
+// 图库右边的抽屉：大图、标签、文本（JSON）、向量，底部「找相似」「编辑」，更多里是下载原图、删除。
 // 上传的人和主管能编辑、删除；别的人只能看和找相似。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { CodeBlock, CodeBlockContent } from "@/components/ui/code-block"
+import { CodeBlock, CodeBlockActions, CodeBlockContent, CodeBlockCopyButton } from "@/components/ui/code-block"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Separator } from "@/components/ui/separator"
 import { SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
@@ -95,6 +95,7 @@ export function ImageSheetBody({ id, canSearchByImage, onSimilar }: { id: string
             <p className="text-muted-foreground">没有文本</p>
           )}
         </DetailSection>
+        <EmbeddingSection id={image.id} embedded={image.embedded} />
       </div>
       <Separator />
       <SheetFooter className="mt-0 flex-row items-center justify-between">
@@ -132,6 +133,37 @@ export function ImageSheetBody({ id, canSearchByImage, onSimilar }: { id: string
       {editing && <EditDialog image={image} tagOptions={tagsQuery.data ?? []} onClose={() => setEditing(false)} />}
       <DeleteDialog image={image} open={confirmDelete} onOpenChange={setConfirmDelete} pending={remove.isPending} onConfirm={() => remove.mutate({ id: image.id })} />
     </>
+  )
+}
+
+/** 向量只显示前几个数，复制按钮复制整个数组（JSON） */
+const EMBEDDING_PREVIEW = 8
+
+function EmbeddingSection({ id, embedded }: { id: string; embedded: boolean }) {
+  const query = useQuery({ ...trpc.gallery.embedding.queryOptions({ id }), enabled: embedded })
+  const embedding = query.data
+  return (
+    <DetailSection title="向量" description={embedding ? `当前 embedding 模型「${embedding.model.name}」算出的 ${embedding.vector.length} 维向量。这里只显示前 ${EMBEDDING_PREVIEW} 个数，点复制图标复制完整数组（JSON）。` : "当前 embedding 模型算出的向量，以图搜图、比对都用它。"}>
+      {!embedded ? (
+        <p className="text-muted-foreground">当前模型还没算这张图的向量。</p>
+      ) : query.isPending ? (
+        <Skeleton className="h-12 w-full" />
+      ) : query.isError ? (
+        <p className="text-muted-foreground">向量没读出来：{query.error.message}</p>
+      ) : !embedding ? (
+        <p className="text-muted-foreground">当前模型还没算这张图的向量。</p>
+      ) : (
+        <CodeBlock size="sm">
+          <CodeBlockActions>
+            <CodeBlockCopyButton value={JSON.stringify(embedding.vector)} aria-label={`复制完整向量（${embedding.vector.length} 个数）`} />
+          </CodeBlockActions>
+          <CodeBlockContent wrap>
+            [{embedding.vector.slice(0, EMBEDDING_PREVIEW).join(", ")}
+            {embedding.vector.length > EMBEDDING_PREVIEW ? `, … 共 ${embedding.vector.length} 个]` : "]"}
+          </CodeBlockContent>
+        </CodeBlock>
+      )}
+    </DetailSection>
   )
 }
 

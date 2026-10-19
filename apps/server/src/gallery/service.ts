@@ -10,6 +10,7 @@ import {
   type Actor,
   type GalleryCompareResult,
   type GalleryCondition,
+  type GalleryEmbedding,
   type GalleryFilter,
   type GalleryImage,
   type GalleryImageRef,
@@ -87,6 +88,18 @@ export async function getImage(db: Db, id: string, options: ViewOptions = {}): P
   const [row] = await db.select({ image: t.galleryImages, embedded: embeddedFor(model) }).from(t.galleryImages).where(eq(t.galleryImages.id, id))
   if (!row) throw new GalleryError("not_found", `图库里没有 ${id}`)
   return toGalleryImage(row.image, row.embedded, options)
+}
+
+/** 一张图在当前 embedding 模型下的向量；没设模型、当前模型还没算过时返回 null */
+export async function imageEmbedding(db: Db, id: string): Promise<GalleryEmbedding | null> {
+  await loadRow(db, id)
+  const model = await currentEmbedModel(db)
+  if (!model) return null
+  const [stored] = await db
+    .select({ embedding: t.galleryEmbeddings.embedding })
+    .from(t.galleryEmbeddings)
+    .where(and(eq(t.galleryEmbeddings.imageId, id), eq(t.galleryEmbeddings.modelId, model.id)))
+  return stored ? { model, vector: stored.embedding } : null
 }
 
 /** 原图或缩略图的内容（下载接口用） */

@@ -209,6 +209,13 @@ export const galleryImageSchema = z.object({
 })
 export type GalleryImage = z.infer<typeof galleryImageSchema>
 
+/** 一张图在当前 embedding 模型下的向量（图库抽屉最下面显示，能复制整个数组）；当前模型没算过时接口返回 null */
+export const galleryEmbeddingSchema = z.object({
+  model: z.object({ id: z.string(), name: z.string() }),
+  vector: z.array(z.number()),
+})
+export type GalleryEmbedding = z.infer<typeof galleryEmbeddingSchema>
+
 export const galleryPageSchema = z.object({
   items: z.array(galleryImageSchema),
   /** 还有下一页时给（只在按时间排时有） */
