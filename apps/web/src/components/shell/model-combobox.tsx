@@ -1,4 +1,5 @@
 // 选一个模型（可搜索）：模型服务刷新后可能有几百个模型，下拉要能按名字 / id 搜。基于 @/components/ui/combobox（Base UI）。
+import * as React from "react"
 import type { ModelInfo } from "@heyagent/shared"
 
 import { Combobox, ComboboxContent, ComboboxEmpty, ComboboxInput, ComboboxItem, ComboboxList } from "@/components/ui/combobox"
@@ -20,6 +21,7 @@ const sameModel = (a: ModelInfo, b: ModelInfo) => a.id === b.id
 
 export function ModelCombobox({ id, value, onValueChange, models, placeholder = "搜模型名", disabled, "aria-invalid": invalid, className, clearable = false }: ModelComboboxProps) {
   // 选中的模型不在列表里（刷新后下架了）也要显示出来，让人知道要换
+  const inputRef = React.useRef<HTMLInputElement>(null)
   const selected = models.find((model) => model.id === value) ?? (value ? { id: value, name: value, note: "", contextK: 0, priceIn: 0, priceOut: 0 } : null)
   return (
     <Combobox<ModelInfo>
@@ -33,9 +35,11 @@ export function ModelCombobox({ id, value, onValueChange, models, placeholder = 
         const text = query.trim().toLowerCase()
         return !text || model.name.toLowerCase().includes(text) || model.id.toLowerCase().includes(text)
       }}
+      // 打开下拉时选中输入框里已选模型的名字：直接打字就是重新搜，不会接在旧名字后面（「Claude Sonnet 5.5deepseek」一个都搜不到）
+      onOpenChange={(open) => open && requestAnimationFrame(() => inputRef.current?.select())}
       onValueChange={(model) => (model ? onValueChange(model.id) : clearable && onValueChange(""))}
     >
-      <ComboboxInput id={id} className={className ?? "w-full"} placeholder={placeholder} aria-invalid={invalid} showClear={clearable && !!value} />
+      <ComboboxInput ref={inputRef} id={id} className={className ?? "w-full"} placeholder={placeholder} aria-invalid={invalid} showClear={clearable && !!value} />
       <ComboboxContent>
         <ComboboxEmpty>没有匹配的模型</ComboboxEmpty>
         <ComboboxList>
