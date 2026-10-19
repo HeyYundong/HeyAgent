@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { CodeBlock, CodeBlockActions, CodeBlockContent, CodeBlockCopyButton } from "@/components/ui/code-block"
+import { CodeBlock, CodeBlockContent, CodeBlockCopyButton } from "@/components/ui/code-block"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Separator } from "@/components/ui/separator"
 import { SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
@@ -143,7 +143,10 @@ function EmbeddingSection({ id, embedded }: { id: string; embedded: boolean }) {
   const query = useQuery({ ...trpc.gallery.embedding.queryOptions({ id }), enabled: embedded })
   const embedding = query.data
   return (
-    <DetailSection title="向量" description={embedding ? `当前 embedding 模型「${embedding.model.name}」算出的 ${embedding.vector.length} 维向量。这里只显示前 ${EMBEDDING_PREVIEW} 个数，点复制图标复制完整数组（JSON）。` : "当前 embedding 模型算出的向量，以图搜图、比对都用它。"}>
+    <DetailSection
+      title="向量"
+      action={embedding && <CodeBlockCopyButton value={JSON.stringify(embedding.vector)} aria-label={`复制完整向量（${embedding.vector.length} 个数）`} />}
+      description={embedding ? `当前 embedding 模型「${embedding.model.name}」算出的 ${embedding.vector.length} 维向量。这里只显示前 ${EMBEDDING_PREVIEW} 个数，点右上角的复制图标复制完整数组（JSON）。` : "当前 embedding 模型算出的向量，以图搜图、比对都用它。"}>
       {!embedded ? (
         <p className="text-muted-foreground">当前模型还没算这张图的向量。</p>
       ) : query.isPending ? (
@@ -154,9 +157,6 @@ function EmbeddingSection({ id, embedded }: { id: string; embedded: boolean }) {
         <p className="text-muted-foreground">当前模型还没算这张图的向量。</p>
       ) : (
         <CodeBlock size="sm">
-          <CodeBlockActions>
-            <CodeBlockCopyButton value={JSON.stringify(embedding.vector)} aria-label={`复制完整向量（${embedding.vector.length} 个数）`} />
-          </CodeBlockActions>
           <CodeBlockContent wrap>
             [{embedding.vector.slice(0, EMBEDDING_PREVIEW).join(", ")}
             {embedding.vector.length > EMBEDDING_PREVIEW ? `, … 共 ${embedding.vector.length} 个]` : "]"}
