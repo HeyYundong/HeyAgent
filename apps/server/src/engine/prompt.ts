@@ -119,7 +119,7 @@ export function buildSystemPrompt(
   }
 
   if (snapshot.browser) {
-    const { profiles, allowedDomains, allowEvaluate } = snapshot.browser
+    const { profiles, allowedDomains, allowEvaluate, allowVision } = snapshot.browser
     sections.push(
       [
         "## 浏览器",
@@ -129,8 +129,12 @@ export function buildSystemPrompt(
           : `- 直接用浏览器工具就行：第一次用时系统从本任务允许的 Chrome 里自动分配一个空闲的（每个 Chrome 同一时间只给一个运行用），都被占着就先挂起，空出来再叫你继续。一次运行从头到尾只用一个 Chrome，分到以后不能再换。只有任务要求用某个特定的 Chrome 时才调 browser_use 指定，而且要在第一次用浏览器工具之前调。允许的 Chrome：\n${profiles.map((profile) => `  - ${profile.id}「${profile.name}」${profile.description ? `：${profile.description}` : ""}`).join("\n") || "  - （没有可用的 Chrome 配置）"}`,
         "- 看页面：browser_snapshot 一定带 depth（先 4～6）看结构，再用 target 传元素 ref 展开局部；找文字用 browser_find。不要不带 depth 拿整页快照（长页面有几十万字）。",
         "- 点击、输入这类动作用 target 传快照里的元素 ref（例如 e12）。动作类工具不返回页面内容，做完要看结果就再拿一次快照。",
-        "- 截图只存档留证（存成这次运行的文件），不会发给你；要读内容用快照。",
+        allowVision
+          ? "- 允许看画面：browser_look 截当前画面发给你，截图里的坐标可以直接用于 browser_mouse_click_xy 等坐标工具。快照解决不了时才用（找菜单、确认操作结果、canvas 画出来的页面），别每步都看（每次多一张图的费用）。别的截图照旧只存档、不发给你。"
+          : "- 截图只存档留证（存成这次运行的文件），不会发给你；要读内容用快照。",
         "- 要往网页里传文件，用 browser_file_upload 的 fileIds 填文件 id。",
+        "- 在线表格、文档的格子画在画布上，快照里看不到格子：读写数据走剪贴板，不要逐格点。读：在名称框 / 定位框里填区域（例如 A1:H200）回车选中，再 browser_clipboard_read（copy: true）；写：点到起始格，browser_clipboard_paste（table），写完选中同一块读回来核对。",
+        "- 往在线文档、表格里贴图：先点到要放的位置，browser_copy_image 复制网页上的图（相当于右键 → 复制图片），再 browser_clipboard_paste（fileId）；贴不进时用网页的「插入 → 图片 → 本地上传」配合 browser_file_upload。各平台的具体操作（名称框在哪、快捷键）看技能。",
         allowedDomains.length
           ? `- 网址白名单：${allowedDomains.join("、")}（含子域名）。不在名单里的网页会被拦下。`
           : "- 没有网址白名单，但只做任务需要的访问。",

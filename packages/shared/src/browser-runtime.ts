@@ -265,6 +265,18 @@ const ACTION_TAGS: Record<string, string> = {
   browser_console_messages: "Inspect",
   browser_network_requests: "Inspect",
   browser_network_request: "Inspect",
+  /** 网关自己的工具（不是 MCP 的）：剪贴板、看画面 */
+  browser_copy_image: "CopyImage",
+  browser_clipboard_read: "ReadClipboard",
+  browser_clipboard_paste: "Paste",
+  browser_look: "Look",
+  /** 按坐标操作（开了「允许看画面」才有） */
+  browser_mouse_click_xy: "Click",
+  browser_mouse_move_xy: "Hover",
+  browser_mouse_drag_xy: "Drag",
+  browser_mouse_down: "Click",
+  browser_mouse_up: "Click",
+  browser_mouse_wheel: "Scroll",
 }
 
 export function browserActionTag(toolName: string): string {

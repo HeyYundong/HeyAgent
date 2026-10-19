@@ -20,7 +20,7 @@ const CONCEPTS = `## 平台的概念
 - 待办：人加的「到点 / 按 cron / 等到某个事件，让某个任务的 agent 去做一件事」（编号 td-…）。待办看板上还有「要人办的事」（审批、登录、验收、记忆和技能的审核），那些你只能看。`
 
 const FIELDS = `## 各类配置的字段（改的工具用）
-- 任务（create_task / update_task）：title 要 agent 做什么（一句话）；goal 做到什么算完成；steps 步骤 [{ text, wait, checkpoint? }]；schedule { cron, text } 或 null；modelId 执行模型（不填用默认的执行模型）；verifyModelId 验收模型（不填用默认的；不能和执行模型同一家）；ownerId 负责人（不填是自己，只有主管能指定别人）；enabled 启用；memoryIds / skillIds / toolIds / ruleIds 挂的全局记忆、技能（要已发布）、工具、规则（要已生效）；browserProfileIds 能用的 Chrome 配置（空 = 全部）；allowedDomains 网址白名单（空 = 不限）；allowBrowserEvaluate 允许在网页里执行脚本；cronSkipIfRunning 定时到点时上一次没跑完就跳过。
+- 任务（create_task / update_task）：title 要 agent 做什么（一句话）；goal 做到什么算完成；steps 步骤 [{ text, wait, checkpoint? }]；schedule { cron, text } 或 null；modelId 执行模型（不填用默认的执行模型）；verifyModelId 验收模型（不填用默认的；不能和执行模型同一家）；ownerId 负责人（不填是自己，只有主管能指定别人）；enabled 启用；memoryIds / skillIds / toolIds / ruleIds 挂的全局记忆、技能（要已发布）、工具、规则（要已生效）；browserProfileIds 能用的 Chrome 配置（空 = 全部）；allowedDomains 网址白名单（空 = 不限）；allowBrowserEvaluate 允许在网页里执行脚本；allowBrowserVision 允许看画面（agent 截图看、按坐标点，在线表格、画布类网页用得上）；cronSkipIfRunning 定时到点时上一次没跑完就跳过。
 - 任务记忆（add_task_memory / update_task_memory / delete_task_memory）：taskId、content；改和删用 list_task_memory 里的数字 id。
 - 待办（create_todo / update_todo / delete_todo）：taskId 让哪个任务去做；title 要做的事；trigger 什么时候：{ kind: "time", at: "2026-10-20T09:00" }（${TIME_ZONE} 时间）/ { kind: "cron", cron, text? } / { kind: "event", event: 事件名或一句话, fallbackDays: 最多等几天 } / { kind: "time_or_event", at, event }。
 - 全局记忆（create_memory / update_memory / archive_memory / delete_memory / approve_memory / reject_memory）：content 内容；appliesTo 适用于哪里（一个简短的标签）。

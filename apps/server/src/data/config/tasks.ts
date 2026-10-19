@@ -121,6 +121,7 @@ function columns(input: TaskInput, modelId: string, verifyModelId: string | null
     browserProfileIds: [...new Set(input.browserProfileIds)],
     allowedDomains: [...new Set(input.allowedDomains)],
     allowBrowserEvaluate: input.allowBrowserEvaluate,
+    allowBrowserVision: input.allowBrowserVision,
     verifyModelId,
     // 派活：参数声明和名额（已经按 shared 的 taskDispatchSchema 校验过：参数名不重复）；null = 不能被派活
     dispatch: input.dispatch ?? null,

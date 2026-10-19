@@ -113,7 +113,7 @@ export const sessionSnapshotSchema = z.object({
       })
     )
     .optional(),
-  /** M2：任务选了「浏览器」工具时才有：允许的 Chrome 配置（含给 agent 看的说明）、网址白名单、是否允许执行脚本 */
+  /** M2：任务选了「浏览器」工具时才有：允许的 Chrome 配置（含给 agent 看的说明）、网址白名单、是否允许执行脚本、是否允许看画面 */
   browser: z
     .object({
       profiles: z.array(
@@ -121,6 +121,8 @@ export const sessionSnapshotSchema = z.object({
       ),
       allowedDomains: z.array(z.string()),
       allowEvaluate: z.boolean(),
+      /** 允许看画面（browser.look + 坐标工具）；老快照没有这一项 = 不允许 */
+      allowVision: z.boolean().default(false),
     })
     .optional(),
 })
@@ -413,7 +415,7 @@ export const sessionFileSchema = z.object({
   name: z.string(),
   mime: z.string(),
   size: z.number(),
-  /** attachment = 附件；artifact = agent 产出的文件；tool_output = 太长的工具输出全文；screenshot = 截图；download = 在浏览器里下载的文件 */
+  /** attachment = 附件；artifact = agent 产出的文件；tool_output = 太长的工具输出全文；screenshot = 截图；download = 在浏览器里下载的文件；clipboard = 浏览器剪贴板工具存的（复制的图片、读到的剪贴板内容） */
   kind: z.enum([
     "attachment",
     "artifact",
@@ -421,6 +423,7 @@ export const sessionFileSchema = z.object({
     "screenshot",
     "upload",
     "download",
+    "clipboard",
   ]),
   /** 任务附件（跨运行一直有效）还是只属于这次运行 */
   scope: z.enum(["task", "session"]),

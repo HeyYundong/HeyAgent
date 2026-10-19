@@ -18,7 +18,7 @@ import {
 
 const task = (id: string, extra: Partial<TaskDef> = {}): TaskDef => ({
   id, title: id, goal: "", steps: [], ownerId: "u-wang", createdAt: "2026-10-16T01:00:00.000Z", enabled: true,
-  modelId: "m", memoryIds: [], skillIds: [], toolIds: [], ruleIds: [], browserProfileIds: [], allowedDomains: [], allowBrowserEvaluate: false, dispatchFrom: [], cronSkipIfRunning: true, ...extra,
+  modelId: "m", memoryIds: [], skillIds: [], toolIds: [], ruleIds: [], browserProfileIds: [], allowedDomains: [], allowBrowserEvaluate: false, allowBrowserVision: false, dispatchFrom: [], cronSkipIfRunning: true, ...extra,
 })
 const run = (id: string, taskId: string, status: SessionRun["status"], startedAt: string, extra: Partial<SessionRun> = {}): SessionRun => ({
   id, taskId, status, startedAt, modelId: "m", tokensIn: 0, tokensOut: 0, costUsd: 0, checkpoints: [], events: [], ...extra,

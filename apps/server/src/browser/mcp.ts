@@ -19,6 +19,15 @@ export function mcpCliPath() {
 export const BLOCKED_MCP_TOOLS = new Set(["browser_run_code_unsafe"])
 /** 任务设置里打开「允许执行脚本」才给 */
 export const EVALUATE_TOOL = "browser_evaluate"
+/** 按坐标操作的工具（--caps vision）：任务设置里打开「允许看画面」才给 */
+export const VISION_MCP_TOOLS = new Set([
+  "browser_mouse_click_xy",
+  "browser_mouse_move_xy",
+  "browser_mouse_drag_xy",
+  "browser_mouse_down",
+  "browser_mouse_up",
+  "browser_mouse_wheel",
+])
 
 function baseArgs(cdpEndpoint: string, outputDir: string) {
   return [
@@ -37,6 +46,9 @@ function baseArgs(cdpEndpoint: string, outputDir: string) {
     "none",
     // 网页自己注册的工具不收（不受我们的网关管）
     "--no-webmcp",
+    // 按坐标操作的工具一律列出来（工具清单进程里只列一次、全局缓存），没开「允许看画面」的任务在网关里过滤掉
+    "--caps",
+    "vision",
   ]
 }
 

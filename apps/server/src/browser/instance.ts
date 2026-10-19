@@ -290,6 +290,20 @@ export class BrowserInstance {
     return pages.at(-1)
   }
 
+  /**
+   * agent 正在操作的标签页（剪贴板、看画面用）：MCP 切换、新开标签页时都会把它拿到前台，所以看哪个页面可见；
+   * 拿不准（只有一个页面、都不可见、弹框挡着读不了）就用 currentPage()
+   */
+  async frontPage(): Promise<Page | undefined> {
+    const pages = this.pages()
+    if (pages.length > 1) {
+      const states = await Promise.all(pages.map((page) => withTimeout(page.evaluate("document.visibilityState").catch(() => ""), 1500, "")))
+      const visible = pages.filter((_, index) => states[index] === "visible")
+      if (visible.length === 1) return visible[0]
+    }
+    return this.currentPage()
+  }
+
   /** 每个页面：挂弹框监听（不处理，留给 agent 或人）、拦截主文档请求（白名单、账号租约） */
   private async watchPage(page: Page, follow: boolean) {
     this.pageId(page)

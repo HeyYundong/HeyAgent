@@ -494,7 +494,7 @@ export async function runSession(
           content: [
             {
               type: "text",
-              text: `file.read 读到的图片（${images.map((image) => image.name).join("、")}）：`,
+              text: `工具给你看的图片（${images.map((image) => image.name).join("、")}）：`,
             },
             ...images.map((image) => ({
               type: "file" as const,

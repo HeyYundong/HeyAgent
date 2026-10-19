@@ -338,6 +338,8 @@ export const taskSchema = z.object({
   allowedDomains: z.array(z.string()),
   /** M2：是否允许 agent 在网页里执行脚本 */
   allowBrowserEvaluate: z.boolean(),
+  /** 是否允许 agent 看画面（browser.look 截图发给模型 + 按坐标操作的工具） */
+  allowBrowserVision: z.boolean(),
   /** M3：这个任务自己选的三方验收模型；没有就用默认验收模型。必须和执行模型不是同一家 */
   verifyModelId: z.string().optional(),
   /** 派活：能被派活时的参数声明和名额；没有 = 不能被派活 */

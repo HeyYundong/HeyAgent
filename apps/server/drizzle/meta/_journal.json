@@ -155,6 +155,13 @@
       "when": 1792398395276,
       "tag": "0021_assistant_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1792405128719,
+      "tag": "0022_browser_vision",
+      "breakpoints": true
     }
   ]
 }
