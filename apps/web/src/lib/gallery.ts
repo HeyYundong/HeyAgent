@@ -22,14 +22,15 @@ export function uploadToGallery(file: File, fields: { text?: Record<string, unkn
   return send<GalleryUploadResult>("/api/gallery/images", form)
 }
 
-/** 以图搜图：传一张本地的图，结果按相似度排 */
-export function searchGalleryByImage(file: File, filter: GalleryFilter & { limit?: number }) {
+/** 以图搜图：传一张本地的图，结果按相似度排；minScore 是相似度下限（-1～1） */
+export function searchGalleryByImage(file: File, filter: GalleryFilter & { limit?: number; minScore?: number }) {
   const form = new FormData()
   form.append("image", file)
   if (filter.tags?.length) form.append("tags", JSON.stringify(filter.tags))
   if (filter.text) form.append("text", JSON.stringify(filter.text))
   if (filter.keyword) form.append("keyword", filter.keyword)
   if (filter.limit) form.append("limit", String(filter.limit))
+  if (filter.minScore !== undefined) form.append("minScore", String(filter.minScore))
   return send<GalleryPage>("/api/gallery/search", form)
 }
 

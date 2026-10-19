@@ -313,6 +313,17 @@ describe("检索", () => {
     expect(data.items.every((item: { score?: number }) => typeof item.score === "number")).toBe(true)
   })
 
+  it("「找相似」也能限相似度下限和张数（minScore、limit）", async () => {
+    const { data: all } = await query(ctx.app, "gallery.list", wang, { similarTo: A })
+    const [best, second] = all.items as { id: string; score: number }[]
+    const { data: strict } = await query(ctx.app, "gallery.list", wang, { similarTo: A, minScore: (best!.score + second!.score) / 2 })
+    expect(strict.items.map((item: { id: string }) => item.id)).toEqual([best!.id])
+    const { data: none } = await query(ctx.app, "gallery.list", wang, { similarTo: A, minScore: 1 })
+    expect(none.items).toEqual([])
+    const { data: one } = await query(ctx.app, "gallery.list", wang, { similarTo: A, limit: 1 })
+    expect(one.items.map((item: { id: string }) => item.id)).toEqual([best!.id])
+  })
+
   it("按一句描述找图；image 和 query 不能同时传", async () => {
     const res = await search({ query: "红色的杯子" })
     expect(res.body.items).toHaveLength(3)

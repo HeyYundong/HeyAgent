@@ -1,5 +1,6 @@
 // 图库：打开就是满屏的图片墙（按上传时间倒序，往下滚自动加载）。
 // 顶部一行：以图搜图（选一张本地图，或者 Ctrl+V 粘贴）、标签筛选、关键词 / JSON 包含匹配；右上角上传（也可以把图片拖进页面）。
+// 以图搜图、找相似时多两个框：最多几张、相似度下限（默认 50 张、90%）。
 // 点一张图在右边抽屉里看大图、文本和标签，能找相似、编辑、删除。
 import * as React from "react"
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query"
@@ -12,6 +13,7 @@ import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/u
 import { AspectRatio } from "@/components/ui/aspect-ratio"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { ButtonGroup } from "@/components/ui/button-group"
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group"
 import { Sheet, SheetContent } from "@/components/ui/sheet"
@@ -29,10 +31,17 @@ import { UploadDialog } from "./upload-dialog"
 
 /** 一页多少张（往下滚到底再拉下一页） */
 const PAGE_SIZE = 60
-/** 以图搜图最多看前多少张 */
-const PROBE_LIMIT = 100
+/** 以图搜图（传一张图、找相似）默认只看最像的前 50 张、相似度不低于 90% 的；页面上能改 */
+const IMAGE_SEARCH_LIMIT = 50
+const IMAGE_SEARCH_MIN_PERCENT = 90
 
 const percent = (score: number) => `${Math.round(score * 100)}%`
+/** 框里的数字：取整、限在 min～max；空着或不是数字用默认值 */
+function toInt(text: string, min: number, max: number, fallback: number) {
+  const number = Number(text)
+  if (!text.trim() || !Number.isFinite(number)) return fallback
+  return Math.min(max, Math.max(min, Math.round(number)))
+}
 const isImageFile = (file: File) => file.type.startsWith("image/")
 
 function useDebounced<T>(value: T, ms: number) {
@@ -57,6 +66,13 @@ export default function GalleryPage() {
   const [uploadFiles, setUploadFiles] = React.useState<File[] | null>(null)
   const [dragging, setDragging] = React.useState(false)
   const pickRef = React.useRef<HTMLInputElement>(null)
+  /** 以图搜图：最多几张、相似度下限（%） */
+  const [limitBox, setLimitBox] = React.useState(String(IMAGE_SEARCH_LIMIT))
+  const [minBox, setMinBox] = React.useState(String(IMAGE_SEARCH_MIN_PERCENT))
+  const searchLimit = toInt(useDebounced(limitBox, 400), 1, 200, IMAGE_SEARCH_LIMIT)
+  const minPercent = toInt(useDebounced(minBox, 400), 0, 100, IMAGE_SEARCH_MIN_PERCENT)
+  const minScore = minPercent / 100
+  const imageSearch = Boolean(probe || similarTo)
 
   const statsQuery = useQuery({ ...trpc.gallery.stats.queryOptions(), refetchInterval: (query) => (query.state.data?.pending ? 5000 : false) })
   const tagsQuery = useQuery(trpc.gallery.tags.queryOptions())
@@ -66,12 +82,12 @@ export default function GalleryPage() {
   const filtered = Object.keys(filter).length > 0 || Boolean(similarTo) || Boolean(probe)
 
   const list = useInfiniteQuery({
-    ...trpc.gallery.list.infiniteQueryOptions({ ...filter, similarTo: similarTo ?? undefined, limit: PAGE_SIZE }, { getNextPageParam: (last) => last.nextCursor }),
+    ...trpc.gallery.list.infiniteQueryOptions({ ...filter, ...(similarTo ? { similarTo, minScore, limit: searchLimit } : { limit: PAGE_SIZE }) }, { getNextPageParam: (last) => last.nextCursor }),
     enabled: !probe,
   })
   const probeQuery = useQuery({
-    queryKey: ["gallery", "probe", probe?.url, filter],
-    queryFn: () => searchGalleryByImage(probe!.file, { ...filter, limit: PROBE_LIMIT }),
+    queryKey: ["gallery", "probe", probe?.url, filter, searchLimit, minScore],
+    queryFn: () => searchGalleryByImage(probe!.file, { ...filter, limit: searchLimit, minScore }),
     enabled: Boolean(probe),
     retry: false,
   })
@@ -163,22 +179,28 @@ export default function GalleryPage() {
                 event.target.value = ""
               }}
             />
-            {probe ? (
-              <Badge variant="secondary">
-                <img src={probe.url} alt="" className="size-4 object-cover" />
-                以图搜图
-                <Button variant="ghost" size="icon-xs" aria-label="不按图搜了" onClick={clearProbe}>
+            {imageSearch ? (
+              <ButtonGroup>
+                {probe ? (
+                  <Tooltip>
+                    <TooltipTrigger render={<Button variant="outline" onClick={() => pickRef.current?.click()} />}>
+                      <img src={probe.url} alt="" data-icon="inline-start" className="size-4 object-cover" />
+                      以图搜图
+                    </TooltipTrigger>
+                    <TooltipContent>换一张图，也可以直接 Ctrl+V 粘贴</TooltipContent>
+                  </Tooltip>
+                ) : (
+                  <Tooltip>
+                    <TooltipTrigger render={<Button variant="outline" onClick={() => setParams({ id: similarTo })} />}>
+                      <ScanSearchIcon data-icon="inline-start" />和 {similarTo} 相似
+                    </TooltipTrigger>
+                    <TooltipContent>看这张图</TooltipContent>
+                  </Tooltip>
+                )}
+                <Button variant="outline" size="icon" aria-label={probe ? "不按图搜了" : "不找相似了"} onClick={() => (probe ? clearProbe() : setParams({ similar: null }))}>
                   <XIcon />
                 </Button>
-              </Badge>
-            ) : similarTo ? (
-              <Badge variant="secondary">
-                <ScanSearchIcon data-icon="inline-start" />
-                和 {similarTo} 相似
-                <Button variant="ghost" size="icon-xs" aria-label="不找相似了" onClick={() => setParams({ similar: null })}>
-                  <XIcon />
-                </Button>
-              </Badge>
+              </ButtonGroup>
             ) : (
               <Tooltip>
                 <TooltipTrigger render={<span />}>
@@ -189,6 +211,39 @@ export default function GalleryPage() {
                 </TooltipTrigger>
                 <TooltipContent>{canSearchByImage ? "选一张图，或者直接 Ctrl+V 粘贴" : "还没设 embedding 模型"}</TooltipContent>
               </Tooltip>
+            )}
+            {imageSearch && (
+              <>
+                <InputGroup className="w-32">
+                  <InputGroupAddon>最多</InputGroupAddon>
+                  <InputGroupInput
+                    type="number"
+                    min={1}
+                    max={200}
+                    aria-label="最多几张"
+                    value={limitBox}
+                    onChange={(event) => setLimitBox(event.target.value)}
+                    onBlur={() => setLimitBox(String(toInt(limitBox, 1, 200, IMAGE_SEARCH_LIMIT)))}
+                  />
+                  <InputGroupAddon align="inline-end">张</InputGroupAddon>
+                </InputGroup>
+                <InputGroup className="w-40">
+                  <InputGroupAddon>相似度 ≥</InputGroupAddon>
+                  <InputGroupInput
+                    type="number"
+                    min={0}
+                    max={100}
+                    aria-label="相似度不低于（%）"
+                    value={minBox}
+                    onChange={(event) => setMinBox(event.target.value)}
+                    onBlur={() => setMinBox(String(toInt(minBox, 0, 100, IMAGE_SEARCH_MIN_PERCENT)))}
+                  />
+                  <InputGroupAddon align="inline-end">
+                    %
+                    <HelpTip>只显示相似度不低于这个值的图，按相似度从高到低最多显示前面那么多张。用 gemini-embedding-2 时，同一张图改大小、裁边一般在 95% 以上，同类的不同图 80% 左右。</HelpTip>
+                  </InputGroupAddon>
+                </InputGroup>
+              </>
             )}
             <TagsCombobox className="w-full sm:w-64" value={tags} onValueChange={setTags} options={tagsQuery.data ?? []} placeholder="按标签筛（都要有）" />
             <InputGroup className="min-w-48 flex-1">
@@ -202,7 +257,7 @@ export default function GalleryPage() {
             </InputGroup>
           </div>
           {search.error && <p className="text-sm text-destructive">{search.error}</p>}
-          <StatusLine total={stats?.total} pending={stats?.pending ?? 0} lastError={stats?.lastError} shown={images.length} filtered={filtered} />
+          <StatusLine total={stats?.total} pending={stats?.pending ?? 0} lastError={stats?.lastError} shown={active.isPending ? undefined : images.length} filtered={filtered} cap={imageSearch ? searchLimit : undefined} />
 
           {active.isPending ? (
             <WallSkeleton />
@@ -224,8 +279,8 @@ export default function GalleryPage() {
                 <EmptyMedia variant="icon">
                   <SearchXIcon />
                 </EmptyMedia>
-                <EmptyTitle>没有符合条件的图</EmptyTitle>
-                <EmptyDescription>换个标签或关键词试试。</EmptyDescription>
+                <EmptyTitle>{imageSearch ? `没有相似度 ≥ ${minPercent}% 的图` : "没有符合条件的图"}</EmptyTitle>
+                <EmptyDescription>{imageSearch ? "把上面的相似度调低一些试试（同类的不同图一般 80% 左右），或者换个标签、关键词。" : "换个标签或关键词试试。"}</EmptyDescription>
               </EmptyHeader>
               <EmptyContent>
                 <Button
@@ -307,12 +362,13 @@ function Tile({ image, selected }: { image: GalleryImage; selected: boolean }) {
   )
 }
 
-/** 列表下面一行小字：共几张、正在重算向量、最近一次失败的原因 */
-function StatusLine({ total, pending, lastError, shown, filtered }: { total?: number; pending: number; lastError?: string; shown: number; filtered: boolean }) {
+/** 列表上面一行小字：共几张（shown 没有 = 还在找）、以图搜图到了张数上限、正在重算向量、最近一次失败的原因 */
+function StatusLine({ total, pending, lastError, shown, filtered, cap }: { total?: number; pending: number; lastError?: string; shown?: number; filtered: boolean; cap?: number }) {
   if (total === undefined) return null
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-      <span>{filtered ? `找到 ${shown} 张` : `共 ${total} 张`}</span>
+      <span>{!filtered ? `共 ${total} 张` : shown === undefined ? "正在找…" : `找到 ${shown} 张`}</span>
+      {cap !== undefined && shown !== undefined && shown >= cap && <span>只显示最像的前 {cap} 张</span>}
       {pending > 0 && (
         <span className="inline-flex items-center gap-1">
           <Spinner />

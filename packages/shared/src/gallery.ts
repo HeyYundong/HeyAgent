@@ -150,6 +150,8 @@ export type GallerySearchInput = z.infer<typeof gallerySearchSchema>
 export const galleryListInputSchema = galleryFilterSchema.extend({
   similarTo: z.string().min(1).optional(),
   query: z.string().trim().min(1).max(2000).optional(),
+  /** 只要相似度不低于这个值的（-1～1，只在传了 similarTo / query 时有用） */
+  minScore: z.number().min(-1).max(1).optional(),
   limit: limitSchema,
   cursor: z.string().optional(),
 })
