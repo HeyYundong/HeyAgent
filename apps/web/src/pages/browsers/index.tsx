@@ -45,7 +45,8 @@ export default function BrowsersPage() {
   const platformsQuery = usePlatformsQuery()
   // 平台名、登录人、最近选用它的运行、开着的 Chrome、账号使用情况
   const queries = [browsersQuery, platformsQuery, useStaffQuery(), useSessionsQuery(), useTasksQuery(), liveQuery, useAccountStatusQuery()]
-  const list = browsersQuery.data ?? []
+  // 按名字排序
+  const list = [...(browsersQuery.data ?? [])].sort((a, b) => a.name.localeCompare(b.name, "zh"))
   const live = liveQuery.data ?? []
   const [dialog, setDialog] = React.useState<"new" | "edit" | null>(null)
   const [editSite, setEditSite] = React.useState<BrowserSite | null>(null)
