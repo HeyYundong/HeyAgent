@@ -2,9 +2,10 @@
 // 图片显示缩略图，点了弹窗看大图（左右箭头或键盘 ← → 切换同一组里的其他图片）；文本文件点了弹窗看内容（Markdown 按 Markdown 显示）；
 // 表格文件（xlsx、xls、csv 等）点了看每个工作表的前 200 行（服务器解析，GET /api/files/:id/sheet）；其他文件弹窗里只说「不能预览，请下载」。
 // 下载走 GET /api/files/:id（要求登录，cookie 自动带上）。
+// 另外导出 FileViewer（看图 / 看内容的弹窗）、fileSourceLabel（来源文字）、fileTypeIcon（按类型选图标）、isImageFile，给运行详情的「空间文件」列表等别的页面用。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
-import { ChevronLeftIcon, ChevronRightIcon, DownloadIcon, FileIcon, FileSpreadsheetIcon, FileTextIcon, PaperclipIcon, XIcon } from "lucide-react"
+import { ChevronLeftIcon, ChevronRightIcon, DownloadIcon, FileIcon, FileSpreadsheetIcon, FileTextIcon, ImageIcon, PaperclipIcon, XIcon, type LucideIcon } from "lucide-react"
 import type { SessionFile, SheetPreview, UploadedFile } from "@heyagent/shared"
 
 import { MarkdownView } from "@/components/markdown"
@@ -32,7 +33,7 @@ const KIND_LABEL: Record<SessionFile["kind"], string> = {
   download: "浏览器下载",
 }
 
-type ShownFile = Pick<SessionFile, "id" | "name" | "mime" | "size" | "url"> & { kind?: SessionFile["kind"]; scope?: SessionFile["scope"] }
+export type ShownFile = Pick<SessionFile, "id" | "name" | "mime" | "size" | "url"> & { kind?: SessionFile["kind"]; scope?: SessionFile["scope"] }
 
 /** 弹窗里最多显示这么多字，再多的请下载 */
 const MAX_PREVIEW_CHARS = 200_000
@@ -50,9 +51,25 @@ const isSheet = (file: ShownFile) => SHEET_MIME.test(file.mime) || SHEET_EXT.tes
 const isText = (file: ShownFile) => TEXT_MIME.test(file.mime) || TEXT_EXT.test(file.name)
 const isMarkdown = (file: ShownFile) => file.mime === "text/markdown" || /\.(md|markdown)$/i.test(file.name)
 
+/** 是不是图片（看大图时能左右切换） */
+export const isImageFile = isImage
+
+/** 文件的来源：任务附件（跨运行一直有效）单独写，其他按 kind */
+export function fileSourceLabel(file: { kind: SessionFile["kind"]; scope?: SessionFile["scope"] }) {
+  return file.scope === "task" ? "任务附件" : KIND_LABEL[file.kind]
+}
+
+/** 按文件类型选的图标：图片、表格、文本，其他是普通文件 */
+export function fileTypeIcon(file: ShownFile): LucideIcon {
+  if (isImage(file)) return ImageIcon
+  if (isSheet(file)) return FileSpreadsheetIcon
+  if (isText(file)) return FileTextIcon
+  return FileIcon
+}
+
 function describe(file: ShownFile) {
   const parts = [fmtSize(file.size)]
-  if (file.kind) parts.push(file.scope === "task" ? "任务附件" : KIND_LABEL[file.kind])
+  if (file.kind) parts.push(fileSourceLabel({ kind: file.kind, scope: file.scope }))
   return parts.join(" · ")
 }
 
@@ -123,7 +140,7 @@ export function FileList({ files, onRemove, removingId, empty }: FileListProps) 
 }
 
 /** 看大图 / 看文本内容的弹窗。看图时 images 是同一组的全部图片：左右箭头、键盘 ← → 切换（到头就停，不循环） */
-function FileViewer({ file, images, onShow, onClose }: { file: ShownFile; images: ShownFile[]; onShow: (file: ShownFile) => void; onClose: () => void }) {
+export function FileViewer({ file, images, onShow, onClose }: { file: ShownFile; images: ShownFile[]; onShow: (file: ShownFile) => void; onClose: () => void }) {
   const index = images.findIndex((each) => each.id === file.id)
   const prev = index > 0 ? images[index - 1] : undefined
   const next = index >= 0 ? images[index + 1] : undefined

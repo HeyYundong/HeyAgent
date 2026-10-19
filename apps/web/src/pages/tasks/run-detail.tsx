@@ -1,4 +1,5 @@
-// 某次运行的 session 详情：标题卡 + 检查点 / 验收 / 总结和记忆（结束后）/ agent 的步骤 / 附件和产物 / 过程。
+// 某次运行的 session 详情：标题卡 + 检查点 / 验收 / 总结和记忆（结束后）/ agent 的步骤 / 空间文件 / 过程。
+// 右上角「空间文件」（run-space.tsx）弹窗按来源、名字筛这次运行的全部文件。
 // M3：过程里标出规则命中、agent 写下步骤（plan.set）、上下文压缩；验收逐条显示结论和理由；agent 的步骤可以「存为任务步骤」（tasks.saveStepsFromSession）。
 // 派活：meta 前面写怎么开始的（派活触发写清哪张单、谁派的）；被派来的加「派来的活」，派过活的加「派出去的活」（docs/dev/dispatch.md 9.4 节）。
 // 不带页面级布局和返回链接，放进任何 768px 宽的抽屉都能用（任务页、Session 页的抽屉都直接放它）。
@@ -33,6 +34,7 @@ import { VerificationReport } from "./verification"
 import { CheckpointList, Elapsed, RunStatusBadge, StepList, WaitingAlert, checkpointSummary, focusedCheckpoint, money } from "./parts"
 import { CancelRunDialog, isActive, ResumeButton, SessionFiles } from "./run-actions"
 import { RunBrowserButton } from "./run-browser"
+import { RunSpaceButton } from "./run-space"
 import { RunDigestSection } from "./run-digest"
 
 const EVENT_ICON: Record<RunEventKind, LucideIcon> = { plan: ListTreeIcon, think: BrainIcon, tool: WrenchIcon, checkpoint: FlagIcon, rule: ShieldIcon, wait: PauseIcon, resume: PlayIcon, human: UserIcon, verify: ScanSearchIcon, done: CircleCheckIcon, error: TriangleAlertIcon }
@@ -63,6 +65,7 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionSummary }
       badges={<><RunStatusBadge status={run.status} />{run.status === "running" && <span className="text-xs text-muted-foreground"><Elapsed since={run.startedAt} /></span>}</>}
       meta={<RunMeta run={run} rest={`模型 ${modelName(run.modelId)} · 输入 ${num(run.tokensIn)} / 输出 ${num(run.tokensOut)} token · 花费 ${money(run.costUsd)} · 开始 ${fmtDateTime(run.startedAt)} · ${run.endedAt ? `结束 ${fmtDateTime(run.endedAt)}` : "还没结束"}`} />}
       actions={<>
+        <RunSpaceButton run={run} />
         <RunBrowserButton run={run} />
         {run.status === "waiting" && can(user, "session.resume", { taskOwnerId: task.ownerId }) && <ResumeButton run={run} size="sm" />}
         {isActive(run) && can(user, "task.manage", { ownerId: task.ownerId }) && (
@@ -96,7 +99,7 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionSummary }
       {run.exploredSteps && run.exploredSteps.length > 0 && (
         <AgentSteps task={task} run={run} steps={run.exploredSteps} events={events} canSave={can(user, "task.manage", { ownerId: task.ownerId })} />
       )}
-      <DetailSection title="附件和产物" description="点下载。agent 存下的文件、这次运行带的附件都在这里，新产物会自动出现。">
+      <DetailSection title="空间文件" description="这次运行的文件空间：agent 存的文件、浏览器下载、截图、带的附件都在这里，新文件会自动出现。点文件看内容或下载；要按来源筛、按名字搜，点右上角「空间文件」。">
         <SessionFiles run={run} />
       </DetailSection>
       <DetailSection
