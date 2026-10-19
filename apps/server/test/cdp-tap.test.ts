@@ -75,6 +75,12 @@ describe("parseAgentInput", () => {
     expect(parseAgentInput(JSON.stringify({ id: 7, method: "Runtime.evaluate", sessionId: "S1", params: { expression: "'Input.'" } }), targets)).toBeUndefined()
     expect(parseAgentInput("不是 JSON", targets)).toBeUndefined()
   })
+  it("agent 切标签页、打开网址：远程画面跟过去", () => {
+    expect(parseAgentInput(JSON.stringify({ id: 8, method: "Page.bringToFront", sessionId: "S1" }), targets)).toEqual({ kind: "focus", targetId: "T1" })
+    expect(parseAgentInput(JSON.stringify({ id: 9, method: "Page.navigate", sessionId: "S1", params: { url: "https://example.com" } }), targets)).toEqual({ kind: "focus", targetId: "T1" })
+    expect(parseAgentInput(JSON.stringify({ id: 10, method: "Page.navigateToHistoryEntry", sessionId: "S1", params: { entryId: 1 } }), targets)).toEqual({ kind: "focus", targetId: "T1" })
+    expect(parseAgentInput(JSON.stringify({ id: 11, method: "Page.bringToFront", sessionId: "S9" }), targets)).toBeUndefined()
+  })
 })
 
 describe("startCdpTap", () => {

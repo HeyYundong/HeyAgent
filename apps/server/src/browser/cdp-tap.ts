@@ -2,7 +2,8 @@
 // 顺手记下 agent 发的输入指令（Input.dispatchMouseEvent 的坐标、Input.insertText / dispatchKeyEvent 打字）。
 // - 网页什么都察觉不到：页面里不插东西，截图里也没有光标（Playwright 自带的 showActions 会往页面里插 x-pw-glass）；
 // - 只有 MCP 走这里，人在远程画面里的操作走编排器自己的连接，所以记下的都是 agent 的；
-// - 只解析含 "Input." 的消息（MCP → Chrome）和 Target.attachedToTarget / detachedFromTarget（Chrome → MCP），其余原样转；
+// - 还记下 agent 换了标签页（Page.bringToFront）和在哪个页面打开网址（Page.navigate*），远程画面跟过去；
+// - 只解析含 "Input." / "Page.bringToFront" / "Page.navigate" 的消息（MCP → Chrome）和 Target.attachedToTarget / detachedFromTarget（Chrome → MCP），其余原样转；
 // - 有人看画面时，按下鼠标前停 PRESS_DELAY_MS，让光标先移过去再点（之后的消息排在它后面，顺序不乱）；
 // - 只监听 127.0.0.1，路径带随机串（和 Chrome 自己的调试端口一样只在本机）。
 import { randomBytes } from "node:crypto"
@@ -16,6 +17,8 @@ import { WebSocket, WebSocketServer, type RawData } from "ws"
 export type AgentInput =
   | { kind: "mouse"; targetId: string; type: "mouseMoved" | "mousePressed" | "mouseReleased" | "mouseWheel"; x: number; y: number }
   | { kind: "key"; targetId: string }
+  /** agent 切到这个标签页，或在这个页面上打开网址 / 前进后退 */
+  | { kind: "focus"; targetId: string }
   /** 页面没了（关掉、换进程）：记的光标位置可以扔了 */
   | { kind: "detached"; targetId: string }
 
@@ -36,6 +39,7 @@ export const PRESS_DELAY_MS = 200
 const MAX_PAYLOAD = 256 * 1024 * 1024
 const MOUSE_TYPES = new Set(["mouseMoved", "mousePressed", "mouseReleased", "mouseWheel"])
 const KEY_TYPES = new Set(["keyDown", "rawKeyDown"])
+const FOCUS_METHODS = new Set(["Page.bringToFront", "Page.navigate", "Page.navigateToHistoryEntry"])
 
 interface CdpCommand {
   method?: string
@@ -68,6 +72,7 @@ export function parseAgentInput(raw: string, targets: ReadonlyMap<string, string
   if (command.method === "Input.dispatchDragEvent" && typeof params.x === "number" && typeof params.y === "number")
     return { kind: "mouse", targetId, type: "mouseMoved", x: params.x, y: params.y }
   if (command.method === "Input.insertText" || (command.method === "Input.dispatchKeyEvent" && KEY_TYPES.has(params.type ?? ""))) return { kind: "key", targetId }
+  if (FOCUS_METHODS.has(command.method ?? "")) return { kind: "focus", targetId }
   return undefined
 }
 
@@ -110,7 +115,7 @@ export async function startCdpTap(upstreamUrl: string, options: CdpTapOptions): 
     }
 
     client.on("message", (data, isBinary) => {
-      const input = !isBinary && includes(data, '"Input.') ? parseAgentInput(text(data), targets) : undefined
+      const input = !isBinary && (includes(data, '"Input.') || includes(data, '"Page.bringToFront"') || includes(data, '"Page.navigate')) ? parseAgentInput(text(data), targets) : undefined
       const delay = input?.kind === "mouse" && input.type === "mousePressed" && options.shouldDelay() ? PRESS_DELAY_MS : 0
       if (!delay && !queued) return deliver(data, isBinary, input)
       queued += 1

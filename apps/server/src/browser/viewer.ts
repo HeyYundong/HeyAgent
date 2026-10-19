@@ -1,6 +1,6 @@
 // 远程画面（m2.md 第 8 条）：每个开着的 Chrome 一个，worker 的内部 WebSocket 接进来的观看端都挂在这里。
 // - 只在有人看的时候开 screencast，画面缩到 960 宽；收到帧立刻 ack，慢的观看端靠丢帧应对（缓冲超过 1MB 就不发）；
-// - 新标签页自动跟随；切换标签页时先 bringToFront（后台标签页不出帧）；
+// - 新标签页自动跟随；agent 切到别的标签页、在别的标签页上打开网址或点、打字时也跟过去；切换标签页时先 bringToFront（后台标签页不出帧）；
 // - 输入转发不 await：弹框打开期间 renderer 是阻塞的，CDP 调用要等弹框关掉才返回（实测）；
 // - 没有操作权限的连接，输入一律丢弃（API 转发时已经丢过一次，这里再挡一次）；
 // - agent 的鼠标（cdp-tap 记下的）推给观看端画虚拟光标：只推当前标签页的；agent 打字时把光标挪到有焦点的输入框
@@ -216,6 +216,12 @@ export class ViewerHub {
       return
     }
     const active = this.active ? this.instance.targetIdOf(this.active) : undefined
+    // agent 在别的标签页上动了（切过去、打开网址、点、打字）：画面跟过去（人手动切开的也拉回来，看的是 agent 在做什么）
+    if (input.targetId !== active && this.clients.size) {
+      const page = this.instance.pages().find((each) => this.instance.targetIdOf(each) === input.targetId)
+      if (page) void this.activate(page)
+    }
+    if (input.kind === "focus") return
     if (input.kind === "key") {
       if (input.targetId === active) void this.followFocus(input.targetId)
       return

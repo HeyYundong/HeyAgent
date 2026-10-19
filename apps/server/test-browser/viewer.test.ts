@@ -208,6 +208,14 @@ describe("远程画面", () => {
     owner.send({ t: "tab", id: first })
     await waitFor(async () => near(lastCursor(), boxCenter), { what: "切回来光标还在" })
 
+    // agent 在没显示的标签页上动了（它的当前标签页还是新开的那个）：画面跟过去
+    const second = instance.pageId(instance.pages().find((each) => each !== page)!)
+    await tool("browser_navigate", { url: site.url("127.0.0.1", "/hello?again") })
+    await waitFor(async () => activeTab() === second, { what: "画面跟到 agent 打开网址的标签页" })
+    // agent 自己切回第一个标签页：画面也跟过去
+    await tool("browser_tabs", { action: "select", index: 0 })
+    await waitFor(async () => activeTab() === first, { what: "画面跟到 agent 切过去的标签页" })
+
     expect((await mutate(ctx.app, "browser.close", wang, { browserId })).error).toBeUndefined()
     await waitFor(async () => owner.json.some((message) => message.t === "closed"), { what: "收到 closed" })
   })
