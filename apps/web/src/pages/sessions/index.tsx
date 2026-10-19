@@ -18,6 +18,7 @@ import { money } from "@/pages/tasks/parts"
 import { RunDetail } from "@/pages/tasks/run-detail"
 
 import { SOURCE_LABEL, SessionItems, SessionTable } from "./list"
+import { TaskFilter } from "./task-filter"
 
 const SOURCE_ITEMS = [{ value: "all", label: "全部来源" }, ...Object.entries(SOURCE_LABEL).map(([value, label]) => ({ value, label }))]
 
@@ -27,6 +28,8 @@ export default function SessionsPage() {
   const [query, setQuery] = React.useState(() => params.get("q") ?? "") // 别的页面可以带 ?q= 过来
   // 来源：手动 / 定时 / 待办 / 事件 / 派活（派活加的，可以只看派活触发的）
   const [source, setSource] = React.useState(() => params.get("source") ?? "all")
+  // 任务：只看某个任务的 session（别的页面可以带 ?task=T-… 过来）
+  const [taskId, setTaskId] = React.useState(() => params.get("task") ?? "all")
 
   const sessionsQuery = useSessionsQuery()
   const tasksQuery = useTasksQuery()
@@ -41,6 +44,7 @@ export default function SessionsPage() {
   const shownList = allRuns.filter((run) => {
     if (group !== "all" && groupOf(run) !== group) return false
     if (source !== "all" && run.source !== source) return false
+    if (taskId !== "all" && run.taskId !== taskId) return false
     if (!q) return true
     const title = findById(tasks, run.taskId)?.title ?? ""
     return run.id.toLowerCase().includes(q) || run.taskId.toLowerCase().includes(q) || title.toLowerCase().includes(q) || Boolean(run.workItemId?.toLowerCase().includes(q))
@@ -56,6 +60,7 @@ export default function SessionsPage() {
   const clear = () => {
     setGroup("all")
     setSource("all")
+    setTaskId("all")
     setQuery("")
   }
 
@@ -87,6 +92,7 @@ export default function SessionsPage() {
                 {SOURCE_ITEMS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}
               </SelectContent>
             </Select>
+            <TaskFilter value={taskId} onValueChange={setTaskId} runs={allRuns} tasks={tasks} />
             <InputGroup className="w-full sm:w-72">
               <InputGroupAddon><SearchIcon /></InputGroupAddon>
               <InputGroupInput value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜 session 编号、任务名或派活单号" aria-label="搜索 session" />
