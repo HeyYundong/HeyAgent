@@ -172,7 +172,7 @@ export const columnLessons: Record<BoardColumn, { comes: string; goes: string }>
   },
   done: {
     comes: "验收通过的运行。定时任务每触发一次是新的一次运行，所以每天都会多一张卡。",
-    goes: "不再移动。完整过程在任务详情的「运行记录」里能看到。",
+    goes: "不再移动。完整过程在「会话」页能看到（任务详情头部点「会话」）。",
   },
 }
 

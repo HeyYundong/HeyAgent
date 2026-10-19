@@ -1,32 +1,29 @@
 // 任务页（v3.1）：卡片墙一直是主画面；点卡片从右边打开抽屉看任务详情（?id=），抽屉里再看某次运行的 session（?id=&run=）。
-// 执行中的排最前，而且是全墙唯一会动的卡（转圈、当前在做的那句闪光、已运行时间每秒跳）。
+// 卡片和抽屉只说明任务（目标、步骤、定时、负责人），不显示运行状态；运行记录在「会话」页看（抽屉头部「会话」按钮带上这个任务筛好）。
+// 执行中的仍排最前。
 // 主管能新建任务、开关任务；员工能看全部任务，只能开关、运行自己负责的。
 // 新建、编辑、开关、删除接通后端（M1 P2）；立即运行（可带附件）、立即继续、取消、任务附件接引擎（M1 P3）。
 import * as React from "react"
-import { ArrowLeftIcon, ListChecksIcon, PlusIcon } from "lucide-react"
+import { ArrowLeftIcon, HistoryIcon, ListChecksIcon, PlusIcon } from "lucide-react"
 
 import { EmptyState, PageFrame, SimpleHeader } from "@/components/shell/simple-page"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
-import { Progress } from "@/components/ui/progress"
 import { Separator } from "@/components/ui/separator"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Switch } from "@/components/ui/switch"
-import { can, fmtDateTime, fmtShort, runsOfTask, type RunStatus, type SessionRun, type TaskDef } from "@heyagent/shared"
+import { can, fmtDateTime, fmtShort, runsOfTask, type RunStatus, type TaskDef } from "@heyagent/shared"
 
 import {
-  useBoardQuery, useMemoriesQuery, useModelsQuery, useRulesQuery, useRunNow, useSessionsQuery, useSkillsQuery, useStaffName, useStaffQuery, useTasksQuery, useToolsQuery,
+  useBoardQuery, useMemoriesQuery, useModelsQuery, useRulesQuery, useSessionsQuery, useSkillsQuery, useStaffName, useStaffQuery, useTasksQuery, useToolsQuery,
 } from "@/lib/data"
 import { useAction } from "@/lib/mutations"
-import { cn } from "@/lib/utils"
 import { href, setParams, useRoute } from "@/lib/router"
 import { useMe } from "@/lib/session"
 import { trpc } from "@/lib/trpc"
-import { useWorkTaskStats } from "@/pages/work/parts"
 
 import { TaskDialog } from "./task-dialog"
-import { Elapsed, RunStatusBadge, nextRunText, type TasksState } from "./parts"
+import { nextRunText, type TasksState } from "./parts"
 import { RunDetail } from "./run-detail"
 import { TaskActions, TaskDetail } from "./task-detail"
 
@@ -66,7 +63,7 @@ export default function TasksPage() {
   const header = (
     <SimpleHeader
       title="任务"
-      description={isAdmin ? "每个任务一张卡，执行中的排最前。点卡片从右边看详情。" : "全部任务，执行中的排最前。你只能开关、运行自己负责的。"}
+      description={isAdmin ? "每个任务一张卡，说明这个任务做什么。点卡片从右边看详情；每次运行的过程在「会话」页看。" : "全部任务，点卡片看详情；每次运行的过程在「会话」页看。你只能开关、运行自己负责的。"}
       learnId="task"
       action={can(user, "task.create", {}) && taskList.length > 0 && <Button onClick={() => setCreating(true)}><PlusIcon data-icon="inline-start" />新建任务</Button>}
     />
@@ -89,7 +86,7 @@ export default function TasksPage() {
         }
       >
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
-          {visible.map((each) => <TaskCard key={each.id} task={each} latest={latestOf(each.id)} canToggle={canManage(each)} onToggle={(enabled) => setEnabled.mutate({ id: each.id, enabled })} />)}
+          {visible.map((each) => <TaskCard key={each.id} task={each} canToggle={canManage(each)} onToggle={(enabled) => setEnabled.mutate({ id: each.id, enabled })} />)}
         </div>
         <Sheet open={Boolean(taskId)} onOpenChange={(next) => !next && setParams({ id: null, run: null })}>
           <SheetContent className="gap-0 data-[side=right]:w-full data-[side=right]:sm:max-w-3xl">
@@ -103,21 +100,22 @@ export default function TasksPage() {
   )
 }
 
-/** 抽屉：头部是任务（状态、标题、负责人和定时），中间是任务详情或某次 session，底部是主管操作 */
+/** 抽屉：头部是任务（编号、标题、负责人和定时，右边「会话」按钮去会话页只看这个任务的 session），中间是任务详情或某次 session，底部是主管操作 */
 function TaskSheetBody({ task, runId, state, canEdit }: { task: TaskDef; runId: string | null; state: TasksState; canEdit: boolean }) {
   const staffName = useStaffName()
-  const latest = state.runsOf(task.id)[0]
+  const runs = state.runsOf(task.id)
   return (
     <>
       <SheetHeader className="pr-12">
         <div className="flex flex-wrap items-center gap-2 pb-1 text-muted-foreground">
-          {latest && <RunStatusBadge status={latest.status} />}
-          {latest?.status === "running" && <Elapsed since={latest.startedAt} />}
           <span className="font-mono">{task.id}</span>
+          <Button variant="outline" size="sm" className="ml-auto" nativeButton={false} render={<a href={href("sessions", { task: task.id })} />}>
+            <HistoryIcon data-icon="inline-start" />会话（{runs.length}）
+          </Button>
         </div>
         <SheetTitle>{task.title}</SheetTitle>
         <SheetDescription>
-          负责人 {staffName(task.ownerId)} · 创建于 {fmtDateTime(task.createdAt)} · {task.schedule ? `定时：${task.schedule.text}（${task.schedule.cron}）` : task.dispatch ? "被派活，不定时" : "只跑一次"} · 预计下次运行：{nextRunText(task, latest)}
+          负责人 {staffName(task.ownerId)} · 创建于 {fmtDateTime(task.createdAt)} · {task.schedule ? `定时：${task.schedule.text}（${task.schedule.cron}）` : task.dispatch ? "被派活，不定时" : "只跑一次"} {(task.schedule || task.dispatch || !task.enabled) && `· 预计下次运行：${nextRunText(task)}`}
         </SheetDescription>
       </SheetHeader>
       <Separator />
@@ -125,7 +123,7 @@ function TaskSheetBody({ task, runId, state, canEdit }: { task: TaskDef; runId: 
         {runId ? (
           <>
             <Button variant="ghost" size="sm" className="self-start" onClick={() => setParams({ run: null })}><ArrowLeftIcon data-icon="inline-start" />{task.id} 任务详情</Button>
-            <RunDetail task={task} run={state.runsOf(task.id).find((run) => run.id === runId)} />
+            <RunDetail task={task} run={runs.find((run) => run.id === runId)} />
           </>
         ) : <TaskDetail task={task} state={state} canEdit={canEdit} />}
       </div>
@@ -147,37 +145,18 @@ function metaLine(task: TaskDef) {
   return [task.schedule?.text ?? "只跑一次", next, steps].filter(Boolean).join(" · ")
 }
 
-function TaskCard({ task, latest, canToggle, onToggle }: { task: TaskDef; latest?: SessionRun; canToggle: boolean; onToggle: (enabled: boolean) => void }) {
+/** 任务卡片：只说明任务（标题、目标、定时和步骤、负责人、开关），不显示运行状态 */
+function TaskCard({ task, canToggle, onToggle }: { task: TaskDef; canToggle: boolean; onToggle: (enabled: boolean) => void }) {
   const staffName = useStaffName()
-  const runNow = useRunNow()
-  const now = latest && runNow(latest)
-  const running = latest?.status === "running"
-  const checkpoints = latest?.checkpoints ?? []
-  const done = checkpoints.filter((cp) => cp.status === "done").length
   return (
     <Card size="sm" className="relative">
       <CardContent className="flex flex-1 flex-col gap-1.5">
-        <div className="flex items-center gap-2 text-muted-foreground">
-          {latest ? <RunStatusBadge status={latest.status} /> : <Badge variant="ghost">还没运行过</Badge>}
-          {task.dispatch && <QueuedBadge taskId={task.id} />}
-          {running ? <span className="text-foreground"><Elapsed since={latest.startedAt} /></span> : latest && <span className="tabular-nums">{fmtShort(latest.startedAt)}</span>}
-          <span className="ml-auto font-mono">{task.id}</span>
+        <div className="flex items-start gap-2">
+          {/* 整张卡可点：链接铺满卡片，开关浮在上面 */}
+          <a href={href("tasks", { id: task.id })} className="line-clamp-2 min-w-0 flex-1 text-sm font-medium after:absolute after:inset-0 hover:underline">{task.title}</a>
+          <span className="shrink-0 pt-0.5 font-mono text-muted-foreground">{task.id}</span>
         </div>
-        {/* 整张卡可点：链接铺满卡片，开关浮在上面 */}
-        <a href={href("tasks", { id: task.id })} className="line-clamp-2 text-sm font-medium after:absolute after:inset-0 hover:underline">{task.title}</a>
-        {now && (
-          <div className={cn("flex min-w-0 flex-col border-l-2 pl-2", running ? "border-primary" : "border-border")}>
-            <p className={now.when || running ? "truncate" : "line-clamp-2"}>
-              <span className="text-muted-foreground">{now.label}：</span><span className={cn(running && "shimmer")}>{now.text}</span>
-            </p>
-            {now.when && <p className="truncate text-muted-foreground">继续：{now.when}</p>}
-          </div>
-        )}
-        {running && checkpoints.length > 0 && (
-          <Progress value={(done / checkpoints.length) * 100} aria-label={`检查点完成 ${done}/${checkpoints.length}`}>
-            <span className="text-muted-foreground tabular-nums">检查点 {done}/{checkpoints.length}</span>
-          </Progress>
-        )}
+        <p className="line-clamp-2 text-muted-foreground">目标：{task.goal}</p>
         <p className="mt-auto truncate pt-1 text-muted-foreground">{metaLine(task)}</p>
         <div className="flex items-center justify-between gap-2">
           <span className="text-muted-foreground">负责人 {staffName(task.ownerId)}</span>
@@ -193,10 +172,4 @@ function TaskCard({ task, latest, canToggle, onToggle }: { task: TaskDef; latest
       </CardContent>
     </Card>
   )
-}
-
-/** 能被派活的任务卡片上：有排队的单时「排队 N」 */
-function QueuedBadge({ taskId }: { taskId: string }) {
-  const queued = useWorkTaskStats(taskId).data?.queued ?? 0
-  return queued > 0 ? <Badge variant="outline">排队 {queued}</Badge> : null
 }

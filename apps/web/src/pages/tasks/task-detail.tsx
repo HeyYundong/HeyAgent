@@ -1,7 +1,7 @@
 // 任务详情（放在右侧抽屉里）：分区卡 + 抽屉底部的操作。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
-import { ArrowRightIcon, ChevronRightIcon, CircleStopIcon, EllipsisIcon, FlagIcon, HandIcon, HourglassIcon, PaperclipIcon, PencilIcon, PlayIcon, SendIcon, Trash2Icon } from "lucide-react"
+import { ArrowRightIcon, CircleStopIcon, EllipsisIcon, FlagIcon, HandIcon, HourglassIcon, PaperclipIcon, PencilIcon, PlayIcon, SendIcon, Trash2Icon } from "lucide-react"
 
 import { DetailSection } from "@/components/shell/simple-page"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
@@ -11,9 +11,9 @@ import { Button } from "@/components/ui/button"
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "@/components/ui/item"
 import { Spinner } from "@/components/ui/spinner"
 import { Switch } from "@/components/ui/switch"
-import { alwaysOnToolIds, BROWSER_TOOL_ID, can, findById, fmtDateTime, fmtShort, sameShanghaiDay, toolIdsOfTask, WORK_DISPATCH_TOOL_ID, type SessionRun, type TaskDef } from "@heyagent/shared"
+import { alwaysOnToolIds, BROWSER_TOOL_ID, can, findById, sameShanghaiDay, toolIdsOfTask, WORK_DISPATCH_TOOL_ID, type SessionRun, type TaskDef } from "@heyagent/shared"
 
-import { useBrowsersQuery, useHumanItems, useMemoriesQuery, useModels, useRulesQuery, useRunNow, useSkillsQuery, useTasksQuery, useToolName, useToolsQuery } from "@/lib/data"
+import { useBrowsersQuery, useHumanItems, useMemoriesQuery, useModels, useRulesQuery, useSkillsQuery, useTasksQuery, useToolName, useToolsQuery } from "@/lib/data"
 import { useAction } from "@/lib/mutations"
 import { href, navigate, setParams, type PageId } from "@/lib/router"
 import { useMe } from "@/lib/session"
@@ -23,7 +23,7 @@ import { useWorkTaskStats } from "@/pages/work/parts"
 
 import { compileOf, ruleSelectable } from "@/pages/rules/compile"
 
-import { RunStatusBadge, StepList, WaitingAlert, money, tokens, type TasksState } from "./parts"
+import { StepList, type TasksState } from "./parts"
 import { CancelRunDialog, isActive, ResumeButton, RunWithFilesDialog, TaskAttachments, useStartRun } from "./run-actions"
 import { retryText } from "./dispatch-fields"
 import { TaskDialog } from "./task-dialog"
@@ -112,22 +112,16 @@ export function TaskActions({ task, state }: { task: TaskDef; state: TasksState 
   )
 }
 
-/** 抽屉里的任务详情：分区卡（目标和步骤 / 任务记忆 / 运行记录 / 附件 / 用到的配置）。标题和操作在抽屉的头和底。
- * 检查点只在运行详情里看，这里不放最近一次运行的检查点（页面太乱） */
+/** 抽屉里的任务详情：只说明任务，分区卡（目标和步骤 / 任务记忆 / 附件 / 用到的配置）。标题和操作在抽屉的头和底。
+ * 不放运行状态和运行记录：每次运行在「会话」页看（抽屉头部的「会话」按钮带上这个任务筛好） */
 export function TaskDetail({ task, state, canEdit }: { task: TaskDef; state: TasksState; canEdit: boolean }) {
   const taskRuns = state.runsOf(task.id)
-  const latest = taskRuns[0]
   return (
     <>
-      {/* 能被派活的任务同时有好几个运行，只看最近一个没有意义，看「派活」区块的数字 */}
-      {latest && !task.dispatch && <WaitingAlert run={latest} link={href("tasks", { id: task.id, run: latest.id })} />}
       {task.dispatch && <DispatchSection task={task} />}
       {task.toolIds.includes(WORK_DISPATCH_TOOL_ID) && <DispatchOutSection task={task} />}
-      <GoalAndSteps task={task} latest={latest} />
+      <GoalAndSteps task={task} latest={taskRuns[0]} />
       <TaskMemorySection task={task} runs={taskRuns} canEdit={canEdit} />
-      <DetailSection title={`运行记录（${taskRuns.length}）`} description="一次运行 = 一个 session：要等时挂起，等到了继续同一个 session；定时任务每次触发是一次新的运行。点一行看完整过程。">
-        {taskRuns.length ? <RunList task={task} taskRuns={taskRuns} /> : <p className="text-muted-foreground">还没运行过。</p>}
-      </DetailSection>
       <DetailSection title="附件" description="任务附件每次运行都会带上，agent 用「读附件」工具读。只想这一次带的，用「⋯ → 带附件运行」。">
         <TaskAttachments task={task} canEdit={canEdit} />
       </DetailSection>
@@ -157,37 +151,12 @@ function GoalAndSteps({ task, latest }: { task: TaskDef; latest?: SessionRun }) 
           </ItemGroup>
         ) : (
           <div className="flex flex-col gap-2">
-            <p className="text-muted-foreground">没写步骤，agent 自己探索。{explored ? `最近一次运行（${latest.id}）里 agent 探索出的步骤：` : "运行后这里会列出 agent 探索出的步骤。"}</p>
+            <p className="text-muted-foreground">没写步骤，agent 自己探索。{explored ? "agent 最近一次探索出的步骤：" : "运行后这里会列出 agent 探索出的步骤。"}</p>
             {explored && <StepList steps={explored} />}
           </div>
         )}
       </div>
     </DetailSection>
-  )
-}
-
-function RunList({ task, taskRuns }: { task: TaskDef; taskRuns: SessionRun[] }) {
-  const runNow = useRunNow()
-  const { modelName } = useModels()
-  return (
-    <ItemGroup className="gap-2">
-      {taskRuns.map((run) => {
-        const now = runNow(run)
-        return (
-          <Item key={run.id} variant="outline" size="sm" render={<a href={href("tasks", { id: task.id, run: run.id })} />}>
-            <ItemContent className="min-w-0">
-              <ItemTitle className="flex-wrap">
-                <span className="font-mono">{run.id}</span>
-                <RunStatusBadge status={run.status} />
-                <span className="font-normal tabular-nums text-muted-foreground">{fmtDateTime(run.startedAt)}{run.endedAt ? ` – ${fmtShort(run.endedAt)}` : " 起"}</span>
-              </ItemTitle>
-              <ItemDescription className="line-clamp-2">{run.workItemId && `${run.workItemId} · `}{modelName(run.modelId)} · {tokens(run.tokensIn + run.tokensOut)} token · {money(run.costUsd)} · {now.label}：{now.text}</ItemDescription>
-            </ItemContent>
-            <ItemActions><ChevronRightIcon className="size-4 text-muted-foreground" /></ItemActions>
-          </Item>
-        )
-      })}
-    </ItemGroup>
   )
 }
 
