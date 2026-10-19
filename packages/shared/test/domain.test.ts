@@ -12,7 +12,7 @@ import {
   triggerText,
   type HumanItem,
   type HumanTodo,
-  type SessionRun,
+  type SessionSummary,
   type TaskDef,
 } from "../src/index.js"
 
@@ -20,8 +20,8 @@ const task = (id: string, extra: Partial<TaskDef> = {}): TaskDef => ({
   id, title: id, goal: "", steps: [], ownerId: "u-wang", createdAt: "2026-10-16T01:00:00.000Z", enabled: true,
   modelId: "m", memoryIds: [], skillIds: [], toolIds: [], ruleIds: [], browserProfileIds: [], allowedDomains: [], allowBrowserEvaluate: false, dispatchFrom: [], cronSkipIfRunning: true, ...extra,
 })
-const run = (id: string, taskId: string, status: SessionRun["status"], startedAt: string, extra: Partial<SessionRun> = {}): SessionRun => ({
-  id, taskId, status, startedAt, modelId: "m", tokensIn: 0, tokensOut: 0, costUsd: 0, checkpoints: [], events: [], ...extra,
+const run = (id: string, taskId: string, status: SessionSummary["status"], startedAt: string, extra: Partial<SessionSummary> = {}): SessionSummary => ({
+  id, taskId, status, startedAt, modelId: "m", tokensIn: 0, tokensOut: 0, costUsd: 0, checkpoints: [], eventCount: 0, pausedMs: 0, browserIds: [], ...extra,
 })
 const detail = { sections: [], primary: "通过", secondary: "拒绝" }
 const item = (id: string, assigneeId: string, extra: Partial<HumanItem> = {}): HumanItem => ({
@@ -138,6 +138,12 @@ describe("runNow", () => {
       waiting: { what: "等工厂回复", trigger: { kind: "event", event: "回复", fallbackDays: 7 }, since: "2026-10-16T01:00:00.000Z" },
     })
     expect(runNow(r, [], staff).text).toBe("工厂回复")
+  })
+  it("执行中写最后一条过程，失败写最后一条出错（摘要里的 lastEvent / lastError）", () => {
+    const at = "2026-10-16T01:05:00.000Z"
+    expect(runNow(run("R-1", "T-1", "running", at, { lastEvent: { at, kind: "tool", title: "打开网页" } }), [], staff).text).toBe("打开网页")
+    expect(runNow(run("R-1", "T-1", "running", at), [], staff).text).toBe("刚开始")
+    expect(runNow(run("R-1", "T-1", "failed", at, { lastError: { at, title: "模型超时" } }), [], staff).text).toBe("失败 · 模型超时")
   })
 })
 

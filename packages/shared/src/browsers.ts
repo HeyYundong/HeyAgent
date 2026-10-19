@@ -1,5 +1,5 @@
 // 浏览器页的纯函数（原型 browsers/data.ts）。
-import type { BrowserProfile, BrowserProxy, BrowserSite, SessionRun, TaskDef } from "./schemas.js"
+import type { BrowserProfile, BrowserProxy, BrowserSite, RunEvent, SessionSummary, TaskDef } from "./schemas.js"
 import { findById } from "./domain.js"
 import { TIME_ZONE } from "./time.js"
 
@@ -45,15 +45,30 @@ export function problemCount(profile: Pick<BrowserProfile, "sites">) {
 }
 
 /**
- * 最近用了这个 Chrome 配置的运行：系统分配 Chrome 时记的「打开了 Chrome」过程（详情以「Chrome 配置 br-xx；」开头），
- * 或者工具调用的输入带着它的 id：browser.use 的 {"profileId": "br-xx"}；更早的数据是 {"browser": "br-xx"}（冒号前后有没有空格都行）
+ * 过程里认出用过的 Chrome 配置：工具调用的输入带着它的 id：browser.use 的 {"profileId": "br-xx"}，更早的数据是 {"browser": "br-xx"}（冒号前后有没有空格都行）。
+ * 服务端在库里用同一个正则（PostgreSQL 的 regexp_matches 也认这个写法）
  */
-export function recentRunsUsing(profileId: string, runs: readonly SessionRun[], tasks: readonly TaskDef[]) {
-  const id = profileId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-  const pattern = new RegExp(`"(profileId|browser)"\\s*:\\s*"${id}"`)
-  const opened = `Chrome 配置 ${profileId}；`
+export const BROWSER_ID_IN_INPUT = String.raw`"(?:profileId|browser)"\s*:\s*"([^"]+)"`
+/** 系统分配 Chrome 时记的「打开了 Chrome」过程（plan），详情以「Chrome 配置 br-xx；」开头 */
+export const BROWSER_ID_IN_PLAN = "^Chrome 配置 ([^；]+)；"
+
+/** 一次运行的过程里用过的 Chrome 配置 id，去重，从小到大（SessionSummary.browserIds） */
+export function browserIdsOf(events: readonly Pick<RunEvent, "kind" | "detail" | "input">[]): string[] {
+  const ids = new Set<string>()
+  const inInput = new RegExp(BROWSER_ID_IN_INPUT, "g")
+  const inPlan = new RegExp(BROWSER_ID_IN_PLAN)
+  for (const event of events) {
+    if (event.input) for (const match of event.input.matchAll(inInput)) ids.add(match[1]!)
+    const plan = event.kind === "plan" && event.detail?.match(inPlan)
+    if (plan) ids.add(plan[1]!)
+  }
+  return [...ids].sort()
+}
+
+/** 最近用了这个 Chrome 配置的运行（最多 3 个，按传进来的顺序） */
+export function recentRunsUsing<R extends Pick<SessionSummary, "taskId" | "browserIds">>(profileId: string, runs: readonly R[], tasks: readonly TaskDef[]) {
   return runs
-    .filter((run) => run.events.some((event) => (event.input && pattern.test(event.input)) || (event.kind === "plan" && event.detail?.startsWith(opened))))
+    .filter((run) => run.browserIds.includes(profileId))
     .slice(0, 3)
     .map((run) => ({ run, task: findById(tasks, run.taskId) }))
 }

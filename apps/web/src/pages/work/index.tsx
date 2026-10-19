@@ -34,7 +34,7 @@ import {
   WORK_LIST_DEFAULT_DAYS,
   WORK_RETRY_DELAY_DEFAULT,
   type RunStatus,
-  type SessionRun,
+  type SessionSummary,
   type TaskDef,
   type WorkItemDetail,
   type WorkItemStatus,
@@ -459,7 +459,7 @@ function WorkDetail({ id, onEdit, onCancel, onRedo }: { id: string; onEdit: (ite
 }
 
 /** 详情最上面：现在卡在哪 */
-function StatusAlert({ item, run, canManage }: { item: WorkItemDetail; run?: SessionRun; canManage: boolean }) {
+function StatusAlert({ item, run, canManage }: { item: WorkItemDetail; run?: SessionSummary; canManage: boolean }) {
   const staffName = useStaffName()
   const humanItems = useHumanItems()
   const runNow = useRunNow()
@@ -554,7 +554,7 @@ function failText(item: WorkItemDetail) {
   return { title: "没办成 · 运行出错", why: "运行出错（模型、浏览器、程序的问题），不是这件事办不成。" }
 }
 
-function ResultBody({ item, run, canManage }: { item: WorkItemDetail; run?: SessionRun; canManage: boolean }) {
+function ResultBody({ item, run, canManage }: { item: WorkItemDetail; run?: SessionSummary; canManage: boolean }) {
   const runNow = useRunNow()
   const data = item.result?.data && Object.keys(item.result.data).length > 0 ? item.result.data : undefined
   if (item.status === "done" && item.result) return <ResultSummary item={item} />

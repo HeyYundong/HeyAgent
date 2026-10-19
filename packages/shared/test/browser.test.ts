@@ -63,26 +63,33 @@ describe("网址解析", () => {
 })
 
 describe("最近用了这个 Chrome 的运行", () => {
+  const event = (fields: { kind?: "plan" | "tool"; detail?: string; input?: string }) => ({ seq: 1, at: "2026-10-17T00:00:00.000Z", kind: "tool" as const, title: "t", ...fields })
+
   it("认系统分配时记的「打开了 Chrome」过程", async () => {
-    const { recentRunsUsing } = await import("../src/index.js")
-    const run = (id: string, detail: string) =>
-      ({ id, taskId: "T-1", events: [{ seq: 1, at: "2026-10-17T00:00:00.000Z", kind: "plan", title: "打开了 Chrome「a」", detail }] }) as never
-    const runs = [run("R-1", "Chrome 配置 br-a；浏览器 b-1"), run("R-2", "Chrome 配置 br-a-2；浏览器 b-2")]
-    expect(recentRunsUsing("br-a", runs, []).map((item) => item.run.id)).toEqual(["R-1"])
+    const { browserIdsOf } = await import("../src/index.js")
+    expect(browserIdsOf([event({ kind: "plan", detail: "Chrome 配置 br-a；浏览器 b-1" })])).toEqual(["br-a"])
+    expect(browserIdsOf([event({ kind: "plan", detail: "Chrome 配置 br-a-2；浏览器 b-2；网址白名单：a.com" })])).toEqual(["br-a-2"])
+    // 不是 plan、不在开头的不算
+    expect(browserIdsOf([event({ kind: "tool", detail: "Chrome 配置 br-a；" }), event({ kind: "plan", detail: "用 Chrome 配置 br-a；" })])).toEqual([])
   })
 
-  it("认 browser.use 的 profileId，也认旧格式 browser", async () => {
-    const { recentRunsUsing } = await import("../src/index.js")
-    const run = (id: string, input: string) =>
-      ({ id, taskId: "T-1", events: [{ seq: 1, at: "2026-10-17T00:00:00.000Z", kind: "tool", title: "t", input }] }) as never
-    const runs = [
-      run("R-1", '{"profileId":"br-a.b"}'),
-      run("R-2", '{"browser": "br-a.b"}'),
-      run("R-3", '{"profileId":"br-aXb"}'),
-      run("R-4", '{"profileId":"br-a.b-2"}'),
+  it("认 browser.use 的 profileId，也认旧格式 browser；去重、排序", async () => {
+    const { browserIdsOf } = await import("../src/index.js")
+    const events = [
+      event({ input: '{"profileId":"br-a.b"}' }),
+      event({ input: '{"browser": "br-a.b"}' }),
+      event({ input: '{"url":"x","profileId" : "br-z","browser":"br-c"}' }),
+      event({ input: '{"profile":"br-q","profileId":""}' }),
     ]
+    expect(browserIdsOf(events)).toEqual(["br-a.b", "br-c", "br-z"])
+  })
+
+  it("按摘要的 browserIds 找，最多 3 个", async () => {
+    const { recentRunsUsing } = await import("../src/index.js")
+    const run = (id: string, browserIds: string[]) => ({ id, taskId: "T-1", browserIds })
+    const runs = [run("R-1", ["br-a.b"]), run("R-2", ["br-a.b", "br-c"]), run("R-3", ["br-aXb"]), run("R-4", ["br-a.b-2"]), run("R-5", ["br-a.b"]), run("R-6", ["br-a.b"])]
     const found = recentRunsUsing("br-a.b", runs, [{ id: "T-1" } as never])
-    expect(found.map((item) => item.run.id)).toEqual(["R-1", "R-2"])
+    expect(found.map((item) => item.run.id)).toEqual(["R-1", "R-2", "R-5"])
     expect(found[0]!.task?.id).toBe("T-1")
   })
 })

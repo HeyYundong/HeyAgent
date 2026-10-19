@@ -163,8 +163,8 @@ curl -s -b 'better-auth.session_token=<COOKIE>' -H 'content-type: application/js
 | `platforms.list` | 登录即可 | 无 | `Platform[]`：`id name`，按 position | |
 | `tasks.list` | 登录即可 | 无 | `TaskDef[]`，新建的在前。字段：`id title goal steps[]{id text wait checkpoint?} ownerId createdAt enabled schedule?{cron text} nextRunAt? modelId memoryIds skillIds toolIds ruleIds`。`toolIds` 不含每个任务都自带的内置工具 | |
 | `tasks.get` | 登录即可 | `{ id }` | `TaskDef` | `NOT_FOUND` |
-| `sessions.list` | 登录即可 | `{ taskId? }`（可整个省略） | `SessionRun[]`，开始时间新的在前 | 见下面「SessionRun」 |
-| `sessions.get` | 登录即可 | `{ id }` | `SessionRun` | `NOT_FOUND` |
+| `sessions.list` | 登录即可 | `{ taskId? }`（可整个省略） | `SessionSummary[]`，开始时间新的在前：**不带过程**（`events`），见下面「SessionRun」 | 见下面「SessionRun」 |
+| `sessions.get` | 登录即可 | `{ id }` | `SessionRun`（摘要 + 全部过程） | `NOT_FOUND` |
 | `todos.board` | 登录即可 | 无 | `{ humanItems: HumanItem[]; humanTodos: HumanTodo[] }`：还没处理的「要人办的事」（按急迫程度 `urgency` 小的在前，再按时间）和有效的「人加的待办」（新的在前） | 运行卡不在这里，用 `sessions.list` + shared 的 `boardCards` 拼 |
 | `memories.list` | 登录即可 | 无 | `MemoryRef[]`，按 id。含已拒绝、已归档的，页面自己筛。`note.lastUsed` 是服务端按当前时间生成的文字；待审核的带 `reviewItemId` | |
 | `skills.list` | 登录即可 | 无 | `Skill[]`：带 `version updatedAt body toolIds`，有待审核的修改建议时带 `suggestion{taskId summary reviewerId createdAt itemId?}` | |
@@ -179,19 +179,20 @@ curl -s -b 'better-auth.session_token=<COOKIE>' -H 'content-type: application/js
 
 ### SessionRun
 
-`sessions.list`/`get` 的一条（一次运行 = 一个 session）：`id taskId parentSessionId? startedAt endedAt? status modelId tokensIn tokensOut costUsd exploredSteps? checkpoints[] events[] waiting? verification?`。M3：`exploredSteps` 是 agent 用 `plan.set` 写下的步骤，`verification` 多了逐条结论，见第 11 节。
+`sessions.get` 的一条（一次运行 = 一个 session）：`id taskId parentSessionId? startedAt endedAt? status modelId tokensIn tokensOut costUsd exploredSteps? checkpoints[] waiting? verification? digest? eventCount lastEvent? lastError? pausedMs browserIds[] events[]`。`sessions.list` 的一条是 `SessionSummary`：同样的字段，只是没有 `events[]`。M3：`exploredSteps` 是 agent 用 `plan.set` 写下的步骤，`verification` 多了逐条结论，见第 11 节。
 
 | 字段 | 说明 |
 |---|---|
 | `status` | `running`（执行中）、`waiting`（挂起等时间或事件）、`needs_human`（等人处理）、`verifying`、`done`、`incomplete`（没完成：正常结束但事情没做成，见下面「没完成」）、`failed` |
 | `checkpoints[]` | `title kind target? stepId? status(done/open/skipped) progress? records[]{at text synced} skipReason?` |
 | `events[]` | 过程事件，按 `seq`（session 内从 1 递增）排。`kind`：`plan think tool checkpoint rule wait resume human verify done error`；工具调用带 `toolId input output ms tokensIn tokensOut`（输入输出各最多 5 万字符，更长的截断） |
+| `eventCount` `lastEvent?` `lastError?` `doneDetail?` `pausedMs` `browserIds[]` | 过程的摘要（列表和详情都有，服务端在库里算）：条数；最后一条 `{ at kind title }`；最后一条 `kind = "error"` 的 `{ at title }`；`doneDetail?` 是最后一条 `kind = "done"` 的 `detail`（没完成的原因）；中途挂起的毫秒数（每个 `wait` 到下一个 `resume`）；用过的 Chrome 配置 id（工具输入里的 `profileId` / `browser`、「Chrome 配置 br-xx；」开头的 `plan` 详情）。和 shared 的 `summarizeEvents(events)` 算的一样 |
 | `waiting` | 挂起时才有：`{ what, trigger, since }`，`trigger` 是 `time / cron / event / time_or_event` 之一（带 `at`、`event`、`fallbackDays` 等） |
-| 失败原因 | **没有单独的 `error` 字段**，在 `kind = "error"` 的事件里（取消、花费 / 步数上限被拒、模型出错都是这样） |
+| 失败原因 | **没有单独的 `error` 字段**，在 `kind = "error"` 的事件里（取消、花费 / 步数上限被拒、模型出错都是这样）；标题在摘要的 `lastError` 里 |
 | 没完成（`incomplete`，迁移 0022） | 运行正常结束、但事情没做成：① agent 调了自带的内置工具 `run.not_done`「报没完成」（参数 `reason`，调用后运行马上结束，不再调模型、不验收）；② 被派的运行用 `work.report` 报了 `not_done`；③ agent 说做完了（验收照常先跑），但至少有一个检查点、而且有没勾的或者全部跳过了（验收通过的不按检查点判；部分跳过、其余都勾了的算完成；没有检查点的照旧算完成）。原因在最后一条 `kind = "done"` 的事件的 `detail` 里（也写进 `sessions.error`）；负责人收到「<任务>：没完成」通知（被派的也发）；被派的运行的派活单记没办成（`failKind = not_done`），不自动重试 |
 | 触发来源 | 不在 `SessionRun` 里；快照里有 `source`（`manual / cron / todo / event`），第一条 `plan` 事件的 detail 里也写了 |
 
-`sessions.list` 一次返回**全部** session 和它们的全部事件（没有分页）。session 多了以后会变重，需要时按 `taskId` 筛，或另行加分页。
+`sessions.list` 一次返回**全部** session 的摘要（没有分页），不带过程：过程（带工具的输入输出）多了会有几十 MB，页面实时刷新时一直重新拉会把浏览器的连接占满。要看过程用 `sessions.get` 按 id 取（任务详情、Session 详情、看板的运行抽屉都是打开时才取）。
 
 ---
 
@@ -548,14 +549,14 @@ curl -s -X POST http://localhost:3100/api/events \
 - 第一次订阅（没有 `lastEventId`）**不补发历史**，只推订阅之后的变化。所以页面要先正常查一遍数据，再靠推送保持新鲜。
 - `{ table: "*" }` 的意思是「什么都可能变了」：API 和数据库的 LISTEN 连接断了又连上后、`pnpm db:seed` 灌完后，也会推一条。
 
-**`liveQueriesByTable`**：表名到「要重新拉的查询路径」的对照表（`packages/shared/src/live.ts`）。前端用 `queriesForTable(table)` 取路径，对这些路径调 `queryClient.invalidateQueries`；返回 `null`（`"*"` 或不认识的表）就**全部**失效。一次操作常连着推好几条，前端攒 250 ms 再统一失效。tRPC 查询键的第一项是路由路径数组（`["sessions","list"]`），所以匹配时 `path.join(".")`。
+**`liveQueriesByTable`**：表名到「要重新拉的查询路径」的对照表（`packages/shared/src/live.ts`）。前端用 `liveTargets({ table, id })` 取路径，对这些路径调 `queryClient.invalidateQueries`；返回 `null`（`"*"` 或不认识的表）就**全部**失效。`liveQueriesById` 里的（`sessions` `session_events` `checkpoints` `session_waits` → `sessions.get`）推来的 id 就是 session id，只失效 `input.id` 对得上的那一个。一次操作常连着推好几条：第一条到了以后 250 ms 统一失效一次，中间来的并进这一批；`liveThrottledTables`（运行相关的表、`browser_actions`）两次失效之间至少隔 1 秒。tRPC 查询键的第一项是路由路径数组（`["sessions","list"]`），所以匹配时 `path.join(".")`。
 
 | 表 | 重新拉 |
 |---|---|
 | `users` | `me.get` `staff.list` `users.list` |
 | `tasks` `task_memories` `task_skills` `task_tools` `task_rules` | `tasks.list` |
 | `task_memory_entries`（推任务 id） | `taskMemory.list` |
-| `sessions` `session_events` `checkpoints` `checkpoint_records` `session_waits` | `sessions.list` `sessions.get` |
+| `sessions` `session_events` `checkpoints` `checkpoint_records` `session_waits` | `sessions.list` `sessions.get`（`checkpoint_records` 以外只失效推来的那个 session 的） |
 | `human_items` | `todos.board` `me.get` `memories.list` `skills.list` |
 | `human_todos` | `todos.board` |
 | `memories` | `memories.list` |
@@ -598,7 +599,7 @@ curl -s -X POST http://localhost:3100/api/events \
 
 ### 9.2 已知限制（写代码时要知道）
 
-- `sessions.list` 没有分页，一次返回全部 session 和全部事件；session 多了以后需要按 `taskId` 筛或加分页。
+- `sessions.list` 没有分页，一次返回全部 session 的摘要（不带过程）；session 很多了以后需要按 `taskId` 筛或加分页。
 - `SessionRun` 没有 `error` 字段，失败原因要去 `kind = "error"` 的事件里找。
 - `engine.listMcpServerTools` 对 stdio 类型会在 API 机器上起进程；`engine.sessionFiles`、`taskAttachments`、通知这几个查询只要求登录。
 - 上传后一直没用上的文件不会被清理，也没有删除文件的接口。

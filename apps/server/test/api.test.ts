@@ -1,4 +1,5 @@
-import { eq, sql } from "drizzle-orm"
+import { summarizeEvents, type SessionRun, type SessionSummary } from "@heyagent/shared"
+import { eq, inArray, sql } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
 import * as t from "../src/db/schema.js"
@@ -179,6 +180,87 @@ describe("表结构约束", () => {
   it("新 id 的序列已经推到现有最大值之后", async () => {
     const result = await ctx.db.execute<{ n: string }>(sql`select nextval('task_no_seq') as n`)
     expect(Number(result.rows[0]!.n)).toBe(1042)
+  })
+})
+
+describe("sessions.list 只给摘要，sessions.get 给全部过程", () => {
+  it("列表不带过程；摘要里的几样和按全部过程算的一致（shared 的 summarizeEvents）", async () => {
+    const list: SessionSummary[] = (await query(ctx.app, "sessions.list", lin)).data
+    expect(list).toHaveLength(12)
+    let withBrowser = 0
+    let withPause = 0
+    for (const summary of list) {
+      expect(summary).not.toHaveProperty("events")
+      const full: SessionRun = (await query(ctx.app, "sessions.get", lin, { id: summary.id })).data
+      const { events, ...rest } = full
+      expect(rest, summary.id).toEqual(summary)
+      expect({ ...summarizeEvents(events) }, summary.id).toEqual({
+        eventCount: summary.eventCount,
+        lastEvent: summary.lastEvent,
+        lastError: summary.lastError,
+        doneDetail: summary.doneDetail,
+        pausedMs: summary.pausedMs,
+        browserIds: summary.browserIds,
+      })
+      if (summary.browserIds.length) withBrowser++
+      if (summary.pausedMs) withPause++
+    }
+    // 种子里有用过 Chrome 的、挂起后继续过的，两样都对上了才算数
+    expect(withBrowser).toBeGreaterThan(0)
+    expect(withPause).toBeGreaterThan(0)
+    const run = list.find((each) => each.id === "R-1024-1")!
+    expect(run.eventCount).toBe(18)
+    expect(run.lastEvent?.kind).toBe("wait")
+  })
+
+  it("过程的边角：连着两个挂起、没有挂起的继续、多条出错、工具输入和「打开了 Chrome」过程里的 Chrome；按任务筛", async () => {
+    const [task] = await ctx.db.select().from(t.tasks).where(eq(t.tasks.id, "T-1024"))
+    const id = "R-SUMMARY-1"
+    const at = (minute: number) => new Date(Date.UTC(2026, 9, 16, 1, minute, 0, 123))
+    await ctx.db.insert(t.sessions).values([
+      { id, taskId: task!.id, status: "failed", modelId: "m", startedAt: at(0) },
+      { id: `${id}-empty`, taskId: task!.id, status: "running", modelId: "m", startedAt: at(1) },
+    ])
+    const events: { kind: SessionRun["events"][number]["kind"]; detail?: string; input?: string }[] = [
+      { kind: "plan", detail: "Chrome 配置 br-x；浏览器 b-1；网址白名单：a.com" },
+      { kind: "wait" },
+      { kind: "wait" },
+      { kind: "resume" },
+      { kind: "resume" },
+      { kind: "error" },
+      { kind: "tool", input: '{"profileId" : "br-us", "url": "https://a.com"}' },
+      { kind: "tool", input: '{"browser":"br-old"} {"browser":"br-us"} {"profileId":""}' },
+      { kind: "plan", detail: "用 Chrome 配置 br-no；" },
+      { kind: "error" },
+      { kind: "think", input: "不是 JSON" },
+    ]
+    await ctx.db.insert(t.sessionEvents).values(events.map((event, index) => ({ sessionId: id, seq: index + 1, at: at(index * 10), title: `${event.kind}-${index + 1}`, ...event })))
+    try {
+      const list: SessionSummary[] = (await query(ctx.app, "sessions.list", lin, { taskId: "T-1024" })).data
+      expect(list.every((each) => each.taskId === "T-1024")).toBe(true)
+      const summary = list.find((each) => each.id === id)!
+      expect(summary).toMatchObject({
+        eventCount: 11,
+        lastEvent: { at: at(100).toISOString(), kind: "think", title: "think-11" },
+        lastError: { at: at(90).toISOString(), title: "error-10" },
+        // 第二个挂起（20 分）到第一个继续（30 分）
+        pausedMs: 10 * 60_000,
+        browserIds: ["br-old", "br-us", "br-x"],
+      })
+      const full: SessionRun = (await query(ctx.app, "sessions.get", lin, { id })).data
+      expect(full.events).toHaveLength(11)
+      expect(full.events[6]!.input).toContain("br-us")
+      const { eventCount, lastEvent, lastError, doneDetail, pausedMs, browserIds } = summary
+      expect(summarizeEvents(full.events)).toEqual({ eventCount, lastEvent, lastError, doneDetail, pausedMs, browserIds })
+      // 还没有过程的 session
+      const empty = list.find((each) => each.id === `${id}-empty`)!
+      expect(empty).toMatchObject({ eventCount: 0, pausedMs: 0, browserIds: [] })
+      expect(empty).not.toHaveProperty("lastEvent")
+      expect(empty).not.toHaveProperty("lastError")
+      expect((await query(ctx.app, "sessions.list", lin, { taskId: "T-nobody" })).data).toEqual([])
+    } finally {
+      await ctx.db.delete(t.sessions).where(inArray(t.sessions.id, [id, `${id}-empty`]))
+    }
   })
 })
 

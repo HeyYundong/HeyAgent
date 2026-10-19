@@ -3,7 +3,7 @@
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
 import { CircleStopIcon, PlayIcon } from "lucide-react"
-import { isRunEnded, type SessionRun, type TaskDef, type UploadedFile } from "@heyagent/shared"
+import { isRunEnded, type SessionSummary, type TaskDef, type UploadedFile } from "@heyagent/shared"
 
 import { FileList, UploadButton } from "@/components/files"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
@@ -17,7 +17,7 @@ import { navigate } from "@/lib/router"
 import { trpc } from "@/lib/trpc"
 
 /** 还没结束的运行（可以取消） */
-export const isActive = (run?: SessionRun) => Boolean(run && !isRunEnded(run.status))
+export const isActive = (run?: SessionSummary) => Boolean(run && !isRunEnded(run.status))
 
 /** 立即运行：成功后打开这次运行的过程，实时看事件 */
 export function useStartRun(task: TaskDef) {
@@ -28,7 +28,7 @@ export function useStartRun(task: TaskDef) {
 }
 
 /** 立即继续（只对「挂起等待」的运行；「等人处理」的要先去待办里处理那件事） */
-export function ResumeButton({ run, size = "default" }: { run: SessionRun; size?: "sm" | "default" }) {
+export function ResumeButton({ run, size = "default" }: { run: SessionSummary; size?: "sm" | "default" }) {
   const resume = useAction(trpc.engine.resumeNow.mutationOptions(), { success: `${run.id} 已继续，接着刚才的地方做`, errorTitle: "没能继续" })
   return (
     <Button size={size} disabled={resume.isPending} onClick={() => resume.mutate({ sessionId: run.id })}>
@@ -38,7 +38,7 @@ export function ResumeButton({ run, size = "default" }: { run: SessionRun; size?
 }
 
 /** 取消运行：不可撤回，AlertDialog 二次确认，按钮用 destructive */
-export function CancelRunDialog({ run, open, onOpenChange }: { run: SessionRun; open: boolean; onOpenChange: (open: boolean) => void }) {
+export function CancelRunDialog({ run, open, onOpenChange }: { run: SessionSummary; open: boolean; onOpenChange: (open: boolean) => void }) {
   const [reason, setReason] = React.useState("")
   const cancel = useAction(trpc.engine.cancel.mutationOptions({ onSuccess: () => onOpenChange(false) }), { success: `${run.id} 已取消`, errorTitle: "没能取消" })
   return (
@@ -120,7 +120,7 @@ export function TaskAttachments({ task, canEdit }: { task: TaskDef; canEdit: boo
 }
 
 /** 这次运行的附件和产物（engine.sessionFiles）；新产物由实时推送（files 表）自动出现 */
-export function SessionFiles({ run }: { run: SessionRun }) {
+export function SessionFiles({ run }: { run: SessionSummary }) {
   const list = useQuery(trpc.engine.sessionFiles.queryOptions({ sessionId: run.id }))
   if (list.isPending) return <Spinner />
   if (list.isError) return <p className="text-destructive">文件列表没取到，稍后再试。</p>

@@ -2,6 +2,7 @@
 // M3：过程里标出规则命中、agent 写下步骤（plan.set）、上下文压缩；验收逐条显示结论和理由；agent 的步骤可以「存为任务步骤」（tasks.saveStepsFromSession）。
 // 派活：meta 前面写怎么开始的（派活触发写清哪张单、谁派的）；被派来的加「派来的活」，派过活的加「派出去的活」（docs/dev/dispatch.md 9.4 节）。
 // 不带页面级布局和返回链接，放进任何 768px 宽的抽屉都能用（任务页、Session 页的抽屉都直接放它）。
+// 传进来的 run 是 sessions.list 的摘要（不带过程）：标题、检查点、验收先显示；过程按 id 另取（sessions.get），取到前是骨架屏。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
 import { BrainIcon, ChevronRightIcon, CircleAlertIcon, CircleCheckIcon, CircleStopIcon, FlagIcon, FoldVerticalIcon, ListTreeIcon, PauseIcon, PlayIcon, SaveIcon, ScanSearchIcon, SearchXIcon, SendIcon, ShieldIcon, TriangleAlertIcon, UserIcon, WrenchIcon, type LucideIcon } from "lucide-react"
@@ -14,13 +15,14 @@ import { Button } from "@/components/ui/button"
 import { CodeBlock, CodeBlockContent, CodeBlockHeader, CodeBlockTitle } from "@/components/ui/code-block"
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "@/components/ui/item"
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker"
+import { Skeleton } from "@/components/ui/skeleton"
 import { Spinner } from "@/components/ui/spinner"
 import { Trace, TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigger, TraceDescription, TraceIcon, TraceLine, TraceTitle } from "@/components/ui/trace"
 import { can, eventTimeText, fmtDateTime, incompleteReason, isRunEnded, WORK_DISPATCH_TOOL_ID } from "@heyagent/shared"
-import type { RunEvent, RunEventKind, SessionRun, TaskDef, Verification } from "@heyagent/shared"
+import type { RunEvent, RunEventKind, SessionSummary, TaskDef, Verification } from "@heyagent/shared"
 
 import { MarkdownView } from "@/components/markdown"
-import { useHumanItems, useModels, useStaffName, useToolName } from "@/lib/data"
+import { useHumanItems, useModels, useSessionQuery, useStaffName, useToolName } from "@/lib/data"
 import { useAction } from "@/lib/mutations"
 import { href } from "@/lib/router"
 import { useMe } from "@/lib/session"
@@ -28,7 +30,7 @@ import { trpc } from "@/lib/trpc"
 import { ParamsTable, WorkStatusBadge, shortName, timeText } from "@/pages/work/parts"
 
 import { VerificationReport } from "./verification"
-import { CheckpointList, Elapsed, RunStatusBadge, StepList, WaitingAlert, checkpointSummary, money } from "./parts"
+import { CheckpointList, Elapsed, RunStatusBadge, StepList, WaitingAlert, checkpointSummary, focusedCheckpoint, money } from "./parts"
 import { CancelRunDialog, isActive, ResumeButton, SessionFiles } from "./run-actions"
 import { RunBrowserButton } from "./run-browser"
 import { RunDigestSection } from "./run-digest"
@@ -43,14 +45,17 @@ const eventMeta = ({ ms, tokensIn, tokensOut }: RunEvent) => [
   tokensIn !== undefined && `输入 ${num(tokensIn)} / 输出 ${num(tokensOut ?? 0)} token`,
 ].filter(Boolean).join(" · ")
 
-export function RunDetail({ task, run }: { task: TaskDef; run?: SessionRun }) {
+export function RunDetail({ task, run }: { task: TaskDef; run?: SessionSummary }) {
   const { user } = useMe()
   const { modelName } = useModels()
   const [cancelling, setCancelling] = React.useState(false)
+  const detail = useSessionQuery(run?.id)
   if (!run) return <EmptyState icon={<SearchXIcon />} title="找不到这次运行" description="可能是网址里的运行编号写错了。" />
-  const toolCalls = run.events.filter((event) => event.kind === "tool").length
-  const ruleHits = run.events.filter((event) => event.kind === "rule").length
-  const error = run.status === "failed" ? run.events.findLast((event) => event.kind === "error") : undefined
+  const events = detail.data?.events
+  const toolCalls = events?.filter((event) => event.kind === "tool").length ?? 0
+  const ruleHits = events?.filter((event) => event.kind === "rule").length ?? 0
+  // 失败原因先用摘要里的标题，详情等过程取到再补上
+  const error = run.status === "failed" && run.lastError ? { ...run.lastError, detail: events?.findLast((event) => event.kind === "error")?.detail } : undefined
   const notDone = incompleteReason(run)
   return (
     <DetailPanel
@@ -82,24 +87,44 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionRun }) {
         </Alert>
       )}
       {run.workItemId && <DispatchedIn run={run} itemId={run.workItemId} />}
-      {task.toolIds.includes(WORK_DISPATCH_TOOL_ID) && <DispatchedOut run={run} />}
+      {task.toolIds.includes(WORK_DISPATCH_TOOL_ID) && <DispatchedOut run={run} events={events} />}
       <DetailSection title={`检查点 · ${checkpointSummary(run.checkpoints)}`}>
-        <CheckpointList run={run} />
+        <CheckpointList run={run} focused={detail.data && focusedCheckpoint(detail.data)} />
       </DetailSection>
       {run.verification && <VerificationSection run={run} verification={run.verification} />}
       {isRunEnded(run.status) && <RunDigestSection task={task} run={run} canEdit={can(user, "task.manage", { ownerId: task.ownerId })} />}
       {run.exploredSteps && run.exploredSteps.length > 0 && (
-        <AgentSteps task={task} run={run} steps={run.exploredSteps} canSave={can(user, "task.manage", { ownerId: task.ownerId })} />
+        <AgentSteps task={task} run={run} steps={run.exploredSteps} events={events} canSave={can(user, "task.manage", { ownerId: task.ownerId })} />
       )}
       <DetailSection title="附件和产物" description="点下载。agent 存下的文件、这次运行带的附件都在这里，新产物会自动出现。">
         <SessionFiles run={run} />
       </DetailSection>
-      <DetailSection title="过程" description={`${run.events.length} 条记录 · 工具调用 ${toolCalls} 次${ruleHits ? ` · 规则命中 ${ruleHits} 次` : ""}${run.status === "running" ? " · 实时更新" : ""}。点工具调用看输入和输出。`}>
-        <Trace className="gap-3">
-          {run.events.map((event, index) => <EventRow key={event.seq} event={event} run={run} running={run.status === "running" && index === run.events.length - 1} />)}
-        </Trace>
+      <DetailSection
+        title="过程"
+        description={events
+          ? `${events.length} 条记录 · 工具调用 ${toolCalls} 次${ruleHits ? ` · 规则命中 ${ruleHits} 次` : ""}${run.status === "running" ? " · 实时更新" : ""}。点工具调用看输入和输出。`
+          : `${run.eventCount} 条记录`}
+      >
+        {events ? (
+          <Trace className="gap-3">
+            {events.map((event, index) => <EventRow key={event.seq} event={event} run={run} running={run.status === "running" && index === events.length - 1} />)}
+          </Trace>
+        ) : detail.isError ? (
+          <p className="text-muted-foreground">过程没取到，稍后再试。</p>
+        ) : (
+          <EventsSkeleton count={run.eventCount} />
+        )}
       </DetailSection>
     </DetailPanel>
+  )
+}
+
+/** 过程取到前的占位：最多 6 行 */
+function EventsSkeleton({ count }: { count: number }) {
+  return (
+    <div className="flex flex-col gap-3">
+      {Array.from({ length: Math.min(count, 6) }, (_, index) => <Skeleton key={index} className="h-4 w-full" />)}
+    </div>
   )
 }
 
@@ -113,7 +138,7 @@ function eventTag(event: RunEvent): { label: string; variant: "outline" | "secon
   return undefined
 }
 
-function EventRow({ event, run, running }: { event: RunEvent; run: SessionRun; running: boolean }) {
+function EventRow({ event, run, running }: { event: RunEvent; run: SessionSummary; running: boolean }) {
   const toolName = useToolName()
   // 没完成的运行：结束事件（kind = done）用感叹号，不用打勾
   const Icon = event.kind === "done" && run.status === "incomplete" ? CircleAlertIcon : EVENT_ICON[event.kind]
@@ -174,14 +199,14 @@ const IoBlock = ({ title, text }: { title: string; text: string }) => (
 )
 
 /** agent 用「写下步骤」（plan.set）定的最后一版步骤；负责人或主管可以整体覆盖到任务的步骤里 */
-function AgentSteps({ task, run, steps, canSave }: { task: TaskDef; run: SessionRun; steps: string[]; canSave: boolean }) {
+function AgentSteps({ task, run, steps, events, canSave }: { task: TaskDef; run: SessionSummary; steps: string[]; events?: RunEvent[]; canSave: boolean }) {
   const [confirming, setConfirming] = React.useState(false)
   const save = useAction(trpc.tasks.saveStepsFromSession.mutationOptions({ onSuccess: () => setConfirming(false) }), {
     success: (result) => `已存为任务 ${result.id} 的步骤（${result.steps.length} 步），下一次运行照这些步骤做`,
     errorTitle: "没存成",
   })
   const same = task.steps.length === steps.length && task.steps.every((step, index) => step.text === steps[index])
-  const updates = run.events.filter((event) => event.kind === "plan" && event.toolId === "plan.set").length
+  const updates = events?.filter((event) => event.kind === "plan" && event.toolId === "plan.set").length ?? 0
   const checkpoints = task.steps.filter((step) => step.checkpoint).length
   const saveNow = () => save.mutate({ sessionId: run.id })
   return (
@@ -215,7 +240,7 @@ function AgentSteps({ task, run, steps, canSave }: { task: TaskDef; run: Session
 
 const VERDICT = { passed: "通过", asking: "在反问", disputed: "有争议，交给人" } as const
 
-function VerificationSection({ run, verification }: { run: SessionRun; verification: Verification }) {
+function VerificationSection({ run, verification }: { run: SessionSummary; verification: Verification }) {
   const { modelName, defaults } = useModels()
   const item = useHumanItems().find((human) => human.runId === run.id && human.kind === "verify")
   const model = modelName(verification.modelId ?? defaults.verify)
@@ -235,7 +260,7 @@ function VerificationSection({ run, verification }: { run: SessionRun; verificat
 const SOURCE_TEXT: Record<string, string> = { manual: "手动触发", cron: "定时触发", todo: "待办触发", event: "外部事件触发", dispatch: "派活触发" }
 
 /** meta 一行：怎么开始的（派活触发写清是哪张单、谁派的，两个都是链接）+ 原来的模型、token、花费、时间 */
-function RunMeta({ run, rest }: { run: SessionRun; rest: string }) {
+function RunMeta({ run, rest }: { run: SessionSummary; rest: string }) {
   const staffName = useStaffName()
   const item = useQuery(trpc.work.get.queryOptions({ id: run.workItemId ?? "" }, { enabled: Boolean(run.workItemId) })).data
   const source = run.source && SOURCE_TEXT[run.source]
@@ -259,7 +284,7 @@ function RunMeta({ run, rest }: { run: SessionRun; rest: string }) {
 }
 
 /** 被派来的运行：派来的活（单号、标题、状态、参数表），在检查点上面 */
-function DispatchedIn({ run, itemId }: { run: SessionRun; itemId: string }) {
+function DispatchedIn({ run, itemId }: { run: SessionSummary; itemId: string }) {
   const detail = useQuery(trpc.work.get.queryOptions({ id: itemId }))
   const item = detail.data
   const nth = item ? item.runs.findIndex((each) => each.sessionId === run.id) + 1 : 0
@@ -290,16 +315,16 @@ function DispatchedIn({ run, itemId }: { run: SessionRun; itemId: string }) {
 }
 
 /** 派过活的运行：派出去的活，每行一张单，点了去派活页 */
-function DispatchedOut({ run }: { run: SessionRun }) {
+function DispatchedOut({ run, events }: { run: SessionSummary; events?: RunEvent[] }) {
   const page = useQuery(trpc.work.list.queryOptions({ fromSessionId: run.id, days: 0, limit: 200 }))
   const list = page.data?.items ?? []
-  const called = run.events.some((event) => event.toolId === WORK_DISPATCH_TOOL_ID)
+  const called = events?.some((event) => event.toolId === WORK_DISPATCH_TOOL_ID)
   return (
     <DetailSection
       title={`派出去的活（新建 ${page.data?.counts.all ?? list.length} 张）`}
       description="这次运行用内置工具「派活」派出去的单。已经有单的同一件事不会重复建，只在过程里的「派活」调用返回现状。"
     >
-      {page.isPending ? (
+      {page.isPending || (!list.length && !events) ? (
         <Spinner />
       ) : list.length ? (
         <ItemGroup className="gap-2">

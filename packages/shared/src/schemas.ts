@@ -486,8 +486,15 @@ export const sessionDigestSchema = z.object({
 })
 export type SessionDigest = z.infer<typeof sessionDigestSchema>
 
-/** 一次运行 = 一个 session */
-export const sessionRunSchema = z.object({
+/** 列表里的一条过程：只有时间、类型、标题（不带输入、输出、详情） */
+export const runEventBriefSchema = z.object({ at: isoTime, kind: runEventKindSchema, title: z.string() })
+export type RunEventBrief = z.infer<typeof runEventBriefSchema>
+
+/**
+ * 一次运行 = 一个 session。列表（sessions.list）只给摘要：不带过程，过程里列表要用的几样在库里算好。
+ * 过程很多（一次运行上千条，带工具的输入输出），全部 session 连过程一起拉会有几十 MB；要看过程用 sessions.get 按 id 取
+ */
+export const sessionSummarySchema = z.object({
   id: z.string(),
   taskId: z.string(),
   /** 父 session：派活触发的运行 = 派活的那次运行 */
@@ -506,13 +513,30 @@ export const sessionRunSchema = z.object({
   /** 任务没写步骤时，agent 自己探索出来的步骤 */
   exploredSteps: z.array(z.string()).optional(),
   checkpoints: z.array(runCheckpointSchema),
-  /** 按 seq 从小到大 */
-  events: z.array(runEventSchema),
   /** 挂起时：在等什么、什么时候继续（来自 session_waits 里状态为 waiting 的那条） */
   waiting: z.object({ what: z.string(), trigger: triggerSchema, since: isoTime }).optional(),
   verification: verificationSchema.optional(),
   /** 运行结束后三方 AI 的总结和任务记忆候选（有人点过「总结」才有） */
   digest: sessionDigestSchema.optional(),
+  /** 过程有几条 */
+  eventCount: z.number().int(),
+  /** 最后一条过程（seq 最大）：正在做什么、运行到了哪天 */
+  lastEvent: runEventBriefSchema.optional(),
+  /** 最后一条出错的过程：失败的运行写原因 */
+  lastError: runEventBriefSchema.pick({ at: true, title: true }).optional(),
+  /** 最后一条结束（kind = "done"）过程的说明：没完成的运行写原因 */
+  doneDetail: z.string().optional(),
+  /** 中途挂起了多久（毫秒）：每个「挂起」到下一个「继续」之间的时间加起来 */
+  pausedMs: z.number().int(),
+  /** 用过的 Chrome 配置 id（浏览器页「最近用它的运行」），从小到大 */
+  browserIds: z.array(z.string()),
+})
+export type SessionSummary = z.infer<typeof sessionSummarySchema>
+
+/** 一次运行的全部：摘要 + 全部过程（sessions.get） */
+export const sessionRunSchema = sessionSummarySchema.extend({
+  /** 按 seq 从小到大 */
+  events: z.array(runEventSchema),
 })
 export type SessionRun = z.infer<typeof sessionRunSchema>
 

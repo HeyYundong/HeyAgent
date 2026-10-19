@@ -12,6 +12,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Item, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "@/components/ui/item"
 import { Kbd } from "@/components/ui/kbd"
 import { Separator } from "@/components/ui/separator"
+import { Skeleton } from "@/components/ui/skeleton"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Spinner } from "@/components/ui/spinner"
 import { Trace, TraceDescription, TraceIcon, TraceLine, TraceTitle } from "@/components/ui/trace"
@@ -22,9 +23,9 @@ import { focusedCheckpoint, money } from "@/pages/tasks/parts"
 import { VerificationReport } from "@/pages/tasks/verification"
 import { ResumeButton } from "@/pages/tasks/run-actions"
 import { addDaysIso, boardColumns, eventTimeText, findById, fmtDateTime, fmtShort, suspendedRun, triggerText } from "@heyagent/shared"
-import type { BoardColumn, HumanTodo, RunEventKind, SessionRun, TaskDef, Trigger } from "@heyagent/shared"
+import type { BoardColumn, HumanTodo, RunEventKind, SessionSummary, TaskDef, Trigger } from "@heyagent/shared"
 
-import { useModels, useStaffName } from "@/lib/data"
+import { useModels, useSessionQuery, useStaffName } from "@/lib/data"
 
 import { nextRuns, shortTime } from "./cron"
 
@@ -84,7 +85,7 @@ export function FireEventButton({ event }: { event: string }) {
   )
 }
 
-type RunProps = { run: SessionRun; task: TaskDef; column: BoardColumn; note?: string; canAct: boolean; isAdmin: boolean; open: boolean; onClose: () => void }
+type RunProps = { run: SessionSummary; task: TaskDef; column: BoardColumn; note?: string; canAct: boolean; isAdmin: boolean; open: boolean; onClose: () => void }
 
 /** 员工看别人的任务只读：canAct 为 false 时没有「立即继续」。「等人处理」的运行（?id= 直接打开）也不能手动继续。
  * 在等事件的，主管可以手动触发这个事件 */
@@ -92,8 +93,10 @@ export function RunSheet({ run, task, column, note, canAct, isAdmin, open, onClo
   const { modelName } = useModels()
   const waiting = note ? undefined : run.waiting
   const doneCount = run.checkpoints.filter((checkpoint) => checkpoint.status === "done").length
-  const focused = focusedCheckpoint(run)
-  const last = run.events.slice(-4)
+  // 摘要不带过程：最近几条过程、正在做的检查点要按 id 取全部过程（Sheet 开着才取）
+  const detail = useSessionQuery(run.id, open)
+  const focused = detail.data && focusedCheckpoint(detail.data)
+  const last = detail.data?.events.slice(-4)
   const k = (n: number) => `${(n / 1000).toFixed(1)}k`
   return (
     <DetailSheet
@@ -113,7 +116,7 @@ export function RunSheet({ run, task, column, note, canAct, isAdmin, open, onClo
           <p className="mt-2 text-muted-foreground">等到了就继续这个 session（{run.id}），之前的上下文和检查点都还在，不会新开一个。</p>
         </DetailSection>
       )}
-      {run.status === "running" && <DetailSection title="正在做什么"><p className="flex items-center gap-2"><Spinner />{run.events.at(-1)?.title}</p></DetailSection>}
+      {run.status === "running" && <DetailSection title="正在做什么"><p className="flex items-center gap-2"><Spinner />{run.lastEvent?.title ?? "刚开始"}</p></DetailSection>}
       {note && (
         <DetailSection title={column === "done" ? "已完成" : run.status === "waiting" ? "已手动继续同一个 session" : "已处理，继续同一个 session"} description="没有新开 session">
           <p className="flex items-center gap-2 text-base">{column === "running" && <Spinner />}{note}</p>
@@ -137,16 +140,24 @@ export function RunSheet({ run, task, column, note, canAct, isAdmin, open, onClo
           ))}
         </ul>
       </DetailSection>
-      <DetailSection title="最近的过程" description={`共 ${run.events.length} 条，这里显示最后 ${last.length} 条`}>
-        <Trace>
-          {last.map((event, index) => (
-            <TraceLine key={event.seq} status={run.status === "running" && index === last.length - 1 ? "running" : undefined}>
-              <TraceIcon>{createElement(EVENT_ICON[event.kind])}</TraceIcon>
-              <TraceTitle>{event.title}</TraceTitle>
-              <TraceDescription>{eventTimeText(event.at, run)}</TraceDescription>
-            </TraceLine>
-          ))}
-        </Trace>
+      <DetailSection title="最近的过程" description={`共 ${run.eventCount} 条，这里显示最后 ${Math.min(run.eventCount, 4)} 条`}>
+        {last ? (
+          <Trace>
+            {last.map((event, index) => (
+              <TraceLine key={event.seq} status={run.status === "running" && index === last.length - 1 ? "running" : undefined}>
+                <TraceIcon>{createElement(EVENT_ICON[event.kind])}</TraceIcon>
+                <TraceTitle>{event.title}</TraceTitle>
+                <TraceDescription>{eventTimeText(event.at, run)}</TraceDescription>
+              </TraceLine>
+            ))}
+          </Trace>
+        ) : detail.isError ? (
+          <p className="text-muted-foreground">过程没取到，稍后再试。</p>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {Array.from({ length: Math.min(run.eventCount, 4) }, (_, index) => <Skeleton key={index} className="h-4 w-full" />)}
+          </div>
+        )}
       </DetailSection>
     </DetailSheet>
   )
@@ -159,7 +170,7 @@ export const triggerHeadline = (trigger: Trigger, since: string) => trigger.kind
 export const waitText = (trigger: Trigger, since: string) => trigger.kind !== "event" ? triggerText(trigger)
   : `等到「${trigger.event}」；最多等到 ${isoShortTime(addDaysIso(since, trigger.fallbackDays))}，到期提醒负责人`
 
-type TodoProps = { todo: HumanTodo; runs: SessionRun[]; tasks: TaskDef[]; open: boolean; canRun: boolean; canManage: boolean; isAdmin: boolean; onClose: () => void; onEdit: () => void; onDelete: () => void }
+type TodoProps = { todo: HumanTodo; runs: SessionSummary[]; tasks: TaskDef[]; open: boolean; canRun: boolean; canManage: boolean; isAdmin: boolean; onClose: () => void; onEdit: () => void; onDelete: () => void }
 
 /** canRun：主管、加这条的人、任务负责人能「立即执行」；canManage：只有主管和加这条的人能编辑、删除。
  * 立即执行和到点一样（engine.runTodoNow）：任务有挂起的 session 就继续它，没有就新开一次运行；一次性的待办执行后就结束 */
@@ -206,7 +217,7 @@ export function TodoSheet({ todo, runs, tasks, open, canRun, canManage, isAdmin,
 }
 
 /** 挂起的运行最早什么时候继续：定时的是那个时间，只等事件的是兜底期限（since + fallbackDays） */
-export function dueAt(run: SessionRun) {
+export function dueAt(run: SessionSummary) {
   const waiting = run.waiting
   if (!waiting) return run.startedAt
   const trigger = waiting.trigger
@@ -217,7 +228,7 @@ export function dueAt(run: SessionRun) {
 
 const byTime = (a: string, b: string) => Date.parse(a) - Date.parse(b)
 
-type GroupProps = { task: TaskDef; runs: SessionRun[]; open: boolean; onClose: () => void }
+type GroupProps = { task: TaskDef; runs: SessionSummary[]; open: boolean; onClose: () => void }
 
 /**
  * 派活第二期：收起的卡片点开，列出同一个任务被派来、在等的运行（按什么时候继续排），点一行去 Session 页看那次运行；底部去派活页看全部。
@@ -226,7 +237,7 @@ type GroupProps = { task: TaskDef; runs: SessionRun[]; open: boolean; onClose: (
 export function GroupSheet({ task, runs: list, open, onClose }: GroupProps) {
   const staffName = useStaffName()
   const items = useQuery(trpc.work.list.queryOptions({ taskId: task.id, status: "running", days: 0, limit: 200 }, { enabled: open })).data?.items ?? []
-  const titleOf = (run: SessionRun) => items.find((item) => item.id === run.workItemId || item.sessionId === run.id)?.title
+  const titleOf = (run: SessionSummary) => items.find((item) => item.id === run.workItemId || item.sessionId === run.id)?.title
   const sorted = [...list].sort((a, b) => byTime(dueAt(a), dueAt(b)))
   return (
     <DetailSheet

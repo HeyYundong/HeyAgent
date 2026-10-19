@@ -103,7 +103,7 @@ function CardLink({ card, userId }: { card: Card; userId: string }) {
   const { run, task, column, note } = card
   return (
     <Shell id={card.id} title={task.title} head={<span className="text-muted-foreground">{run.id} · {who(task.ownerId)}负责</span>}>
-      {column === "running" && <Line icon={<Spinner className="size-3" />}>{!note ? `正在：${run.events.at(-1)?.title}` : run.status === "waiting" ? "已手动继续同一个 session" : "已处理，继续同一个 session"}</Line>}
+      {column === "running" && <Line icon={<Spinner className="size-3" />}>{!note ? `正在：${run.lastEvent?.title ?? "刚开始"}` : run.status === "waiting" ? "已手动继续同一个 session" : "已处理，继续同一个 session"}</Line>}
       {column === "waiting" && run.waiting && <>
         <Line label="在等：">{run.waiting.what}</Line>
         <Line label="什么时候继续：">{waitText(run.waiting.trigger, run.waiting.since)}</Line>

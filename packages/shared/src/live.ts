@@ -11,7 +11,8 @@ export const liveQueriesByTable: Record<string, string[]> = {
   task_tools: ["tasks.list"],
   task_rules: ["tasks.list"],
   task_memory_entries: ["taskMemory.list"],
-  // 被派的运行状态变了，派活单的徽章（sessionStatus）和名额数跟着变
+  // 被派的运行状态变了，派活单的徽章（sessionStatus）和名额数跟着变。
+  // sessions.list 只是摘要（不带过程），跑起来常变也不重；sessions.get（带全部过程）只让推来的那个 session 的失效，见 liveQueriesById
   sessions: ["sessions.list", "sessions.get", "work.list", "work.get", "work.taskStats"],
   session_events: ["sessions.list", "sessions.get"],
   checkpoints: ["sessions.list", "sessions.get"],
@@ -55,7 +56,32 @@ export const liveQueriesByTable: Record<string, string[]> = {
   work_items: ["work.list", "work.get", "work.taskStats", "work.lookup"],
 }
 
+/**
+ * 这些表推来的 id 就是这些查询的 input.id（session_events、checkpoints、session_waits 推的是 session_id，见 drizzle/0001_triggers.sql）：
+ * 只让 id 对得上的那一个失效，不把开着的每个运行详情都重新拉。checkpoint_records 推的是 checkpoint_id，对不上，还是全部
+ */
+export const liveQueriesById: Record<string, string[]> = {
+  sessions: ["sessions.get"],
+  session_events: ["sessions.get"],
+  checkpoints: ["sessions.get"],
+  session_waits: ["sessions.get"],
+}
+
+/** 变得很勤的表（agent 跑起来一秒好几条）：前端两次失效之间至少隔一会儿，别一直重新拉 */
+export const liveThrottledTables: ReadonlySet<string> = new Set(["sessions", "session_events", "checkpoints", "checkpoint_records", "session_waits", "browser_actions"])
+
 /** 某张表变了要重新拉的查询；不认识的表（或 "*"）返回 null，表示全部重新拉 */
 export function queriesForTable(table: string): string[] | null {
   return liveQueriesByTable[table] ?? null
+}
+
+/** 一条推送要重新拉的查询：paths 整个失效，byId 只失效 input.id 对得上的；null 表示全部重新拉 */
+export function liveTargets(change: { table: string; id: string | null }): { paths: string[]; byId: { path: string; id: string }[] } | null {
+  const list = queriesForTable(change.table)
+  if (list === null) return null
+  const narrow = change.id === null ? [] : (liveQueriesById[change.table] ?? [])
+  return {
+    paths: list.filter((path) => !narrow.includes(path)),
+    byId: narrow.filter((path) => list.includes(path)).map((path) => ({ path, id: change.id! })),
+  }
 }

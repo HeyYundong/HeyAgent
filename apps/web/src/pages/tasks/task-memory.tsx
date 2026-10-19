@@ -6,7 +6,7 @@ import { useQuery } from "@tanstack/react-query"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
 import { EllipsisIcon, PencilIcon, PlusIcon, SparklesIcon, Trash2Icon } from "lucide-react"
-import { fmtDateTime, TASK_MEMORY_MAX, taskMemoryAddSchema, type SessionRun, type TaskDef, type TaskMemoryEntry } from "@heyagent/shared"
+import { fmtDateTime, TASK_MEMORY_MAX, taskMemoryAddSchema, type SessionSummary, type TaskDef, type TaskMemoryEntry } from "@heyagent/shared"
 
 import { DetailSection } from "@/components/shell/simple-page"
 import { Alert, AlertAction, AlertTitle } from "@/components/ui/alert"
@@ -26,9 +26,9 @@ import { trpc } from "@/lib/trpc"
 const contentSchema = taskMemoryAddSchema.pick({ content: true })
 
 /** 一次运行里还没审核的记忆候选有几条 */
-export const pendingCandidates = (run: SessionRun) => run.digest?.candidates.filter((candidate) => candidate.status === "pending").length ?? 0
+export const pendingCandidates = (run: SessionSummary) => run.digest?.candidates.filter((candidate) => candidate.status === "pending").length ?? 0
 
-export function TaskMemorySection({ task, runs, canEdit }: { task: TaskDef; runs: SessionRun[]; canEdit: boolean }) {
+export function TaskMemorySection({ task, runs, canEdit }: { task: TaskDef; runs: SessionSummary[]; canEdit: boolean }) {
   const list = useQuery(trpc.taskMemory.list.queryOptions({ taskId: task.id }))
   const staffName = useStaffName()
   const [editing, setEditing] = React.useState<TaskMemoryEntry | "new" | null>(null)

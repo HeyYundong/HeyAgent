@@ -10,7 +10,7 @@ import {
   type HumanItem,
   type ModelDefaults,
   type ModelProvider,
-  type SessionRun,
+  type SessionSummary,
 } from "@heyagent/shared"
 
 import { trpc } from "@/lib/trpc"
@@ -23,7 +23,11 @@ const NO_ITEMS: HumanItem[] = []
 
 export const useStaffQuery = () => useQuery(trpc.staff.list.queryOptions())
 export const useTasksQuery = () => useQuery(trpc.tasks.list.queryOptions())
+/** 全部运行的摘要（不带过程） */
 export const useSessionsQuery = () => useQuery(trpc.sessions.list.queryOptions())
+/** 一次运行的全部过程（带工具的输入、输出）：sessions.list 只有摘要，看过程时才按 id 取。实时推送只让这一个 id 的失效 */
+export const useSessionQuery = (id: string | undefined, enabled = true) =>
+  useQuery(trpc.sessions.get.queryOptions({ id: id ?? "" }, { enabled: Boolean(id) && enabled }))
 export const useBoardQuery = () => useQuery(trpc.todos.board.queryOptions())
 export const useMemoriesQuery = () => useQuery(trpc.memories.list.queryOptions())
 export const useSkillsQuery = () => useQuery(trpc.skills.list.queryOptions())
@@ -61,5 +65,5 @@ export function useHumanItems() {
 export function useRunNow() {
   const humanItems = useHumanItems()
   const staff = useStaffQuery().data
-  return (run: SessionRun) => runNow(run, humanItems, staff ?? [])
+  return (run: SessionSummary) => runNow(run, humanItems, staff ?? [])
 }

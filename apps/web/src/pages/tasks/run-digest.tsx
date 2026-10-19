@@ -2,7 +2,7 @@
 // 写一段总结，再提取以后用得上的经验作为任务记忆的候选。候选由负责人或主管审核（可以先改字），通过的记进任务记忆（task-memory.tsx）。
 import * as React from "react"
 import { CircleCheckIcon, ClipboardCheckIcon, RotateCwIcon, SparklesIcon } from "lucide-react"
-import { fmtDateTime, type DigestCandidateStatus, type SessionDigest, type SessionRun, type TaskDef } from "@heyagent/shared"
+import { fmtDateTime, type DigestCandidateStatus, type SessionDigest, type SessionSummary, type TaskDef } from "@heyagent/shared"
 
 import { MarkdownView } from "@/components/markdown"
 import { DetailSection } from "@/components/shell/simple-page"
@@ -29,7 +29,7 @@ function CandidateBadge({ status }: { status: DigestCandidateStatus }) {
   return <Badge>待审核</Badge>
 }
 
-export function RunDigestSection({ task, run, canEdit }: { task: TaskDef; run: SessionRun; canEdit: boolean }) {
+export function RunDigestSection({ task, run, canEdit }: { task: TaskDef; run: SessionSummary; canEdit: boolean }) {
   const { modelName, defaults } = useModels()
   const [reviewing, setReviewing] = React.useState(false)
   const [confirming, setConfirming] = React.useState(false)
@@ -128,7 +128,7 @@ function DigestView({ digest }: { digest: SessionDigest }) {
 }
 
 /** 审核候选：默认全勾上，可以改字；勾上的记进任务记忆，没勾的标为没采用 */
-function DigestReviewDialog({ task, run, digest, open, onOpenChange }: { task: TaskDef; run: SessionRun; digest: SessionDigest; open: boolean; onOpenChange: (open: boolean) => void }) {
+function DigestReviewDialog({ task, run, digest, open, onOpenChange }: { task: TaskDef; run: SessionSummary; digest: SessionDigest; open: boolean; onOpenChange: (open: boolean) => void }) {
   const [rows, setRows] = React.useState(() =>
     digest.candidates.flatMap((candidate, index) => (candidate.status === "pending" ? [{ index, accept: true, text: candidate.text, reason: candidate.reason }] : []))
   )

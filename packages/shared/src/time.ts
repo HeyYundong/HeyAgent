@@ -36,12 +36,13 @@ export function shanghaiToIso(text: string): string {
 interface RunTimes {
   startedAt: string
   endedAt?: string
-  events: { at: string }[]
+  /** 最后一条过程（SessionSummary.lastEvent） */
+  lastEvent?: { at: string }
 }
 
 /** 这次运行是不是跨了天（按上海日期） */
 export function runSpansDays(run: RunTimes): boolean {
-  const last = run.endedAt ?? run.events.at(-1)?.at ?? run.startedAt
+  const last = run.endedAt ?? run.lastEvent?.at ?? run.startedAt
   return fmtDate(run.startedAt) !== fmtDate(last)
 }
 

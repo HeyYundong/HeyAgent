@@ -1,7 +1,7 @@
 // 按任务筛 session：下拉里是出现过 session 的任务（最近跑过的在前），可以按任务名 / 编号搜。
 // 第一项「全部任务」= 不筛。基于 @/components/ui/combobox（Base UI），和 model-combobox 同一写法。
 import * as React from "react"
-import { findById, type SessionRun, type TaskDef } from "@heyagent/shared"
+import { findById, type SessionSummary, type TaskDef } from "@heyagent/shared"
 
 import { Combobox, ComboboxContent, ComboboxEmpty, ComboboxInput, ComboboxItem, ComboboxList } from "@/components/ui/combobox"
 
@@ -16,7 +16,7 @@ interface TaskFilterProps {
   value: string
   onValueChange: (value: string) => void
   /** 全部 session（已排好序），从里面数出有哪些任务、各跑了几次 */
-  runs: SessionRun[]
+  runs: SessionSummary[]
   tasks: TaskDef[]
 }
 

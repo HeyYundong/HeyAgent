@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button"
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "@/components/ui/item"
 import { Spinner } from "@/components/ui/spinner"
 import { Switch } from "@/components/ui/switch"
-import { alwaysOnToolIds, BROWSER_TOOL_ID, can, findById, sameShanghaiDay, toolIdsOfTask, WORK_DISPATCH_TOOL_ID, type SessionRun, type TaskDef } from "@heyagent/shared"
+import { alwaysOnToolIds, BROWSER_TOOL_ID, can, findById, sameShanghaiDay, toolIdsOfTask, WORK_DISPATCH_TOOL_ID, type SessionSummary, type TaskDef } from "@heyagent/shared"
 
 import { useBrowsersQuery, useHumanItems, useMemoriesQuery, useModels, useRulesQuery, useSkillsQuery, useTasksQuery, useToolName, useToolsQuery } from "@/lib/data"
 import { useAction } from "@/lib/mutations"
@@ -130,7 +130,7 @@ export function TaskDetail({ task, state, canEdit }: { task: TaskDef; state: Tas
   )
 }
 
-function GoalAndSteps({ task, latest }: { task: TaskDef; latest?: SessionRun }) {
+function GoalAndSteps({ task, latest }: { task: TaskDef; latest?: SessionSummary }) {
   const explored = latest?.exploredSteps
   return (
     <DetailSection title="目标和步骤">

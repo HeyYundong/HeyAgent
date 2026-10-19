@@ -1,7 +1,9 @@
 // 从库里读数据，拼成 @heyagent/shared 里的领域类型（和原型页面读的形状一致）。
 // 规则：库里为空的字段直接省略；时间都转成 ISO；密钥只给掩码，登录态只给状态和个数，绝不读出原文。
-import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm"
+import { and, asc, desc, eq, inArray, isNull, sql, type AnyColumn } from "drizzle-orm"
 import {
+  BROWSER_ID_IN_INPUT,
+  BROWSER_ID_IN_PLAN,
   compiledRuleSchema,
   NOTIFY_SECRET_PREFIX,
   relativeDayText,
@@ -19,6 +21,7 @@ import {
   type RuleRef,
   type SavedSecret,
   type SessionRun,
+  type SessionSummary,
   type Skill,
   type Staff,
   type TaskDef,
@@ -145,40 +148,119 @@ function toTrigger(row: {
   }
 }
 
-export async function listSessions(db: Db, filter: { ids?: string[]; taskId?: string } = {}): Promise<SessionRun[]> {
-  const conditions = [filter.ids ? inArray(t.sessions.id, filter.ids) : undefined, filter.taskId ? eq(t.sessions.taskId, filter.taskId) : undefined]
+type SessionFilter = { ids?: string[]; taskId?: string }
+
+/** 只取这些 session 的行：按 id，或按任务（子查询，不把 id 一个个拼进 SQL）；不筛返回 undefined */
+function sessionScope(db: Db, column: AnyColumn, filter: SessionFilter) {
+  if (filter.ids) return inArray(column, filter.ids)
+  if (filter.taskId) return inArray(column, db.select({ id: t.sessions.id }).from(t.sessions).where(eq(t.sessions.taskId, filter.taskId)))
+  return undefined
+}
+
+/**
+ * 每个 session 的过程摘要（条数、最后一条、最后一条出错、挂起多久、用过的 Chrome），全在库里算，不把过程的输入、输出、详情读进来。
+ * 算法和 shared 的 summarizeEvents 一样（测试里对过）
+ */
+async function eventSummaries(db: Db, filter: SessionFilter) {
+  const ev = t.sessionEvents
+  const scope = sessionScope(db, ev.sessionId, filter)
+  const andScope = scope ? sql`and ${scope}` : sql``
+  // 每个 session 的条数和最大的 seq，再按主键取那一条（比 DISTINCT ON 整表排序快得多）
+  const latest = db
+    .select({ sessionId: ev.sessionId, seq: sql<number>`max(${ev.seq})`.as("last_seq"), count: sql<number>`count(*)::int`.as("event_count") })
+    .from(ev)
+    .where(scope)
+    .groupBy(ev.sessionId)
+    .as("latest")
+  const [lasts, errors, dones, paused, browsers] = await Promise.all([
+    db
+      .select({ sessionId: ev.sessionId, at: ev.at, kind: ev.kind, title: ev.title, count: latest.count })
+      .from(latest)
+      .innerJoin(ev, and(eq(ev.sessionId, latest.sessionId), eq(ev.seq, latest.seq))),
+    db
+      .selectDistinctOn([ev.sessionId], { sessionId: ev.sessionId, at: ev.at, title: ev.title })
+      .from(ev)
+      .where(and(scope, eq(ev.kind, "error")))
+      .orderBy(ev.sessionId, desc(ev.seq)),
+    // 最后一条结束过程的说明（没完成的原因）
+    db
+      .selectDistinctOn([ev.sessionId], { sessionId: ev.sessionId, detail: ev.detail })
+      .from(ev)
+      .where(and(scope, eq(ev.kind, "done")))
+      .orderBy(ev.sessionId, desc(ev.seq)),
+    // 挂起、继续按 seq 排，前一条是挂起的「继续」才算（连着两个挂起按后一个算）；截到毫秒，和前端 Date.parse 的结果一致
+    db.execute<{ session_id: string; ms: number }>(sql`
+      select session_id, (sum(extract(epoch from date_trunc('milliseconds', at) - date_trunc('milliseconds', prev_at))) * 1000)::float8 as ms
+      from (
+        select ${ev.sessionId} as session_id, ${ev.kind} as kind, ${ev.at} as at, lag(${ev.kind}) over w as prev_kind, lag(${ev.at}) over w as prev_at
+        from ${ev}
+        where ${ev.kind} in ('wait', 'resume') ${andScope}
+        window w as (partition by ${ev.sessionId} order by ${ev.seq})
+      ) pairs
+      where kind = 'resume' and prev_kind = 'wait'
+      group by session_id`),
+    // 工具输入里的 profileId / browser，和「打开了 Chrome」过程详情开头的配置 id；先用 strpos、like 筛掉不相干的，正则只跑剩下的
+    db.execute<{ session_id: string; id: string }>(sql`
+      select ${ev.sessionId} as session_id, (regexp_matches(${ev.input}, ${BROWSER_ID_IN_INPUT}, 'g'))[1] as id
+      from ${ev}
+      where (strpos(${ev.input}, '"profileId"') > 0 or strpos(${ev.input}, '"browser"') > 0) ${andScope}
+      union
+      select ${ev.sessionId}, substring(${ev.detail} from ${BROWSER_ID_IN_PLAN})
+      from ${ev}
+      where ${ev.kind} = 'plan' and ${ev.detail} like 'Chrome 配置 %' ${andScope}`),
+  ])
+  const browserIds = new Map<string, Set<string>>()
+  for (const row of browsers.rows) {
+    if (!row.id) continue
+    const set = browserIds.get(row.session_id) ?? new Set()
+    browserIds.set(row.session_id, set.add(row.id))
+  }
+  return {
+    last: new Map(lasts.map((row) => [row.sessionId, row])),
+    error: new Map(errors.map((row) => [row.sessionId, row])),
+    doneDetail: new Map(dones.map((row) => [row.sessionId, row.detail])),
+    pausedMs: new Map(paused.rows.map((row) => [row.session_id, Math.round(Number(row.ms))])),
+    // 和 shared 的 browserIdsOf 一样按 JS 的默认顺序排（库里的排序规则可能不同）
+    browserIds: (sessionId: string) => [...(browserIds.get(sessionId) ?? [])].sort(),
+  }
+}
+
+/** session 列表（新的在前）：摘要，不带过程。可以按 id 或任务筛 */
+export async function listSessions(db: Db, filter: SessionFilter = {}): Promise<SessionSummary[]> {
   const rows = await db
     .select()
     .from(t.sessions)
-    .where(and(...conditions))
+    .where(and(filter.ids ? inArray(t.sessions.id, filter.ids) : undefined, filter.taskId ? eq(t.sessions.taskId, filter.taskId) : undefined))
     .orderBy(desc(t.sessions.startedAt))
   if (rows.length === 0) return []
-  const ids = rows.map((row) => row.id)
-  const [events, checkpoints, waits] = await Promise.all([
-    db.select().from(t.sessionEvents).where(inArray(t.sessionEvents.sessionId, ids)).orderBy(asc(t.sessionEvents.sessionId), asc(t.sessionEvents.seq)),
-    db.select().from(t.checkpoints).where(inArray(t.checkpoints.sessionId, ids)).orderBy(asc(t.checkpoints.sessionId), asc(t.checkpoints.position)),
+  const checkpointScope = sessionScope(db, t.checkpoints.sessionId, filter)
+  const [summaries, checkpoints, records, waits] = await Promise.all([
+    eventSummaries(db, filter),
+    db.select().from(t.checkpoints).where(checkpointScope).orderBy(asc(t.checkpoints.sessionId), asc(t.checkpoints.position)),
+    db
+      .select()
+      .from(t.checkpointRecords)
+      .where(checkpointScope ? inArray(t.checkpointRecords.checkpointId, db.select({ id: t.checkpoints.id }).from(t.checkpoints).where(checkpointScope)) : undefined)
+      .orderBy(asc(t.checkpointRecords.at), asc(t.checkpointRecords.id)),
     db
       .select()
       .from(t.sessionWaits)
-      .where(and(inArray(t.sessionWaits.sessionId, ids), eq(t.sessionWaits.status, "waiting"))),
+      .where(and(sessionScope(db, t.sessionWaits.sessionId, filter), eq(t.sessionWaits.status, "waiting"))),
   ])
-  const checkpointIds = checkpoints.map((row) => row.id)
-  const records = checkpointIds.length
-    ? await db.select().from(t.checkpointRecords).where(inArray(t.checkpointRecords.checkpointId, checkpointIds)).orderBy(asc(t.checkpointRecords.at), asc(t.checkpointRecords.id))
-    : []
 
   const group = <R, K>(list: R[], key: (row: R) => K) => {
     const map = new Map<K, R[]>()
     for (const row of list) map.set(key(row), [...(map.get(key(row)) ?? []), row])
     return map
   }
-  const eventsBy = group(events, (row) => row.sessionId)
   const checkpointsBy = group(checkpoints, (row) => row.sessionId)
   const recordsBy = group(records, (row) => row.checkpointId)
   const waitBy = new Map(waits.map((row) => [row.sessionId, row]))
 
   return rows.map((row) => {
     const wait = waitBy.get(row.id)
+    const last = summaries.last.get(row.id)
+    const error = summaries.error.get(row.id)
     return compact({
       id: row.id,
       taskId: row.taskId,
@@ -205,26 +287,44 @@ export async function listSessions(db: Db, filter: { ids?: string[]; taskId?: st
           skipReason: opt(cp.skipReason),
         })
       ),
-      events: (eventsBy.get(row.id) ?? []).map((event) =>
-        compact({
-          seq: event.seq,
-          at: iso(event.at),
-          kind: event.kind,
-          title: event.title,
-          detail: opt(event.detail),
-          toolId: opt(event.toolId),
-          input: opt(event.input),
-          output: opt(event.output),
-          ms: opt(event.ms),
-          tokensIn: opt(event.tokensIn),
-          tokensOut: opt(event.tokensOut),
-        })
-      ),
       waiting: wait ? { what: wait.what, trigger: toTrigger({ ...wait, at: wait.resumeAt }), since: iso(wait.createdAt) } : undefined,
       verification: opt(row.verification),
       digest: opt(row.digest),
+      eventCount: last?.count ?? 0,
+      lastEvent: last && { at: iso(last.at), kind: last.kind, title: last.title },
+      lastError: error && { at: iso(error.at), title: error.title },
+      doneDetail: opt(summaries.doneDetail.get(row.id)),
+      pausedMs: summaries.pausedMs.get(row.id) ?? 0,
+      browserIds: summaries.browserIds(row.id),
     })
   })
+}
+
+/** 一个 session 的全部：摘要 + 全部过程（按 seq） */
+export async function loadSession(db: Db, id: string): Promise<SessionRun | undefined> {
+  const [[summary], events] = await Promise.all([
+    listSessions(db, { ids: [id] }),
+    db.select().from(t.sessionEvents).where(eq(t.sessionEvents.sessionId, id)).orderBy(asc(t.sessionEvents.seq)),
+  ])
+  if (!summary) return undefined
+  return {
+    ...summary,
+    events: events.map((event) =>
+      compact({
+        seq: event.seq,
+        at: iso(event.at),
+        kind: event.kind,
+        title: event.title,
+        detail: opt(event.detail),
+        toolId: opt(event.toolId),
+        input: opt(event.input),
+        output: opt(event.output),
+        ms: opt(event.ms),
+        tokensIn: opt(event.tokensIn),
+        tokensOut: opt(event.tokensOut),
+      })
+    ),
+  }
 }
 
 // ---------- 任务记忆 ----------

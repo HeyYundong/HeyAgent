@@ -2,13 +2,13 @@
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "@/components/ui/item"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { href } from "@/lib/router"
-import { endedText, findById, groupOf, startText, type SessionRun, type TaskDef } from "@heyagent/shared"
+import { endedText, findById, groupOf, startText, type SessionSummary, type TaskDef } from "@heyagent/shared"
 
 import { useModels, useRunNow, useStaffName } from "@/lib/data"
 import { Elapsed, RunStatusBadge, money, tokens } from "@/pages/tasks/parts"
 
 /** 「时长或在等什么」：执行中跳秒（和任务页同一个 Elapsed）；验收中写验收到哪；挂起写在等什么；已结束写总时长（挂起过的带上挂起多久） */
-export function NowText({ run }: { run: SessionRun }) {
+export function NowText({ run }: { run: SessionSummary }) {
   const runNow = useRunNow()
   if (run.status === "running") return <Elapsed since={run.startedAt} />
   const group = groupOf(run)
@@ -16,16 +16,16 @@ export function NowText({ run }: { run: SessionRun }) {
   return <span title={text} className={group === "paused" ? "text-foreground" : "text-muted-foreground"}>{text}</span>
 }
 
-const link = (run: SessionRun) => href("sessions", { id: run.id })
+const link = (run: SessionSummary) => href("sessions", { id: run.id })
 
 /** 来源（怎么开始的）：手动 / 定时 / 待办 / 事件 / 派活。老数据没有来源 */
 export const SOURCE_LABEL: Record<string, string> = { manual: "手动", cron: "定时", todo: "待办", event: "事件", dispatch: "派活" }
 
 /** 「定时」「派活 W-57」 */
-export const sourceText = (run: SessionRun) => `${(run.source && SOURCE_LABEL[run.source]) || "—"}${run.workItemId ? ` ${run.workItemId}` : ""}`
+export const sourceText = (run: SessionSummary) => `${(run.source && SOURCE_LABEL[run.source]) || "—"}${run.workItemId ? ` ${run.workItemId}` : ""}`
 
 interface ListProps {
-  list: SessionRun[]
+  list: SessionSummary[]
   tasks: TaskDef[]
   selectedId?: string
 }

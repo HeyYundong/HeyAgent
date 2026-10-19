@@ -15,7 +15,7 @@ import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui
 import { Spinner } from "@/components/ui/spinner"
 import { Textarea } from "@/components/ui/textarea"
 import { href } from "@/lib/router"
-import { findById, fmtShort, humanItemKindLabel, riskLabel, type HumanItem, type SessionRun } from "@heyagent/shared"
+import { findById, fmtShort, humanItemKindLabel, riskLabel, type HumanItem, type SessionSummary } from "@heyagent/shared"
 
 import { useModels, useRulesQuery, useStaffName } from "@/lib/data"
 import { VerificationReport } from "@/pages/tasks/verification"
@@ -32,7 +32,7 @@ import { Block, DetailSheet, TextLink, dots } from "./sheets"
 // M3：「审批工具调用」带 detail.toolCall：显示工具名和参数，只有「批准」「拒绝」，可以加备注；
 //     「验收争议」带 detail.verification：显示验收报告（逐条结论），三种处理「算通过」「算失败」「补充说明后继续」（engine.resolveVerifyDispute，说明必填）；
 //     记忆审核、技能修改：可以直接批，也可以按 memoryId / skillId 去记忆页、技能页看全文再审。
-type Props = { item: HumanItem; runs: SessionRun[]; open: boolean; userId: string; canAct: boolean; onClose: () => void }
+type Props = { item: HumanItem; runs: SessionSummary[]; open: boolean; userId: string; canAct: boolean; onClose: () => void }
 
 export function HumanSheet({ item, runs, open, userId, canAct, onClose }: Props) {
   const staffName = useStaffName()

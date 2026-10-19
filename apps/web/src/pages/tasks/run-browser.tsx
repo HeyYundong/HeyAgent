@@ -3,7 +3,7 @@
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
 import { CheckIcon, MonitorIcon } from "lucide-react"
-import { can, fmtShort, isRunEnded, type HumanItem, type SessionRun } from "@heyagent/shared"
+import { can, fmtShort, isRunEnded, type HumanItem, type SessionSummary } from "@heyagent/shared"
 
 import { RemoteViewDialog } from "@/components/remote-view/remote-view-dialog"
 import { Button } from "@/components/ui/button"
@@ -28,7 +28,7 @@ export function useResolveDone(onDone?: () => void) {
 }
 
 /** 运行详情右上角的「看浏览器」：只在这次运行开着 Chrome 时出现 */
-export function RunBrowserButton({ run }: { run: SessionRun }) {
+export function RunBrowserButton({ run }: { run: SessionSummary }) {
   const active = !isRunEnded(run.status)
   const query = useSessionBrowser(run.id, active)
   const [open, setOpen] = React.useState(false)

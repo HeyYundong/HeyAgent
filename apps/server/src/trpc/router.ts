@@ -50,6 +50,7 @@ import {
   saveStepsFromSessionInputSchema,
   sessionDigestSchema,
   sessionRunSchema,
+  sessionSummarySchema,
   settingsAgentInputSchema,
   settingsBrowserInputSchema,
   settingsDispatchInputSchema,
@@ -188,16 +189,17 @@ export const appRouter = router({
   }),
 
   sessions: router({
-    /** 全部 session（新的在前），带检查点、全部过程、在等什么、验收。可以按任务筛 */
+    /** 全部 session（新的在前）的摘要：检查点、在等什么、验收，过程只有条数、最后一条等几样（不带过程，页面一直开着、实时刷新也不重）。可以按任务筛 */
     list: protectedProcedure
       .input(z.object({ taskId: z.string().optional() }).optional())
-      .output(z.array(sessionRunSchema))
+      .output(z.array(sessionSummarySchema))
       .query(({ ctx, input }) => load.listSessions(ctx.db, { taskId: input?.taskId })),
+    /** 一个 session 的全部，带全部过程（工具的输入、输出）：运行详情里看过程时才取 */
     get: protectedProcedure
       .input(idInput)
       .output(sessionRunSchema)
       .query(async ({ ctx, input }) => {
-        const [run] = await load.listSessions(ctx.db, { ids: [input.id] })
+        const run = await load.loadSession(ctx.db, input.id)
         if (!run) throw notFound("session", input.id)
         return run
       }),

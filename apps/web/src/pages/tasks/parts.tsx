@@ -10,7 +10,7 @@ import { Item, ItemActions, ItemContent, ItemTitle } from "@/components/ui/item"
 import { Progress } from "@/components/ui/progress"
 import { Spinner } from "@/components/ui/spinner"
 import { fmtShort, isRunEnded, nextRunText as sharedNextRunText, runStatusLabel } from "@heyagent/shared"
-import type { RunCheckpoint, RunStatus, SessionRun, TaskDef } from "@heyagent/shared"
+import type { RunCheckpoint, RunStatus, SessionRun, SessionSummary, TaskDef } from "@heyagent/shared"
 
 import { useRunNow } from "@/lib/data"
 
@@ -18,7 +18,7 @@ import { useRunNow } from "@/lib/data"
 export { checkpointSummary } from "@heyagent/shared"
 
 /** 预计下次运行。能被派活、不定时的任务：有派活单就开始；停用时派来的单先排着 */
-export function nextRunText(task: TaskDef, latest?: SessionRun) {
+export function nextRunText(task: TaskDef, latest?: SessionSummary) {
   if (task.dispatch && !task.enabled) return "已停用：派来的单先排着"
   if (task.dispatch && !task.schedule) return "有派活单就开始"
   return sharedNextRunText(task, latest)
@@ -57,7 +57,7 @@ const STATUS = { done: { icon: CircleCheckIcon, label: "完成", variant: "outli
 
 /**
  * agent 用 checkpoint.mark(status = "doing") 最近指定的「正在做」的检查点（序号从 0 开始）。
- * 同类型的检查点有好几个时，规则自动写的记录记到它上面（M3）。运行结束了就不算
+ * 同类型的检查点有好几个时，规则自动写的记录记到它上面（M3）。运行结束了就不算。要全部过程（sessions.get）
  */
 export function focusedCheckpoint(run: Pick<SessionRun, "status" | "events">): number | undefined {
   if (isRunEnded(run.status)) return undefined
@@ -126,10 +126,9 @@ function CheckpointCard({ cp, doing }: { cp: RunCheckpoint; doing: boolean }) {
   )
 }
 
-/** 检查点：每条一张小卡片，网格排列。每条记录先一行时间（带日期），下面一行内容 */
-export function CheckpointGrid({ run }: { run: SessionRun }) {
+/** 检查点：每条一张小卡片，网格排列。每条记录先一行时间（带日期），下面一行内容。focused：正在做的那条（focusedCheckpoint，取到全部过程后才有） */
+export function CheckpointGrid({ run, focused }: { run: SessionSummary; focused?: number }) {
   const { checkpoints } = run
-  const focused = focusedCheckpoint(run)
   if (checkpoints.length === 0) return <p className="text-muted-foreground">这次运行还没有检查点。没写步骤的任务，agent 会边做边加。</p>
   return (
     <div className="flex flex-col gap-3">
@@ -144,9 +143,8 @@ export function CheckpointGrid({ run }: { run: SessionRun }) {
 }
 
 /** 检查点的紧凑列表：每条一行（标题、状态、最近一条记录的时间），记录等详情鼠标放上去才显示。Session 详情用 */
-export function CheckpointList({ run }: { run: SessionRun }) {
+export function CheckpointList({ run, focused }: { run: SessionSummary; focused?: number }) {
   const { checkpoints } = run
-  const focused = focusedCheckpoint(run)
   if (checkpoints.length === 0) return <p className="text-muted-foreground">这次运行还没有检查点。没写步骤的任务，agent 会边做边加。</p>
   return (
     <div className="flex flex-col gap-1">
@@ -178,11 +176,11 @@ export function CheckpointList({ run }: { run: SessionRun }) {
 }
 
 export interface TasksState {
-  runsOf: (taskId: string) => SessionRun[]
+  runsOf: (taskId: string) => SessionSummary[]
 }
 
 /** 运行挂起时的醒目提示：在等什么、什么时候继续 */
-export function WaitingAlert({ run, link }: { run: SessionRun; link?: string }) {
+export function WaitingAlert({ run, link }: { run: SessionSummary; link?: string }) {
   const now = useRunNow()(run)
   if (now.label !== "在等") return null
   return (

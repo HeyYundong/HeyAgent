@@ -11,7 +11,7 @@ import { Separator } from "@/components/ui/separator"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { href, setParams, useRoute } from "@/lib/router"
-import { findById, groupOf, isToday, sessionGroups as groups, sortRuns, type SessionGroup as Group, type SessionRun } from "@heyagent/shared"
+import { findById, groupOf, isToday, sessionGroups as groups, sortRuns, type SessionGroup as Group, type SessionSummary } from "@heyagent/shared"
 
 import { useBoardQuery, useModelsQuery, useSessionsQuery, useStaffQuery, useTasksQuery, useToolsQuery } from "@/lib/data"
 import { money } from "@/pages/tasks/parts"
@@ -53,7 +53,7 @@ export default function SessionsPage() {
 
   const selected = findById(allRuns, params.get("id"))
   // 关抽屉时 ?id= 先清掉了，留着上一个 session，让关闭动画有内容
-  const [shown, setShown] = React.useState<SessionRun | undefined>(selected)
+  const [shown, setShown] = React.useState<SessionSummary | undefined>(selected)
   if (selected && selected.id !== shown?.id) setShown(selected)
   const run = selected ?? shown
   const task = run && findById(tasks, run.taskId)
