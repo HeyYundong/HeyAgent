@@ -46,9 +46,16 @@ const DELAY_ITEMS = [1, 5, 10, 30, 60, 120, 360, 1440].map((minutes) => ({ value
 const NEW_PARAM = { name: "", description: "", required: false, dedupe: false }
 const FIRST_DRAFT = { params: [{ name: "", description: "", required: true, dedupe: true }], maxRunning: 1 }
 
-/** shared 的 taskInputSchema 之外再查一条：打开了「可以被派活」就至少写一个参数（和别的错误一起显示） */
+/**
+ * shared 的 taskInputSchema 之外再查一条：打开了「可以被派活」就至少写一个参数（和别的错误一起显示）。
+ * 自动重试两项没选过时，下拉的 Controller 会把它们放成 null，schema 只认数字或不写，这里先当作不写
+ * （不然报的错在页面上没地方显示，点创建一声不响）。
+ */
 const zodTaskResolver = zodResolver(taskInputSchema)
-export const taskResolver: typeof zodTaskResolver = async (values, context, options) => {
+export const taskResolver: typeof zodTaskResolver = async (input, context, options) => {
+  const values = input.dispatch
+    ? { ...input, dispatch: { ...input.dispatch, retries: input.dispatch.retries ?? undefined, retryDelayMinutes: input.dispatch.retryDelayMinutes ?? undefined } }
+    : input
   const result = await zodTaskResolver(values, context, options)
   if (values.dispatch && values.dispatch.params.length === 0) {
     return { values: {}, errors: { ...result.errors, dispatch: { type: "custom", message: "至少写一个参数：每件事要带什么（例如单号）" } } }
@@ -103,6 +110,38 @@ function NumberSelect({ id, items, value, onChange }: { id: string; items: { val
  * id：表单里各控件 id 的前缀；fromOptions：「谁能派活给它」的选项；fromNote：选项下面的一行说明（例如导入时只能选包里的任务）。
  * 表单的 dispatchFrom 存的就是 fromOptions 的值（任务 id，或导入方案里的 key）。
  */
+/**
+ * 「每件事带的参数」。字段数组单独放一个组件、只在打开「可以被派活」时挂上：
+ * useFieldArray 一挂上，提交时 dispatch 就会从 null 变成 { params: [] }，没打开也报「至少写一个参数」，而这个错误在关着时看不到，表单就一声不响地提交不了。
+ */
+function DispatchParams({ id, control, register, errors }: {
+  id: string
+  control: Control<TaskInput>
+  register: UseFormRegister<TaskInput>
+  errors: FieldErrors<TaskInput>
+}) {
+  const params = useFieldArray({ control, name: "dispatch.params" })
+  const rootError = errors.dispatch?.message ?? errors.dispatch?.params?.message ?? errors.dispatch?.params?.root?.message
+  const paramError = (index: number) => errors.dispatch?.params?.[index]?.name?.message ?? errors.dispatch?.params?.[index]?.description?.message
+  return (
+    <Field data-invalid={!!rootError}>
+      <FieldLabel className="flex items-center gap-1">
+        每件事带的参数
+        <HelpTip>派活的 agent 按这里填，缺必填的当场被拒。标了「去重」的参数用来判断是不是同一件事：同一个值只办一次；一个都不标时，派活的 agent 要自己给每件事一个编号。</HelpTip>
+      </FieldLabel>
+      <div className="flex flex-col gap-3">
+        {params.fields.map((param, index) => (
+          <ParamEditor key={param.id} id={`${id}-param`} index={index} control={control} register={register} error={paramError(index)} onRemove={() => params.remove(index)} />
+        ))}
+        <Button type="button" variant="outline" size="sm" className="self-start" onClick={() => params.append(NEW_PARAM)}>
+          <PlusIcon data-icon="inline-start" />加一个参数
+        </Button>
+      </div>
+      {rootError && <FieldError>{rootError}</FieldError>}
+    </Field>
+  )
+}
+
 export function DispatchFields({ id, control, register, errors, fromOptions, fromNote }: {
   id: string
   control: Control<TaskInput>
@@ -112,11 +151,8 @@ export function DispatchFields({ id, control, register, errors, fromOptions, fro
   fromNote?: string
 }) {
   const dispatch = useWatch({ control, name: "dispatch" })
-  const params = useFieldArray({ control, name: "dispatch.params" })
   // 关掉再打开，刚才写的参数还在
   const draft = React.useRef<NonNullable<TaskInput["dispatch"]>>(dispatch ?? FIRST_DRAFT)
-  const rootError = errors.dispatch?.message ?? errors.dispatch?.params?.message ?? errors.dispatch?.params?.root?.message
-  const paramError = (index: number) => errors.dispatch?.params?.[index]?.name?.message ?? errors.dispatch?.params?.[index]?.description?.message
   return (
     <FieldSet>
       <FieldLegend variant="label" className="flex items-center gap-1">
@@ -131,8 +167,6 @@ export function DispatchFields({ id, control, register, errors, fromOptions, fro
             <Switch id={`${id}-on`} checked={!!field.value} onCheckedChange={(on) => {
               if (!on && field.value) draft.current = field.value
               field.onChange(on ? draft.current : null)
-              // 改整个对象时字段数组不一定跟着刷新，参数行再明确放一次
-              if (on) params.replace(draft.current.params)
             }} />
             <FieldLabel htmlFor={`${id}-on`}>可以被派活</FieldLabel>
           </Field>
@@ -140,21 +174,7 @@ export function DispatchFields({ id, control, register, errors, fromOptions, fro
       />
       {dispatch && (
         <>
-          <Field data-invalid={!!rootError}>
-            <FieldLabel className="flex items-center gap-1">
-              每件事带的参数
-              <HelpTip>派活的 agent 按这里填，缺必填的当场被拒。标了「去重」的参数用来判断是不是同一件事：同一个值只办一次；一个都不标时，派活的 agent 要自己给每件事一个编号。</HelpTip>
-            </FieldLabel>
-            <div className="flex flex-col gap-3">
-              {params.fields.map((param, index) => (
-                <ParamEditor key={param.id} id={`${id}-param`} index={index} control={control} register={register} error={paramError(index)} onRemove={() => params.remove(index)} />
-              ))}
-              <Button type="button" variant="outline" size="sm" className="self-start" onClick={() => params.append(NEW_PARAM)}>
-                <PlusIcon data-icon="inline-start" />加一个参数
-              </Button>
-            </div>
-            {rootError && <FieldError>{rootError}</FieldError>}
-          </Field>
+          <DispatchParams id={id} control={control} register={register} errors={errors} />
           <div className="grid gap-4 sm:grid-cols-2">
             <Field>
               <FieldLabel htmlFor={`${id}-max-running`} className="flex items-center gap-1">
