@@ -2,6 +2,7 @@
 // 区别只在底部的按钮（footer）。
 // 弹窗能缩成小窗（Card，默认在右上角，按住标题栏拖到任意位置），小窗不挡页面，还能接着看、接着操作；点「放大」回到弹窗。
 // 弹窗和小窗之间切换不重连：RemoteView 只渲染一份（portal 到一个固定的 div 里），切换时只把这个 div 挪到弹窗或小窗里。
+// 都由挂在应用根部的 RemoteViewHost 渲染（见 store.ts）：打开它的抽屉、页面关了，小窗还在。
 import * as React from "react"
 import { createPortal } from "react-dom"
 import { Maximize2Icon, Minimize2Icon, XIcon } from "lucide-react"
@@ -12,24 +13,42 @@ import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, Di
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 
 import { RemoteView } from "."
+import { remoteViews, type RemoteViewEntry, type RemoteViewEntryProps } from "./store"
 
-interface RemoteViewDialogProps {
-  browserId: string
-  title: React.ReactNode
-  description?: React.ReactNode
-  /** 底部按钮；不传就只有右上角的关闭 */
-  footer?: React.ReactNode
+interface RemoteViewDialogProps extends RemoteViewEntryProps {
   open: boolean
-  onOpenChange: (open: boolean) => void
-  onClosed?: (reason: string) => void
-  /** 只看不操作 */
-  viewOnly?: boolean
 }
 
 type Point = { x: number; y: number }
 
-export function RemoteViewDialog({ browserId, title, description, footer, open, onOpenChange, onClosed, viewOnly }: RemoteViewDialogProps) {
-  const [minimized, setMinimized] = React.useState(false)
+/** 打开远程画面：只是登记，画面由 RemoteViewHost 渲染。这个组件没了（或 open 变成 false）时大弹窗关掉，缩成小窗的留着 */
+export function RemoteViewDialog({ open, ...props }: RemoteViewDialogProps) {
+  const [owner] = React.useState(() => Symbol("remote-view"))
+  const latest = React.useRef(props)
+  React.useLayoutEffect(() => {
+    latest.current = props
+    remoteViews.update(owner, props)
+  })
+  const { browserId } = props
+  React.useLayoutEffect(() => {
+    if (!open) return
+    remoteViews.register(owner, latest.current)
+    return () => remoteViews.release(owner, browserId)
+  }, [owner, browserId, open])
+  return null
+}
+
+/** 挂在应用根部（登录后），渲染所有打开着的远程画面 */
+export function RemoteViewHost() {
+  const entries = React.useSyncExternalStore(remoteViews.subscribe, remoteViews.snapshot)
+  return entries.map((entry) => <RemoteViewWindow key={entry.props.browserId} entry={entry} />)
+}
+
+function RemoteViewWindow({ entry }: { entry: RemoteViewEntry }) {
+  const { browserId, title, description, footer, onOpenChange, onClosed, viewOnly } = entry.props
+  const { minimized } = entry
+  // 打开它的组件已经没了：底部按钮里的操作也跟着没了，不再显示
+  const detached = entry.owner === null
   // 小窗拖到的位置；没拖过就在右上角。缩小、放大几次都记着
   const [position, setPosition] = React.useState<Point | null>(null)
   const [host] = React.useState(() => document.createElement("div"))
@@ -37,17 +56,20 @@ export function RemoteViewDialog({ browserId, title, description, footer, open, 
   const slot = React.useCallback((element: HTMLDivElement | null) => {
     if (element && host.parentElement !== element) element.appendChild(host)
   }, [host])
-  // 关掉以后下次打开是大弹窗
-  if (!open && minimized) setMinimized(false)
+  // 先从根部拿掉，再告诉打开它的组件（例如登录用的 Chrome 关掉就保存）
+  const close = () => {
+    remoteViews.remove(browserId)
+    onOpenChange(false)
+  }
 
   return (
     <>
       {/* 点弹窗外面不关：人在画面里拖滑块时很容易拖出边界 */}
-      <Dialog open={open && !minimized} onOpenChange={(next, details) => (next || details.reason !== "outside-press") && onOpenChange(next)}>
+      <Dialog open={!minimized} onOpenChange={(next, details) => !next && details.reason !== "outside-press" && close()}>
         <DialogContent showCloseButton={false} className="max-h-svh overflow-y-auto sm:max-w-5xl">
           <div className="absolute top-2 right-2 flex gap-1">
             <Tooltip>
-              <TooltipTrigger render={<Button variant="ghost" size="icon-sm" aria-label="缩成小窗" onClick={() => setMinimized(true)} />}>
+              <TooltipTrigger render={<Button variant="ghost" size="icon-sm" aria-label="缩成小窗" onClick={() => remoteViews.setMinimized(browserId, true)} />}>
                 <Minimize2Icon />
               </TooltipTrigger>
               <TooltipContent>缩成小窗</TooltipContent>
@@ -61,13 +83,13 @@ export function RemoteViewDialog({ browserId, title, description, footer, open, 
             {description && <DialogDescription>{description}</DialogDescription>}
           </DialogHeader>
           <div ref={slot} />
-          {footer && <DialogFooter className="sm:items-center">{footer}</DialogFooter>}
+          {footer && !detached && <DialogFooter className="sm:items-center">{footer}</DialogFooter>}
         </DialogContent>
       </Dialog>
-      {open && minimized && (
-        <MiniWindow title={title} initial={position} onMoved={setPosition} slot={slot} onRestore={() => setMinimized(false)} onClose={() => onOpenChange(false)} />
+      {minimized && (
+        <MiniWindow title={title} initial={position} onMoved={setPosition} slot={slot} onRestore={() => remoteViews.setMinimized(browserId, false)} onClose={close} />
       )}
-      {open && createPortal(<RemoteView browserId={browserId} onClosed={onClosed} viewOnly={viewOnly} compact={minimized} />, host)}
+      {createPortal(<RemoteView browserId={browserId} onClosed={onClosed} viewOnly={viewOnly} compact={minimized} />, host)}
     </>
   )
 }

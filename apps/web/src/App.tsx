@@ -4,6 +4,7 @@ import { RotateCwIcon, TriangleAlertIcon } from "lucide-react"
 
 import { AssistantWidget } from "@/components/assistant"
 import { LoginForm } from "@/components/login-form"
+import { RemoteViewHost } from "@/components/remote-view/remote-view-dialog"
 import { SetupForm } from "@/components/setup-form"
 import { AppSidebar } from "@/components/shell/app-sidebar"
 import { LiveSync } from "@/components/shell/live-sync"
@@ -77,6 +78,7 @@ function AuthGate() {
         <LiveSync />
         <Shell />
         <AssistantWidget />
+        <RemoteViewHost />
       </SessionProvider>
     )
   }
