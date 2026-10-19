@@ -134,7 +134,7 @@ export function buildSystemPrompt(
           : "- 截图只存档留证（存成这次运行的文件），不会发给你；要读内容用快照。",
         "- 要往网页里传文件，用 browser_file_upload 的 fileIds 填文件 id。",
         "- 在线表格、文档的格子画在画布上，快照里看不到格子：读写数据走剪贴板，不要逐格点。读：在名称框 / 定位框里填区域（例如 A1:H200）回车选中，再 browser_clipboard_read（copy: true）；写：点到起始格，browser_clipboard_paste（table），写完选中同一块读回来核对。",
-        "- 往在线文档、表格里贴图：先点到要放的位置，browser_copy_image 复制网页上的图（相当于右键 → 复制图片），再 browser_clipboard_paste（fileId）；贴不进时用网页的「插入 → 图片 → 本地上传」配合 browser_file_upload。各平台的具体操作（名称框在哪、快捷键）看技能。",
+        "- 往在线文档、表格里贴图：先在图片所在的网页上 browser_copy_image 复制图（相当于右键 → 复制图片，输出里有文件 id），再到在线文档里点到要放的位置，browser_clipboard_paste（fileId）；贴不进时用网页的「插入 → 图片 → 本地上传」配合 browser_file_upload。各平台的具体操作（名称框在哪、快捷键）看技能。",
         allowedDomains.length
           ? `- 网址白名单：${allowedDomains.join("、")}（含子域名）。不在名单里的网页会被拦下。`
           : "- 没有网址白名单，但只做任务需要的访问。",
