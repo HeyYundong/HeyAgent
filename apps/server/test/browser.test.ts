@@ -54,7 +54,10 @@ describe("纯函数", () => {
   })
 
   it("验证码和登录页检测：通用规则", () => {
-    expect(judgePage(facts({ frameUrls: ["https://www.google.com/recaptcha/api2/anchor?k=1"] })).kind).toBe("captcha")
+    expect(judgePage(facts({ frameUrls: ["https://www.google.com/recaptcha/api2/anchor?k=1"] }))).toMatchObject({ kind: "captcha", provider: "reCAPTCHA" })
+    expect(judgePage(facts({ frameUrls: ["https://challenges.cloudflare.com/cdn-cgi/challenge-platform/x"] }))).toMatchObject({ kind: "captcha", provider: "Cloudflare Turnstile" })
+    // 页面自己的验证码（标题、正文）不算第三方，会先自己试着过
+    expect(judgePage(facts({ title: "安全验证" }))).not.toHaveProperty("provider")
     expect(judgePage(facts({ frameUrls: ["https://newassets.hcaptcha.com/captcha/v1/x"] })).kind).toBe("captcha")
     expect(judgePage(facts({ title: "Robot Check" })).kind).toBe("captcha")
     expect(judgePage(facts({ title: "安全验证" })).kind).toBe("captcha")
@@ -435,8 +438,17 @@ describe("工具网关：浏览器工具组", () => {
     await ctx.db.update(t.tasks).set({ allowBrowserEvaluate: true }).where(eq(t.tasks.id, taskId))
     const script2 = useScript("test/browser-tools2", new Script([step([text("好")])]))
     await ctx.db.update(t.tasks).set({ modelId: "test/browser-tools2" }).where(eq(t.tasks.id, taskId))
+    // 关掉「遇到验证码先自己试着过」：没有填验证码的工具，系统提示里也不提
+    const lin = await login(ctx.app, "linzhou@heyagent.local")
+    const browserSettings = { maxPerWorker: 4, visionCheck: false, visionModel: "openrouter/qwen/qwen3.8-flash", humanHoldMinutes: 30 }
+    expect((await mutate(ctx.app, "settings.updateBrowser", lin, { ...browserSettings, captchaSolve: false })).error).toBeUndefined()
     const res2 = await mutate(ctx.app, "engine.runNow", wang, { taskId })
     await waitStatus(ctx.db, res2.data.sessionId, "done", 60_000)
-    expect((script2.prompts[0]!.tools ?? []).map((tool) => tool.name)).toContain("browser_evaluate")
+    await mutate(ctx.app, "settings.updateBrowser", lin, { ...browserSettings, captchaSolve: true })
+    const names2 = (script2.prompts[0]!.tools ?? []).map((tool) => tool.name)
+    expect(names2).toContain("browser_evaluate")
+    expect(names2).toContain("browser_use")
+    expect(names2).not.toContain("browser_fill_captcha")
+    expect(JSON.stringify(script2.prompts[0]!.prompt[0])).not.toContain("fill_captcha")
   })
 })

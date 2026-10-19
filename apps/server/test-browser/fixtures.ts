@@ -127,6 +127,12 @@ export async function startSite(): Promise<TestSite> {
           return
         }
         return send(200, html("安全验证", `<h1>请完成安全验证</h1>${textcapForm("/textcap", "")}`))
+      case "/provider":
+        // 第三方人机验证：框架地址像 reCAPTCHA（测试站点自己的路径，不连外网）
+        return send(
+          200,
+          html("继续访问", `<p>继续之前先验证</p><iframe src="/p/www.google.com/recaptcha/api2/anchor" width="300" height="80"></iframe><button id="human">我不是机器人</button>`)
+        )
       case "/query":
         // 表单里带图片验证码的查询页：单号、验证码都填对才出结果
         if (req.method === "POST") {

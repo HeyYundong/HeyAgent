@@ -15,7 +15,7 @@ import type { ToolOutcome } from "../engine/tools/builtin.js"
 import { executeMcpTool, type McpConnection } from "../engine/tools/mcp.js"
 import { decryptText, type Keyring } from "../lib/crypto.js"
 import { CAPTCHA_MAX_TRIES, solveCaptcha, type CaptchaTry } from "./captcha.js"
-import { judgePage } from "./detect.js"
+import { judgePage, providerCaptchaNote } from "./detect.js"
 import type { BrowserInstance } from "./instance.js"
 import type { PlatformAccount } from "./leases.js"
 import { listBrowserMcpTools } from "./mcp.js"
@@ -167,6 +167,10 @@ export interface AutoLoginInput {
   signal?: AbortSignal
 }
 
+/** 验证码没过时给人看的半句：没试的写原因，试了没过的写怎么没过 */
+const captchaNote = (solved: { detail: string; skipped?: string } | undefined) =>
+  solved ? `；${solved.skipped ?? `自动过验证码没成功：${solved.detail}`}` : ""
+
 export interface AutoLoginCaptcha {
   modelId: string
   onTry?: (each: CaptchaTry, index: number) => Promise<void>
@@ -196,6 +200,13 @@ export async function autoLogin(input: AutoLoginInput): Promise<AutoLoginResult>
     const page = instance.currentPage()
     if (!input.captcha || !page || captchaTries >= CAPTCHA_MAX_TRIES) return undefined
     const captcha = input.captcha
+    // 第三方人机验证（reCAPTCHA 等的框架）：不自己试，交给人
+    const facts = await instance.pageFacts(page)
+    const verdict = facts ? judgePage(facts) : undefined
+    if (verdict?.kind === "captcha" && verdict.provider) {
+      const note = providerCaptchaNote(verdict.provider)
+      return { ok: false, unsupported: note, skipped: note, detail: note }
+    }
     const solved = await solveCaptcha({
       db,
       instance,
@@ -263,7 +274,7 @@ export async function autoLogin(input: AutoLoginInput): Promise<AutoLoginResult>
         const found = await instance.detect()
         if (found?.verdict.kind === "captcha") {
           const solved = await passCaptcha(true)
-          if (!solved?.ok) return finish(false, true, `遇到验证码：${found.verdict.reason}${solved ? `；自动过验证码没成功：${solved.detail}` : ""}`)
+          if (!solved?.ok) return finish(false, true, `遇到验证码：${found.verdict.reason}${captchaNote(solved)}`)
           messages.push(toolResult(call.toolCallId, call.toolName, `遇到验证码页，系统已经自动过了（${solved.detail}）。先用 browser_snapshot 看看是不是登录好了。`, true))
           continue
         }
@@ -284,7 +295,7 @@ export async function autoLogin(input: AutoLoginInput): Promise<AutoLoginResult>
         const found = await instance.detect()
         if (found?.verdict.kind === "captcha") {
           const solved = await passCaptcha(true)
-          if (!solved?.ok) return finish(false, true, `遇到验证码：${found.verdict.reason}${solved ? `；自动过验证码没成功：${solved.detail}` : ""}`)
+          if (!solved?.ok) return finish(false, true, `遇到验证码：${found.verdict.reason}${captchaNote(solved)}`)
           output += `\n（遇到验证码页，系统已经自动过了：${solved.detail}。先用 browser_snapshot 看看页面）`
         }
       }

@@ -1,5 +1,6 @@
 // 验证码和登录页检测（m2.md 第 5 条）：每次调完浏览器工具，编排器看页面的地址、iframe 域名、标题和正文关键词。
 // 这里只管检测；检测到验证码后先自己试着过简单的（captcha.ts，设置里的开关），过不了再交给人。
+// 第三方人机验证服务（reCAPTCHA、hCaptcha、Turnstile、GeeTest、Arkose 等）的框架记在 provider 上：这种不自己试，直接交给人。
 // 规则是通用的（常见验证码服务的域名、通用关键词、密码框），不针对任何具体网站。
 // 规则拿不准时返回 uncertain，设置里打开了视觉判断（browser.visionCheck）才交给视觉模型看截图。
 
@@ -15,7 +16,8 @@ export interface PageFacts {
 }
 
 export type Verdict =
-  | { kind: "captcha"; reason: string }
+  /** provider：页面里有第三方人机验证服务（reCAPTCHA 等）的框架，这种不自己试，直接交给人 */
+  | { kind: "captcha"; reason: string; provider?: string }
   | { kind: "login"; reason: string }
   | { kind: "uncertain"; reason: string }
   | { kind: "none" }
@@ -50,7 +52,7 @@ const LOGIN_WORDS = /登录|登入|sign in|log in|signin|login/i
 
 export function judgePage(facts: PageFacts): Verdict {
   for (const url of [facts.url, ...facts.frameUrls]) {
-    for (const [pattern, name] of CAPTCHA_URLS) if (pattern.test(url)) return { kind: "captcha", reason: `页面里有 ${name} 验证（${shorten(url)}）` }
+    for (const [pattern, name] of CAPTCHA_URLS) if (pattern.test(url)) return { kind: "captcha", reason: `页面里有 ${name} 验证（${shorten(url)}）`, provider: name }
   }
   if (CAPTCHA_TITLE.test(facts.title)) return { kind: "captcha", reason: `页面标题像验证码页：「${facts.title.slice(0, 60)}」` }
   const strong = CAPTCHA_TEXT_STRONG.exec(facts.text)
@@ -115,3 +117,6 @@ function samePage(a: string, b: string) {
     return false
   }
 }
+
+/** 第三方人机验证不自己试时，给人和 agent 看的一句话 */
+export const providerCaptchaNote = (provider: string) => `${provider} 是第三方人机验证，系统不自己试`

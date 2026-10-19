@@ -115,6 +115,8 @@ export interface CaptchaResult {
   form?: boolean
   /** 不是简单验证码（模型说的原因）：不用再试 */
   unsupported?: string
+  /** 没试（例如第三方人机验证）：原因，给人和 agent 看 */
+  skipped?: string
   tries: CaptchaTry[]
   detail: string
   tokensIn: number

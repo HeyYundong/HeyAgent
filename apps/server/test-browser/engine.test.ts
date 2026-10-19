@@ -400,6 +400,22 @@ describe("自动过验证码", () => {
     await manager.sweep()
   })
 
+  it("第三方人机验证（reCAPTCHA 的框架）：不自己试、不问模型，直接交给人，卡片和工具输出写原因", async () => {
+    const vision = useScript(VISION, new Script([reply("click")]))
+    useScript("test/cap-provider", new Script([step([call("browser.navigate", { url: site.url("pcap.localhost", "/provider") })])]))
+    const sessionId = await runNow(await browserTask("test/cap-provider"))
+    await waitStatus(ctx.db, sessionId, "needs_human", 90_000)
+    expect(vision.prompts).toHaveLength(0)
+    expect(await tries(sessionId)).toHaveLength(0)
+    const [item] = await openItems(sessionId)
+    expect(item!.detail.browser!.reason).toContain("reCAPTCHA")
+    expect(item!.detail.sections[0]!.text).toContain("reCAPTCHA 是第三方人机验证，系统不自己试")
+    const toolEvent = (await eventsOf(ctx.db, sessionId)).find((event) => event.toolId === "browser.navigate")
+    expect(toolEvent?.output).toContain("第三方人机验证，系统不自己试")
+    await mutate(ctx.app, "engine.cancel", wang, { sessionId })
+    await manager.sweep()
+  })
+
   it("验证码在表单里：不自己提交，让 agent 先填别的，再调 browser_fill_captcha 填验证码、自己提交", async () => {
     const vision = useScript(VISION, new Script([reply(TEXTCAP_CODE)]))
     const script = useScript(

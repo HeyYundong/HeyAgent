@@ -34,7 +34,7 @@ import { getKeyring } from "../engine/runtime.js"
 import { loadEngineSettings } from "../engine/settings.js"
 import type { SessionRow, ToolOutcome } from "../engine/tools/builtin.js"
 import { executeMcpTool, type McpConnection } from "../engine/tools/mcp.js"
-import { judgePage, parseVisionAnswer, VISION_PROMPT, type Verdict } from "./detect.js"
+import { judgePage, parseVisionAnswer, providerCaptchaNote, VISION_PROMPT, type Verdict } from "./detect.js"
 import { autoLogin, loadAccountPassword, loginModelId, type AutoLoginCaptcha } from "./auto-login.js"
 import { CAPTCHA_MAX_TRIES, solveCaptcha, type CaptchaResult, type CaptchaTry } from "./captcha.js"
 import { ProfileFullError, type BlockedNavigation, type BrowserInstance } from "./instance.js"
@@ -152,6 +152,8 @@ export class BrowserTools {
   private readonly captchaTries = new Map<string, number>()
   /** 验证码在表单里的页面：等 agent 填好别的再调 browser_fill_captcha，检测到时不再自己提交、也不交给人 */
   private readonly captchaForms = new Set<string>()
+  /** 起的时候设置里开着「遇到验证码先自己试着过」：开着才给 agent 填验证码的工具 */
+  private captchaTool = false
   /** 遇到验证码 / 登录页挂起时：Chrome 保留多少分钟（gateway 关闭时交给 manager） */
   holdMinutes?: number
 
@@ -164,6 +166,7 @@ export class BrowserTools {
   static async create(ctx: Ctx): Promise<BrowserTools> {
     const tools = await listBrowserMcpTools()
     const group = new BrowserTools(ctx, tools)
+    group.captchaTool = (await readBrowserSettings(ctx.db)).captchaSolve
     // 等人处理时保留着的 Chrome：session 继续了，接着用同一个（取消保留）
     const manager = getBrowserManager()
     const held = manager?.forSession(ctx.session.id)
@@ -213,20 +216,21 @@ export class BrowserTools {
         execute: (input) => this.use((input as { profileId: string }).profileId),
       },
     ]
-    entries.push({
-      id: FILL_CAPTCHA_TOOL,
-      def: {
+    if (this.captchaTool)
+      entries.push({
         id: FILL_CAPTCHA_TOOL,
-        name: "浏览器：填验证码",
-        summary: "让系统认出页面上的图片验证码（字母、数字）并填进验证码输入框，不提交",
-        description: `页面表单里有图片验证码（字母、数字、简单算式）时调用：系统让视觉模型认出来，填进验证码输入框（不提交）；「我不是机器人」这类点一下的也能点。先填好表单的别的项，调完再点提交。提交后提示验证码不对就再调一次，每个页面最多 ${CAPTCHA_MAX_TRIES} 次；滑块、拼图、短信验证码这类过不了的会交给人处理。`,
-        source: "builtin",
-        risk: "external",
-      },
-      jsonSchema: { type: "object", properties: {}, additionalProperties: false },
-      validator: z.object({}).passthrough(),
-      execute: () => this.fillCaptcha(),
-    })
+        def: {
+          id: FILL_CAPTCHA_TOOL,
+          name: "浏览器：填验证码",
+          summary: "让系统认出页面上的图片验证码（字母、数字）并填进验证码输入框，不提交",
+          description: `页面表单里有图片验证码（字母、数字、简单算式）时调用：系统让视觉模型认出来，填进验证码输入框（不提交）；「我不是机器人」这类点一下的也能点。先填好表单的别的项，调完再点提交。提交后提示验证码不对就再调一次，每个页面最多 ${CAPTCHA_MAX_TRIES} 次；滑块、拼图、短信验证码这类过不了的会交给人处理。`,
+          source: "builtin",
+          risk: "external",
+        },
+        jsonSchema: { type: "object", properties: {}, additionalProperties: false },
+        validator: z.object({}).passthrough(),
+        execute: () => this.fillCaptcha(),
+      })
     for (const tool of this.mcpTools) {
       if (BLOCKED_MCP_TOOLS.has(tool.name)) continue
       if (tool.name === EVALUATE_TOOL && !browser?.allowEvaluate) continue
@@ -469,7 +473,7 @@ export class BrowserTools {
           isError: result.isError,
           facts,
         }
-      else if (solved) captchaNote = `自动过验证码没成功：${solved.detail}`
+      else if (solved) captchaNote = solved.skipped ?? `自动过验证码没成功：${solved.detail}`
     }
     if (hit) {
       // 登录页：账号存了密码就先让登录小 agent 用它登录，登不上再交给人
@@ -618,6 +622,13 @@ export class BrowserTools {
     const empty: CaptchaResult = { ok: false, tries: [], detail: "", tokensIn: 0, tokensOut: 0, costUsd: 0 }
     if (used >= CAPTCHA_MAX_TRIES) return { ...empty, detail: `这个页面已经自动试过 ${used} 次了` }
     if (submit && this.captchaForms.has(key)) return { ...empty, form: true, detail: "验证码在表单里" }
+    // 第三方人机验证（reCAPTCHA 等的框架）：不自己试，不问模型，直接交给人
+    const facts = await instance.pageFacts(hit.page)
+    const verdict = facts ? judgePage(facts) : undefined
+    if (verdict?.kind === "captcha" && verdict.provider) {
+      const note = providerCaptchaNote(verdict.provider)
+      return { ...empty, skipped: note, detail: note }
+    }
     // 提交后还是不是验证码页：规则说是就是；原来是视觉模型认出来的，规则拿不准时再问一次视觉模型
     const stillCaptcha = async () => {
       const facts = await instance.pageFacts(hit.page)
@@ -671,6 +682,7 @@ export class BrowserTools {
     if (!solved) return this.humanOutcome(instance, await hit("agent 要填验证码，设置里没打开「遇到验证码先自己试着过」"), "")
     if (solved.ok)
       return { output: `${solved.detail}。接着提交（点提交或登录按钮）；提交后提示验证码不对就再调一次（每个页面最多 ${CAPTCHA_MAX_TRIES} 次）。` }
+    if (solved.skipped) return this.humanOutcome(instance, await hit("页面上的验证码要人过"), "", solved.skipped)
     if (solved.unsupported || (this.captchaTries.get(pageKey(page.url())) ?? 0) >= CAPTCHA_MAX_TRIES)
       return this.humanOutcome(instance, await hit("页面上的验证码要人过"), "", `自动过验证码没成功：${solved.detail}`)
     return fail(`没认出验证码：${solved.detail}`)
