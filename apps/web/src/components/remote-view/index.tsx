@@ -38,9 +38,11 @@ export interface RemoteViewProps {
   onClosed?: (reason: string) => void
   /** 只看不操作 */
   viewOnly?: boolean
+  /** 小窗：不显示底下的说明文字 */
+  compact?: boolean
 }
 
-export function RemoteView({ browserId, className, onClosed, viewOnly }: RemoteViewProps) {
+export function RemoteView({ browserId, className, onClosed, viewOnly, compact }: RemoteViewProps) {
   const canvasRef = React.useRef<HTMLCanvasElement | null>(null)
   const view = useRemoteView(browserId, canvasRef, viewOnly)
   const { status, meta, send } = view
@@ -57,13 +59,13 @@ export function RemoteView({ browserId, className, onClosed, viewOnly }: RemoteV
       <Toolbar view={view} canControl={canControl} opening={opening} />
       {meta && meta.tabs.length > 1 && <BrowserTabs view={view} canControl={canControl} />}
       <Screen view={view} canvasRef={canvasRef} canControl={canControl} closedReason={closedReason} openingUrl={opening.url} />
-      <p className="text-xs text-muted-foreground">
+      {!compact && <p className="text-xs text-muted-foreground">
         {canControl
           ? "点一下画面就能直接操作：打字、回车、滚动都会发到服务器上的 Chrome。中文用本机输入法，粘贴用 Ctrl+V。看不到 Chrome 自己的地址栏，用上面的地址栏。"
           : meta && !meta.canControl
             ? "只读：你能看，不能操作。只有任务负责人、被分配处理的人和主管（登录用的 Chrome 是打开它的人）能操作。"
             : "连上以后显示服务器上这个 Chrome 的实时画面。"}
-      </p>
+      </p>}
       <PageDialogPrompt dialog={view.dialog} canControl={canControl} onDismiss={view.dismissDialog} onAnswer={(accept, promptText) => {
         send({ t: "dialog", accept, ...(promptText !== undefined ? { promptText } : {}) })
         view.dismissDialog()
