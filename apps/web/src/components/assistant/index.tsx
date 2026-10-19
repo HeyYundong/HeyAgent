@@ -3,7 +3,7 @@
 // 面板：宽屏是固定在右下角的 Card（不挡整页，可以边看边说），窄屏是全屏的 Sheet。开关和当前对话记在 localStorage。
 // 「浮动面板」registry 里没有，用 Card 加 fixed 定位，只是定位、不改外观（docs/ui-rules.md 第 8 节登记）。
 import * as React from "react"
-import { ArrowUpIcon, BotIcon, CircleAlertIcon, MinusIcon, SquareIcon, SquarePenIcon } from "lucide-react"
+import { ArrowUpIcon, BotIcon, CircleAlertIcon, Maximize2Icon, Minimize2Icon, MinusIcon, SquareIcon, SquarePenIcon } from "lucide-react"
 import { ASSISTANT_MAX_MESSAGE } from "@heyagent/shared"
 
 import { Alert, AlertAction, AlertDescription } from "@/components/ui/alert"
@@ -17,10 +17,11 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useIsMobile } from "@/hooks/use-mobile"
 
 import { errorMessage } from "@/lib/mutations"
+import { cn } from "@/lib/utils"
 
 import { HistoryButton } from "./history"
 import { ChatSettingsButton } from "./settings"
-import { useAssistant, useStoredOpen, type AssistantState } from "./use-assistant"
+import { useAssistant, useStoredExpanded, useStoredOpen, type AssistantState } from "./use-assistant"
 
 // 记录（Markdown、代码块、滚动容器）按需加载：不打开面板就不下载
 const Transcript = React.lazy(() => import("./transcript"))
@@ -30,6 +31,7 @@ const EXAMPLES = ["把这个任务的定时改成每天早上 9 点", "新建一
 
 export function AssistantWidget() {
   const [open, setOpen] = useStoredOpen()
+  const [expanded, setExpanded] = useStoredExpanded()
   const assistant = useAssistant()
   const isMobile = useIsMobile()
   const buttonRef = React.useRef<HTMLButtonElement>(null)
@@ -69,12 +71,18 @@ export function AssistantWidget() {
 
   if (!open) return <LauncherButton ref={buttonRef} onClick={() => setOpen(true)} />
 
+  // 放大：占右边一半宽、上下撑满（长的确认卡、技能正文看得全）；还原：右下角的小面板
   return (
-    <Card size="sm" role="dialog" aria-label="助手" className="fixed right-4 bottom-4 z-50 h-160 max-h-11/12 w-96 gap-0 shadow-lg">
+    <Card
+      size="sm"
+      role="dialog"
+      aria-label="助手"
+      className={cn("fixed right-4 bottom-4 z-50 gap-0 shadow-lg", expanded ? "top-4 w-1/2 min-w-96" : "h-160 max-h-11/12 w-96")}
+    >
       <CardHeader className="flex items-center gap-1 border-b">
         <CardTitle className="mr-auto">助手</CardTitle>
         <CardAction className="flex items-center gap-1">
-          <HeaderActions assistant={assistant} onClose={close} />
+          <HeaderActions assistant={assistant} onClose={close} expanded={expanded} onToggleExpanded={() => setExpanded(!expanded)} />
         </CardAction>
       </CardHeader>
       <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden p-0">{body}</CardContent>
@@ -94,8 +102,8 @@ function LauncherButton({ ref, onClick }: { ref: React.Ref<HTMLButtonElement>; o
   )
 }
 
-/** 标题栏右边：以前的对话、本对话的设置（模型、上限）、新对话、收起 */
-function HeaderActions({ assistant, onClose }: { assistant: AssistantState; onClose: () => void }) {
+/** 标题栏右边：以前的对话、本对话的设置（模型、上限）、新对话、放大 / 还原（宽屏才有）、收起 */
+function HeaderActions({ assistant, onClose, expanded, onToggleExpanded }: { assistant: AssistantState; onClose: () => void; expanded?: boolean; onToggleExpanded?: () => void }) {
   const busy = !!assistant.busy
   return (
     <>
@@ -107,6 +115,14 @@ function HeaderActions({ assistant, onClose }: { assistant: AssistantState; onCl
         </TooltipTrigger>
         <TooltipContent>新对话</TooltipContent>
       </Tooltip>
+      {onToggleExpanded && (
+        <Tooltip>
+          <TooltipTrigger render={<Button variant="ghost" size="icon-sm" aria-label={expanded ? "还原" : "放大"} onClick={onToggleExpanded} />}>
+            {expanded ? <Minimize2Icon /> : <Maximize2Icon />}
+          </TooltipTrigger>
+          <TooltipContent>{expanded ? "还原" : "放大"}</TooltipContent>
+        </Tooltip>
+      )}
       <Tooltip>
         <TooltipTrigger render={<Button variant="ghost" size="icon-sm" aria-label="收起" onClick={onClose} />}>
           <MinusIcon />

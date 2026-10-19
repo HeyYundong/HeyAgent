@@ -15,6 +15,7 @@ import { postAssistant, type StreamOutcome } from "./stream"
 
 const CHAT_KEY = "heyagent.assistant.chat"
 const OPEN_KEY = "heyagent.assistant.open"
+const EXPANDED_KEY = "heyagent.assistant.expanded"
 
 function readStored(key: string): string | null {
   try {
@@ -33,15 +34,23 @@ function writeStored(key: string, value: string | null) {
   }
 }
 
-/** 面板开着还是收起，刷新后保持 */
-export function useStoredOpen() {
-  const [open, setOpenState] = React.useState(() => readStored(OPEN_KEY) === "1")
-  const setOpen = React.useCallback((next: boolean) => {
-    setOpenState(next)
-    writeStored(OPEN_KEY, next ? "1" : null)
-  }, [])
-  return [open, setOpen] as const
+/** 记在 localStorage 里的开关，刷新后保持 */
+function useStoredFlag(key: string) {
+  const [value, setValueState] = React.useState(() => readStored(key) === "1")
+  const setValue = React.useCallback(
+    (next: boolean) => {
+      setValueState(next)
+      writeStored(key, next ? "1" : null)
+    },
+    [key]
+  )
+  return [value, setValue] as const
 }
+
+/** 面板开着还是收起 */
+export const useStoredOpen = () => useStoredFlag(OPEN_KEY)
+/** 面板放大了没有（宽屏才有） */
+export const useStoredExpanded = () => useStoredFlag(EXPANDED_KEY)
 
 // ---------- 记录的小工具 ----------
 
