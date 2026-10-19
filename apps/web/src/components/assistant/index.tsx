@@ -189,7 +189,7 @@ function PanelBody({ assistant, onExample, onNavigate }: { assistant: AssistantS
     )
   }
   return (
-    // key：换一段对话时重新挂上滚动容器，打开时停在最后一轮（last-anchor）
+    // key：换一段对话时重新挂上滚动容器，打开时停在最底下
     <React.Suspense fallback={<TranscriptSkeleton />}>
       <Transcript key={assistant.viewKey} entries={entries} busy={assistant.busy} error={assistant.error} onDismissError={assistant.dismissError} onDecide={onDecide} onNavigate={onNavigate} />
     </React.Suspense>

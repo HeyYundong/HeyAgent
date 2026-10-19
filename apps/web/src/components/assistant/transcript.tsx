@@ -1,5 +1,7 @@
 // 面板里的对话记录：人说的（靠右）、助手说的（Markdown）、查了什么（Trace，连着的几次合成一组）、改动确认卡、停下来的原因。
-// 每一行包一个 MessageScrollerItem：人发的那条是锚点，新一轮从顶上开始，回答往下长（官方 Message Scroller 的用法）。
+// 每一行包一个 MessageScrollerItem。不用锚点（scrollAnchor）：锚点模式会把人发的那句钉在顶上、回答长了也不跟着往下走，
+// 看起来像「每次回答都跳到顶上」（先显示的那条换成服务器回来的那条时还会再定位一次）。改成普通聊天的跟随：
+// 跟着新字到最底下，人往上翻时不打扰；发新消息、点「应用 / 不要」时滚到最底下。
 import * as React from "react"
 import { CircleAlertIcon, CircleCheckIcon, InfoIcon, LoaderCircleIcon, XIcon } from "lucide-react"
 import type { AssistantEntry } from "@heyagent/shared"
@@ -52,10 +54,10 @@ interface TranscriptProps {
   onNavigate?: () => void
 }
 
-/** 换一段对话时由外面换 key 重新挂上：打开时停在最后一轮（last-anchor），之后跟着新字往下走（autoScroll） */
+/** 换一段对话时由外面换 key 重新挂上：打开时停在最底下，之后跟着新字往下走（autoScroll） */
 export default function Transcript(props: TranscriptProps) {
   return (
-    <MessageScrollerProvider autoScroll defaultScrollPosition="last-anchor">
+    <MessageScrollerProvider autoScroll defaultScrollPosition="end">
       <TranscriptView {...props} />
     </MessageScrollerProvider>
   )
@@ -63,11 +65,11 @@ export default function Transcript(props: TranscriptProps) {
 
 function TranscriptView({ entries, busy, error, onDismissError, onDecide, onNavigate }: TranscriptProps) {
   const rows = React.useMemo(() => toRows(entries), [entries])
-  // 点了「应用 / 不要」：结果和接着的回答在最下面，滚过去并重新跟着走（人点按钮时滚动容器会停止自动跟随）
+  // 发了新消息、点了「应用 / 不要」：滚到最下面并重新跟着走（人往上翻过、点过按钮时滚动容器会停止自动跟随）
   const scroller = useMessageScroller()
   const lastBusy = React.useRef(busy)
   React.useEffect(() => {
-    if (busy === "apply" && lastBusy.current !== "apply") scroller.scrollToEnd({ behavior: "smooth" })
+    if (busy && busy !== lastBusy.current) scroller.scrollToEnd({ behavior: "smooth" })
     lastBusy.current = busy
   }, [busy, scroller])
   const last = entries.at(-1)
@@ -88,7 +90,7 @@ function TranscriptView({ entries, busy, error, onDismissError, onDecide, onNavi
                 </Trace>
               </MessageScrollerItem>
             ) : (
-              <MessageScrollerItem key={row.entry.id} messageId={row.entry.id} scrollAnchor={row.entry.kind === "user"}>
+              <MessageScrollerItem key={row.entry.id} messageId={row.entry.id}>
                 <EntryView entry={row.entry} busy={busy} onDecide={onDecide} onNavigate={onNavigate} />
               </MessageScrollerItem>
             )
