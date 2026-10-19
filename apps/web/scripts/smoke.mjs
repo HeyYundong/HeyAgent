@@ -60,7 +60,7 @@ const NAMES = {
 const PAGES = [
   { id: "tasks", title: "任务" },
   { id: "todos", title: "待办" },
-  { id: "sessions", title: "Session" },
+  { id: "sessions", title: "会话" },
   { id: "memory", title: "记忆" },
   { id: "skills", title: "技能" },
   { id: "rules", title: "规则" },

@@ -60,7 +60,7 @@ interface NavItem {
 export const NAV_WORK: NavItem[] = [
   { id: "tasks", title: "任务", icon: LayoutGridIcon },
   { id: "todos", title: "待办", icon: KanbanIcon },
-  { id: "sessions", title: "Session", icon: HistoryIcon },
+  { id: "sessions", title: "会话", icon: HistoryIcon },
   /** 派活（docs/dev/dispatch.md 第 9.2 节） */
   { id: "work", title: "派活", icon: SendIcon },
 ]

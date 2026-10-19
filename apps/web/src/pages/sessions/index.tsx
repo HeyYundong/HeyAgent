@@ -60,7 +60,7 @@ export default function SessionsPage() {
   }
 
   const header = (
-    <SimpleHeader title="Session" description="每次运行就是一个 session：正在跑的、挂起的、跑完的都在这里。" learnId="task" />
+    <SimpleHeader title="会话" description="每次运行就是一个 session：正在跑的、挂起的、跑完的都在这里。" learnId="task" />
   )
   const empty = (
     <EmptyState icon={<HistoryIcon />} title="还没有 session" description="任务运行一次就是一个 session。要等的时候 session 挂起，等到了继续同一个，不会新开。" />
