@@ -15,10 +15,12 @@ import { z } from "zod"
 
 import * as apiKeys from "../data/config/api-keys.js"
 import { GalleryError } from "../gallery/errors.js"
-import { deleteImage, galleryStats, galleryTags, getImage, imageEmbedding, searchImages, updateImage, type GalleryActor } from "../gallery/service.js"
+import { deleteImage, deleteImages, galleryStats, galleryTags, getImage, imageEmbedding, searchImages, updateImage, type GalleryActor } from "../gallery/service.js"
 import { protectedProcedure, router, type Context, type SessionUser } from "./init.js"
 
 const idInput = z.object({ id: z.string().min(1) })
+/** 图片墙上一次最多删多少张 */
+const idsInput = z.object({ ids: z.array(z.string().min(1)).min(1).max(200) })
 
 type AuthedContext = Context & { user: SessionUser }
 
@@ -61,6 +63,8 @@ export const galleryRouter = router({
     .output(galleryImageSchema)
     .mutation(({ ctx, input }) => translate(() => updateImage(ctx.db, actorOf(ctx), input))),
   delete: protectedProcedure.input(idInput).mutation(({ ctx, input }) => translate(() => deleteImage(ctx.db, actorOf(ctx), input.id))),
+  /** 图片墙上选中的一起删；有一张没权限就整批不删 */
+  deleteMany: protectedProcedure.input(idsInput).mutation(({ ctx, input }) => translate(() => deleteImages(ctx.db, actorOf(ctx), input.ids))),
 })
 
 const w = (ctx: AuthedContext) => ({ db: ctx.db, actor: ctx.user, keyring: ctx.keyring })

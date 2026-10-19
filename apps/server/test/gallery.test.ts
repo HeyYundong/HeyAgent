@@ -2,7 +2,7 @@
 // 不调真模型：假 embedding 把图缩成 32×32 灰度当向量（同一张图缩放后很像，不同的图不像），文字按内容算一个固定的随机向量。
 import { createHash } from "node:crypto"
 
-import { asc, eq } from "drizzle-orm"
+import { asc, eq, inArray } from "drizzle-orm"
 import sharp from "sharp"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import type { SessionSnapshot } from "@heyagent/shared"
@@ -391,6 +391,20 @@ describe("改、删和权限：上传的人和主管能改能删，别的员工�
     expect((await ctx.app.request(`/api/gallery/images/${mine}`, { headers: { cookie: wang } })).status).toBe(404)
     expect(await ctx.db.select().from(t.files).where(eq(t.files.id, row!.fileId))).toHaveLength(0)
     expect(await ctx.db.select().from(t.galleryEmbeddings).where(eq(t.galleryEmbeddings.imageId, mine))).toHaveLength(0)
+  })
+
+  it("一次删多张：有一张没权限就整批不删；都能删就一起删、文件也没了", async () => {
+    const pic = (fill: string) => png(`<rect width="10" height="10" fill="${fill}"/>`, 10, 10)
+    const wangs = [(await upload(wang, await pic("#123"))).body.image.id, (await upload(wang, await pic("#456"))).body.image.id]
+    const lis = (await upload(li, await pic("#789"))).body.image.id
+    const denied = await mutate(ctx.app, "gallery.deleteMany", wang, { ids: [...wangs, lis] })
+    expect(denied.error?.data?.code).toBe("FORBIDDEN")
+    expect((await mutate(ctx.app, "gallery.deleteMany", wang, { ids: [wangs[0], "img-99999"] })).error?.data?.code).toBe("NOT_FOUND")
+    expect((await ctx.db.select().from(t.galleryImages).where(inArray(t.galleryImages.id, [...wangs, lis])))).toHaveLength(3)
+    const rows = await ctx.db.select().from(t.galleryImages).where(inArray(t.galleryImages.id, wangs))
+    expect((await mutate(ctx.app, "gallery.deleteMany", lin, { ids: [...wangs, lis] })).data).toEqual({ ids: [...wangs, lis] })
+    expect(await ctx.db.select().from(t.galleryImages).where(inArray(t.galleryImages.id, [...wangs, lis]))).toHaveLength(0)
+    expect(await ctx.db.select().from(t.files).where(inArray(t.files.id, rows.map((row) => row.fileId)))).toHaveLength(0)
   })
 })
 

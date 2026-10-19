@@ -1,4 +1,4 @@
-// 图库右边的抽屉：大图、标签、文本（JSON）、向量，底部「找相似」「编辑」，更多里是下载原图、删除。
+// 图库右边的抽屉：大图、标签、文本（JSON）、向量，底部「找相似」「编辑」「删除」，更多里是下载原图。
 // 上传的人和主管能编辑、删除；别的人只能看和找相似。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
@@ -110,6 +110,12 @@ export function ImageSheetBody({ id, canSearchByImage, onSimilar }: { id: string
               编辑
             </Button>
           )}
+          {canManage && (
+            <Button variant="destructive" onClick={() => setConfirmDelete(true)}>
+              <Trash2Icon data-icon="inline-start" />
+              删除
+            </Button>
+          )}
         </div>
         <DropdownMenu>
           <DropdownMenuTrigger render={<Button variant="ghost" size="icon" aria-label="更多操作" />}>
@@ -120,12 +126,6 @@ export function ImageSheetBody({ id, canSearchByImage, onSimilar }: { id: string
               <DownloadIcon />
               下载原图
             </DropdownMenuItem>
-            {canManage && (
-              <DropdownMenuItem variant="destructive" onClick={() => setConfirmDelete(true)}>
-                <Trash2Icon />
-                删除
-              </DropdownMenuItem>
-            )}
           </DropdownMenuContent>
         </DropdownMenu>
       </SheetFooter>

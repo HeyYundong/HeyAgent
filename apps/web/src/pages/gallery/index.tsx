@@ -2,17 +2,22 @@
 // 顶部一行：以图搜图（选一张本地图，或者 Ctrl+V 粘贴）、标签筛选、关键词 / JSON 包含匹配；右上角上传（也可以把图片拖进页面）。
 // 以图搜图、找相似时多两个框：最多几张、相似度下限（默认 50 张、90%）。
 // 点一张图在右边抽屉里看大图、文本和标签，能找相似、编辑、删除。
+// 「选择」进入多选：点图勾上（只能勾自己能删的），一起删。
 import * as React from "react"
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query"
-import { ImagesIcon, ImageUpIcon, RotateCwIcon, ScanSearchIcon, SearchIcon, SearchXIcon, TriangleAlertIcon, UploadIcon, XIcon } from "lucide-react"
-import type { GalleryImage } from "@heyagent/shared"
+import { ImagesIcon, ImageUpIcon, ListChecksIcon, RotateCwIcon, ScanSearchIcon, SearchIcon, SearchXIcon, Trash2Icon, TriangleAlertIcon, UploadIcon, XIcon } from "lucide-react"
+import { can, type GalleryImage } from "@heyagent/shared"
 
 import { EmptyState, HelpTip, PageFrame, SimpleHeader } from "@/components/shell/simple-page"
 import { TagsCombobox } from "@/components/shell/tags-combobox"
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { AspectRatio } from "@/components/ui/aspect-ratio"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { ButtonGroup } from "@/components/ui/button-group"
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group"
@@ -22,8 +27,9 @@ import { Spinner } from "@/components/ui/spinner"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 
 import { parseSearchBox, searchGalleryByImage } from "@/lib/gallery"
-import { errorMessage } from "@/lib/mutations"
+import { errorMessage, useAction } from "@/lib/mutations"
 import { href, setParams, useRoute } from "@/lib/router"
+import { useMe } from "@/lib/session"
 import { trpc } from "@/lib/trpc"
 
 import { ImageSheetBody } from "./image-sheet"
@@ -66,6 +72,10 @@ export default function GalleryPage() {
   const [uploadFiles, setUploadFiles] = React.useState<File[] | null>(null)
   const [dragging, setDragging] = React.useState(false)
   const pickRef = React.useRef<HTMLInputElement>(null)
+  const { user } = useMe()
+  /** 多选：null = 没在选；Set = 选中的 id */
+  const [picked, setPicked] = React.useState<Set<string> | null>(null)
+  const [confirmDelete, setConfirmDelete] = React.useState(false)
   /** 以图搜图：最多几张、相似度下限（%） */
   const [limitBox, setLimitBox] = React.useState(String(IMAGE_SEARCH_LIMIT))
   const [minBox, setMinBox] = React.useState(String(IMAGE_SEARCH_MIN_PERCENT))
@@ -93,6 +103,33 @@ export default function GalleryPage() {
   })
   const active = probe ? probeQuery : list
   const images: GalleryImage[] = probe ? (probeQuery.data?.items ?? []) : (list.data?.pages.flatMap((page) => page.items) ?? [])
+  const canDelete = (image: GalleryImage) => can(user, "gallery.manage", { createdById: image.createdById ?? "" })
+  const deletable = images.filter(canDelete)
+  const removeMany = useAction(
+    trpc.gallery.deleteMany.mutationOptions({
+      onSuccess: ({ ids }) => {
+        setConfirmDelete(false)
+        setPicked(null)
+        if (selectedId && ids.includes(selectedId)) setParams({ id: null })
+      },
+    }),
+    { success: ({ ids }) => `已删除 ${ids.length} 张` }
+  )
+  const togglePick = (id: string) =>
+    setPicked((current) => {
+      const next = new Set(current)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+
+  // 多选时按 Esc 退出（确认框开着时让它自己处理）
+  React.useEffect(() => {
+    if (!picked || confirmDelete) return
+    const onKey = (event: KeyboardEvent) => event.key === "Escape" && setPicked(null)
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [picked, confirmDelete])
 
   const startProbe = (file: File) => {
     setParams({ similar: null })
@@ -126,6 +163,32 @@ export default function GalleryPage() {
       上传
     </Button>
   )
+  const allPicked = deletable.length > 0 && deletable.every((image) => picked?.has(image.id))
+  const headerAction = picked ? (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-sm text-muted-foreground">已选 {picked.size} 张</span>
+      <Button variant="outline" disabled={deletable.length === 0} onClick={() => setPicked(allPicked ? new Set() : new Set(deletable.map((image) => image.id)))}>
+        {allPicked ? "全不选" : "全选"}
+      </Button>
+      <Button variant="destructive" disabled={picked.size === 0} onClick={() => setConfirmDelete(true)}>
+        <Trash2Icon data-icon="inline-start" />
+        删除
+      </Button>
+      <Button variant="ghost" onClick={() => setPicked(null)}>
+        取消
+      </Button>
+    </div>
+  ) : (
+    <div className="flex flex-wrap items-center gap-2">
+      {images.length > 0 && (
+        <Button variant="outline" onClick={() => setPicked(new Set())}>
+          <ListChecksIcon data-icon="inline-start" />
+          选择
+        </Button>
+      )}
+      {uploadButton}
+    </div>
+  )
 
   return (
     <div
@@ -150,7 +213,7 @@ export default function GalleryPage() {
         queries={[statsQuery]}
         skeleton="grid"
         isEmpty={stats?.total === 0}
-        header={<SimpleHeader title="图库" description="每张图带一段文本（JSON）和标签，可以以图搜图、按标签和字段找；agent 和外部系统也能用。" action={uploadButton} />}
+        header={<SimpleHeader title="图库" description="每张图带一段文本（JSON）和标签，可以以图搜图、按标签和字段找；agent 和外部系统也能用。" action={headerAction} />}
         empty={<EmptyState icon={<ImagesIcon />} title="图库还是空的" description="点「上传」选图片，或者直接把图片拖进这个页面。每张图可以带标签和一段 JSON 说明。" action={uploadButton} />}
       >
         <div className="flex flex-col gap-4">
@@ -300,7 +363,14 @@ export default function GalleryPage() {
             <>
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 2xl:grid-cols-8">
                 {images.map((image) => (
-                  <Tile key={image.id} image={image} selected={image.id === selectedId} />
+                  <Tile
+                    key={image.id}
+                    image={image}
+                    selected={picked ? picked.has(image.id) : image.id === selectedId}
+                    picking={Boolean(picked)}
+                    disabled={Boolean(picked) && !canDelete(image)}
+                    onClick={() => (picked ? togglePick(image.id) : setParams({ id: image.id }))}
+                  />
                 ))}
               </div>
               {!probe && list.hasNextPage && <LoadMore loading={list.isFetchingNextPage} onVisible={() => void list.fetchNextPage()} />}
@@ -325,6 +395,22 @@ export default function GalleryPage() {
         </SheetContent>
       </Sheet>
 
+      <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>删除选中的 {picked?.size ?? 0} 张图？</AlertDialogTitle>
+            <AlertDialogDescription>图片文件、文本、标签和向量一起删除，不能撤销。用到这些图 id 的地方会找不到它们。</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>保留</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" disabled={removeMany.isPending || !picked?.size} onClick={() => picked && removeMany.mutate({ ids: [...picked] })}>
+              {removeMany.isPending && <Spinner data-icon="inline-start" />}
+              确认删除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {uploadFiles && <UploadDialog initialFiles={uploadFiles} tagOptions={tagsQuery.data ?? []} onClose={() => setUploadFiles(null)} />}
 
       {dragging && (
@@ -339,16 +425,17 @@ export default function GalleryPage() {
   )
 }
 
-function Tile({ image, selected }: { image: GalleryImage; selected: boolean }) {
+function Tile({ image, selected, picking, disabled, onClick }: { image: GalleryImage; selected: boolean; picking: boolean; disabled: boolean; onClick: () => void }) {
   const label = [image.name, image.tags.join("、")].filter(Boolean).join(" · ")
   return (
     <button
       type="button"
-      title={label}
+      title={disabled ? "只有上传的人和主管能删这张图" : label}
       aria-label={label || image.id}
       aria-pressed={selected}
-      onClick={() => setParams({ id: image.id })}
-      className="relative block w-full overflow-hidden border bg-muted outline-none focus-visible:ring-2 focus-visible:ring-ring aria-pressed:ring-2 aria-pressed:ring-primary"
+      disabled={disabled}
+      onClick={onClick}
+      className="relative block w-full overflow-hidden border bg-muted outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 aria-pressed:ring-2 aria-pressed:ring-primary"
     >
       <AspectRatio ratio={1}>
         <img src={image.thumbUrl} alt={image.name} loading="lazy" className="size-full object-cover" />
@@ -358,6 +445,7 @@ function Tile({ image, selected }: { image: GalleryImage; selected: boolean }) {
           {percent(image.score)}
         </Badge>
       )}
+      {picking && !disabled && <Checkbox checked={selected} tabIndex={-1} aria-hidden className="pointer-events-none absolute top-1 right-1" />}
     </button>
   )
 }

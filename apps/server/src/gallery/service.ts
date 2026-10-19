@@ -241,6 +241,21 @@ export async function deleteImage(db: Db, actor: GalleryActor, id: string) {
   return { id }
 }
 
+/** 一次删多张（图片墙上选中的）：有一张找不到或没权限删就整批不删 */
+export async function deleteImages(db: Db, actor: GalleryActor, ids: string[]) {
+  const unique = [...new Set(ids)]
+  const rows = unique.length ? await db.select().from(t.galleryImages).where(inArray(t.galleryImages.id, unique)) : []
+  const missing = unique.filter((id) => !rows.some((row) => row.id === id))
+  if (missing.length) throw new GalleryError("not_found", `图库里没有 ${missing.join("、")}`)
+  for (const row of rows) assertManage(actor, row, "删")
+  await db.transaction(async (tx) => {
+    await tx.delete(t.galleryImages).where(inArray(t.galleryImages.id, unique))
+    for (const row of rows) await audit(tx, actor.user?.id ?? null, "gallery.delete", "gallery_images", row.id, { via: actor.via, name: row.name, sha256: row.sha256, tags: row.tags })
+  })
+  await removeFiles(db, rows.flatMap((row) => [row.fileId, row.thumbFileId]))
+  return { ids: unique }
+}
+
 // ---------- 检索 ----------
 
 /** ILIKE 的 % _ \ 要转义 */
