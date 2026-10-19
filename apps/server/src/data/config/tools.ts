@@ -125,13 +125,14 @@ export async function createHttpTool(ctx: WriteCtx, input: HttpToolFields) {
   return ctx.db.transaction(async (tx) => ({ id: (await insertHttpTool(tx, ctx, input)).id }))
 }
 
-export async function updateHttpTool(ctx: WriteCtx, input: HttpToolFields & { id: string }) {
+/** allowMissingSecrets：右下角助手改工具时允许引用还没有值的密钥（助手不碰密钥值），返回里 missing 是缺的名字 */
+export async function updateHttpTool(ctx: WriteCtx, input: HttpToolFields & { id: string }, options: { allowMissingSecrets?: boolean } = {}) {
   assertCan(ctx.actor, "config.manage", {}, "只有主管能修改工具")
   return ctx.db.transaction(async (tx) => {
     const [before] = await tx.select().from(t.tools).where(eq(t.tools.id, input.id))
     if (!before) throw notFound("工具", input.id)
     if (before.source !== "http") throw badRequest(before.source === "builtin" ? "内置工具由系统提供，不能改" : "MCP 工具要编辑它所在的服务器")
-    const { used } = await checkHttpTemplate(tx, input)
+    const { used, missing } = await checkHttpTemplate(tx, input, options.allowMissingSecrets)
     const http = toolSpec(input)
     await tx.update(t.tools).set({ name: input.name, summary: summaryOf(input), description: input.description, http, risk: input.risk }).where(eq(t.tools.id, input.id))
     const secrets = await saveHttpSecrets(tx, ctx, used, input.secrets)
@@ -141,8 +142,8 @@ export async function updateHttpTool(ctx: WriteCtx, input: HttpToolFields & { id
       ...(JSON.stringify(before.http) !== JSON.stringify(http) ? ["http"] : []),
       ...(before.risk !== input.risk ? ["risk"] : []),
     ]
-    await audit(tx, ctx.actor.id, "tool.update", "tools", input.id, { changed, secretsSet: secrets })
-    return { id: input.id }
+    await audit(tx, ctx.actor.id, "tool.update", "tools", input.id, { changed, secretsSet: secrets, ...(missing.length ? { secretsMissing: missing } : {}) })
+    return { id: input.id, missing }
   })
 }
 

@@ -1,0 +1,255 @@
+// 右下角助手（docs/dev/copilot.md 第 2、9.4 节）：每一页右下角一个圆按钮，点开是对话面板。
+// 用中文说要新建、修改、删除什么，助手查清楚后列成改动确认卡，人点「应用」才改；改了库，开着的页面由 LiveSync 刷新。
+// 面板：宽屏是固定在右下角的 Card（不挡整页，可以边看边说），窄屏是全屏的 Sheet。开关和当前对话记在 localStorage。
+// 「浮动面板」registry 里没有，用 Card 加 fixed 定位，只是定位、不改外观（docs/ui-rules.md 第 8 节登记）。
+import * as React from "react"
+import { ArrowUpIcon, BotIcon, CircleAlertIcon, MinusIcon, SquareIcon, SquarePenIcon } from "lucide-react"
+import { ASSISTANT_MAX_MESSAGE } from "@heyagent/shared"
+
+import { ModelCombobox } from "@/components/shell/model-combobox"
+import { Alert, AlertAction, AlertDescription } from "@/components/ui/alert"
+import { Button } from "@/components/ui/button"
+import { Card, CardAction, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
+import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupText, InputGroupTextarea } from "@/components/ui/input-group"
+import { Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
+import { Skeleton } from "@/components/ui/skeleton"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { useIsMobile } from "@/hooks/use-mobile"
+
+import { useModels } from "@/lib/data"
+import { errorMessage } from "@/lib/mutations"
+
+import { HistoryButton } from "./history"
+import { useAssistant, useStoredOpen, type AssistantState } from "./use-assistant"
+
+// 记录（Markdown、代码块、滚动容器）按需加载：不打开面板就不下载
+const Transcript = React.lazy(() => import("./transcript"))
+
+/** 空对话时的示例，点了填进输入框（界面举例，可以是业务例子） */
+const EXAMPLES = ["把这个任务的定时改成每天早上 9 点", "新建一个技能，教 agent 怎么导出订单表", "新建一个任务，每天早上 9 点检查新订单", "哪些任务还在用旧的模型？都换成默认的"]
+
+export function AssistantWidget() {
+  const [open, setOpen] = useStoredOpen()
+  const assistant = useAssistant()
+  const isMobile = useIsMobile()
+  const buttonRef = React.useRef<HTMLButtonElement>(null)
+  const inputRef = React.useRef<HTMLTextAreaElement>(null)
+  const [draft, setDraft] = React.useState("")
+
+  const close = () => {
+    setOpen(false)
+    // 收起后焦点回到按钮（按钮这时才重新出现，等它渲染出来）
+    requestAnimationFrame(() => buttonRef.current?.focus())
+  }
+  const pickExample = (text: string) => {
+    setDraft(text)
+    inputRef.current?.focus()
+  }
+
+  const body = <PanelBody assistant={assistant} onExample={pickExample} onNavigate={isMobile ? close : undefined} />
+  const composer = <Composer assistant={assistant} draft={draft} onDraft={setDraft} inputRef={inputRef} />
+
+  if (isMobile) {
+    return (
+      <>
+        {!open && <LauncherButton ref={buttonRef} onClick={() => setOpen(true)} />}
+        <Sheet open={open} onOpenChange={(next) => (next ? setOpen(true) : close())}>
+          <SheetContent side="bottom" showCloseButton={false} className="gap-0 data-[side=bottom]:h-dvh">
+            <SheetHeader className="flex-row items-center gap-1 border-b p-3">
+              <SheetTitle className="mr-auto">助手</SheetTitle>
+              <HeaderActions assistant={assistant} onClose={close} />
+            </SheetHeader>
+            <div className="flex min-h-0 flex-1 flex-col">{body}</div>
+            <SheetFooter className="mt-0 border-t p-3">{composer}</SheetFooter>
+          </SheetContent>
+        </Sheet>
+      </>
+    )
+  }
+
+  if (!open) return <LauncherButton ref={buttonRef} onClick={() => setOpen(true)} />
+
+  return (
+    <Card size="sm" role="dialog" aria-label="助手" className="fixed right-4 bottom-4 z-50 h-160 max-h-11/12 w-96 gap-0 shadow-lg">
+      <CardHeader className="flex items-center gap-1 border-b">
+        <CardTitle className="mr-auto">助手</CardTitle>
+        <CardAction className="flex items-center gap-1">
+          <HeaderActions assistant={assistant} onClose={close} />
+        </CardAction>
+      </CardHeader>
+      <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden p-0">{body}</CardContent>
+      <CardFooter>{composer}</CardFooter>
+    </Card>
+  )
+}
+
+function LauncherButton({ ref, onClick }: { ref: React.Ref<HTMLButtonElement>; onClick: () => void }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger render={<Button ref={ref} size="icon-lg" className="fixed right-4 bottom-4 z-50 rounded-full shadow-lg" aria-label="助手" onClick={onClick} />}>
+        <BotIcon />
+      </TooltipTrigger>
+      <TooltipContent side="left">助手：说要改什么，我来改</TooltipContent>
+    </Tooltip>
+  )
+}
+
+/** 标题栏右边：模型、以前的对话、新对话、收起 */
+function HeaderActions({ assistant, onClose }: { assistant: AssistantState; onClose: () => void }) {
+  const { models, defaults } = useModels()
+  const busy = !!assistant.busy
+  const modelId = assistant.modelOverride ?? assistant.chat?.modelId ?? defaults.plan
+  return (
+    <>
+      <ModelCombobox className="w-36" models={models} value={modelId} onValueChange={(id) => assistant.setModelOverride(id || null)} placeholder="选模型" disabled={busy} />
+      <HistoryButton currentId={assistant.chatId} disabled={busy} onOpenChat={assistant.openChat} onDeleted={assistant.forget} />
+      <Tooltip>
+        <TooltipTrigger render={<Button variant="ghost" size="icon-sm" aria-label="新对话" disabled={busy || !assistant.chatId} onClick={assistant.newChat} />}>
+          <SquarePenIcon />
+        </TooltipTrigger>
+        <TooltipContent>新对话</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger render={<Button variant="ghost" size="icon-sm" aria-label="收起" onClick={onClose} />}>
+          <MinusIcon />
+        </TooltipTrigger>
+        <TooltipContent>收起</TooltipContent>
+      </Tooltip>
+    </>
+  )
+}
+
+function PanelBody({ assistant, onExample, onNavigate }: { assistant: AssistantState; onExample: (text: string) => void; onNavigate?: () => void }) {
+  // 记录里每一行（memo）拿到的 onDecide 保持同一个函数，流式接字时不跟着重画
+  const decideRef = React.useRef(assistant.decide)
+  React.useEffect(() => {
+    decideRef.current = assistant.decide
+  })
+  const onDecide = React.useCallback((proposalId: string, accept: boolean, note?: string) => void decideRef.current(proposalId, accept, note), [])
+
+  if (assistant.loading) return <TranscriptSkeleton />
+  if (assistant.loadError) {
+    return (
+      <div className="p-3">
+        <Alert variant="destructive">
+          <CircleAlertIcon />
+          <AlertDescription>没读到这段对话：{errorMessage(assistant.loadError)}</AlertDescription>
+          <AlertAction>
+            <Button variant="outline" size="xs" onClick={assistant.reload}>
+              重试
+            </Button>
+          </AlertAction>
+        </Alert>
+      </div>
+    )
+  }
+  const entries = assistant.chat?.entries ?? []
+  if (entries.length === 0 && !assistant.busy) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+        <Empty>
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <BotIcon />
+            </EmptyMedia>
+            <EmptyTitle>要改点什么？</EmptyTitle>
+            <EmptyDescription>说要新建、修改或删除什么。我先列出改动，你点「应用」才会改。</EmptyDescription>
+          </EmptyHeader>
+          <EmptyContent>
+            {EXAMPLES.map((text) => (
+              <Button key={text} variant="outline" size="sm" className="w-full justify-start" onClick={() => onExample(text)}>
+                <span className="truncate">{text}</span>
+              </Button>
+            ))}
+          </EmptyContent>
+        </Empty>
+        {assistant.error && (
+          <div className="p-3">
+            <Alert variant="destructive">
+              <CircleAlertIcon />
+              <AlertDescription>{assistant.error}</AlertDescription>
+            </Alert>
+          </div>
+        )}
+      </div>
+    )
+  }
+  return (
+    // key：换一段对话时重新挂上滚动容器，打开时停在最后一轮（last-anchor）
+    <React.Suspense fallback={<TranscriptSkeleton />}>
+      <Transcript key={assistant.viewKey} entries={entries} busy={assistant.busy} error={assistant.error} onDismissError={assistant.dismissError} onDecide={onDecide} onNavigate={onNavigate} />
+    </React.Suspense>
+  )
+}
+
+function TranscriptSkeleton() {
+  return (
+    <div className="flex flex-col gap-3 p-3">
+      <Skeleton className="h-8 w-2/3 self-end" />
+      <Skeleton className="h-16 w-full" />
+      <Skeleton className="h-8 w-1/2 self-end" />
+    </div>
+  )
+}
+
+const costText = (usd: number) => `$${usd < 0.01 ? usd.toFixed(4) : usd.toFixed(2)}`
+
+/** 输入框：回车发送，Shift+回车换行，输入法组字时回车不发送；请求进行中发送按钮变「停止」 */
+function Composer({ assistant, draft, onDraft, inputRef }: { assistant: AssistantState; draft: string; onDraft: React.Dispatch<React.SetStateAction<string>>; inputRef: React.Ref<HTMLTextAreaElement> }) {
+  const busy = !!assistant.busy
+  const cost = assistant.chat?.costUsd ?? 0
+  const canSend = !busy && !assistant.loading && draft.trim().length > 0
+
+  const submit = async () => {
+    if (!canSend) return
+    const text = draft
+    onDraft("")
+    const result = await assistant.send(text)
+    // 没发出去：原文放回输入框（人这期间又打了字就不覆盖）
+    if (!result.ok) onDraft((current) => (current.trim() ? current : result.restore))
+  }
+
+  return (
+    <form
+      className="w-full"
+      onSubmit={(event) => {
+        event.preventDefault()
+        void submit()
+      }}
+    >
+      <InputGroup>
+        <InputGroupTextarea
+          ref={inputRef}
+          autoFocus
+          rows={2}
+          maxLength={ASSISTANT_MAX_MESSAGE}
+          className="max-h-40"
+          value={draft}
+          placeholder="说要改什么，回车发送"
+          aria-label="给助手的话"
+          onChange={(event) => onDraft(event.target.value)}
+          onKeyDown={(event) => {
+            // 输入法组字时的回车是选字（Safari 上 isComposing 已经是 false，但 keyCode 是 229）
+            if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.keyCode === 229) return
+            event.preventDefault()
+            void submit()
+          }}
+        />
+        <InputGroupAddon align="block-end">
+          {cost > 0 && <InputGroupText>这段对话花了 {costText(cost)}</InputGroupText>}
+          {busy ? (
+            <InputGroupButton type="button" variant="outline" size="sm" className="ml-auto" onClick={assistant.stop}>
+              <SquareIcon data-icon="inline-start" />
+              停止
+            </InputGroupButton>
+          ) : (
+            <InputGroupButton type="submit" variant="default" size="icon-sm" className="ml-auto" aria-label="发送" disabled={!canSend}>
+              <ArrowUpIcon />
+            </InputGroupButton>
+          )}
+        </InputGroupAddon>
+      </InputGroup>
+    </form>
+  )
+}

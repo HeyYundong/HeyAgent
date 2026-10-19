@@ -11,6 +11,7 @@ import {
   snakeName,
   type NotifyChannel,
   type SettingsAgentInput,
+  type SettingsAssistantInput,
   type SettingsBrowserInput,
   type SettingsDispatchInput,
   type SettingsLimitsInput,
@@ -113,7 +114,8 @@ export async function getSettings(ctx: WriteCtx): Promise<SettingsView> {
   const browser = await readBrowserSettings(ctx.db)
   const agent = await readAgentSettings(ctx.db)
   const dispatch = await readDispatchSettings(ctx.db)
-  return { ...limits, browser, agent, dispatch, ...(token ? { eventToken: { hint: token.hint, createdAt: token.createdAt } } : {}), channels: withMask }
+  const assistant = await readAssistantSettings(ctx.db)
+  return { ...limits, browser, agent, dispatch, assistant, ...(token ? { eventToken: { hint: token.hint, createdAt: token.createdAt } } : {}), channels: withMask }
 }
 
 /** agent 相关的设置（M3）：验收最多几轮、压缩上下文的 token 上限。引擎每次用到时重新读 */
@@ -158,6 +160,28 @@ export async function updateDispatchSettings(ctx: WriteCtx, input: SettingsDispa
     await writeKey(tx, SETTING_KEYS.dispatchMaxPerTaskPerDay, input.maxPerTaskPerDay, ctx.actor.id)
     await writeKey(tx, SETTING_KEYS.dispatchMaxQueued, input.maxQueued, ctx.actor.id)
     await audit(tx, ctx.actor.id, "settings.dispatch.update", "settings", "dispatch", { before, after: input })
+    return input
+  })
+}
+
+/** 右下角助手：一次请求最多几步、最多花多少美元。每次请求开始时重新读，读不到用默认值 */
+export async function readAssistantSettings(db: DbOrTx): Promise<SettingsAssistantInput> {
+  const values = await readKeys(db, [SETTING_KEYS.assistantMaxSteps, SETTING_KEYS.assistantMaxCostUsd])
+  const steps = values.get(SETTING_KEYS.assistantMaxSteps)
+  const cost = values.get(SETTING_KEYS.assistantMaxCostUsd)
+  return {
+    maxSteps: typeof steps === "number" && Number.isInteger(steps) && steps > 0 ? steps : SETTINGS_DEFAULTS.assistantMaxSteps,
+    maxCostUsd: typeof cost === "number" && cost > 0 ? cost : SETTINGS_DEFAULTS.assistantMaxCostUsd,
+  }
+}
+
+export async function updateAssistantSettings(ctx: WriteCtx, input: SettingsAssistantInput) {
+  assertCan(ctx.actor, "settings.manage", {}, "只有主管能改全局设置")
+  return ctx.db.transaction(async (tx) => {
+    const before = await readAssistantSettings(tx)
+    await writeKey(tx, SETTING_KEYS.assistantMaxSteps, input.maxSteps, ctx.actor.id)
+    await writeKey(tx, SETTING_KEYS.assistantMaxCostUsd, input.maxCostUsd, ctx.actor.id)
+    await audit(tx, ctx.actor.id, "settings.assistant.update", "settings", "assistant", { before, after: input })
     return input
   })
 }

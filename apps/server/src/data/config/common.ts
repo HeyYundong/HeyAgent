@@ -1,5 +1,6 @@
 // 配置写操作共用的小工具：权限、报错、审计、密钥加密存储、编号。
 // 写操作都在一个事务里做完「改数据 + 记审计」，任何一步失败整个回滚。
+import { AsyncLocalStorage } from "node:async_hooks"
 import { randomBytes } from "node:crypto"
 
 import { TRPCError } from "@trpc/server"
@@ -34,9 +35,19 @@ export function assertCan<A extends Action>(actor: Actor, action: A, resource: A
 
 // ---------- 审计 ----------
 
+/**
+ * 「正在由右下角助手执行」的上下文：助手应用改动时把调用包在 runAsAssistant 里，
+ * 这期间写的审计都带上 via: "assistant" 和对话编号，审计里看得出是人通过助手改的。其余调用方不用改
+ */
+const assistantScope = new AsyncLocalStorage<{ chatId: string }>()
+
+export const runAsAssistant = <T>(chatId: string, fn: () => Promise<T>): Promise<T> => assistantScope.run({ chatId }, fn)
+
 /** 记一条审计：谁、做了什么、对哪一行；detail 里不放密钥原文 */
 export async function audit(tx: DbOrTx, actorId: string | null, action: string, targetTable: string, targetId: string, detail: Record<string, unknown> = {}) {
-  await tx.insert(t.auditEvents).values({ actorId, action, targetTable, targetId, detail })
+  const scope = assistantScope.getStore()
+  const values = scope ? { ...detail, via: "assistant", chatId: scope.chatId } : detail
+  await tx.insert(t.auditEvents).values({ actorId, action, targetTable, targetId, detail: values })
 }
 
 // ---------- 编号 ----------

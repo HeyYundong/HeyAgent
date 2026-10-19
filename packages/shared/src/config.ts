@@ -7,6 +7,7 @@ import { z } from "zod"
 import { domainSchema } from "./browser-runtime.js"
 import { canonicalLocale, canonicalTimeZone } from "./browsers.js"
 import { taskDispatchSchema } from "./dispatch.js"
+import { settingsAssistantInputSchema } from "./assistant.js"
 import { httpMethodSchema, httpSpecSchema, modelProviderKindSchema, riskSchema, skillStatusSchema, taskStepSchema, type ModelProviderKind } from "./schemas.js"
 import { TIME_ZONE } from "./time.js"
 
@@ -519,6 +520,10 @@ export const SETTING_KEYS = {
   dispatchMaxPerTaskPerDay: "dispatch.maxPerTaskPerDay",
   /** 派活：一个任务最多排队几张 */
   dispatchMaxQueued: "dispatch.maxQueued",
+  /** 右下角助手：一次请求最多几步模型调用（2026-10-19） */
+  assistantMaxSteps: "assistant.maxSteps",
+  /** 右下角助手：一次请求最多花多少美元（2026-10-19） */
+  assistantMaxCostUsd: "assistant.maxCostUsd",
 } as const
 
 export const SETTINGS_DEFAULTS = {
@@ -536,6 +541,8 @@ export const SETTINGS_DEFAULTS = {
   dispatchMaxPerSession: 100,
   dispatchMaxPerTaskPerDay: 500,
   dispatchMaxQueued: 1000,
+  assistantMaxSteps: 20,
+  assistantMaxCostUsd: 0.2,
 } as const
 
 /** 设置页「派活」一组 */
@@ -612,6 +619,8 @@ export const settingsViewSchema = settingsLimitsInputSchema.extend({
   agent: settingsAgentInputSchema.optional(),
   /** 派活的四个上限（老前端不认也不影响） */
   dispatch: settingsDispatchInputSchema.optional(),
+  /** 右下角助手的两个上限（老前端不认也不影响） */
+  assistant: settingsAssistantInputSchema.optional(),
   eventToken: z.object({ hint: z.string(), createdAt: z.string() }).optional(),
   channels: z.array(notifyChannelSchema.extend({ urlMasked: z.string().optional() })),
 })

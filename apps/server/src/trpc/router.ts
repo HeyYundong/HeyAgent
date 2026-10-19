@@ -53,6 +53,7 @@ import {
   settingsAgentInputSchema,
   settingsBrowserInputSchema,
   settingsDispatchInputSchema,
+  settingsAssistantInputSchema,
   settingsLimitsInputSchema,
   settingsViewSchema,
   skillInputSchema,
@@ -100,6 +101,7 @@ import { apiKeysRouter, galleryRouter } from "./gallery-router.js"
 import { compareRouter } from "./compare-router.js"
 import { workRouter } from "./work-router.js"
 import { importsRouter } from "./imports-router.js"
+import { assistantRouter } from "./assistant-router.js"
 
 const idInput = z.object({ id: z.string().min(1) })
 
@@ -310,6 +312,8 @@ export const appRouter = router({
     updateAgent: protectedProcedure.input(settingsAgentInputSchema).mutation(({ ctx, input }) => settings.updateAgentSettings(w(ctx), input)),
     /** 派活的四个上限（层数、一次运行最多派几张、一个任务每天最多被派几张、最多排队几张） */
     updateDispatch: protectedProcedure.input(settingsDispatchInputSchema).mutation(({ ctx, input }) => settings.updateDispatchSettings(w(ctx), input)),
+    /** 右下角助手的两个上限（一次请求最多几步、最多花多少） */
+    updateAssistant: protectedProcedure.input(settingsAssistantInputSchema).mutation(({ ctx, input }) => settings.updateAssistantSettings(w(ctx), input)),
     /** 生成新的外部事件令牌：原文只在这次返回 */
     regenerateEventToken: protectedProcedure.mutation(({ ctx }) => settings.regenerateEventToken(w(ctx))),
     clearEventToken: protectedProcedure.mutation(({ ctx }) => settings.clearEventToken(w(ctx))),
@@ -336,6 +340,9 @@ export const appRouter = router({
 
   /** 导入（只有主管）：别的 agent 打的 zip 包，AI 读包整理成方案，确认后一次导入（上传 zip 走 HTTP 接口 /api/imports） */
   imports: importsRouter,
+
+  /** 右下角助手：本人的对话列表、记录、删对话（发消息和应用改动走流式的 /api/assistant/*） */
+  assistant: assistantRouter,
 
   live: router({
     /**

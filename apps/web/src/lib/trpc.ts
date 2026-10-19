@@ -14,7 +14,8 @@ export function isUnauthorized(error: unknown) {
   return error instanceof TRPCClientError && error.data?.code === "UNAUTHORIZED"
 }
 
-function isNotFound(error: unknown) {
+/** 接口回了 404（例如对话已经删了） */
+export function isNotFound(error: unknown) {
   return error instanceof TRPCClientError && error.data?.code === "NOT_FOUND"
 }
 

@@ -2,6 +2,7 @@ import { Suspense, lazy } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { RotateCwIcon, TriangleAlertIcon } from "lucide-react"
 
+import { AssistantWidget } from "@/components/assistant"
 import { LoginForm } from "@/components/login-form"
 import { SetupForm } from "@/components/setup-form"
 import { AppSidebar } from "@/components/shell/app-sidebar"
@@ -75,6 +76,7 @@ function AuthGate() {
       <SessionProvider me={me.data}>
         <LiveSync />
         <Shell />
+        <AssistantWidget />
       </SessionProvider>
     )
   }

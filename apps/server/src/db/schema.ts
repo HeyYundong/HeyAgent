@@ -42,6 +42,8 @@ import {
   toolSourceSchema,
   workItemStatusSchema,
   workViaSchema,
+  type AssistantChange,
+  type AssistantProposalStatus,
   type HttpSpec,
   type HumanDetail,
   type ImportPlan,
@@ -1306,4 +1308,67 @@ export const workItems = pgTable(
     index("work_items_from_task_idx").on(t.fromTaskId),
     index("work_items_session_idx").on(t.sessionId),
   ]
+)
+
+// ---------- 右下角助手（2026-10-19） ----------
+
+/** 一段对话：只有本人看得见。每人保留最近 ASSISTANT_MAX_CHATS 段 */
+export const assistantChats = pgTable(
+  "assistant_chats",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** 第一条消息的前 30 个字 */
+    title: text("title").notNull(),
+    /** 上次用的模型；不在了就回到 plan 默认模型 */
+    modelId: text("model_id"),
+    costUsd: numeric("cost_usd", { precision: 12, scale: 6, mode: "number" }).notNull().default(0),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("assistant_chats_user_idx").on(t.userId, t.updatedAt.desc())]
+)
+
+/**
+ * 发给模型的消息历史（AI SDK 的 ModelMessage，原样存在 message 里），按 seq 排。
+ * 面板上显示的记录（AssistantEntry）由它和 assistant_proposals 拼出来，不另存。
+ */
+export const assistantMessages = pgTable(
+  "assistant_messages",
+  {
+    id: identity(),
+    chatId: text("chat_id")
+      .notNull()
+      .references(() => assistantChats.id, { onDelete: "cascade" }),
+    seq: integer("seq").notNull(),
+    role: text("role").notNull(),
+    message: jsonb("message").$type<unknown>().notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex("assistant_messages_chat_seq_idx").on(t.chatId, t.seq)]
+)
+
+/**
+ * 改动确认卡：模型这一步要调的写工具（calls：原样的工具名和输入，应用时照这个执行，前端只传卡的 id），
+ * 和给人看的每一项（changes，应用后带上 result）。一段对话同时最多一张 pending。
+ */
+export const assistantProposals = pgTable(
+  "assistant_proposals",
+  {
+    id: text("id").primaryKey(),
+    chatId: text("chat_id")
+      .notNull()
+      .references(() => assistantChats.id, { onDelete: "cascade" }),
+    /** 这张卡挂在哪条 assistant 消息（带 tool-call 的那条）后面 */
+    afterSeq: integer("after_seq").notNull(),
+    status: text("status").$type<AssistantProposalStatus>().notNull().default("pending"),
+    /** prepared：出卡时算好、应用时照用的东西（例如规则的翻译结果，不用再花一次钱） */
+    calls: jsonb("calls").$type<{ callId: string; tool: string; input: unknown; prepared?: unknown }[]>().notNull(),
+    changes: jsonb("changes").$type<AssistantChange[]>().notNull(),
+    createdAt: createdAt(),
+    decidedAt: ts("decided_at"),
+  },
+  (t) => [index("assistant_proposals_chat_idx").on(t.chatId, t.status)]
 )
