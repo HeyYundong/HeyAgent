@@ -18,6 +18,7 @@ import {
 } from "@heyagent/shared"
 import { z } from "zod"
 
+import { attachFilesToTask } from "../data/config/task-files.js"
 import * as t from "../db/schema.js"
 import {
   cancelSessionImpl,
@@ -284,33 +285,8 @@ export const engineRouter = router({
     .input(attachInputSchema)
     .output(sessionFileSchema)
     .mutation(async ({ ctx, input }) => {
-      const task = await taskOf(ctx.db, input.taskId)
-      if (!can(ctx.user, "task.manage", { ownerId: task.ownerId }))
-        throw forbidden("只有任务负责人和主管能改任务附件")
-      const [file] = await ctx.db
-        .select()
-        .from(t.files)
-        .where(eq(t.files.id, input.fileId))
-      if (!file) throw notFound(`找不到文件 ${input.fileId}`)
-      if (file.taskId === task.id && !file.sessionId)
-        return toSessionFile(file, "task")
-      if (file.kind !== "upload" || file.sessionId || file.taskId)
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "这个文件已经用在别处，请重新上传",
-        })
-      const [row] = await ctx.db
-        .update(t.files)
-        .set({ taskId: task.id, kind: "attachment" })
-        .where(eq(t.files.id, file.id))
-        .returning()
-      await writeAudit(ctx.db, {
-        actorId: ctx.user.id,
-        action: "task.attach",
-        targetTable: "tasks",
-        targetId: task.id,
-        detail: { fileId: file.id, name: file.name },
-      })
+      // 规矩（权限、只收没归属的上传文件、审计）在 data/config/task-files.ts，助手的 attach_files_to_task 也用它
+      const [row] = await attachFilesToTask({ db: ctx.db, actor: ctx.user }, { taskId: input.taskId, fileIds: [input.fileId] })
       return toSessionFile(row!, "task")
     }),
 

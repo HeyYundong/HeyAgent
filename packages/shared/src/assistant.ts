@@ -14,6 +14,8 @@ import { isoTime } from "./schemas.js"
 export const ASSISTANT_MAX_CHATS = 50
 /** 一条消息最长多少字 */
 export const ASSISTANT_MAX_MESSAGE = 8000
+/** 一条消息最多带几张图 */
+export const ASSISTANT_MAX_IMAGES = 6
 
 /** 设置页「助手」一组；默认值在 config.ts 的 SETTINGS_DEFAULTS（20 步、0.2 美元） */
 export const settingsAssistantInputSchema = z.object({
@@ -83,14 +85,19 @@ export const assistantPageContextSchema = z.object({
 })
 export type AssistantPageContext = z.infer<typeof assistantPageContextSchema>
 
-export const assistantChatInputSchema = z.object({
-  /** 不填 = 开一段新对话 */
-  chatId: z.string().max(64).optional(),
-  message: z.string().trim().min(1, "说点什么").max(ASSISTANT_MAX_MESSAGE, `最多 ${ASSISTANT_MAX_MESSAGE} 字`),
-  context: assistantPageContextSchema.optional(),
-  /** 新对话在发第一句之前就设好的本对话设置；只在新建对话（不带 chatId）时用，已有的对话改设置走 assistant.updateSettings */
-  settings: assistantChatSettingsSchema.optional(),
-})
+export const assistantChatInputSchema = z
+  .object({
+    /** 不填 = 开一段新对话 */
+    chatId: z.string().max(64).optional(),
+    /** 只发图时可以空着 */
+    message: z.string().trim().max(ASSISTANT_MAX_MESSAGE, `最多 ${ASSISTANT_MAX_MESSAGE} 字`).default(""),
+    /** 随这句话一起给助手看的图：先 POST /api/files 上传拿到的文件编号（只收 png / jpeg / gif / webp） */
+    images: z.array(z.string().max(64)).max(ASSISTANT_MAX_IMAGES, `一次最多 ${ASSISTANT_MAX_IMAGES} 张图`).default([]),
+    context: assistantPageContextSchema.optional(),
+    /** 新对话在发第一句之前就设好的本对话设置；只在新建对话（不带 chatId）时用，已有的对话改设置走 assistant.updateSettings */
+    settings: assistantChatSettingsSchema.optional(),
+  })
+  .refine((input) => input.message.length > 0 || input.images.length > 0, { message: "说点什么", path: ["message"] })
 export type AssistantChatInput = z.infer<typeof assistantChatInputSchema>
 
 export const assistantApplyInputSchema = z.object({
@@ -153,8 +160,20 @@ export type AssistantProposal = z.infer<typeof assistantProposalSchema>
 
 export const assistantToolStatusSchema = z.enum(["running", "done", "error"])
 
+/** 记录里的一张图（人发的、助手用 view_image 看过的）：前端照 components/files 的 ShownFile 显示缩略图、点开看大图 */
+export const assistantImageSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  mime: z.string(),
+  size: z.number(),
+  /** GET /api/files/:id */
+  url: z.string(),
+})
+export type AssistantImage = z.infer<typeof assistantImageSchema>
+
 export const assistantEntrySchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("user"), id: z.string(), text: z.string(), at: isoTime }),
+  /** text 可能是空的（只发了图）；images 文件被删了的不列 */
+  z.object({ kind: z.literal("user"), id: z.string(), text: z.string(), images: z.array(assistantImageSchema).optional(), at: isoTime }),
   z.object({ kind: z.literal("assistant"), id: z.string(), text: z.string(), at: isoTime }),
   /** 查了什么：一行 Trace，展开看输入输出摘要 */
   z.object({
@@ -166,6 +185,8 @@ export const assistantEntrySchema = z.discriminatedUnion("kind", [
     status: assistantToolStatusSchema,
     /** 展开后显示的细节（输入、输出摘要或报错），已截短 */
     detail: z.string().optional(),
+    /** view_image 看过的图，Trace 下面显示缩略图 */
+    images: z.array(assistantImageSchema).optional(),
     at: isoTime,
   }),
   z.object({ kind: z.literal("proposal"), id: z.string(), proposal: assistantProposalSchema, at: isoTime }),

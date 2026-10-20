@@ -2,12 +2,15 @@
 // 每一行包一个 MessageScrollerItem。不用锚点（scrollAnchor）：锚点模式会把人发的那句钉在顶上、回答长了也不跟着往下走，
 // 看起来像「每次回答都跳到顶上」（先显示的那条换成服务器回来的那条时还会再定位一次）。改成普通聊天的跟随：
 // 跟着新字到最底下，人往上翻时不打扰；发新消息、点「应用 / 不要」时滚到最底下。
+// 图（2026-10-20）：人发的图在那句话上面靠右，助手用 view_image 看过的图在那行 Trace 下面；都是缩略图，点了看大图（components/files 的 FileViewer）。
 import * as React from "react"
 import { CircleAlertIcon, CircleCheckIcon, InfoIcon, LoaderCircleIcon, XIcon } from "lucide-react"
-import type { AssistantEntry } from "@heyagent/shared"
+import type { AssistantEntry, AssistantImage } from "@heyagent/shared"
 
+import { FileViewer } from "@/components/files"
 import { MarkdownView } from "@/components/markdown"
 import { Alert, AlertAction, AlertDescription } from "@/components/ui/alert"
+import { Attachment, AttachmentMedia, AttachmentTrigger } from "@/components/ui/attachment"
 import { Bubble, BubbleContent } from "@/components/ui/bubble"
 import { Button } from "@/components/ui/button"
 import { CodeBlock, CodeBlockContent } from "@/components/ui/code-block"
@@ -23,6 +26,7 @@ import {
   useMessageScroller,
 } from "@/components/ui/message-scroller"
 import { Trace, TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigger, TraceIcon, TraceLine, TraceTitle } from "@/components/ui/trace"
+import { cn } from "@/lib/utils"
 
 import { ProposalCard } from "./proposal-card"
 
@@ -141,9 +145,13 @@ const EntryView = React.memo(function EntryView({
       return (
         <Message align="end">
           <MessageContent>
-            <Bubble align="end" variant="muted">
-              <BubbleContent className="whitespace-pre-wrap">{entry.text}</BubbleContent>
-            </Bubble>
+            {entry.images && entry.images.length > 0 && <ImageThumbs images={entry.images} align="end" />}
+            {/* 只发了图时没有字，不显示空气泡 */}
+            {entry.text && (
+              <Bubble align="end" variant="muted">
+                <BubbleContent className="whitespace-pre-wrap">{entry.text}</BubbleContent>
+              </Bubble>
+            )}
           </MessageContent>
         </Message>
       )
@@ -195,17 +203,52 @@ const ToolRow = React.memo(function ToolRow({ tool }: { tool: ToolEntry }) {
       <TraceTitle>{tool.label}</TraceTitle>
     </TraceLine>
   )
-  if (!tool.detail) return line
+  // 看过的图：缩略图放在这一行下面，和标题对齐
+  const images = tool.images && tool.images.length > 0 && (
+    <div className="pl-6">
+      <ImageThumbs images={tool.images} small />
+    </div>
+  )
+  if (!tool.detail)
+    return (
+      <>
+        {line}
+        {images}
+      </>
+    )
   return (
-    <TraceCollapsible>
-      <TraceCollapsibleTrigger>{line}</TraceCollapsibleTrigger>
-      <TraceCollapsibleContent>
-        <CodeBlock size="sm" variant={tool.status === "error" ? "destructive" : "default"}>
-          <CodeBlockContent wrap className="max-h-64">
-            {tool.detail}
-          </CodeBlockContent>
-        </CodeBlock>
-      </TraceCollapsibleContent>
-    </TraceCollapsible>
+    <>
+      <TraceCollapsible>
+        <TraceCollapsibleTrigger>{line}</TraceCollapsibleTrigger>
+        <TraceCollapsibleContent>
+          <CodeBlock size="sm" variant={tool.status === "error" ? "destructive" : "default"}>
+            <CodeBlockContent wrap className="max-h-64">
+              {tool.detail}
+            </CodeBlockContent>
+          </CodeBlock>
+        </TraceCollapsibleContent>
+      </TraceCollapsible>
+      {images}
+    </>
   )
 })
+
+/** 一组图的缩略图，点了看大图（同一组里 ← → 切换）。人发的大一点、靠右；助手看过的（small）小一点 */
+function ImageThumbs({ images, align = "start", small }: { images: AssistantImage[]; align?: "start" | "end"; small?: boolean }) {
+  // 记 id：看大图时左右切换
+  const [viewingId, setViewingId] = React.useState<string | null>(null)
+  const viewing = images.find((image) => image.id === viewingId)
+  return (
+    <div className={cn("flex flex-wrap gap-1", align === "end" && "justify-end")}>
+      {images.map((image) => (
+        <Attachment key={image.id} orientation="vertical" title={image.name} className={small ? "w-16" : undefined}>
+          <AttachmentMedia variant="image">
+            <img src={image.url} alt={image.name} loading="lazy" />
+          </AttachmentMedia>
+          <AttachmentTrigger aria-label={`看大图：${image.name}`} onClick={() => setViewingId(image.id)} />
+        </Attachment>
+      ))}
+      {viewing && <FileViewer file={viewing} images={images} onShow={(file) => setViewingId(file.id)} onClose={() => setViewingId(null)} />}
+    </div>
+  )
+}

@@ -2,9 +2,10 @@
 // 用中文说要新建、修改、删除什么，助手查清楚后列成改动确认卡，人点「应用」才改；改了库，开着的页面由 LiveSync 刷新。
 // 面板：宽屏是固定在右下角的 Card（不挡整页，可以边看边说），窄屏是全屏的 Sheet。开关和当前对话记在 localStorage。
 // 「浮动面板」registry 里没有，用 Card 加 fixed 定位，只是定位、不改外观（docs/ui-rules.md 第 8 节登记）。
+// 可以发图（2026-10-20）：输入框左下「加图片」、在输入框里粘贴、拖到面板上，见 composer-images.tsx。
 import * as React from "react"
-import { ArrowUpIcon, BotIcon, CircleAlertIcon, Maximize2Icon, Minimize2Icon, MinusIcon, SquareIcon, SquarePenIcon } from "lucide-react"
-import { ASSISTANT_MAX_MESSAGE } from "@heyagent/shared"
+import { ArrowUpIcon, BotIcon, CircleAlertIcon, ImagePlusIcon, Maximize2Icon, Minimize2Icon, MinusIcon, SquareIcon, SquarePenIcon } from "lucide-react"
+import { ASSISTANT_MAX_IMAGES, ASSISTANT_MAX_MESSAGE } from "@heyagent/shared"
 
 import { Alert, AlertAction, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
@@ -19,6 +20,7 @@ import { useIsMobile } from "@/hooks/use-mobile"
 import { errorMessage } from "@/lib/mutations"
 import { cn } from "@/lib/utils"
 
+import { hasFiles, IMAGE_ACCEPT, PendingImageList, usePendingImages, type PendingImages } from "./composer-images"
 import { HistoryButton } from "./history"
 import { ChatSettingsButton } from "./settings"
 import { useAssistant, useStoredExpanded, useStoredOpen, type AssistantState } from "./use-assistant"
@@ -37,6 +39,8 @@ export function AssistantWidget() {
   const buttonRef = React.useRef<HTMLButtonElement>(null)
   const inputRef = React.useRef<HTMLTextAreaElement>(null)
   const [draft, setDraft] = React.useState("")
+  const images = usePendingImages()
+  const [dragging, setDragging] = React.useState(false)
 
   const close = () => {
     setOpen(false)
@@ -49,14 +53,32 @@ export function AssistantWidget() {
   }
 
   const body = <PanelBody assistant={assistant} onExample={pickExample} onNavigate={isMobile ? close : undefined} />
-  const composer = <Composer assistant={assistant} draft={draft} onDraft={setDraft} inputRef={inputRef} />
+  const composer = <Composer assistant={assistant} draft={draft} onDraft={setDraft} images={images} dragging={dragging} inputRef={inputRef} />
+  // 图片拖到面板上任何地方都算（不然拖到记录上松手，浏览器会打开那张图、离开当前页）
+  const dropProps = {
+    onDragOver: (event: React.DragEvent) => {
+      if (!hasFiles(event)) return
+      event.preventDefault()
+      setDragging(true)
+    },
+    onDragLeave: (event: React.DragEvent) => {
+      // 移到面板里的子元素上也会触发，真离开面板才算
+      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false)
+    },
+    onDrop: (event: React.DragEvent) => {
+      if (!hasFiles(event)) return
+      event.preventDefault()
+      setDragging(false)
+      images.add(event.dataTransfer.files)
+    },
+  }
 
   if (isMobile) {
     return (
       <>
         {!open && <LauncherButton ref={buttonRef} onClick={() => setOpen(true)} />}
         <Sheet open={open} onOpenChange={(next) => (next ? setOpen(true) : close())}>
-          <SheetContent side="bottom" showCloseButton={false} className="gap-0 data-[side=bottom]:h-dvh">
+          <SheetContent side="bottom" showCloseButton={false} className="gap-0 data-[side=bottom]:h-dvh" {...dropProps}>
             <SheetHeader className="flex-row items-center gap-1 border-b p-3">
               <SheetTitle className="mr-auto">助手</SheetTitle>
               <HeaderActions assistant={assistant} onClose={close} />
@@ -78,6 +100,7 @@ export function AssistantWidget() {
       role="dialog"
       aria-label="助手"
       className={cn("fixed right-4 bottom-4 z-50 gap-0 shadow-lg", expanded ? "top-4 w-1/2 min-w-96" : "h-160 max-h-11/12 w-96")}
+      {...dropProps}
     >
       <CardHeader className="flex items-center gap-1 border-b">
         <CardTitle className="mr-auto">助手</CardTitle>
@@ -167,7 +190,7 @@ function PanelBody({ assistant, onExample, onNavigate }: { assistant: AssistantS
               <BotIcon />
             </EmptyMedia>
             <EmptyTitle>要改点什么？</EmptyTitle>
-            <EmptyDescription>说要新建、修改或删除什么。我先列出改动，你点「应用」才会改。</EmptyDescription>
+            <EmptyDescription>说要新建、修改或删除什么，也可以发截图给我看。我先列出改动，你点「应用」才会改。</EmptyDescription>
           </EmptyHeader>
           <EmptyContent>
             {EXAMPLES.map((text) => (
@@ -208,19 +231,42 @@ function TranscriptSkeleton() {
 
 const costText = (usd: number) => `$${usd < 0.01 ? usd.toFixed(4) : usd.toFixed(2)}`
 
-/** 输入框：回车发送，Shift+回车换行，输入法组字时回车不发送；请求进行中发送按钮变「停止」 */
-function Composer({ assistant, draft, onDraft, inputRef }: { assistant: AssistantState; draft: string; onDraft: React.Dispatch<React.SetStateAction<string>>; inputRef: React.Ref<HTMLTextAreaElement> }) {
+/**
+ * 输入框：回车发送，Shift+回车换行，输入法组字时回车不发送；请求进行中发送按钮变「停止」。
+ * 上面一排是要一起发的图：有字或有传好的图才能发；还在上传、有没传上去的（先移除）时不能发
+ */
+function Composer({
+  assistant,
+  draft,
+  onDraft,
+  images,
+  dragging,
+  inputRef,
+}: {
+  assistant: AssistantState
+  draft: string
+  onDraft: React.Dispatch<React.SetStateAction<string>>
+  images: PendingImages
+  dragging: boolean
+  inputRef: React.Ref<HTMLTextAreaElement>
+}) {
+  const pickRef = React.useRef<HTMLInputElement>(null)
   const busy = !!assistant.busy
   const cost = assistant.chat?.costUsd ?? 0
-  const canSend = !busy && !assistant.loading && draft.trim().length > 0
+  const canSend = !busy && !assistant.loading && (draft.trim().length > 0 || images.ready > 0) && !images.uploading && !images.failed
+  const problem = images.notice ?? (images.failed ? "有图没传上去，移除后才能发。" : null)
 
   const submit = async () => {
     if (!canSend) return
     const text = draft
+    const sent = images.take()
     onDraft("")
-    const result = await assistant.send(text)
-    // 没发出去：原文放回输入框（人这期间又打了字就不覆盖）
-    if (!result.ok) onDraft((current) => (current.trim() ? current : result.restore))
+    const result = await assistant.send(text, sent)
+    // 没发出去（例如这个模型不能看图）：原文和图放回输入框（人这期间又打了字、加了图就不覆盖）
+    if (!result.ok) {
+      onDraft((current) => (current.trim() ? current : result.restore.text))
+      images.restore(result.restore.images)
+    }
   }
 
   return (
@@ -231,7 +277,32 @@ function Composer({ assistant, draft, onDraft, inputRef }: { assistant: Assistan
         void submit()
       }}
     >
+      <input
+        ref={pickRef}
+        type="file"
+        accept={IMAGE_ACCEPT}
+        multiple
+        className="hidden"
+        aria-label="选择图片"
+        onChange={(event) => {
+          images.add(event.target.files ?? [])
+          event.target.value = ""
+        }}
+      />
       <InputGroup>
+        {(images.items.length > 0 || dragging || problem) && (
+          <InputGroupAddon align="block-start" className="flex-col items-start">
+            {images.items.length > 0 && <PendingImageList images={images} />}
+            {dragging ? (
+              <InputGroupText>
+                <ImagePlusIcon />
+                松开就加上图片
+              </InputGroupText>
+            ) : (
+              problem && <span className="text-destructive">{problem}</span>
+            )}
+          </InputGroupAddon>
+        )}
         <InputGroupTextarea
           ref={inputRef}
           autoFocus
@@ -239,9 +310,16 @@ function Composer({ assistant, draft, onDraft, inputRef }: { assistant: Assistan
           maxLength={ASSISTANT_MAX_MESSAGE}
           className="max-h-40"
           value={draft}
-          placeholder="说要改什么，回车发送"
+          placeholder="说要改什么（可以贴图），回车发送"
           aria-label="给助手的话"
           onChange={(event) => onDraft(event.target.value)}
+          onPaste={(event) => {
+            // 截图、「复制图片」只有图没有文字：加成图片；同时带文字的（例如从表格里复制）照常粘贴文字
+            const files = [...event.clipboardData.files]
+            if (files.length === 0 || event.clipboardData.getData("text/plain")) return
+            event.preventDefault()
+            images.add(files)
+          }}
           onKeyDown={(event) => {
             // 输入法组字时的回车是选字（Safari 上 isComposing 已经是 false，但 keyCode 是 229）
             if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.keyCode === 229) return
@@ -250,6 +328,12 @@ function Composer({ assistant, draft, onDraft, inputRef }: { assistant: Assistan
           }}
         />
         <InputGroupAddon align="block-end">
+          <Tooltip>
+            <TooltipTrigger render={<InputGroupButton variant="ghost" size="icon-sm" aria-label="加图片" disabled={images.full} onClick={() => pickRef.current?.click()} />}>
+              <ImagePlusIcon />
+            </TooltipTrigger>
+            <TooltipContent>{images.full ? `最多 ${ASSISTANT_MAX_IMAGES} 张` : "加图片"}</TooltipContent>
+          </Tooltip>
           {cost > 0 && <InputGroupText>这段对话花了 {costText(cost)}</InputGroupText>}
           {busy ? (
             <InputGroupButton type="button" variant="outline" size="sm" className="ml-auto" onClick={assistant.stop}>

@@ -3,15 +3,22 @@
 // - user 消息 → user；assistant 消息里的文字 → 一条 assistant（id = m<seq>）；
 // - 查的工具调用按出现的顺序一条 tool（id = t-<callId>），没进卡的写工具调用（参数不对、没权限）排在后面；
 // - 卡挂在它那条 assistant 消息后面；role = notice 的行是给人看的提示（到上限、没配模型），不发给模型。
+// 图（第 11 节，images.ts）：库里只存文件编号，不存图片内容。
+// - 人发的带图的消息：role = user，message = { role: "user", content: [{ type: "text", text }], files: [文件编号] }
+//   （没带图的照旧 content 是字符串）。files 是自己加的字段，发给模型前去掉，换成「（附图：……）」一句和每张图；
+// - role = image 的行：这一步 view_image 看的图，message = { images: [{ callId, fileId }] }，紧跟在这一步的 tool 行后面。
+//   发给模型时是一条 user 消息（很多模型的工具结果里放不了图），面板上不单独成一条，图挂到对应的 tool 记录的 images 上。
 import { randomBytes } from "node:crypto"
 
-import { ASSISTANT_MAX_CHATS, type AssistantChat, type AssistantChatSettings, type AssistantChatSummary, type AssistantEntry, type AssistantProposal } from "@heyagent/shared"
-import type { ModelMessage, ToolResultPart } from "ai"
+import { ASSISTANT_MAX_CHATS, type AssistantChat, type AssistantChatSettings, type AssistantChatSummary, type AssistantEntry, type AssistantImage, type AssistantProposal } from "@heyagent/shared"
+import type { ModelMessage, TextPart, ToolResultPart } from "ai"
 import { and, asc, desc, eq, inArray, max, notInArray, sql } from "drizzle-orm"
 
 import type { DbOrTx } from "../data/config/common.js"
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
+import type { FileRow } from "../files/service.js"
+import { assistantImageOf, fileRows, userContent, viewedContent, type ImageLoader } from "./images.js"
 import { isReadTool, toolLabel } from "./tools.js"
 
 export type ChatRow = typeof t.assistantChats.$inferSelect
@@ -20,8 +27,8 @@ export type ProposalRow = typeof t.assistantProposals.$inferSelect
 
 export const newId = (prefix: string) => `${prefix}-${randomBytes(8).toString("hex")}`
 
-/** 新对话的标题：第一条消息的前 30 个字（换行换成空格） */
-export const chatTitle = (message: string) => message.replace(/\s+/g, " ").trim().slice(0, 30)
+/** 新对话的标题：第一条消息的前 30 个字（换行换成空格）；只发了图的是「图片」 */
+export const chatTitle = (message: string, images = 0) => message.replace(/\s+/g, " ").trim().slice(0, 30) || (images > 0 ? "图片" : "")
 
 export const entryIdOf = (seq: number) => `m${seq}`
 export const toolEntryId = (callId: string) => `t-${callId}`
@@ -102,7 +109,7 @@ export async function getChat(db: Db, userId: string, id: string): Promise<Assis
   const [messages, proposals] = await Promise.all([loadMessages(db, id), loadProposals(db, id)])
   return {
     ...summaryOf(chat),
-    entries: buildEntries(messages, proposals),
+    entries: buildEntries(messages, proposals, await fileRows(db, messageFileIds(messages))),
     pendingProposalId: proposals.find((proposal) => proposal.status === "pending")?.id ?? null,
   }
 }
@@ -140,12 +147,49 @@ export interface NoticeMessage {
   tone: "info" | "error"
 }
 
+/** 人发的带图的消息（存库的样子）：content 只有文字，files 是图的文件编号 */
+export interface UserFilesMessage {
+  role: "user"
+  content: TextPart[]
+  files: string[]
+}
+
+/** role = image 的行：这一步 view_image 看的图 */
+export interface ImageRowMessage {
+  images: { callId: string; fileId: string }[]
+}
+
+export const userFilesOf = (row: MessageRow): string[] => (row.role === "user" ? ((row.message as Partial<UserFilesMessage>).files ?? []) : [])
+
+/** 一段对话里所有图的文件编号（人发的 + view_image 看的） */
+export function messageFileIds(rows: MessageRow[]): string[] {
+  return rows.flatMap((row) => (row.role === "image" ? (row.message as ImageRowMessage).images.map((image) => image.fileId) : userFilesOf(row)))
+}
+
+const textOf = (message: Extract<ModelMessage, { role: "user" }>) =>
+  typeof message.content === "string" ? message.content : message.content.map((part) => (part.type === "text" ? part.text : "")).join("")
+
 /**
- * 发给模型的历史：去掉 notice；某次调用没有结果的（进程中途挂了、卡还没处理）补一个「没有执行」的结果，
- * AI SDK 要求每个 tool-call 后面都有 tool-result
+ * 发给模型的历史：去掉 notice；带图的 user 消息、image 行换成文字 + 图（读文件、缩图，当前模型看不了图或文件没了换成一句话）；
+ * 某次调用没有结果的（进程中途挂了、卡还没处理）补一个「没有执行」的结果，AI SDK 要求每个 tool-call 后面都有 tool-result
  */
-export function historyForModel(rows: MessageRow[]): ModelMessage[] {
-  const messages = rows.filter((row) => row.role !== "notice").map((row) => row.message as ModelMessage)
+export async function historyForModel(rows: MessageRow[], images: { loader: ImageLoader; vision: boolean }): Promise<ModelMessage[]> {
+  await images.loader.prefetch(messageFileIds(rows))
+  const messages: ModelMessage[] = []
+  for (const row of rows) {
+    if (row.role === "notice") continue
+    if (row.role === "image") {
+      const ids = (row.message as ImageRowMessage).images.map((image) => image.fileId)
+      messages.push({ role: "user", content: await viewedContent(images.loader, ids, images.vision) })
+      continue
+    }
+    const files = userFilesOf(row)
+    if (files.length) {
+      messages.push({ role: "user", content: await userContent(images.loader, textOf(row.message as Extract<ModelMessage, { role: "user" }>), files, images.vision) })
+      continue
+    }
+    messages.push(row.message as ModelMessage)
+  }
   const answered = new Set<string>()
   for (const message of messages) {
     if (message.role === "tool") for (const part of message.content) if (part.type === "tool-result") answered.add(part.toolCallId)
@@ -234,9 +278,16 @@ export function resultText(part: ToolResultPart): { text: string; error: boolean
   return { text: value, error }
 }
 
-export function buildEntries(messages: MessageRow[], proposals: ProposalRow[]): AssistantEntry[] {
+/** files：对话里图的文件行（messageFileIds 一批查好的）；查不到的（删了）不列 */
+export function buildEntries(messages: MessageRow[], proposals: ProposalRow[], files: Map<string, FileRow> = new Map()): AssistantEntry[] {
   const results = new Map<string, ToolResultPart>()
+  const viewed = new Map<string, AssistantImage[]>()
+  const imagesOf = (ids: string[]) => ids.flatMap((id) => (files.has(id) ? [assistantImageOf(files.get(id)!)] : []))
   for (const row of messages) {
+    if (row.role === "image") {
+      for (const image of (row.message as ImageRowMessage).images) viewed.set(image.callId, [...(viewed.get(image.callId) ?? []), ...imagesOf([image.fileId])])
+      continue
+    }
     const message = row.message as ModelMessage
     if (message.role === "tool") for (const part of message.content) if (part.type === "tool-result") results.set(part.toolCallId, part)
   }
@@ -247,6 +298,7 @@ export function buildEntries(messages: MessageRow[], proposals: ProposalRow[]): 
   const toolEntry = (part: ToolCallPart, at: string): AssistantEntry => {
     const result = results.get(part.toolCallId)
     const out = result ? resultText(result) : undefined
+    const images = viewed.get(part.toolCallId) ?? []
     return {
       kind: "tool",
       id: toolEntryId(part.toolCallId),
@@ -254,6 +306,7 @@ export function buildEntries(messages: MessageRow[], proposals: ProposalRow[]): 
       label: toolLabel(part.toolName, part.input),
       status: !out ? "running" : out.error ? "error" : "done",
       ...(out ? { detail: toolDetail(part.input, out.text) } : {}),
+      ...(images.length ? { images } : {}),
       at,
     }
   }
@@ -265,9 +318,8 @@ export function buildEntries(messages: MessageRow[], proposals: ProposalRow[]): 
       const notice = row.message as NoticeMessage
       entries.push({ kind: "notice", id: entryIdOf(row.seq), text: notice.text, tone: notice.tone, at })
     } else if (row.role === "user") {
-      const message = row.message as Extract<ModelMessage, { role: "user" }>
-      const text = typeof message.content === "string" ? message.content : message.content.map((part) => (part.type === "text" ? part.text : "")).join("")
-      entries.push({ kind: "user", id: entryIdOf(row.seq), text, at })
+      const images = imagesOf(userFilesOf(row))
+      entries.push({ kind: "user", id: entryIdOf(row.seq), text: textOf(row.message as Extract<ModelMessage, { role: "user" }>), ...(images.length ? { images } : {}), at })
     } else if (row.role === "assistant") {
       const message = row.message as Extract<ModelMessage, { role: "assistant" }>
       const parts = typeof message.content === "string" ? [{ type: "text" as const, text: message.content }] : message.content

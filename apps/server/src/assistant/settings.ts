@@ -15,6 +15,12 @@ export async function modelProblem(db: DbOrTx, id: string): Promise<string | und
   return undefined
 }
 
+/** 模型能不能看图（「模型」页的 vision；人随消息发图前查）和给人看的名字 */
+export async function modelVision(db: DbOrTx, id: string): Promise<{ vision: boolean; name: string }> {
+  const [model] = await db.select({ name: t.models.name, vision: t.models.vision }).from(t.models).where(eq(t.models.id, id))
+  return { vision: model?.vision ?? false, name: model?.name || id }
+}
+
 /** 本对话没单独选模型时用哪个：「模型」页的助手默认模型，没配用 plan 默认模型；都没配是 null */
 async function defaultModel(db: DbOrTx): Promise<{ id: string; role: "assistant" | "plan" } | null> {
   const rows = await db

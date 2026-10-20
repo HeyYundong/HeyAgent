@@ -42,8 +42,11 @@ import * as taskMemory from "../data/config/task-memory.js"
 import { createTask, deleteTask, setTaskEnabled, tasksUsingRef, updateTask, usedByText, type TaskInput } from "../data/config/tasks.js"
 import * as todos from "../data/config/todos.js"
 import * as toolsConfig from "../data/config/tools.js"
+import { attachableFiles, attachFilesToTask, ATTACH_FORBIDDEN } from "../data/config/task-files.js"
 import * as t from "../db/schema.js"
 import { compileRuleText } from "../engine/rule-compile.js"
+import { isImageMime, listSessionFiles } from "../files/service.js"
+import { viewableImage } from "./images.js"
 import { clip, changedFields, Names, riskText, scheduleText, skillStatusText, stepsText, triggerText, yesNo, type FieldChange } from "./describe.js"
 
 /** 工具执行的上下文：谁在做（当前登录的人）、库、主密钥 */
@@ -126,6 +129,8 @@ const write = <S extends z.ZodType>(def: {
 
 const str = (value: unknown) => (typeof value === "string" || typeof value === "number" ? String(value) : "")
 const contains = (query: string | undefined, ...values: (string | undefined | null)[]) => !query || values.some((value) => value?.toLowerCase().includes(query.toLowerCase()))
+/** list_run_files 最多列几个 */
+const RUN_FILES_MAX = 100
 const queryInput = z.object({ query: z.string().max(100).optional().describe("可选：按文字筛选（编号、名字、内容里包含它的）") })
 
 // ---------- 读出现在的样子（修改时合并、卡上显示改前） ----------
@@ -510,6 +515,45 @@ export const TOOLS: Record<string, ToolDef> = {
       return { sessions: rows.map((row) => ({ ...row, startedAt: row.startedAt.toISOString(), endedAt: row.endedAt?.toISOString() })) }
     },
   }),
+  list_run_files: read({
+    description: "列一次运行的文件（截图、产物、浏览器下载、附件、工具输出全文）：编号、名字、类型、大小。image = true 的可以用 view_image 看",
+    input: z.object({
+      runId: z.string().min(1).describe("运行编号（R-…），用 list_sessions 查"),
+      kind: z.enum(["screenshot", "artifact", "download", "attachment", "upload", "tool_output"]).optional().describe("可选：只看这一类（screenshot 截图）"),
+    }),
+    label: (input) => `查运行 ${str(input.runId)} 的文件`,
+    run: async (ctx, input) => {
+      // 和运行详情的「空间文件」一样：登录的人都能看
+      const [session] = await ctx.db.select({ id: t.sessions.id, taskId: t.sessions.taskId, snapshot: t.sessions.snapshot }).from(t.sessions).where(eq(t.sessions.id, input.runId))
+      if (!session) throw new ToolError(`找不到运行 ${input.runId}，先用 list_sessions 查编号`)
+      const all = await listSessionFiles(ctx.db, session.id, session.snapshot?.attachments.map((file) => file.id) ?? [])
+      const rows = all.filter((file) => !input.kind || file.kind === input.kind)
+      // 太多时留最后的（截图越往后越接近结果）
+      const shown = rows.slice(-RUN_FILES_MAX)
+      return {
+        runId: session.id,
+        taskId: session.taskId,
+        total: rows.length,
+        files: shown.map((file) => ({ id: file.id, name: file.name, kind: file.kind, mime: file.mime, size: file.size, createdAt: file.createdAt, image: isImageMime(file.mime) })),
+        more: rows.length > shown.length ? `只列了最后 ${RUN_FILES_MAX} 个，带 kind 筛一下` : undefined,
+      }
+    },
+  }),
+  view_image: read({
+    description: "看一张图：运行的截图 / 产物（fileId，用 list_run_files 查）、人发的图（fileId，消息里「附图」后面的编号）、图库的图（galleryImageId，img-…）。两个只给一个。图在工具结果后面的下一条消息里",
+    input: z
+      .object({
+        fileId: z.string().min(1).max(64).optional().describe("文件编号 f-…"),
+        galleryImageId: z.string().min(1).max(64).optional().describe("图库编号 img-…"),
+      })
+      .refine((input) => Boolean(input.fileId) !== Boolean(input.galleryImageId), { message: "fileId 和 galleryImageId 只给一个" }),
+    label: (input) => `看图 ${str(input.galleryImageId ?? input.fileId)}`,
+    // 只查出是哪个文件；读图、缩图、接在工具结果后面由 run.ts 做（它知道当前模型能不能看图）
+    run: async (ctx, input) => {
+      const { row, from } = await viewableImage(ctx.db, input)
+      return { fileId: row.id, name: row.name, mime: row.mime, size: row.size, from }
+    },
+  }),
   list_staff: read({
     description: "列全部的人（编号、名字、职位、是不是主管）：指派负责人、审核人时用",
     input: z.object({}),
@@ -600,6 +644,27 @@ export const TOOLS: Record<string, ToolDef> = {
     apply: async (ctx, input) => {
       await deleteTask(ctx, input)
       return { message: `已删除任务 ${input.id}`, output: { id: input.id } }
+    },
+  }),
+
+  attach_files_to_task: write({
+    description: "把人随消息发的图（上传的文件）放进任务的附件，任务每次运行都能读到。只收人刚上传、还没用在别处的文件",
+    input: z.object({ taskId: z.string().min(1), fileIds: z.array(z.string().min(1).max(64)).min(1).max(20).describe("文件编号 f-…（消息里「附图」后面的）") }),
+    label: (input) => `给任务 ${str(input.taskId)} 加附件`,
+    prepare: async (ctx, input) => {
+      const task = await loadTask(ctx, input.taskId)
+      need(ctx, "task.manage", { ownerId: task.ownerId }, ATTACH_FORBIDDEN)
+      const files = await attachableFiles(ctx.db, task.id, input.fileIds)
+      const fresh = files.filter((each) => !each.already)
+      if (fresh.length === 0) throw new ToolError(`这些文件已经是任务 ${task.id} 的附件了`)
+      return {
+        title: `给任务 ${taskTitle(task.id, task.title)} 加 ${fresh.length} 个附件`,
+        fields: fresh.map((each, index) => ({ label: fresh.length > 1 ? `附件 ${index + 1}` : "附件", after: `${each.file.name}（${each.file.id}）` })),
+      }
+    },
+    apply: async (ctx, input) => {
+      const files = await attachFilesToTask(ctx, input)
+      return { message: `已把 ${files.length} 个文件加到任务 ${input.taskId} 的附件`, link: taskLink(input.taskId), output: { taskId: input.taskId, fileIds: files.map((file) => file.id) } }
     },
   }),
 
@@ -1189,6 +1254,9 @@ async function mergeMcp(ctx: ToolCtx, input: z.output<typeof mcpUpdate>, given: 
 // ---------- 给 run.ts / store.ts 用 ----------
 
 export const isReadTool = (name: string) => TOOLS[name]?.kind === "read"
+
+/** 看图的工具：结果里的图由 run.ts 读出来，接在工具结果后面发给模型 */
+export const VIEW_IMAGE = "view_image"
 
 /** Trace 上显示的中文；不认识的工具照原名 */
 export function toolLabel(name: string, input: unknown): string {

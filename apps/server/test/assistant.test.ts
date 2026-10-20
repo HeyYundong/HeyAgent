@@ -2,14 +2,18 @@
 // 覆盖：查的工具直接执行；写的工具出卡、不改库；应用后库变了、审计带 via、模型拿到结果接着说；不要；新消息让旧卡过期；
 // 员工新建任务不进卡；update_task 只改给的字段；规则出卡时翻译、应用后已确认；超步数 / 超钱停下；get 拼出的记录和流里一致；只看得到自己的对话。
 // 第 10 节：选模型的顺序（本对话设的 → 助手默认 → plan 默认）；本对话的设置（只能改自己的、上限盖过全局、新对话第一句带上）；defaults 接口。
+// 第 11 节（看图、上传图片）：带图的消息库里只存编号、模型收到图；模型看不了图时不收；view_image 看运行截图和图库的图；
+// 换成看不了图的模型 / 图被删了，历史里的图换成一句话；attach_files_to_task 出卡、应用后挂到任务附件。
 import type { AssistantEntry, AssistantStreamEvent } from "@heyagent/shared"
 import { SETTING_KEYS } from "@heyagent/shared"
 import { convertArrayToReadableStream, MockLanguageModelV4 } from "ai/test"
-import { and, desc, eq } from "drizzle-orm"
+import { and, desc, eq, inArray } from "drizzle-orm"
+import sharp from "sharp"
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 
 import * as t from "../src/db/schema.js"
 import { configureEngine } from "../src/engine/runtime.js"
+import { saveFile } from "../src/files/service.js"
 import { login, mutate, query, setupApp, type TestApp } from "./helpers.js"
 
 // 引擎的对接函数（定时、待办调度）这里不测，换成空的
@@ -19,6 +23,8 @@ vi.mock("../src/engine/api.js", () => ({ ...engine, startSession: vi.fn() }))
 const MODEL = "openrouter/test-assistant"
 const MODEL_B = "openrouter/test-assistant-b"
 const MODEL_C = "openrouter/test-assistant-c"
+/** 能看图的模型（别的几个 vision = false） */
+const MODEL_V = "openrouter/test-assistant-vision"
 /** resolveModel 每次拿的模型编号（假模型不管编号，按这个看用的是哪个） */
 const usedModels: string[] = []
 
@@ -168,6 +174,7 @@ beforeAll(async () => {
     { id: MODEL, providerId: "openrouter", name: "助手测试模型", contextK: 128 },
     { id: MODEL_B, providerId: "openrouter", name: "助手测试模型 B", contextK: 128 },
     { id: MODEL_C, providerId: "openrouter", name: "助手测试模型 C", contextK: 128 },
+    { id: MODEL_V, providerId: "openrouter", name: "助手看图模型", contextK: 128, vision: true },
   ])
   await ctx.db.update(t.modelDefaults).set({ modelId: MODEL }).where(eq(t.modelDefaults.role, "plan"))
   lin = await login(ctx.app, "linzhou@heyagent.local")
@@ -625,5 +632,233 @@ describe("右下角助手", () => {
     const res = await send(lin, { message: "" })
     expect(res.status).toBe(200)
     expect(of(res.events, "error")[0]?.message).toContain("请求不对")
+  })
+})
+
+// ---------- 第 11 节：看图、上传图片 ----------
+
+const pngOf = (color: string) => sharp({ create: { width: 40, height: 30, channels: 3, background: color } }).png().toBuffer()
+
+/** 照前端的做法：先 POST /api/files 上传拿编号 */
+async function uploadFile(cookie: string, name: string, data: Buffer | string, type: string) {
+  const form = new FormData()
+  form.append("file", new File([typeof data === "string" ? data : new Uint8Array(data)], name, { type }))
+  const res = await ctx.app.request("/api/files", { method: "POST", body: form, headers: { cookie } })
+  return (await res.json()) as { id: string; name: string; mime: string; size: number; url: string }
+}
+const uploadImage = async (cookie: string, name: string, color = "#f00") => uploadFile(cookie, name, await pngOf(color), "image/png")
+
+type PromptPart = { type: string; text?: string; mediaType?: string; data?: unknown; filename?: string }
+/** 第 index 次调模型时，发过去的所有消息里的图（file part） */
+const filePartsOf = (index: number) =>
+  script.prompts[index]!.prompt.flatMap((message) => (Array.isArray(message.content) ? (message.content as PromptPart[]) : [])).filter((part) => part.type === "file")
+
+const visionSettings = { modelId: MODEL_V, maxSteps: null, maxCostUsd: null }
+const chatCount = async (userId: string) => (await ctx.db.select().from(t.assistantChats).where(eq(t.assistantChats.userId, userId))).length
+
+describe("右下角助手：看图、上传图片", () => {
+  it("带图发消息：库里只存编号，模型收到缩过的图和「附图」一句，记录里有图；只发图的标题是「图片」；换成看不了图的模型 / 图删了，历史里换成一句话", async () => {
+    const a = await uploadImage(lin, "a.png", "#f00")
+    const b = await uploadImage(lin, "b.png", "#00f")
+    useScript([{ parts: [say("左边红的，右边蓝的。")] }])
+    const first = await send(lin, { message: "看看这两张", images: [a.id, b.id], settings: visionSettings })
+    const chatId = chatIdOf(first.events)
+    const user = replay(first.events).find((entry) => entry.kind === "user")!
+    expect(user).toMatchObject({ text: "看看这两张", images: [{ id: a.id, name: "a.png", mime: "image/png", size: a.size, url: `/api/files/${a.id}` }, { id: b.id, name: "b.png" }] })
+    // 库里不存图片内容，只存编号
+    const [row] = await ctx.db.select().from(t.assistantMessages).where(and(eq(t.assistantMessages.chatId, chatId), eq(t.assistantMessages.role, "user")))
+    expect(row!.message).toEqual({ role: "user", content: [{ type: "text", text: "看看这两张" }], files: [a.id, b.id] })
+    // 模型收到：文字 + 附图的编号 + 两张 JPEG
+    expect(script.promptText(0)).toContain(`（附图：${a.id} a.png、${b.id} b.png）`)
+    expect(script.promptText(0)).not.toContain('"files"')
+    const parts = filePartsOf(0)
+    expect(parts).toHaveLength(2)
+    expect(parts.every((part) => part.mediaType === "image/jpeg")).toBe(true)
+    // get 拼出来的和流里一致
+    const got = await query(ctx.app, "assistant.get", lin, { id: chatId })
+    expect(withoutAt(got.data.entries)).toEqual(withoutAt(replay(first.events)))
+
+    // 换成看不了图的模型：再说一句（不带图）照常能聊，历史里的图换成一句话
+    await mutate(ctx.app, "assistant.updateSettings", lin, { id: chatId, modelId: MODEL, maxSteps: null, maxCostUsd: null })
+    useScript([{ parts: [say("好")] }])
+    await send(lin, { chatId, message: "接着说" })
+    expect(filePartsOf(0)).toHaveLength(0)
+    expect(script.promptText(0)).toContain(`[图片 ${a.id}（a.png）：当前模型看不了图]`)
+
+    // 一张图被删了：换回能看图的模型，删了的那张换成一句话，另一张照发；记录里只列还在的
+    await ctx.db.delete(t.files).where(eq(t.files.id, b.id))
+    await mutate(ctx.app, "assistant.updateSettings", lin, { id: chatId, modelId: MODEL_V, maxSteps: null, maxCostUsd: null })
+    useScript([{ parts: [say("好")] }])
+    await send(lin, { chatId, message: "再看看" })
+    expect(filePartsOf(0)).toHaveLength(1)
+    expect(script.promptText(0)).toContain(`[图片 ${b.id} 已经删了]`)
+    const after = await query(ctx.app, "assistant.get", lin, { id: chatId })
+    expect(after.data.entries.find((entry: AssistantEntry) => entry.kind === "user").images.map((image: { id: string }) => image.id)).toEqual([a.id])
+
+    // 只发图：标题是「图片」
+    const c = await uploadImage(lin, "c.png")
+    useScript([{ parts: [say("一张红的图。")] }])
+    const only = await send(lin, { images: [c.id], settings: visionSettings })
+    expect(of(only.events, "chat")[0]!.title).toBe("图片")
+    expect(replay(only.events).find((entry) => entry.kind === "user")).toMatchObject({ text: "", images: [{ id: c.id }] })
+    expect(script.promptText(0)).toContain(`（附图：${c.id} c.png）`)
+  })
+
+  it("发图被拒：模型看不了图、不是图片、找不到；什么都不存，对话不建、不多一条消息", async () => {
+    const image = await uploadImage(wang, "x.png")
+    const text = await uploadFile(wang, "x.txt", "hello", "text/plain")
+    const before = await chatCount("u-wang")
+    // 默认模型（plan）看不了图
+    const rejected = await send(wang, { message: "看图", images: [image.id] })
+    expect(of(rejected.events, "error")[0]?.message).toBe("本对话用的模型 助手测试模型 看不了图，在「本对话的设置」里换一个能看图的模型")
+    expect(of(rejected.events, "chat")).toHaveLength(0)
+    expect(await chatCount("u-wang")).toBe(before)
+
+    const notImage = await send(wang, { message: "看图", images: [text.id], settings: visionSettings })
+    expect(of(notImage.events, "error")[0]?.message).toContain("不是图片")
+    const missing = await send(wang, { message: "看图", images: ["f-nope"], settings: visionSettings })
+    expect(of(missing.events, "error")[0]?.message).toContain("找不到图片 f-nope")
+    expect(await chatCount("u-wang")).toBe(before)
+
+    // 已有的对话：不插消息
+    useScript([{ parts: [say("你好")] }])
+    const chatId = chatIdOf((await send(wang, { message: "你好" })).events)
+    const rows = async () => (await ctx.db.select().from(t.assistantMessages).where(eq(t.assistantMessages.chatId, chatId))).length
+    const count = await rows()
+    const again = await send(wang, { chatId, message: "看图", images: [image.id] })
+    expect(of(again.events, "error")[0]?.message).toContain("看不了图")
+    expect(await rows()).toBe(count)
+    // 什么都没说也没带图：请求不对
+    expect(of((await send(wang, { chatId, images: [] })).events, "error")[0]?.message).toContain("请求不对")
+  })
+
+  it("view_image：查运行的文件、看截图和图库的图；图接在工具结果后面发给模型、存成 image 行；记录里工具那条带图；看不了图的模型报错", async () => {
+    const taskId = await makeTask({ title: "截图任务" })
+    const runId = `R-${taskId.slice(2)}-7`
+    await ctx.db.insert(t.sessions).values({ id: runId, taskId, status: "done", modelId: MODEL, startedAt: new Date() })
+    const shot = await saveFile(ctx.db, { data: await pngOf("#0f0"), name: "screenshot.png", kind: "screenshot", sessionId: runId })
+    const log = await saveFile(ctx.db, { data: Buffer.from("日志"), name: "out.txt", kind: "tool_output", sessionId: runId })
+    const original = await saveFile(ctx.db, { data: await pngOf("#ff0"), name: "gallery.png", kind: "gallery" })
+    const thumb = await saveFile(ctx.db, { data: await pngOf("#ff0"), name: "thumb.webp", kind: "gallery_thumb" })
+    await ctx.db.insert(t.galleryImages).values({ id: "img-9901", fileId: original.id, thumbFileId: thumb.id, sha256: original.sha256, name: "gallery.png", mime: "image/png", size: original.size, width: 40, height: 30, via: "web" })
+
+    useScript([
+      { parts: [use("list_run_files", { runId })] },
+      { parts: [say("看一下截图。"), use("view_image", { fileId: shot.id }), use("view_image", { galleryImageId: "img-9901" }), use("view_image", { fileId: log.id }), use("view_image", { galleryImageId: "img-nope" })] },
+      { parts: [say("截图是绿的，图库那张是黄的。")] },
+    ])
+    const res = await send(lin, { message: "看看运行的截图", settings: visionSettings })
+    const chatId = chatIdOf(res.events)
+    // list_run_files 列出了截图，标了能看
+    expect(script.promptText(1)).toContain(shot.id)
+    expect(script.promptText(1)).toContain('\\"image\\":true')
+    // 第三次调模型：工具结果说图在下一条消息里，后面一条 user 消息带两张图
+    const third = script.prompts[2]!.prompt
+    const toolIndex = third.findLastIndex((message) => message.role === "tool")
+    expect(JSON.stringify(third[toolIndex])).toContain("图片在下一条消息里")
+    expect(third[toolIndex + 1]).toMatchObject({ role: "user" })
+    expect(JSON.stringify(third[toolIndex + 1])).toContain(`view_image 看的图（${shot.id} screenshot.png、${original.id} gallery.png）`)
+    expect(filePartsOf(2)).toHaveLength(2)
+    // 不是图片的、图库里没有的：报错交回模型
+    expect(JSON.stringify(third[toolIndex])).toContain("不是图片")
+    expect(JSON.stringify(third[toolIndex])).toContain("图库里没有 img-nope")
+
+    // 存库：image 行紧跟在 tool 行后面，只存编号
+    const rows = await ctx.db.select().from(t.assistantMessages).where(eq(t.assistantMessages.chatId, chatId)).orderBy(t.assistantMessages.seq)
+    expect(rows.map((row) => row.role)).toEqual(["user", "assistant", "tool", "assistant", "tool", "image", "assistant"])
+    const calls = (rows[3]!.message as { content: { type: string; toolCallId?: string }[] }).content.filter((part) => part.type === "tool-call").map((part) => part.toolCallId)
+    expect(rows[5]!.message).toEqual({ images: [{ callId: calls[0], fileId: shot.id }, { callId: calls[1], fileId: original.id }] })
+    expect(rows.map((row) => row.seq)).toEqual(rows.map((_, index) => rows[0]!.seq + index))
+
+    // 记录：view_image 那条带图；和 get 一致
+    const tools = replay(res.events).filter((entry) => entry.kind === "tool")
+    expect(tools.map((entry) => entry.kind === "tool" && [entry.label, entry.status, entry.images?.map((image) => image.id)])).toEqual([
+      [`查运行 ${runId} 的文件`, "done", undefined],
+      [`看图 ${shot.id}`, "done", [shot.id]],
+      ["看图 img-9901", "done", [original.id]],
+      [`看图 ${log.id}`, "error", undefined],
+      ["看图 img-nope", "error", undefined],
+    ])
+    const got = await query(ctx.app, "assistant.get", lin, { id: chatId })
+    expect(withoutAt(got.data.entries)).toEqual(withoutAt(replay(res.events)))
+
+    // 接着聊：历史里的 image 行照样带图发给模型
+    useScript([{ parts: [say("好")] }])
+    await send(lin, { chatId, message: "嗯" })
+    expect(filePartsOf(0)).toHaveLength(2)
+
+    // 看不了图的模型：view_image 报错，不存 image 行
+    useScript([{ parts: [use("view_image", { fileId: shot.id })] }, { parts: [say("看不了")] }])
+    const blind = await send(lin, { message: "看截图" })
+    expect(script.promptText(1)).toContain("当前模型看不了图")
+    expect(filePartsOf(1)).toHaveLength(0)
+    const blindRows = await ctx.db.select().from(t.assistantMessages).where(eq(t.assistantMessages.chatId, chatIdOf(blind.events)))
+    expect(blindRows.some((row) => row.role === "image")).toBe(false)
+  })
+
+  it("一步里有 view_image 又有卡：image 行在 tool 行后面，卡的结果照样并进 tool 行", async () => {
+    const id = await makeTask({ title: "看图再改" })
+    const image = await uploadImage(lin, "ref.png")
+    useScript([{ parts: [use("view_image", { fileId: image.id }), use("set_task_enabled", { id, enabled: false })] }, { parts: [say("停好了")] }])
+    const first = await send(lin, { message: "看图，然后停用任务", settings: visionSettings })
+    const proposalId = doneOf(first.events)!.pendingProposalId!
+    expect(proposalId).toBeTruthy()
+    await decide(lin, { proposalId, accept: true })
+    const rows = await ctx.db.select().from(t.assistantMessages).where(eq(t.assistantMessages.chatId, chatIdOf(first.events))).orderBy(t.assistantMessages.seq)
+    expect(rows.map((row) => row.role)).toEqual(["user", "assistant", "tool", "image", "assistant"])
+    expect(JSON.stringify(rows[2]!.message)).toContain(`已停用任务 ${id}`)
+    // 应用后再调模型：工具结果齐了，图在后面
+    const prompt = script.prompts[1]!.prompt
+    const toolIndex = prompt.findLastIndex((message) => message.role === "tool")
+    expect((prompt[toolIndex]!.content as unknown[]).length).toBe(2)
+    expect(filePartsOf(1)).toHaveLength(1)
+  })
+
+  it("attach_files_to_task：出卡不改库；应用后图成了任务附件、审计带 via；别处的文件不进卡；engine.attachToTask 同一套规矩", async () => {
+    const id = await makeTask({ title: "要附件的任务" })
+    const a = await uploadImage(lin, "样图.png")
+    const b = await uploadImage(lin, "样图2.png")
+    const runId = `R-${id.slice(2)}-1`
+    await ctx.db.insert(t.sessions).values({ id: runId, taskId: id, status: "done", modelId: MODEL, startedAt: new Date() })
+    const shot = await saveFile(ctx.db, { data: await pngOf("#0f0"), name: "screenshot.png", kind: "screenshot", sessionId: runId })
+    useScript([
+      { parts: [use("attach_files_to_task", { taskId: id, fileIds: [shot.id] }), use("attach_files_to_task", { taskId: id, fileIds: [a.id, b.id] })] },
+      { parts: [say("挂好了")] },
+    ])
+    const first = await send(lin, { message: "把这两张放进任务附件", images: [a.id, b.id], settings: visionSettings })
+    const card = of(first.events, "entry").find((event) => event.entry.kind === "proposal")!.entry as Extract<AssistantEntry, { kind: "proposal" }>
+    expect(card.proposal.changes).toHaveLength(1)
+    expect(card.proposal.changes[0]).toMatchObject({ tool: "attach_files_to_task", destructive: false, title: `给任务 ${id}「要附件的任务」 加 2 个附件` })
+    expect(card.proposal.changes[0]!.fields).toEqual([
+      { label: "附件 1", after: `样图.png（${a.id}）` },
+      { label: "附件 2", after: `样图2.png（${b.id}）` },
+    ])
+    const error = replay(first.events).find((entry) => entry.kind === "tool" && entry.status === "error")
+    expect(error?.kind === "tool" && error.detail).toContain("已经用在别处")
+    expect((await ctx.db.select().from(t.files).where(eq(t.files.id, a.id)))[0]).toMatchObject({ kind: "upload", taskId: null })
+
+    const applied = await decide(lin, { proposalId: card.id, accept: true })
+    expect(of(applied.events, "update")[0]).toMatchObject({ entry: { proposal: { changes: [{ result: { ok: true, message: `已把 2 个文件加到任务 ${id} 的附件`, link: { page: "tasks", params: { id } } } }] } } })
+    const files = await ctx.db.select().from(t.files).where(inArray(t.files.id, [a.id, b.id]))
+    expect(files.every((file) => file.taskId === id && file.kind === "attachment" && file.sessionId === null)).toBe(true)
+    const audits = await ctx.db.select().from(t.auditEvents).where(and(eq(t.auditEvents.action, "task.attach"), eq(t.auditEvents.targetId, id)))
+    expect(audits).toHaveLength(2)
+    expect(audits.every((audit) => (audit.detail as { via?: string }).via === "assistant")).toBe(true)
+    // 挂成附件以后，对话里的图照样能看
+    const got = await query(ctx.app, "assistant.get", lin, { id: chatIdOf(first.events) })
+    expect(got.data.entries.find((entry: AssistantEntry) => entry.kind === "user").images).toHaveLength(2)
+
+    // 员工不能给别人的任务挂附件：不进卡
+    const c = await uploadImage(wang, "c.png")
+    useScript([{ parts: [use("attach_files_to_task", { taskId: id, fileIds: [c.id] })] }, { parts: [say("没权限")] }])
+    await send(wang, { message: "挂上", images: [c.id], settings: visionSettings })
+    expect(script.promptText(1)).toContain("只有任务负责人和主管能改任务附件")
+
+    // tRPC 的 attachToTask 走同一个函数：已经是附件的照样返回；别人的任务 FORBIDDEN；用在别处的 BAD_REQUEST
+    expect((await mutate(ctx.app, "engine.attachToTask", lin, { taskId: id, fileId: a.id })).data).toMatchObject({ id: a.id, scope: "task", kind: "attachment" })
+    expect((await mutate(ctx.app, "engine.attachToTask", wang, { taskId: id, fileId: c.id })).error?.data?.code).toBe("FORBIDDEN")
+    const badRequest = await mutate(ctx.app, "engine.attachToTask", lin, { taskId: id, fileId: shot.id })
+    expect(badRequest.error?.data?.code).toBe("BAD_REQUEST")
+    expect(badRequest.error?.message).toBe("这个文件已经用在别处，请重新上传")
   })
 })
