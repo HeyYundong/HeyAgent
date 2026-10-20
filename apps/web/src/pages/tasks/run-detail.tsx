@@ -133,8 +133,8 @@ function EventsSkeleton({ count }: { count: number }) {
 /** 过程里几类 M3 的事件加个小标签，一眼分清：规则命中、agent 写下步骤、上下文压缩、验收 */
 function eventTag(event: RunEvent): { label: string; variant: "outline" | "secondary"; icon?: LucideIcon } | undefined {
   if (event.kind === "rule") return { label: "规则", variant: "outline" }
-  // 轻量复核也写成 verify 事件，按标题区分（run-outcome 5.2）
-  if (event.kind === "verify" && event.title.startsWith("复核")) return { label: "复核", variant: "outline" }
+  // 轻量复核也写成 verify 事件，标题以「AI 复核」开头（「AI 复核：办成」「AI 复核出错：…」，run-outcome 5.2）
+  if (event.kind === "verify" && event.title.startsWith("AI 复核")) return { label: "复核", variant: "outline" }
   if (event.kind === "verify") return { label: "验收", variant: "outline" }
   if (event.kind === "plan" && event.toolId === "plan.set") return { label: "步骤", variant: "secondary" }
   // 压缩也写成 plan 事件，按标题区分（api.md 11.6）
