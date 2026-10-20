@@ -160,7 +160,7 @@ function DefaultsSection({ providers, defaults, readOnly, nameOf, saving, onSave
   const optional = ["embed", "assistant", "review"] as const
   const dirty = ROLES.some((role) => draft[role.id] !== defaults[role.id]) || optional.some((role) => (draft[role] ?? "") !== (defaults[role] ?? ""))
   return (
-    <DetailSection title="默认用哪个模型" description="三方验收不能和执行用同一家的模型：同一家容易犯同样的错，验收看不出来，就不算第三方了。"
+    <DetailSection title="默认用哪个模型"
       action={!readOnly && (
         <Button size="sm" disabled={!dirty || clash || saving} onClick={() => onSave({ ...draft, embed: draft.embed ?? "", assistant: draft.assistant ?? "", review: draft.review ?? "" })}>
           {saving ? <Spinner data-icon="inline-start" /> : <SaveIcon data-icon="inline-start" />}
@@ -172,10 +172,13 @@ function DefaultsSection({ providers, defaults, readOnly, nameOf, saving, onSave
           const invalid = role.id === "verify" && clash
           return (
             <Field key={role.id} data-invalid={invalid}>
-              <FieldLabel htmlFor={`default-${role.id}`}>{role.label}</FieldLabel>
+              <FieldTitle htmlFor={`default-${role.id}`} label={role.label}>
+                {role.hint}
+                {role.id === "verify" && "不能和执行用同一家的模型：同一家容易犯同样的错，验收看不出来，就不算第三方了。"}
+                现在选的是 {modelFamily(draft[role.id])} 家的。
+              </FieldTitle>
               <ModelCombobox id={`default-${role.id}`} className="w-full sm:w-96" models={models} value={draft[role.id]} disabled={readOnly} aria-invalid={invalid}
                 onValueChange={(next) => setDraft({ ...draft, [role.id]: next })} />
-              <FieldDescription>{role.hint} 家族：{modelFamily(draft[role.id])}</FieldDescription>
               {invalid && (
                 <FieldError>
                   执行用的 {nameOf(draft.run)} 也是 {modelFamily(draft.run)} 家的。同一家容易犯同样的错，验收看不出来，就不算第三方了。请换一家，换好才能保存。
@@ -185,33 +188,36 @@ function DefaultsSection({ providers, defaults, readOnly, nameOf, saving, onSave
           )
         })}
         <Field>
-          <div className="flex items-center gap-1">
-            <FieldLabel htmlFor="default-assistant">助手</FieldLabel>
-            <HelpTip>右下角助手用的模型，不选就用「规划」那个。每段对话还可以在助手的「本对话的设置」里单独换。</HelpTip>
-          </div>
+          <FieldTitle htmlFor="default-assistant" label="助手">右下角助手用的模型，不选就用「规划」那个。每段对话还可以在助手的「本对话的设置」里单独换。</FieldTitle>
           <ModelCombobox id="default-assistant" className="w-full sm:w-96" models={models} value={draft.assistant ?? ""} disabled={readOnly} clearable placeholder={`不选（用规划：${nameOf(draft.plan)}）`}
             onValueChange={(next) => setDraft({ ...draft, assistant: next || undefined })} />
         </Field>
         <Field>
-          <div className="flex items-center gap-1">
-            <FieldLabel htmlFor="default-review">复核模型</FieldLabel>
-            <HelpTip>新任务默认用的复核模型（每个任务都必须有复核模型，任务里可以换）；以前没选复核模型的旧任务运行时也用它。运行结束后它看目标、检查点、agent 的报告、最后几步和最后一张截图，判办成还是没办成，证据不足判没办成。用便宜、能看图的模型就够，每次不到 0.001 美元。</HelpTip>
-          </div>
+          <FieldTitle htmlFor="default-review" label="复核模型">新任务默认用的复核模型（每个任务都必须有复核模型，任务里可以换）；以前没选复核模型的旧任务运行时也用它。运行结束后它看目标、检查点、agent 的报告、最后几步和最后一张截图，判办成还是没办成，证据不足判没办成。用便宜、能看图的模型就够，每次不到 0.001 美元。</FieldTitle>
           <ModelCombobox id="default-review" className="w-full sm:w-96" models={models} value={draft.review ?? ""} disabled={readOnly} clearable placeholder="不选（新任务要自己选，没选复核模型的旧任务不能运行）"
             onValueChange={(next) => setDraft({ ...draft, review: next || undefined })} />
         </Field>
         <Field>
-          <FieldLabel htmlFor="default-embed">图库的 embedding 模型</FieldLabel>
-          <ModelCombobox id="default-embed" className="w-full sm:w-96" models={embeddingModels} value={draft.embed ?? ""} disabled={readOnly} clearable placeholder="不用（图库不能以图搜图）"
-            onValueChange={(next) => setDraft({ ...draft, embed: next || undefined })} />
-          <FieldDescription>
+          <FieldTitle htmlFor="default-embed" label="图库的 embedding 模型">
             把图片和描述变成向量，图库的以图搜图、比对、按描述找图都用它。只列能处理图片的 embedding 模型。
             换了以后后台用新模型把所有图重算一遍，算完之前检索还用旧模型。
-            {embeddingModels.length === 0 && " 现在一个都没有：到 OpenRouter 服务里点「刷新模型列表」。"}
-          </FieldDescription>
+          </FieldTitle>
+          <ModelCombobox id="default-embed" className="w-full sm:w-96" models={embeddingModels} value={draft.embed ?? ""} disabled={readOnly} clearable placeholder="不用（图库不能以图搜图）"
+            onValueChange={(next) => setDraft({ ...draft, embed: next || undefined })} />
+          {embeddingModels.length === 0 && <FieldDescription>现在一个都没有：到 OpenRouter 服务里点「刷新模型列表」。</FieldDescription>}
         </Field>
       </FieldGroup>
     </DetailSection>
+  )
+}
+
+/** 表单项的标题：说明放在旁边的「?」里，不在输入框下面另起一行 */
+function FieldTitle({ htmlFor, label, children }: { htmlFor: string; label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-1">
+      <FieldLabel htmlFor={htmlFor}>{label}</FieldLabel>
+      <HelpTip>{children}</HelpTip>
+    </div>
   )
 }
 

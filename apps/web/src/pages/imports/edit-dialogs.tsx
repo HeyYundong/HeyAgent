@@ -204,7 +204,7 @@ function TaskForm({ plan, task, onSave }: { plan: ImportPlan; task: PlanTask; on
             </FieldSet>
             <Field data-invalid={!!errors.goal}>
               <FieldLabel htmlFor="import-task-goal">目标</FieldLabel>
-              <Input id="import-task-goal" aria-invalid={!!errors.goal} {...form.register("goal")} />
+              <Textarea id="import-task-goal" rows={3} aria-invalid={!!errors.goal} {...form.register("goal")} />
               <FieldDescription>做到什么算完成。必填，三方验收按它判断。</FieldDescription>
               <FieldError errors={[errors.goal]} />
             </Field>
