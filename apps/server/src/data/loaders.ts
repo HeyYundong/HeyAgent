@@ -622,7 +622,7 @@ export async function loadModels(db: Db): Promise<{ providers: ModelProvider[]; 
   const modelsOf = (providerId: string, kind: "chat" | "embedding") =>
     models
       .filter((model) => model.providerId === providerId && model.kind === kind)
-      .map((model) => ({ id: model.id, name: model.name, note: model.note, contextK: model.contextK, priceIn: model.priceIn, priceOut: model.priceOut, vision: model.vision }))
+      .map((model) => ({ id: model.id, name: model.name, note: model.note, contextK: model.contextK, priceIn: model.priceIn, priceOut: model.priceOut, vision: model.vision, ...(model.manual ? { manual: true } : {}) }))
   return {
     providers: providers.map(({ provider, masked }) => {
       const embeddingModels = modelsOf(provider.id, "embedding")

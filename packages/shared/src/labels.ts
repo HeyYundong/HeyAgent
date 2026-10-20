@@ -137,7 +137,7 @@ export const loopStages: { id: LoopStage; name: string; description: string }[] 
 ]
 
 /** 模型服务类型（原型 models/data.ts 的 KIND_LABEL） */
-export const providerKindLabel: Record<ModelProviderKind, string> = { ollama: "Ollama", openrouter: "OpenRouter", anthropic: "Claude", openai: "OpenAI", deepseek: "DeepSeek" }
+export const providerKindLabel: Record<ModelProviderKind, string> = { ollama: "Ollama", openrouter: "OpenRouter", anthropic: "Claude", openai: "OpenAI", deepseek: "DeepSeek", custom: "自定义" }
 
 /** 新增：模型服务状态。原型只有正常 / 连不上 */
 export const providerStatusLabel: Record<ProviderStatus, string> = { ok: "正常", error: "连不上", unconfigured: "未配置" }

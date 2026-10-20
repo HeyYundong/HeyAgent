@@ -316,6 +316,8 @@ export const models = pgTable(
     vision: boolean("vision").notNull().default(false),
     /** chat = 能调工具的聊天模型；embedding = 向量模型（图库用，vision 表示能处理图片） */
     kind: text("kind").$type<"chat" | "embedding">().notNull().default("chat"),
+    /** 人手动加的（自定义服务）：刷新模型列表时不删，列表里有同名的也以手动填的为准 */
+    manual: boolean("manual").notNull().default(false),
     position: position(),
   },
   (t) => [index("models_provider_id_idx").on(t.providerId)]

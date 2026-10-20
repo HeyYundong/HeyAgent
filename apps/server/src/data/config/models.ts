@@ -1,8 +1,10 @@
-// 模型的写操作：模型服务（OpenRouter / Ollama / 直连 Claude、OpenAI、DeepSeek；key 进 secrets）、刷新模型列表、测试连接、各角色的默认模型（含图库的 embedding 模型）。
+// 模型的写操作：模型服务（OpenRouter / Ollama / 直连 Claude、OpenAI、DeepSeek / 自定义的 OpenAI 兼容服务；key 进 secrets）、刷新模型列表、测试连接、
+// 自定义服务手动加的模型、各角色的默认模型（含图库的 embedding 模型）。
 // 不调模型：OpenRouter 的模型列表用公开的 GET /models 和 GET /embeddings/models（不需要 key、不花钱）；测试连接另外用 GET /key 核对 key 有效（也不花钱）。
 // 直连厂商时列模型要带 key（同时就核对了 key）；厂商的列表不给价格，按模型名到 OpenRouter 的公开目录查。
-import { and, asc, desc, eq, inArray, notInArray, sql } from "drizzle-orm"
-import { defaultsAfterRemove, modelFamily, OPENROUTER_DEFAULT_URL, providerKindLabel, providerNeedsKey, sameFamily, type CompareModel, type ModelDefaults, type ModelProviderKind, type ModelRole, type ProviderCheck } from "@heyagent/shared"
+// 自定义服务的 GET /models 是可选的（很多网关没有）：读不到也能存，模型手动加；测试连接时读不到列表就用一个模型试发一句话（花很少的钱）。
+import { and, asc, desc, eq, inArray, notInArray, or, sql } from "drizzle-orm"
+import { defaultsAfterRemove, modelFamily, OPENROUTER_DEFAULT_URL, providerKindLabel, providerNeedsKey, sameFamily, type CompareModel, type ManualModelInput, type ManualModelUpdate, type ModelDefaults, type ModelProviderKind, type ModelRole, type ProviderCheck } from "@heyagent/shared"
 
 import type { Db } from "../../db/client.js"
 import * as t from "../../db/schema.js"
@@ -252,19 +254,119 @@ async function probeNative(kind: NativeKind, base: string, apiKey: string | unde
   return { check: { ok: true, latencyMs: listed.latencyMs, models: models.length, message: `连上了，读到 ${models.length} 个能调工具的模型`, note }, models }
 }
 
+/** 自定义服务的 /models 里常混着向量、重排、语音、画图模型：按名字去掉（聊天接口用不了） */
+const CUSTOM_NOT_CHAT = /(embed|rerank|whisper|tts|transcri|speech|moderation|dall-e|diffusion)/i
+const lastSegment = (id: string) => id.slice(id.lastIndexOf("/") + 1)
+
+/**
+ * 自定义服务列出的模型：列表只有 id。上下文长度、能不能看图、一句话说明按模型名（去掉前面的「厂商/」）到 OpenRouter 公开目录宽松匹配；
+ * 价格不用目录里的（各家网关、云厂商的价格和 OpenRouter 不一样，有的还按人民币算），记 0（页面显示「未知」），要算钱就手动加同名模型填单价
+ */
+export function customCatalog(ids: string[], reference: OpenRouterModel[] | undefined): CatalogModel[] {
+  const loose = new Map<string, OpenRouterModel>()
+  for (const model of reference ?? []) {
+    const name = lastSegment(model.id)
+    if (name.includes(":")) continue
+    if (!loose.has(looseName(name))) loose.set(looseName(name), model)
+  }
+  return [...new Set(ids)]
+    .filter((id) => !CUSTOM_NOT_CHAT.test(id))
+    .sort((a, b) => a.localeCompare(b))
+    .map((id) => {
+      const ref = loose.get(looseName(lastSegment(id)))
+      return {
+        name: id,
+        displayName: id,
+        note: firstSentence(ref?.description),
+        contextK: ref?.context_length ? Math.max(1, Math.round(ref.context_length / 1000)) : 0,
+        priceIn: 0,
+        priceOut: 0,
+        vision: ref?.architecture?.input_modalities?.includes("image") ?? false,
+        kind: "chat" as const,
+      }
+    })
+}
+
+/** 自定义服务：带 key（有的话）请求，不管成不成功都要状态码；body 不是 JSON 时当作没有 */
+async function customRequest(url: string, apiKey: string | undefined, body?: unknown) {
+  const started = Date.now()
+  const response = await fetch(url, {
+    method: body ? "POST" : "GET",
+    headers: { accept: "application/json", ...(body ? { "content-type": "application/json" } : {}), ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  })
+  const latencyMs = Date.now() - started
+  const text = await response.text().catch(() => "")
+  let json: unknown
+  try {
+    json = JSON.parse(text)
+  } catch {
+    json = undefined
+  }
+  return { status: response.status, ok: response.ok, json, text, latencyMs }
+}
+
+/** 接口报错时给人看的原因：OpenAI 风格的 { error: { message } }，没有就取正文开头 */
+function errorReason(res: { json: unknown; text: string }) {
+  const error = (res.json as { error?: { message?: unknown } | string } | undefined)?.error
+  const message = typeof error === "string" ? error : typeof error?.message === "string" ? error.message : res.text
+  return message.replace(/\s+/g, " ").trim().slice(0, 200)
+}
+
+const NO_LIST_NOTE = "很多服务没有模型列表接口，到「可用模型」点「添加模型」手动加要用的模型。地址填错了也会这样：地址要填到 /v1 为止（后面接 /chat/completions）"
+
+/**
+ * 自定义服务（OpenAI 兼容）：GET /models 读到了就用；401、403 是 key 不对；连不上（超时、域名不对）报错。
+ * 其余情况（404、不是 JSON、列表是空的）算连上了但没有列表（listed = false，已有的模型不动）：
+ * 有 tryModel 时（测试连接、服务里已经有模型）再用它试发一句话，确认地址和 key 真的能用
+ */
+async function probeCustom(base: string, apiKey: string | undefined, tryModel?: string): Promise<{ check: ProviderCheck; models: CatalogModel[]; listed: boolean }> {
+  const keyHint = apiKey ? "请检查后重新填" : "这个服务要 API Key，填上再试"
+  const [list, reference] = await Promise.all([customRequest(`${base}/models`, apiKey), loadReference()])
+  if (list.status === 401 || list.status === 403) return { check: { ok: false, latencyMs: list.latencyMs, message: `API Key 不对（GET /models 返回 ${list.status}），${keyHint}` }, models: [], listed: false }
+  const data = (list.json as { data?: { id?: unknown }[] } | undefined)?.data
+  const ids = list.ok && Array.isArray(data) ? data.map((item) => item?.id).filter((id): id is string => typeof id === "string" && id.length > 0) : []
+  const models = customCatalog(ids, reference)
+  if (models.length) {
+    return {
+      check: {
+        ok: true,
+        latencyMs: list.latencyMs,
+        models: models.length,
+        message: `连上了，读到 ${models.length} 个模型`,
+        note: "这个服务不给价格，单价显示「未知」：花费按 0 算，花费上限管不住。要算钱就点「添加模型」，按同一个模型名填上单价。模型能不能调工具也不知道，agent 要用能调工具的模型",
+      },
+      models,
+      listed: true,
+    }
+  }
+  const why = !list.ok ? `GET /models 返回 HTTP ${list.status}` : "GET /models 没列出模型"
+  if (!tryModel) return { check: { ok: true, latencyMs: list.latencyMs, models: 0, message: `连上了，但读不到模型列表（${why}）`, note: NO_LIST_NOTE }, models: [], listed: false }
+  // 试发一句话：max_tokens 给小一点，花不了几个 token
+  const chat = await customRequest(`${base}/chat/completions`, apiKey, { model: tryModel, messages: [{ role: "user", content: "ping" }], max_tokens: 16 })
+  if (chat.ok) return { check: { ok: true, latencyMs: chat.latencyMs, models: 0, message: `连上了：读不到模型列表（${why}），用「${tryModel}」试发了一句话，能用` }, models: [], listed: false }
+  if (chat.status === 401 || chat.status === 403) return { check: { ok: false, latencyMs: chat.latencyMs, message: `API Key 不对（返回 ${chat.status}），${keyHint}` }, models: [], listed: false }
+  if (chat.status === 404) return { check: { ok: false, latencyMs: chat.latencyMs, message: `用「${tryModel}」试发一句话，返回 HTTP 404：地址不对（要填到 /v1 为止），或者服务里没有这个模型名。${errorReason(chat)}`.trim() }, models: [], listed: false }
+  return { check: { ok: false, latencyMs: chat.latencyMs, message: `用「${tryModel}」试发一句话失败：HTTP ${chat.status} ${errorReason(chat)}`.trim() }, models: [], listed: false }
+}
+
 /**
  * 连一次服务：拿到模型目录；OpenRouter 有 key 时再核对一次 key（GET /key，不花钱）；直连厂商列模型本身就要 key。
- * embeddingsKnown = 这次读到了 embedding 模型目录（OpenRouter 才有；Ollama 的 embedding 不支持图片，不读）
+ * embeddingsKnown = 这次读到了 embedding 模型目录（OpenRouter 才有；Ollama 的 embedding 不支持图片，不读）。
+ * listed 为 false = 连上了但没读到模型列表（自定义服务），已有的模型不动。tryModel 只给自定义服务用，见 probeCustom
  */
 export async function probeProvider(
   kind: ModelProviderKind,
   baseUrl: string,
   apiKey?: string,
-  verifyKey = true
-): Promise<{ check: ProviderCheck; models: CatalogModel[]; embeddingsKnown?: boolean }> {
+  verifyKey = true,
+  tryModel?: string
+): Promise<{ check: ProviderCheck; models: CatalogModel[]; embeddingsKnown?: boolean; listed?: boolean }> {
   const base = trimUrl(baseUrl)
   try {
     if (isNative(kind)) return await probeNative(kind, base, apiKey)
+    if (kind === "custom") return await probeCustom(base, apiKey, tryModel)
     if (kind === "openrouter") {
       const list = await getJson(`${base}/models`)
       if (!list.ok) return { check: { ok: false, message: `连不上 OpenRouter：GET /models 返回 HTTP ${list.status}` }, models: [] }
@@ -300,10 +402,13 @@ async function providerKey(db: DbOrTx, keyring: Keyring, secretId: string | null
 
 /**
  * 把模型目录写进 models 表：新的加上，旧的更新，没了的删掉（默认设置还在用的先留着，免得默认设置断掉）。
- * embeddingsKnown 为 false 时这次没读到 embedding 模型目录，已有的 embedding 模型不动
+ * embeddingsKnown 为 false 时这次没读到 embedding 模型目录，已有的 embedding 模型不动。
+ * 手动加的模型（manual）不删也不覆盖：列表里有同名的，以人填的单价、能不能看图为准
  */
 async function writeModels(tx: DbOrTx, providerId: string, models: CatalogModel[], embeddingsKnown = true) {
-  const seen = new Set<string>()
+  const existing = await tx.select({ id: t.models.id, kind: t.models.kind, manual: t.models.manual }).from(t.models).where(eq(t.models.providerId, providerId))
+  const manual = new Set(existing.filter((row) => row.manual).map((row) => row.id))
+  const seen = new Set<string>(manual)
   const rows = models
     .map((model, position) => ({
       id: `${providerId}/${model.name}`,
@@ -321,9 +426,8 @@ async function writeModels(tx: DbOrTx, providerId: string, models: CatalogModel[
     .filter((row) => !seen.has(row.id) && Boolean(seen.add(row.id)))
   const keep = new Set(rows.map((row) => row.id))
   const defaults = (await tx.select({ modelId: t.modelDefaults.modelId }).from(t.modelDefaults)).map((row) => row.modelId)
-  const existing = await tx.select({ id: t.models.id, kind: t.models.kind }).from(t.models).where(eq(t.models.providerId, providerId))
   const stale = existing
-    .filter((row) => embeddingsKnown || row.kind !== "embedding")
+    .filter((row) => !row.manual && (embeddingsKnown || row.kind !== "embedding"))
     .map((row) => row.id)
     .filter((id) => !keep.has(id) && !defaults.includes(id))
   if (stale.length) await tx.delete(t.models).where(inArray(t.models.id, stale))
@@ -368,7 +472,7 @@ export async function addProvider(
   options: { verifyKey?: boolean } = {}
 ) {
   if (providerNeedsKey(input.kind) && !input.apiKey) throw badRequest(`填 ${providerKindLabel[input.kind]} 的 API Key`)
-  const { check, models, embeddingsKnown } = await probeProvider(input.kind, input.baseUrl, input.apiKey, options.verifyKey ?? true)
+  const { check, models, embeddingsKnown, listed } = await probeProvider(input.kind, input.baseUrl, input.apiKey, options.verifyKey ?? true)
   if (!check.ok) throw badRequest(check.message)
   const id = await db.transaction(async (tx) => {
     const id = await nextProviderId(tx, input.kind)
@@ -376,7 +480,7 @@ export async function addProvider(
     await tx.insert(t.modelProviders).values({
       id,
       kind: input.kind,
-      name: input.name || (id === input.kind ? providerKindLabel[input.kind] : `${providerKindLabel[input.kind]} ${id.split("-").at(-1)}`),
+      name: input.name || defaultProviderName(input.kind, id, input.baseUrl),
       baseUrl: trimUrl(input.baseUrl),
       status: "ok",
       checkedAt: new Date(),
@@ -387,11 +491,23 @@ export async function addProvider(
       const secretId = await putSecret(tx, keyring, { scope: "model_provider", refId: id, name: "api_key" }, input.apiKey, actorId, 9)
       await tx.update(t.modelProviders).set({ apiKeySecretId: secretId }).where(eq(t.modelProviders.id, id))
     }
-    await writeModels(tx, id, models, embeddingsKnown)
+    if (listed !== false) await writeModels(tx, id, models, embeddingsKnown)
     await audit(tx, actorId, "model_provider.create", "model_providers", id, { kind: input.kind, baseUrl: trimUrl(input.baseUrl), models: models.length, apiKeySet: Boolean(input.apiKey) })
     return id
   })
   return { id, check }
+}
+
+/** 没填名称时：自定义服务用地址里的域名（列表里看得出是哪家），其余用类型名（第二个起加序号） */
+function defaultProviderName(kind: ModelProviderKind, id: string, baseUrl: string) {
+  if (kind === "custom") {
+    try {
+      return new URL(trimUrl(baseUrl)).hostname
+    } catch {
+      // 地址格式在 schema 里已经校验过，这里只是兜底
+    }
+  }
+  return id === kind ? providerKindLabel[kind] : `${providerKindLabel[kind]} ${id.split("-").at(-1)}`
 }
 
 export async function createProvider(ctx: WriteCtx, input: { kind: ModelProviderKind; name?: string; baseUrl: string; apiKey?: string }) {
@@ -411,7 +527,7 @@ export async function updateProvider(ctx: WriteCtx, input: { id: string; name?: 
   const before = await loadProvider(ctx.db, input.id)
   const apiKey = input.apiKey || (await providerKey(ctx.db, ctx.keyring(), before.apiKeySecretId))
   if (providerNeedsKey(before.kind) && !apiKey) throw badRequest(`填 ${providerKindLabel[before.kind]} 的 API Key`)
-  const { check, models, embeddingsKnown } = await probeProvider(before.kind, input.baseUrl, apiKey)
+  const { check, models, embeddingsKnown, listed } = await probeProvider(before.kind, input.baseUrl, apiKey, true, await firstModelName(ctx.db, before.id))
   if (!check.ok) throw badRequest(check.message)
   await ctx.db.transaction(async (tx) => {
     let apiKeySecretId = before.apiKeySecretId
@@ -420,10 +536,16 @@ export async function updateProvider(ctx: WriteCtx, input: { id: string; name?: 
       .update(t.modelProviders)
       .set({ name: input.name || before.name, baseUrl: trimUrl(input.baseUrl), apiKeySecretId, status: "ok", checkedAt: new Date(), latencyMs: check.latencyMs ?? null })
       .where(eq(t.modelProviders.id, input.id))
-    await writeModels(tx, input.id, models, embeddingsKnown)
+    if (listed !== false) await writeModels(tx, input.id, models, embeddingsKnown)
     await audit(tx, ctx.actor.id, "model_provider.update", "model_providers", input.id, { baseUrl: trimUrl(input.baseUrl), apiKeyChanged: Boolean(input.apiKey), models: models.length })
   })
   return { id: input.id, check }
+}
+
+/** 自定义服务读不到模型列表时，测试连接拿来试发一句话的模型：排在最前面的（手动加的排在前面） */
+async function firstModelName(db: DbOrTx, providerId: string) {
+  const [row] = await db.select({ id: t.models.id }).from(t.models).where(and(eq(t.models.providerId, providerId), eq(t.models.kind, "chat"))).orderBy(asc(t.models.position)).limit(1)
+  return row?.id.slice(providerId.length + 1)
 }
 
 /** 测试连接：结果写回状态、检查时间、延迟（连不上不报错，返回原因） */
@@ -432,7 +554,7 @@ export async function testProvider(ctx: WriteCtx, input: { id: string }): Promis
   const before = await loadProvider(ctx.db, input.id)
   if (!before.baseUrl) return { ok: false, message: "还没填地址：先编辑这个服务" }
   const apiKey = await providerKey(ctx.db, ctx.keyring(), before.apiKeySecretId)
-  const { check } = await probeProvider(before.kind, before.baseUrl, apiKey)
+  const { check } = await probeProvider(before.kind, before.baseUrl, apiKey, true, await firstModelName(ctx.db, before.id))
   await ctx.db.transaction(async (tx) => {
     await tx.update(t.modelProviders).set({ status: check.ok ? "ok" : "error", checkedAt: new Date(), latencyMs: check.latencyMs ?? null }).where(eq(t.modelProviders.id, input.id))
     await audit(tx, ctx.actor.id, "model_provider.test", "model_providers", input.id, { ok: check.ok, message: check.message })
@@ -446,10 +568,10 @@ export async function refreshProvider(db: Db, keyring: Keyring, actorId: string 
   if (!before.baseUrl) return { ok: false, message: "还没填地址：先编辑这个服务" }
   // OpenRouter 刷新列表只用公开接口，不带 key；直连厂商列模型要 key
   const apiKey = before.kind === "openrouter" ? undefined : await providerKey(db, keyring, before.apiKeySecretId)
-  const { check, models, embeddingsKnown } = await probeProvider(before.kind, before.baseUrl, apiKey)
+  const { check, models, embeddingsKnown, listed } = await probeProvider(before.kind, before.baseUrl, apiKey)
   await db.transaction(async (tx) => {
     await tx.update(t.modelProviders).set({ status: check.ok ? "ok" : "error", checkedAt: new Date(), latencyMs: check.latencyMs ?? null }).where(eq(t.modelProviders.id, id))
-    if (check.ok) await writeModels(tx, id, models, embeddingsKnown)
+    if (check.ok && listed !== false) await writeModels(tx, id, models, embeddingsKnown)
     await audit(tx, actorId, "model_provider.refresh", "model_providers", id, { ok: check.ok, models: models.length })
   })
   return check
@@ -458,6 +580,82 @@ export async function refreshProvider(db: Db, keyring: Keyring, actorId: string 
 export async function refreshProviderAsActor(ctx: WriteCtx, input: { id: string }) {
   assertCan(ctx.actor, "config.manage", {}, "只有主管能刷新模型列表")
   return refreshProvider(ctx.db, ctx.keyring(), ctx.actor.id, input.id)
+}
+
+// ---------- 手动加的模型（自定义服务） ----------
+
+/** 手动加模型只给自定义服务：其余类型的模型列表由厂商给全，价格也查得到 */
+async function loadCustomProvider(db: DbOrTx, id: string) {
+  const provider = await loadProvider(db, id)
+  if (provider.kind !== "custom") throw badRequest(`「${provider.name}」不是自定义服务，模型列表由服务自己给，不能手动加模型`)
+  return provider
+}
+
+/** 手动填的那几项（单价按 4 位小数存） */
+const manualValues = (input: { displayName?: string; contextK: number; vision: boolean; priceIn: number; priceOut: number }, modelName: string) => ({
+  name: input.displayName?.trim() || modelName,
+  contextK: input.contextK,
+  vision: input.vision,
+  priceIn: input.priceIn,
+  priceOut: input.priceOut,
+  manual: true,
+})
+
+/** 加一个模型。列表里已经有同名的：改成手动的（以人填的为准，刷新也不会被覆盖） */
+export async function addManualModel(ctx: WriteCtx, input: ManualModelInput) {
+  assertCan(ctx.actor, "config.manage", {}, "只有主管能加模型")
+  return ctx.db.transaction(async (tx) => {
+    const provider = await loadCustomProvider(tx, input.providerId)
+    const modelName = input.modelName.trim()
+    const id = `${provider.id}/${modelName}`
+    const values = manualValues(input, modelName)
+    const [existing] = await tx.select({ manual: t.models.manual }).from(t.models).where(eq(t.models.id, id))
+    if (existing?.manual) throw conflict(`「${provider.name}」里已经有模型 ${modelName} 了，要改就编辑它`)
+    // 手动加的排在最前面，新加的在上（列表里改成手动的也挪上去）
+    const [first] = await tx.select({ position: t.models.position }).from(t.models).where(eq(t.models.providerId, provider.id)).orderBy(asc(t.models.position)).limit(1)
+    const position = (first?.position ?? 0) - 1
+    if (existing) await tx.update(t.models).set({ ...values, kind: "chat", position }).where(eq(t.models.id, id))
+    else await tx.insert(t.models).values({ id, providerId: provider.id, note: "", kind: "chat", position, ...values })
+    await audit(tx, ctx.actor.id, "model.create", "models", id, { providerId: provider.id, ...values, replacedListed: Boolean(existing) })
+    return { id }
+  })
+}
+
+async function loadManualModel(db: DbOrTx, id: string) {
+  const [row] = await db.select().from(t.models).where(eq(t.models.id, id))
+  if (!row) throw notFound("模型", id)
+  if (!row.manual) throw badRequest(`${row.name} 是服务自己列出来的模型，不能改；要改单价就按同一个模型名手动加一个`)
+  return row
+}
+
+/** 改手动加的模型：模型名（调接口用的）不能改，任务、默认设置按它引用 */
+export async function updateManualModel(ctx: WriteCtx, input: ManualModelUpdate) {
+  assertCan(ctx.actor, "config.manage", {}, "只有主管能改模型")
+  return ctx.db.transaction(async (tx) => {
+    const before = await loadManualModel(tx, input.id)
+    const values = manualValues(input, before.id.slice(before.providerId.length + 1))
+    await tx.update(t.models).set(values).where(eq(t.models.id, input.id))
+    await audit(tx, ctx.actor.id, "model.update", "models", input.id, {
+      before: { name: before.name, contextK: before.contextK, vision: before.vision, priceIn: before.priceIn, priceOut: before.priceOut },
+      after: values,
+    })
+    return { id: input.id }
+  })
+}
+
+/** 删手动加的模型：有任务在用、默认设置在用的不能删（先换掉） */
+export async function deleteManualModel(ctx: WriteCtx, input: { id: string }) {
+  assertCan(ctx.actor, "config.manage", {}, "只有主管能删模型")
+  return ctx.db.transaction(async (tx) => {
+    const before = await loadManualModel(tx, input.id)
+    const used = await tx.select({ id: t.tasks.id, title: t.tasks.title }).from(t.tasks).where(or(eq(t.tasks.modelId, input.id), eq(t.tasks.verifyModelId, input.id)))
+    if (used.length) throw conflict(`有 ${used.length} 个任务在用 ${before.name}：${usedByText(used)}。先给这些任务换模型，再删除。`)
+    const roles = (await tx.select({ role: t.modelDefaults.role }).from(t.modelDefaults).where(eq(t.modelDefaults.modelId, input.id))).map((row) => row.role)
+    if (roles.length) throw conflict(`默认设置里还在用 ${before.name}，先到「默认设置」换一个模型，再删除。`)
+    await tx.delete(t.models).where(eq(t.models.id, input.id))
+    await audit(tx, ctx.actor.id, "model.delete", "models", input.id, { providerId: before.providerId, name: before.name })
+    return { id: input.id }
+  })
 }
 
 /**

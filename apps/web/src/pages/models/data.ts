@@ -8,13 +8,14 @@ export { contextText, defaultsAfterRemove, modelRoles as ROLES, priceText, provi
 export type Provider = ModelProvider
 export type Defaults = ModelDefaults
 
-/** 添加服务时预填的地址 */
+/** 添加服务时预填的地址；自定义服务没有默认地址，要人填 */
 export const DEFAULT_URL: Record<ModelProviderKind, string> = {
   ollama: "http://192.168.31.101:11434",
   openrouter: OPENROUTER_DEFAULT_URL,
   anthropic: ANTHROPIC_DEFAULT_URL,
   openai: OPENAI_DEFAULT_URL,
   deepseek: DEEPSEEK_DEFAULT_URL,
+  custom: "",
 }
 
 export function tasksOnProvider(provider: Provider, tasks: TaskDef[]) {
@@ -33,7 +34,7 @@ export function connectionRows(provider: Provider): [string, string][] {
   const latency = provider.latencyMs !== undefined ? ` · 延迟 ${provider.latencyMs} ms` : ""
   return [
     ["地址", provider.baseUrl || "还没填"],
-    ["API Key", provider.apiKeyMasked ?? "不需要"],
+    ["API Key", provider.apiKeyMasked ?? (provider.kind === "custom" ? "没填" : "不需要")],
     ["状态", `${providerStatusLabel[provider.status]}${latency}`],
     ["检查时间", provider.checkedAt ? fmtDateTime(provider.checkedAt) : "还没检查过"],
   ]

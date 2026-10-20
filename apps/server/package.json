@@ -31,6 +31,7 @@
     "@ai-sdk/deepseek": "3.0.66",
     "@ai-sdk/mcp": "2.0.77",
     "@ai-sdk/openai": "4.0.95",
+    "@ai-sdk/openai-compatible": "3.0.70",
     "@heyagent/shared": "workspace:*",
     "@hono/node-server": "2.1.5",
     "@modelcontextprotocol/server": "2.3.1",

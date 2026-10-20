@@ -14,7 +14,7 @@ import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/in
 import { Spinner } from "@/components/ui/spinner"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { toast } from "@/components/ui/toast"
-import { can, findById, fmtDateTime, modelFamily, sameFamily, type ProviderCheck, type TaskDef } from "@heyagent/shared"
+import { can, findById, fmtDateTime, modelFamily, sameFamily, type ModelInfo, type ProviderCheck, type TaskDef } from "@heyagent/shared"
 
 import { useModelsQuery, useTasksQuery } from "@/lib/data"
 import { useAction } from "@/lib/mutations"
@@ -23,13 +23,14 @@ import { trpc } from "@/lib/trpc"
 import { useMe } from "@/lib/session"
 
 import { connectionRows, contextText, KIND_LABEL, priceText, providerLine, ROLES, tasksOnProvider, type Defaults, type Provider } from "./data"
+import { ModelDialog } from "./model-dialog"
 import { ProviderDialog } from "./provider-dialog"
 
 const LINK = "underline underline-offset-4 hover:text-foreground"
 /** 模型表格默认最多显示几行，其余的靠搜索 */
 const TABLE_LIMIT = 50
 
-// 写操作（M1 接通，都只有主管）：添加 / 编辑 / 删除模型服务、测试连接、刷新模型列表、保存默认设置。
+// 写操作（M1 接通，都只有主管）：添加 / 编辑 / 删除模型服务、测试连接、刷新模型列表、保存默认设置；自定义服务手动加 / 改 / 删模型。
 export default function ModelsPage() {
   const { user } = useMe()
   const isAdmin = can(user, "config.manage", {})
@@ -88,7 +89,7 @@ export default function ModelsPage() {
         empty={
           isAdmin ? (
             <EmptyState icon={<CpuIcon />} title="还没接入模型服务" action={addButton}
-              description="点「添加模型服务」，选 OpenRouter 或直连 Claude、OpenAI、DeepSeek，填 API Key；连上后会读出能用的模型，再到「默认设置」选执行、规划、验收模型。" />
+              description="点「添加模型服务」，选 OpenRouter、直连 Claude、OpenAI、DeepSeek，或者「自定义」接任何兼容 OpenAI 接口的服务；连上后会读出能用的模型，再到「默认设置」选执行、规划、验收模型。" />
           ) : (
             <EmptyState icon={<CpuIcon />} title="还没接入模型服务" description="还没有模型服务，由主管来接。接好以后 agent 才能干活。" />
           )
@@ -241,6 +242,12 @@ function ProviderDetail({ provider, tasks, defaults, isAdmin, actions }: {
   const embeddings = [...(provider.embeddingModels ?? [])].sort((a, b) => Number(b.vision ?? false) - Number(a.vision ?? false))
   const embedDefault = embeddings.find((m) => m.id === defaults.embed)
   const assistantDefault = provider.models.find((m) => m.id === defaults.assistant)
+  // 只有自定义服务能手动加模型（其余的模型列表由服务给全）
+  const canEditModels = isAdmin && provider.kind === "custom"
+  /** 添加（model 为空）或编辑哪个模型；null = 弹窗关着 */
+  const [modelDialog, setModelDialog] = React.useState<{ model?: ModelInfo } | null>(null)
+  const [removing, setRemoving] = React.useState<ModelInfo | null>(null)
+  const removeModel = useAction(trpc.models.deleteModel.mutationOptions(), { success: "模型已删除" })
 
   return (
     <DetailPanel
@@ -267,9 +274,19 @@ function ProviderDetail({ provider, tasks, defaults, isAdmin, actions }: {
           ))}
         </dl>
       </DetailSection>
-      <DetailSection title="可用模型" description="价格是每百万 token 的输入 / 输出（美元）。">
+      <DetailSection title="可用模型"
+        description={provider.kind === "custom"
+          ? "价格是每百万 token 的输入 / 输出（美元）。服务列出的模型不知道价格，要算钱就点「添加模型」按同一个模型名填单价；手动加的刷新时不会被删。"
+          : "价格是每百万 token 的输入 / 输出（美元）。"}
+        action={canEditModels && (
+          <Button size="sm" variant="outline" onClick={() => setModelDialog({})}><PlusIcon data-icon="inline-start" />添加模型</Button>
+        )}>
         {provider.models.length === 0 ? (
-          <p className="text-muted-foreground">还没有模型：这个服务还没配好，填好地址、连上以后会读出能用的模型。</p>
+          <p className="text-muted-foreground">
+            {provider.kind === "custom"
+              ? "还没有模型：这个服务没给模型列表，点「添加模型」手动加要用的模型。"
+              : "还没有模型：这个服务还没配好，填好地址、连上以后会读出能用的模型。"}
+          </p>
         ) : (
           <div className="flex flex-col gap-3">
             <InputGroup className="sm:max-w-sm">
@@ -281,7 +298,10 @@ function ProviderDetail({ provider, tasks, defaults, isAdmin, actions }: {
             ) : (
               <Table>
                 <TableHeader>
-                  <TableRow><TableHead>模型</TableHead><TableHead>适合干什么</TableHead><TableHead>上下文</TableHead><TableHead>价格</TableHead><TableHead>看图</TableHead></TableRow>
+                  <TableRow>
+                    <TableHead>模型</TableHead><TableHead>适合干什么</TableHead><TableHead>上下文</TableHead><TableHead>价格</TableHead><TableHead>看图</TableHead>
+                    {canEditModels && <TableHead><span className="sr-only">操作</span></TableHead>}
+                  </TableRow>
                 </TableHeader>
                 <TableBody>
                   {shown.map((m) => (
@@ -289,6 +309,7 @@ function ProviderDetail({ provider, tasks, defaults, isAdmin, actions }: {
                       <TableCell>
                         <div className="flex flex-wrap items-center gap-1">
                           {m.name}
+                          {m.manual && <Badge variant="outline">手动</Badge>}
                           {ROLES.filter((role) => defaults[role.id] === m.id).map((role) => <Badge key={role.id} variant="secondary">默认{role.label}</Badge>)}
                           {defaults.assistant === m.id && <Badge variant="secondary">默认助手</Badge>}
                         </div>
@@ -297,6 +318,21 @@ function ProviderDetail({ provider, tasks, defaults, isAdmin, actions }: {
                       <TableCell>{contextText(m)}</TableCell>
                       <TableCell>{priceText(m)}</TableCell>
                       <TableCell>{m.vision ? "能" : "不能"}</TableCell>
+                      {canEditModels && (
+                        <TableCell>
+                          {m.manual && (
+                            <DropdownMenu>
+                              <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" aria-label={`模型 ${m.name} 的更多操作`} />}>
+                                <EllipsisIcon />
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem onClick={() => setModelDialog({ model: m })}><PencilIcon />编辑</DropdownMenuItem>
+                                <DropdownMenuItem variant="destructive" onClick={() => setRemoving(m)}><Trash2Icon />删除</DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          )}
+                        </TableCell>
+                      )}
                     </TableRow>
                   ))}
                 </TableBody>
@@ -355,6 +391,24 @@ function ProviderDetail({ provider, tasks, defaults, isAdmin, actions }: {
           )}
         </div>
       </DetailSection>
+      {modelDialog && <ModelDialog provider={provider} model={modelDialog.model} onClose={() => setModelDialog(null)} />}
+      <AlertDialog open={!!removing} onOpenChange={(open) => !open && setRemoving(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>删除模型「{removing?.name}」？</AlertDialogTitle>
+            <AlertDialogDescription>
+              有任务或默认设置在用它时删不了，要先换成别的模型。删掉后服务列表里要是有同名的模型，下次刷新模型列表会再出现（不带手动填的单价）。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>保留</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" onClick={() => {
+              if (removing) removeModel.mutate({ id: removing.id })
+              setRemoving(null)
+            }}>确认删除</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </DetailPanel>
   )
 }

@@ -1,6 +1,6 @@
 // 模型层：一层很薄的接口包住 AI SDK 7 的各家 provider，换线路或直连厂商只改这里。
-// - 线路：OpenRouter；直连 Anthropic（Messages API）、OpenAI（Responses API）、DeepSeek；
-// - key 从 model_providers.api_key_secret_id 指向的 secrets 解密（包 P2 的模型页写入）；
+// - 线路：OpenRouter；直连 Anthropic（Messages API）、OpenAI（Responses API）、DeepSeek；自定义服务（任何 OpenAI 兼容的 /chat/completions）；
+// - key 从 model_providers.api_key_secret_id 指向的 secrets 解密（包 P2 的模型页写入）；自定义服务可以没有 key；
 // - 每次调用记下 token 和花费（OpenRouter 返回的 usage.cost；直连厂商不返回，按模型单价估，缓存命中按折扣算）；
 // - Anthropic 的模型开 prompt caching（OpenRouter 和直连都用顶层 cache_control）；
 // - 不传 temperature、top_p；
@@ -8,6 +8,7 @@
 import { createAnthropic, type AnthropicLanguageModelOptions } from "@ai-sdk/anthropic"
 import { createDeepSeek } from "@ai-sdk/deepseek"
 import { createOpenAI } from "@ai-sdk/openai"
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
 import { createOpenRouter } from "@openrouter/ai-sdk-provider"
 import {
   APICallError,
@@ -82,10 +83,16 @@ export async function resolveModel(
     throw new ModelConfigError(
       `模型服务「${provider.name}」（Ollama）还没有配置，暂时不能用`
     )
-  if (provider.status === "unconfigured" || !provider.apiKeySecretId)
+  if (provider.status === "unconfigured")
+    throw new ModelConfigError(`模型服务「${provider.name}」还没有配置`)
+  // 自定义服务的 key 是可选的（自建的 vLLM 等常常没有）
+  const keyOptional = provider.kind === "custom"
+  if (!provider.apiKeySecretId && !keyOptional)
     throw new ModelConfigError(`模型服务「${provider.name}」还没有配置 API key`)
-  const apiKey = await loadSecretById(db, provider.apiKeySecretId)
-  if (!apiKey)
+  const apiKey = provider.apiKeySecretId
+    ? await loadSecretById(db, provider.apiKeySecretId)
+    : undefined
+  if (!apiKey && !keyOptional)
     throw new ModelConfigError(
       `模型服务「${provider.name}」的 API key 找不到了，请在「模型」页重新填写`
     )
@@ -102,10 +109,11 @@ export async function resolveModel(
   }
 }
 
+/** apiKey 只有自定义服务可以不给（其余由 resolveModel 先检查过） */
 export function languageModel(
   kind: Exclude<ModelProviderKind, "ollama">,
   slug: string,
-  apiKey: string,
+  apiKey: string | undefined,
   baseUrl: string
 ): LanguageModel {
   switch (kind) {
@@ -130,6 +138,15 @@ export function languageModel(
       return createOpenAI({ apiKey, baseURL: baseUrl || OPENAI_DEFAULT_URL })(slug)
     case "deepseek":
       return createDeepSeek({ apiKey, baseURL: baseUrl || DEEPSEEK_DEFAULT_URL })(slug)
+    // 走 /chat/completions（各家兼容得最好的接口）；includeUsage 让流式输出（助手）最后也带回 token 用量，不然算不了钱。
+    // 结构化输出用 json_object（json_schema 不少服务不支持），不合 schema 时 callStructured 会再抠一次 JSON
+    case "custom":
+      return createOpenAICompatible({
+        name: "custom",
+        baseURL: baseUrl,
+        apiKey: apiKey || undefined,
+        includeUsage: true,
+      }).chatModel(slug)
   }
 }
 
@@ -252,7 +269,8 @@ export async function callModel(
 /**
  * 缓存的 token 按输入单价的几倍算（各家公开的价格结构）：Anthropic 读 0.1 倍、写 1.25 倍（5 分钟缓存）；
  * OpenAI、DeepSeek 自动缓存，读约 0.1 倍，写不加价。只是估算：长 session 大部分输入都命中缓存，
- * 按原价算会高估好几倍，提前撞上花费上限
+ * 按原价算会高估好几倍，提前撞上花费上限。
+ * 自定义服务不知道是哪家、有没有缓存折扣：按原价算（宁可高估，单价是人在模型页手动填的）
  */
 const CACHE_PRICE: Partial<Record<ModelProviderKind, { read: number; write: number }>> = {
   anthropic: { read: 0.1, write: 1.25 },

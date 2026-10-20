@@ -39,8 +39,11 @@ export type Platform = z.infer<typeof platformSchema>
 
 // ---------- 模型 ----------
 
-/** ollama：内网；openrouter：一个 key 用各家；anthropic / openai / deepseek：直连厂商自己的接口 */
-export const modelProviderKindSchema = z.enum(["ollama", "openrouter", "anthropic", "openai", "deepseek"])
+/**
+ * ollama：内网；openrouter：一个 key 用各家；anthropic / openai / deepseek：直连厂商自己的接口；
+ * custom：任何兼容 OpenAI 聊天接口（/chat/completions）的服务，key 可以不填，模型列表读不到时手动加模型
+ */
+export const modelProviderKindSchema = z.enum(["ollama", "openrouter", "anthropic", "openai", "deepseek", "custom"])
 export type ModelProviderKind = z.infer<typeof modelProviderKindSchema>
 
 export const modelInfoSchema = z.object({
@@ -55,6 +58,8 @@ export const modelInfoSchema = z.object({
   priceOut: z.number(),
   /** 新增：能不能看图（验证码判断、看截图证据要用） */
   vision: z.boolean().optional(),
+  /** 人手动加的（自定义服务）：刷新模型列表时不删、不被列表里的同名模型覆盖 */
+  manual: z.boolean().optional(),
 })
 export type ModelInfo = z.infer<typeof modelInfoSchema>
 
@@ -69,7 +74,7 @@ export const modelProviderSchema = z.object({
   name: z.string(),
   /** 未配置时是空字符串 */
   baseUrl: z.string(),
-  /** 只给掩码，例如 sk-or-v1-••••••••3f2a；只有 Ollama 没有 */
+  /** 只给掩码，例如 sk-or-v1-••••••••3f2a；Ollama 没有，自定义服务可以没有 */
   apiKeyMasked: z.string().optional(),
   status: providerStatusSchema,
   /** 上次检查连接的时间；未配置时没有 */
