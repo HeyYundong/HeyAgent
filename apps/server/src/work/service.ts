@@ -134,7 +134,7 @@ export async function listWorkItems(db: DbOrTx, rawInput: WorkListInput): Promis
   }
 
   const where: SQL[] = [...base]
-  if (input.status) where.push(eq(t.workItems.status, input.status))
+  if (input.status) where.push(Array.isArray(input.status) ? inArray(t.workItems.status, input.status) : eq(t.workItems.status, input.status))
   if (input.cursor) {
     const [cursor] = await db.select({ createdAt: t.workItems.createdAt, id: t.workItems.id }).from(t.workItems).where(eq(t.workItems.id, input.cursor))
     if (cursor) where.push(or(lt(t.workItems.createdAt, cursor.createdAt), and(eq(t.workItems.createdAt, cursor.createdAt), lt(t.workItems.id, cursor.id)))!)

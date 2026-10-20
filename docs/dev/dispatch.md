@@ -361,7 +361,7 @@ session 结束的地方现在有 5 处（读代码确认），每处在**同一�
 用现成的 `MasterDetail` + `PickGroup` / `PickItem` + `DetailPanel`。
 
 - **左边列表**：
-  - 顶上：`InputGroup` 搜索（单号、标题、参数值）；`ToggleGroup` 按状态（全部 / 排队 / 在办 / 办完 / 没办成）；`Select` 按任务（被派的任务）。
+  - 顶上：`InputGroup` 搜索（单号、标题、参数值）；`ToggleGroup` 按状态（排队 / 在办 / 办完 / 没办成，默认在办；2026-10-20 用户要求去掉「全部」）；`Select` 按任务（被派的任务）。
   - 每行（`PickItem`）：标题；一行小字「W-57 · 处理一张搜品单 · 3 分钟前」；状态 `Badge`，按 `docs/ui-rules.md` 第 4 节的映射，不加新颜色：排队 `outline`、在办 `secondary` + `Spinner`、办完 `outline` + `CircleCheckIcon`、没办成 `destructive`、不办了 `ghost`。
   - 空状态 `Empty`：「还没有派活单」+「?」说明怎么让任务能被派活；加载 `Skeleton`。
 - **右边详情**（`DetailPanel`）：

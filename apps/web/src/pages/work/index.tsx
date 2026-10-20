@@ -66,10 +66,10 @@ import { WaitingAlert, money } from "@/pages/tasks/parts"
 import { CancelDialog, DispatchDialog, EditParamsDialog, RedoDoneDialog, dispatchedToast, useRedo } from "./dialogs"
 import { ParamsTable, ReportTable, WorkStatusBadge, reportText, retryAt, shortName, timeText, useWorkTaskStats } from "./parts"
 
-type Filter = "all" | Exclude<WorkItemStatus, "cancelled">
+// 没有「全部」：网址里没写状态时看「在办」；「不办了」的单算在「没办成」里
+type Filter = Exclude<WorkItemStatus, "cancelled">
 
 const FILTERS: { id: Filter; name: string }[] = [
-  { id: "all", name: "全部" },
   { id: "queued", name: "排队" },
   { id: "running", name: "在办" },
   { id: "done", name: "办完" },
@@ -91,11 +91,11 @@ export default function WorkPage() {
   const [redoing, setRedoing] = React.useState<WorkItemDetail | null>(null)
   const redo = useRedo()
 
-  const filter = (FILTERS.some((each) => each.id === params.get("status")) ? params.get("status") : "all") as Filter
+  const filter = (FILTERS.some((each) => each.id === params.get("status")) ? params.get("status") : "running") as Filter
   const taskFilter = params.get("task") ?? "all"
   const fromFilter = params.get("from")
   const selectedId = params.get("id")
-  const urlFilters = { status: filter === "all" ? null : filter, task: taskFilter === "all" ? null : taskFilter, from: fromFilter }
+  const urlFilters = { status: filter === "running" ? null : filter, task: taskFilter === "all" ? null : taskFilter, from: fromFilter }
 
   const q = useDebouncedText(query.trim())
   const tasksQuery = useTasksQuery()
@@ -105,7 +105,7 @@ export default function WorkPage() {
     trpc.work.list.infiniteQueryOptions(
       {
         q: q || undefined,
-        status: filter === "all" ? undefined : filter,
+        status: filter === "failed" ? ["failed", "cancelled"] : filter,
         taskId: taskFilter === "all" ? undefined : taskFilter,
         fromTaskId: fromFilter ?? undefined,
         days: allTime ? 0 : WORK_LIST_DEFAULT_DAYS,
@@ -127,7 +127,7 @@ export default function WorkPage() {
   const now = new Date()
   const today = items.filter((item) => sameShanghaiDay(item.createdAt, now))
   const earlier = items.filter((item) => !sameShanghaiDay(item.createdAt, now))
-  const filtered = Boolean(q) || filter !== "all" || taskFilter !== "all" || Boolean(fromFilter)
+  const filtered = Boolean(q) || taskFilter !== "all" || Boolean(fromFilter)
   const canMore = listQuery.hasNextPage || (!allTime && !q)
   // ?new=1：导入后「派一张试试」等直接打开「派一张」，任务按 ?task= 选好；关掉时把 new 从网址里去掉
   const creatingFromUrl = params.get("new") === "1" && manageable.length > 0
@@ -183,11 +183,11 @@ export default function WorkPage() {
                     </InputGroupAddon>
                   )}
                 </InputGroup>
-                <ToggleGroup variant="outline" size="sm" spacing={0} className="w-full" value={[filter]} onValueChange={(value) => value[0] && setParams({ status: value[0] === "all" ? null : value[0] })} aria-label="按状态筛选">
+                <ToggleGroup variant="outline" size="sm" spacing={0} className="w-full" value={[filter]} onValueChange={(value) => value[0] && setParams({ status: value[0] === "running" ? null : value[0] })} aria-label="按状态筛选">
                   {FILTERS.map((each) => (
                     <ToggleGroupItem key={each.id} value={each.id} className="flex-1">
                       {each.name}
-                      <span className="tabular-nums text-muted-foreground">{counts?.[each.id] ?? 0}</span>
+                      <span className="tabular-nums text-muted-foreground">{(counts?.[each.id] ?? 0) + (each.id === "failed" ? (counts?.cancelled ?? 0) : 0)}</span>
                     </ToggleGroupItem>
                   ))}
                 </ToggleGroup>
@@ -254,7 +254,7 @@ export default function WorkPage() {
               ) : (
                 <EmptyState
                   icon={<SearchXIcon />}
-                  title={filtered ? "没有符合条件的单" : `最近 ${WORK_LIST_DEFAULT_DAYS} 天没有派活单`}
+                  title={filtered ? "没有符合条件的单" : `最近 ${WORK_LIST_DEFAULT_DAYS} 天没有「${FILTERS.find((each) => each.id === filter)?.name}」的单`}
                   description={q ? `没找到「${q}」，换个单号或参数试试。` : filtered ? "这一类现在没有单。" : "更早派的单点下面看。"}
                   action={
                     filtered ? (
@@ -262,7 +262,7 @@ export default function WorkPage() {
                         variant="outline"
                         onClick={() => {
                           setQuery("")
-                          setParams({ status: null, task: null, from: null })
+                          setParams({ task: null, from: null })
                         }}
                       >
                         清空筛选

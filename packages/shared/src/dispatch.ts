@@ -198,8 +198,8 @@ export type WorkItemDetail = z.infer<typeof workItemDetailSchema>
 
 export const workListInputSchema = z.object({
   q: z.string().trim().max(200).optional(),
-  /** 不填 = 全部 */
-  status: workItemStatusSchema.optional(),
+  /** 不填 = 全部；可以给几种（派活页「没办成」= 没办成 + 不办了） */
+  status: z.union([workItemStatusSchema, z.array(workItemStatusSchema).min(1)]).optional(),
   /** 被派的任务 */
   taskId: z.string().optional(),
   /** 派活的任务 / 运行（任务抽屉、运行详情的「派出去的活」） */
