@@ -65,7 +65,7 @@ export function RunOutcomeSection({ run, canEdit }: { run: SessionSummary; canEd
           {run.outcomeBy && <span className="text-muted-foreground">{runOutcomeByLabel[run.outcomeBy]}</span>}
         </div>
         {reason ? <p className="whitespace-pre-line wrap-break-word">{reason}</p> : <p className="text-muted-foreground">{outcome ? "没写原因。" : "这次运行还没有结果。"}</p>}
-        {run.review && <ReviewReport review={run.review} />}
+        {run.review && <ReviewReport review={run.review} sameReason={run.review.reason === reason} />}
       </div>
       {canEdit && <SetOutcomeDialog key={`${run.id}-${editing}`} run={run} open={editing} onOpenChange={setEditing} />}
     </DetailSection>
@@ -73,13 +73,15 @@ export function RunOutcomeSection({ run, canEdit }: { run: SessionSummary; canEd
 }
 
 /** 复核报告：默认收起，一行写结论；展开看理由、模型、带没带截图、花费，复核出错时写原因 */
-function ReviewReport({ review }: { review: RunReview }) {
+/** sameReason：结果的原因就是复核的理由（结果是复核定的）时，报告里不再重复一遍；没有理由（复核出错）也不写这一行 */
+function ReviewReport({ review, sameReason }: { review: RunReview; sameReason: boolean }) {
   const { modelName } = useModels()
   const [open, setOpen] = React.useState(false)
   const headline = review.verdict ? `复核结论：${VERDICT[review.verdict]}` : "复核没跑成"
   const rows: [string, React.ReactNode][] = [
     ["结论", review.verdict ? VERDICT[review.verdict] : "没有（复核出错）"],
-    ["理由", review.reason || "（没写）"],
+    // 复核定的结果，理由已经写在上面；复核出错时没有理由
+    ...(sameReason || !review.reason ? [] : [["理由", review.reason] as [string, React.ReactNode]]),
     ["模型", modelName(review.modelId)],
     ["截图", review.screenshot ? "带了最后一张截图" : "没带截图"],
     ["花费", `${money(review.costUsd)} · 输入 ${review.tokensIn.toLocaleString("en-US")} / 输出 ${review.tokensOut.toLocaleString("en-US")} token`],

@@ -118,6 +118,13 @@ export function WorkStatusBadge({ item, long }: { item: Pick<WorkItem, "status" 
   )
 }
 
+/** 单的结果徽章要不要显示：没办成的单（状态已经写了「没办成」）结果也是没办成时不重复显示；办完的单、部分办成的照样显示 */
+export const showItemOutcome = (item: Pick<WorkItem, "status" | "outcome">) =>
+  Boolean(item.outcome) && !((item.status === "failed" || item.status === "cancelled") && item.outcome === "not_achieved")
+
+/** 没办成的原因去掉后端加的「agent 判断办不成：」前缀（提示标题里已经写了是哪种） */
+export const failReason = (text?: string | null) => text?.replace(/^agent 判断办不成[：:]\s*/, "")
+
 /** 参数表：两列（参数、值）。按声明的顺序列；声明里没有、单上有的（任务后来改了参数）跟在后面 */
 export function ParamsTable({ declared, values, showDedupe = false }: { declared: TaskDispatchParam[]; values: Record<string, string>; showDedupe?: boolean }) {
   const extra = Object.keys(values).filter((name) => !declared.some((param) => param.name === name))

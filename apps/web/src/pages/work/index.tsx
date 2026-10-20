@@ -69,7 +69,7 @@ import { delayText } from "@/pages/tasks/dispatch-fields"
 import { WaitingAlert, money } from "@/pages/tasks/parts"
 
 import { CancelDialog, DispatchDialog, EditParamsDialog, RedoDoneDialog, dispatchedToast, useRedo } from "./dialogs"
-import { ParamsTable, ReportTable, WorkStatusBadge, reportText, retryAt, shortName, timeText, useWorkTaskStats } from "./parts"
+import { ParamsTable, ReportTable, WorkStatusBadge, failReason, reportText, retryAt, shortName, showItemOutcome, timeText, useWorkTaskStats } from "./parts"
 
 // 没有「全部」：网址里没写状态时看「在办」；「不办了」的单算在「没办成」里
 type Filter = Exclude<WorkItemStatus, "cancelled">
@@ -257,7 +257,7 @@ export default function WorkPage() {
                               badge={
                                 <span className="flex flex-col items-end gap-1">
                                   <WorkStatusBadge item={item} />
-                                  {item.outcome && <OutcomeBadge outcome={item.outcome} />}
+                                  {showItemOutcome(item) && <OutcomeBadge outcome={item.outcome} />}
                                 </span>
                               }
                             />
@@ -389,7 +389,7 @@ function WorkDetail({ id, onEdit, onCancel, onRedo }: { id: string; onEdit: (ite
       badges={
         <>
           <WorkStatusBadge item={item} long />
-          {item.outcome && <OutcomeBadge outcome={item.outcome} reason={item.outcomeReason} />}
+          {showItemOutcome(item) && <OutcomeBadge outcome={item.outcome} reason={item.outcomeReason} />}
           {attempt >= 2 && <Badge variant="outline">第 {attempt} 次</Badge>}
         </>
       }
@@ -601,9 +601,9 @@ function OutcomeAlert({ item }: { item: WorkItemDetail }) {
     return (
       <Alert>
         <CircleHelpIcon />
-        <AlertTitle>没核实：agent 说办成了，但没有依据</AlertTitle>
+        <AlertTitle>没核实</AlertTitle>
         <AlertDescription>
-          {reason && <p>{reason}</p>}
+          <p>{reason ?? "agent 说办成了，但没有依据。"}</p>
           <p>
             单记成办完，{item.via === "agent" ? `「${shortName(item.fromTaskTitle)}」` : "派活方"}看得到它没核实。看一下产物和过程，确认办成了可以在运行详情里点「改结果」。
           </p>
@@ -645,7 +645,7 @@ function ResultBody({ item, run, canManage }: { item: WorkItemDetail; run?: Sess
           <AlertTitle>{fail.title}</AlertTitle>
           <AlertDescription>
             {/* 没办成的原因先用结果的原因；老数据退回 error（agent 报的办不成带「agent 判断办不成：」前缀，去掉） */}
-            <p>{item.outcomeReason ?? (notDone ? item.error?.replace(/^agent 判断办不成[：:]\s*/, "") : item.error) ?? item.runs.at(-1)?.error ?? "运行出错了，详情看那次运行。"}</p>
+            <p>{failReason(item.outcomeReason) ?? (notDone ? failReason(item.error) : item.error) ?? item.runs.at(-1)?.error ?? "运行出错了，详情看那次运行。"}</p>
             <p>{fail.why}</p>
           </AlertDescription>
         </Alert>

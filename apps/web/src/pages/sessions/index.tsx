@@ -137,7 +137,7 @@ export default function SessionsPage() {
               <SheetHeader className="flex-row flex-wrap items-center justify-between gap-2 pr-12">
                 <div className="flex min-w-0 flex-col gap-0.5">
                   <SheetTitle>Session 详情</SheetTitle>
-                  <SheetDescription>任务 {task.id} 的一次运行：检查点、每次工具调用、验收都在下面。</SheetDescription>
+                  <SheetDescription>任务 {task.id} 的一次运行：结果、检查点、验收、每次工具调用都在下面。</SheetDescription>
                 </div>
                 <Button variant="outline" size="sm" nativeButton={false} render={<a href={href("tasks", { id: task.id })} />}>
                   查看任务 {task.id}
