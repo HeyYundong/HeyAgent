@@ -86,7 +86,12 @@ export interface SessionRuleState {
   costFired?: string[]
   /** 已经提示过「还没生效、这次不执行」的规则 */
   warned?: boolean
+  /** run-outcome 3.2：agent 只回文字、没调 run.finish，已经提醒过一次（再回文字就按没报结果收尾） */
+  finishNudged?: boolean
 }
+
+/** 库里的派活配置：run-outcome 以前存的没有 results */
+export type StoredTaskDispatch = Omit<TaskDispatch, "results"> & Partial<Pick<TaskDispatch, "results">>
 
 export interface PendingCall {
   toolCallId: string
@@ -501,8 +506,8 @@ export const tasks = pgTable(
     reviewEnabled: boolean("review_enabled").notNull().default(true),
     /** 这个任务自己选的复核模型；为空用默认复核模型 */
     reviewModelId: text("review_model_id"),
-    /** 派活：能被派活时的参数声明和名额；为空 = 不能被派活 */
-    dispatch: jsonb("dispatch").$type<TaskDispatch>(),
+    /** 派活：能被派活时的参数声明和名额；为空 = 不能被派活。results（要交回的结果）是 run-outcome 加的，旧数据没有 = 不要求 */
+    dispatch: jsonb("dispatch").$type<StoredTaskDispatch>(),
     /** 定时到点时上一次还没跑完（执行中 / 验收中）就跳过这次 */
     cronSkipIfRunning: boolean("cron_skip_if_running").notNull().default(true),
     createdAt: createdAt(),

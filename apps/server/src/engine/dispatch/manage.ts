@@ -132,6 +132,8 @@ export async function redoWorkItem(db: Db, actor: WorkActor, input: { id: string
         status: "queued",
         error: null,
         failKind: null,
+        outcome: null,
+        outcomeReason: null,
         notBefore: null,
         autoRetries: 0,
         finishedAt: null,
@@ -159,6 +161,9 @@ export async function cancelWorkItem(db: Db, actor: WorkActor, input: { id: stri
         status: "cancelled",
         error: reason,
         failKind: null,
+        // 不办了：结果记没办成（同迁移 0024 补旧数据的口径）
+        outcome: "not_achieved",
+        outcomeReason: reason,
         notBefore: null,
         finishedAt: now,
         updatedAt: now,

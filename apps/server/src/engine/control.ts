@@ -1,10 +1,11 @@
 // 人对 session 的操作：取消、立即继续；外部事件（webhook 或控制台手动触发）。
-import { and, eq, notInArray } from "drizzle-orm"
-import { ENDED_RUN_STATUSES, type FireEventResult } from "@heyagent/shared"
+import { and, eq, inArray, notInArray } from "drizzle-orm"
+import { ENDED_RUN_STATUSES, isRunEnded, runOutcomeLabel, type FireEventResult, type SetOutcomeInput } from "@heyagent/shared"
 
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
 import { settleWorkItemInTx } from "./dispatch/settle.js"
+import { failedOutcome } from "./outcome.js"
 import type { Tx } from "./queue.js"
 import { appendEvent, writeAudit } from "./records.js"
 import { fireTodo, todosForEvent } from "./schedule.js"
@@ -28,7 +29,8 @@ export async function cancelSessionInTx(db: Db, tx: Tx, input: CancelSessionInpu
   const reason = `${input.actorName}取消了这次运行${input.reason ? `：${input.reason}` : ""}`
   const updated = await tx
     .update(t.sessions)
-    .set({ status: "failed", endedAt: new Date(), error: reason })
+    // 取消的运行：状态照旧记失败，结果记没办成（run-outcome 2.2）
+    .set({ status: "failed", endedAt: new Date(), error: reason, ...failedOutcome(reason) })
     .where(
       and(
         eq(t.sessions.id, input.sessionId),
@@ -76,6 +78,45 @@ export async function cancelSessionInTx(db: Db, tx: Tx, input: CancelSessionInpu
   // 被派的运行：派活单跟着记「没办成」，人取消的不自动重试（人在派活页点「不办了」时单已经先改成不办了，这里不动它）
   await settleWorkItemInTx(db, tx, input.sessionId, { status: "failed", error: reason, retryable: false, failKind: "cancelled_run" })
   return { sessionId: input.sessionId }
+}
+
+/**
+ * 人改结果（run-outcome 第 8 节）：只改结果列，不重开运行；只能改已经结束的运行。记过程记录（human）和审计。
+ * 被派的单：还是这次运行的单、已经结束的，跟着改结果，不改单的状态。权限（负责人、主管）由接口查
+ */
+export async function setOutcomeImpl(db: Db, input: SetOutcomeInput & { actorId: string; actorName: string }) {
+  return db.transaction(async (tx) => {
+    const [session] = await tx
+      .select({ id: t.sessions.id, status: t.sessions.status, outcome: t.sessions.outcome, workItemId: t.sessions.workItemId })
+      .from(t.sessions)
+      .where(eq(t.sessions.id, input.id))
+      .for("update")
+    if (!session) throw new EngineError("NOT_FOUND", `找不到运行 ${input.id}`)
+    if (!isRunEnded(session.status)) throw new EngineError("BAD_REQUEST", "这次运行还没结束，结束以后才能改结果")
+    const reason = input.reason.trim()
+    await tx
+      .update(t.sessions)
+      .set({ outcome: input.outcome, outcomeReason: reason, outcomeBy: "human" })
+      .where(eq(t.sessions.id, session.id))
+    await appendEvent(tx, session.id, {
+      kind: "human",
+      title: `${input.actorName}把结果改成「${runOutcomeLabel[input.outcome]}」`,
+      detail: `理由：${reason}${session.outcome ? `\n原来是「${runOutcomeLabel[session.outcome]}」` : ""}`,
+    })
+    await writeAudit(tx, {
+      actorId: input.actorId,
+      action: "session.set_outcome",
+      targetTable: "sessions",
+      targetId: session.id,
+      detail: { from: session.outcome, to: input.outcome, reason },
+    })
+    if (session.workItemId)
+      await tx
+        .update(t.workItems)
+        .set({ outcome: input.outcome, outcomeReason: reason, updatedAt: new Date() })
+        .where(and(eq(t.workItems.id, session.workItemId), eq(t.workItems.sessionId, session.id), inArray(t.workItems.status, ["done", "failed"])))
+    return { sessionId: session.id, outcome: input.outcome }
+  })
 }
 
 /** 立即继续：只对挂起等待中的 session（等人处理的要先处理那件事） */

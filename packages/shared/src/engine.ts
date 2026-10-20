@@ -104,6 +104,8 @@ export const sessionSnapshotSchema = z.object({
       from: z.object({ taskId: z.string(), taskTitle: z.string(), sessionId: z.string() }).optional(),
       /** 人在派活页派的：谁（第一条消息里写「某某在派活页派的」） */
       fromUser: z.object({ id: z.string(), name: z.string() }).optional(),
+      /** run-outcome 6.1：被派任务声明的要交回的结果（开始运行时冻进来）；必填的没用 work.report 交，结果记没办成。加这个字段之前开始的运行没有 = 不要求 */
+      results: z.array(z.object({ name: z.string(), description: z.string(), required: z.boolean() })).optional(),
     })
     .optional(),
   /** 派活：选了内置工具「派活」时，能派给哪些任务、各要什么参数（开始运行时算好冻进来） */

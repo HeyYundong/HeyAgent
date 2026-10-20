@@ -416,9 +416,10 @@ export type ProviderInput = z.input<typeof providerInputSchema>
 export const providerUpdateSchema = providerInputSchema.omit({ kind: true }).extend({ id: z.string().min(1) })
 /**
  * embed 不传 = 不改；传空字符串 = 不用 embedding 模型（图库就不能以图搜图）。
- * assistant 同样：不传 = 不改；传空字符串 = 不单独配，助手用 plan 默认模型
+ * assistant 同样：不传 = 不改；传空字符串 = 不单独配，助手用 plan 默认模型。
+ * review（复核，run-outcome 5.2）同样：不传 = 不改；传空字符串 = 不配复核模型，运行结束不复核，结果落到「没核实」
  */
-export const modelDefaultsInputSchema = z.object({ run: z.string().min(1), plan: z.string().min(1), verify: z.string().min(1), embed: z.string().optional(), assistant: z.string().optional() })
+export const modelDefaultsInputSchema = z.object({ run: z.string().min(1), plan: z.string().min(1), verify: z.string().min(1), embed: z.string().optional(), assistant: z.string().optional(), review: z.string().optional() })
 
 /** 测试连接、刷新模型列表的结果 */
 export const providerCheckSchema = z.object({

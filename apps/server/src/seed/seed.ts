@@ -5,7 +5,7 @@
 import { randomBytes } from "node:crypto"
 
 import { hashPassword } from "better-auth/crypto"
-import { sql } from "drizzle-orm"
+import { eq, sql } from "drizzle-orm"
 import { describeCompiledRule, LIVE_CHANNEL, shanghaiToIso, type CompiledRule, type Trigger as SharedTrigger } from "@heyagent/shared"
 
 import type { Db } from "../db/client.js"
@@ -16,6 +16,9 @@ import * as proto from "./fixtures/prototype.js"
 
 /** 原型里的「现在」 */
 export const PROTO_NOW = "2026-10-16 16:30"
+
+/** 默认的复核模型（run-outcome 5.2）：能看图、很便宜；不用 :batch 版本（聊天接口用不了） */
+export const SEED_REVIEW_MODEL = "openrouter/deepseek/deepseek-v4.1-flash"
 
 /** 演示规则翻译后的结构（种子数据：业务例子只放在这里） */
 const SEED_RULE_COMPILED: Record<string, Pick<CompiledRule, "trigger" | "actions">> = {
@@ -173,6 +176,9 @@ export async function seedDemo(db: Db, keyring: Keyring, options: SeedOptions): 
       }
     }
     await tx.insert(t.modelDefaults).values(Object.entries(proto.modelDefaults).map(([role, modelId]) => ({ role: role as "run" | "plan" | "verify", modelId, updatedById: "u-lin" })))
+    // 复核模型（run-outcome 5.2，用户 2026-10-20 指定）：模型列表里有它才设；没有就不复核，到「模型」页设
+    const [review] = await tx.select({ id: t.models.id }).from(t.models).where(eq(t.models.id, SEED_REVIEW_MODEL))
+    if (review) await tx.insert(t.modelDefaults).values({ role: "review", modelId: review.id, updatedById: "u-lin" })
 
     // ---------- 浏览器 ----------
     const accountIds = new Map<string, string>() // `${profileId}|${platformId}` → 账号 id

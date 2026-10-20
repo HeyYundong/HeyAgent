@@ -20,6 +20,7 @@ import { notifyUsers, TODOS_LINK } from "./notify.js"
 import type { Tx } from "./queue.js"
 import { appendEvent, writeAudit } from "./records.js"
 import { settleWorkItemInTx } from "./dispatch/settle.js"
+import { failedOutcome, judgeByRules, outcomeFactsInTx, type Judged } from "./outcome.js"
 import { EngineError } from "./sessions.js"
 import { loadEngineSettings } from "./settings.js"
 import { resumeInTx, suspendInTx } from "./waits.js"
@@ -242,7 +243,7 @@ export async function resolveHumanItemImpl(
         : `${item.title}：${input.actorName}决定不继续`
       await tx
         .update(t.sessions)
-        .set({ status: "failed", endedAt: new Date(), error })
+        .set({ status: "failed", endedAt: new Date(), error, ...failedOutcome(error) })
         .where(eq(t.sessions.id, item.sessionId))
       // 被派的运行：派活单跟着记「没办成」，人选了不继续的不自动重试
       await settleWorkItemInTx(db, tx, item.sessionId, { status: "failed", error, retryable: false, failKind: "cancelled_run" })
@@ -401,6 +402,13 @@ export async function resolveVerifyDisputeImpl(
           : `${input.actorName}判定验收不通过，运行失败`,
       detail: note ?? null,
     })
+    // 判通过：结果照硬规则（验收通过的不再按检查点判；缺必交的结果照样没办成），不再复核；判失败：结果没办成（人判的）
+    const failError = `验收没通过，${input.actorName}判定失败${note ? `：${note}` : ""}`
+    let judged: Judged | undefined
+    if (input.how === "pass" && session.snapshot) {
+      const facts = await outcomeFactsInTx(tx, sessionId, session.snapshot, undefined)
+      judged = judgeByRules({ ...facts, verified: { by: "human", headline: verification?.headline ?? `${input.actorName}判定验收通过` } })
+    }
     const done = await tx
       .update(t.sessions)
       .set({
@@ -408,24 +416,24 @@ export async function resolveVerifyDisputeImpl(
         endedAt: new Date(),
         verification,
         ...(input.how === "fail"
-          ? {
-              error: `验收没通过，${input.actorName}判定失败${note ? `：${note}` : ""}`,
-            }
-          : {}),
+          ? { error: failError, ...failedOutcome(failError, "human") }
+          : judged
+            ? { outcome: judged.outcome, outcomeReason: judged.reason.slice(0, 2000), outcomeBy: judged.by }
+            : { outcome: "achieved" as const, outcomeReason: `${input.actorName}判定验收通过`, outcomeBy: "human" as const }),
       })
       .where(
         and(eq(t.sessions.id, sessionId), eq(t.sessions.status, "needs_human"))
       )
       .returning({ id: t.sessions.id })
     if (done.length === 0) return {}
-    // 被派的运行：判通过 = 派活单办完（总结取 agent 最后那段），判失败 = 没办成（人判的，不自动重试）
+    // 被派的运行：判通过 = 派活单按结果结算（总结取 agent 最后那段），判失败 = 没办成（人判的，不自动重试）
     await settleWorkItemInTx(
       db,
       tx,
       sessionId,
       input.how === "pass"
-        ? { status: "done" }
-        : { status: "failed", error: `验收没通过，${input.actorName}判定失败${note ? `：${note}` : ""}`, retryable: false, failKind: "cancelled_run" }
+        ? { status: "done", outcome: judged?.outcome ?? "achieved", ...(judged ? { outcomeReason: judged.reason } : {}), ...(judged?.failKind ? { failKind: judged.failKind } : {}) }
+        : { status: "failed", error: failError, retryable: false, failKind: "cancelled_run" }
     )
     return { endedSessionId: sessionId }
   })

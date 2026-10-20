@@ -7,7 +7,7 @@
 import { z } from "zod"
 
 import { domainSchema } from "./browser-runtime.js"
-import { taskDispatchParamSchema } from "./dispatch.js"
+import { taskDispatchParamSchema, taskDispatchResultSchema } from "./dispatch.js"
 import { secretNameSchema } from "./config.js"
 import { ruleCompileResultSchema } from "./rules.js"
 import { httpMethodSchema, isoTime, riskSchema, skillStatusSchema } from "./schemas.js"
@@ -104,6 +104,8 @@ export const planTaskSchema = z.object({
   dispatch: z
     .object({
       params: z.array(taskDispatchParamSchema).max(20),
+      /** 要交回的结果（run-outcome 6.1）：同 taskDispatchSchema；不写 = 不要求（读包 AI 不填，人在向导里改） */
+      results: z.array(taskDispatchResultSchema).max(20).optional(),
       maxRunning: z.number().int().min(1).max(20),
       /** 没办成自动重试几次、隔多久（分钟），同 taskDispatchSchema；不写 = 不重试（读包 AI 不填，人在向导里改） */
       retries: z.number().int().min(0).max(5).optional(),

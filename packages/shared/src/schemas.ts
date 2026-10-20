@@ -410,6 +410,8 @@ export const runReviewSchema = z.object({
   tokensOut: z.number().int(),
   costUsd: z.number(),
   error: z.string().optional(),
+  /** 复核还在跑（运行已经结束、结果先按硬规则写了）：被派的单等它跑完再结算；worker 中途没了，清扫过了时限按现在的结果结算 */
+  pending: z.boolean().optional(),
 })
 export type RunReview = z.infer<typeof runReviewSchema>
 

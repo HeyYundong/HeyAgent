@@ -21,6 +21,7 @@ export async function insertWorkFixtures(db: Db): Promise<{ patrolId: string; wo
   const modelId = model?.id ?? "openrouter/anthropic/claude-sonnet-5.5"
 
   const dispatch: TaskDispatch = {
+    results: [],
     params: [
       { name: "单号", description: "后台的搜品单号，例如 PSS-1016-0012", required: true, dedupe: true },
       { name: "商品图", description: "商品主图网址；不填就从搜品单里取", required: false, dedupe: false },
@@ -29,6 +30,7 @@ export async function insertWorkFixtures(db: Db): Promise<{ patrolId: string; wo
   }
   // 第二期：配了自动重试的被派任务（没办成自动再试 2 次，隔 10 分钟）
   const checkDispatch: TaskDispatch = {
+    results: [],
     params: [{ name: "单号", description: "要核对回填的搜品单号", required: true, dedupe: true }],
     maxRunning: 2,
     retries: 2,

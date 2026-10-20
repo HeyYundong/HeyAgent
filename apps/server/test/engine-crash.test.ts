@@ -87,6 +87,12 @@ function completion(
   )
 }
 
+/** 回复一段话、同时调 run_finish 报办成（run-outcome：只回文字会先被提醒一次） */
+const finishMessage = (content: string) => ({
+  content,
+  tool_calls: [{ id: `call_finish_${requests.length}`, type: "function", function: { name: "run_finish", arguments: JSON.stringify({ outcome: "achieved", summary: content, evidence: content }) } }],
+})
+
 function workerProcess(name: string): ChildProcess & { logs: string[] } {
   // 直接起 node（不经过 tsx 的命令行包装），kill -9 杀的就是 worker 本身
   const child = spawn(
@@ -215,8 +221,7 @@ describe("场景 9：worker 中途被杀掉", () => {
         ),
       // 第二次调用：一直不回，等测试把 worker 杀掉
       () => reachedSecond(),
-      (_body, res) =>
-        completion(res, { content: "worker 重启后接着做完了" }, "stop", 0.0003),
+      (_body, res) => completion(res, finishMessage("worker 重启后接着做完了"), "tool_calls", 0.0003),
     ]
     const taskId = await createTask(db, {
       modelId: "fakeor/fake/model",
@@ -279,7 +284,7 @@ describe("场景 9：worker 中途被杀掉", () => {
     expect(events.filter((event) => event.kind === "think")).toHaveLength(2)
     expect(
       (await messagesOf(db, sessionId)).map((message) => message.role)
-    ).toEqual(["user", "assistant", "tool", "assistant"])
+    ).toEqual(["user", "assistant", "tool", "assistant", "tool"])
 
     // 优雅退出
     workerB.kill("SIGTERM")
@@ -293,8 +298,7 @@ describe("场景 9：worker 中途被杀掉", () => {
     const hanging = new Promise<void>((resolve) => (reached = resolve))
     handlers = [
       () => reached(),
-      (_body, res) =>
-        completion(res, { content: "换了个 worker 做完了" }, "stop", 0.0001),
+      (_body, res) => completion(res, finishMessage("换了个 worker 做完了"), "tool_calls", 0.0001),
     ]
     const taskId = await createTask(db, { modelId: "fakeor/fake/model" })
     const { sessionId } = await startSession(db, {
