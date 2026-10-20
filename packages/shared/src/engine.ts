@@ -7,6 +7,7 @@ import {
   httpSpecSchema,
   isoTime,
   riskSchema,
+  runOutcomeSchema,
   taskStepSchema,
   toolSourceSchema,
 } from "./schemas.js"
@@ -449,6 +450,14 @@ export const ALWAYS_ON_BUILTIN_TOOLS: readonly BuiltinToolId[] = [
 ]
 
 // ---------- 引擎接口（engine-router）的输入输出 ----------
+
+/** 人改结果（run-outcome 第 8 节，tRPC sessions.setOutcome）：只有负责人和管理员能改；只改结果列，不重开运行；被派的单跟着改结果、不改单的状态 */
+export const setOutcomeInputSchema = z.object({
+  id: z.string().min(1),
+  outcome: runOutcomeSchema,
+  reason: z.string().trim().min(1, "写一句理由：为什么改成这个结果").max(500, "理由最多 500 个字"),
+})
+export type SetOutcomeInput = z.infer<typeof setOutcomeInputSchema>
 
 export const runNowInputSchema = z.object({
   taskId: z.string().min(1),
