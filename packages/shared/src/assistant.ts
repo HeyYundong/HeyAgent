@@ -16,6 +16,56 @@ export const ASSISTANT_MAX_CHATS = 50
 export const ASSISTANT_MAX_MESSAGE = 8000
 /** 一条消息最多带几张图 */
 export const ASSISTANT_MAX_IMAGES = 6
+/** 一条消息最多带几个文本文件（第 12 节） */
+export const ASSISTANT_MAX_FILES = 6
+/** 一个文本文件最大多少字节 */
+export const ASSISTANT_FILE_MAX_BYTES = 5 * 1024 * 1024
+/** 一个 PDF、Word 文件最大多少字节（12.5 节，和上传的默认上限一样） */
+export const ASSISTANT_DOC_MAX_BYTES = 20 * 1024 * 1024
+/**
+ * 能随消息发的文本文件的扩展名（和服务器 files/service.ts 的 TEXT_SAVE_EXTENSIONS 一致）：前端按它判断、选文件框的 accept；
+ * 服务器按 mime 判断，浏览器给的 mime 不对时（例如 .ts 给成 video/mp2t）也按它认
+ */
+export const ASSISTANT_TEXT_EXTENSIONS = [
+  ".md",
+  ".markdown",
+  ".txt",
+  ".html",
+  ".htm",
+  ".csv",
+  ".tsv",
+  ".json",
+  ".jsonl",
+  ".xml",
+  ".yaml",
+  ".yml",
+  ".log",
+  ".py",
+  ".js",
+  ".mjs",
+  ".cjs",
+  ".ts",
+  ".sh",
+  ".bash",
+  ".sql",
+  ".toml",
+  ".ini",
+  ".cfg",
+]
+/** 能抽出文字发的文档（12.5 节）：PDF、Word（.docx；旧版 .doc 不收） */
+export const ASSISTANT_DOC_EXTENSIONS = [".pdf", ".docx"]
+
+const extOf = (name: string) => /\.[^./\\]+$/.exec(name)?.[0]?.toLowerCase() ?? ""
+/** 按文件名分：text 文本、doc PDF / Word、old-word 旧版 .doc（不收，要另存为 .docx）；都不是返回 undefined */
+export function assistantFileKind(name: string): "text" | "doc" | "old-word" | undefined {
+  const ext = extOf(name)
+  if (ASSISTANT_TEXT_EXTENSIONS.includes(ext)) return "text"
+  if (ASSISTANT_DOC_EXTENSIONS.includes(ext)) return "doc"
+  if (ext === ".doc") return "old-word"
+  return undefined
+}
+/** 旧版 Word 的提示（前后端同一句） */
+export const oldWordProblem = (name: string) => `${name} 是旧版 Word 格式，另存为 .docx 再发`
 
 /** 设置页「助手」一组；默认值在 config.ts 的 SETTINGS_DEFAULTS（20 步、0.2 美元） */
 export const settingsAssistantInputSchema = z.object({
@@ -89,15 +139,17 @@ export const assistantChatInputSchema = z
   .object({
     /** 不填 = 开一段新对话 */
     chatId: z.string().max(64).optional(),
-    /** 只发图时可以空着 */
+    /** 只发图、只发文件时可以空着 */
     message: z.string().trim().max(ASSISTANT_MAX_MESSAGE, `最多 ${ASSISTANT_MAX_MESSAGE} 字`).default(""),
     /** 随这句话一起给助手看的图：先 POST /api/files 上传拿到的文件编号（只收 png / jpeg / gif / webp） */
     images: z.array(z.string().max(64)).max(ASSISTANT_MAX_IMAGES, `一次最多 ${ASSISTANT_MAX_IMAGES} 张图`).default([]),
+    /** 随这句话一起给助手读的文本文件（md、txt、html、csv、json……）：同样先上传拿编号 */
+    files: z.array(z.string().max(64)).max(ASSISTANT_MAX_FILES, `一次最多 ${ASSISTANT_MAX_FILES} 个文件`).default([]),
     context: assistantPageContextSchema.optional(),
     /** 新对话在发第一句之前就设好的本对话设置；只在新建对话（不带 chatId）时用，已有的对话改设置走 assistant.updateSettings */
     settings: assistantChatSettingsSchema.optional(),
   })
-  .refine((input) => input.message.length > 0 || input.images.length > 0, { message: "说点什么", path: ["message"] })
+  .refine((input) => input.message.length > 0 || input.images.length > 0 || input.files.length > 0, { message: "说点什么", path: ["message"] })
 export type AssistantChatInput = z.infer<typeof assistantChatInputSchema>
 
 export const assistantApplyInputSchema = z.object({
@@ -172,10 +224,13 @@ export const assistantImageSchema = z.object({
   url: z.string(),
 })
 export type AssistantImage = z.infer<typeof assistantImageSchema>
+/** 记录里人发的一个文本文件：和图同一个形状 */
+export const assistantFileSchema = assistantImageSchema
+export type AssistantFile = AssistantImage
 
 export const assistantEntrySchema = z.discriminatedUnion("kind", [
-  /** text 可能是空的（只发了图）；images 文件被删了的不列 */
-  z.object({ kind: z.literal("user"), id: z.string(), text: z.string(), images: z.array(assistantImageSchema).optional(), at: isoTime }),
+  /** text 可能是空的（只发了图、文件）；images、files 被删了的不列 */
+  z.object({ kind: z.literal("user"), id: z.string(), text: z.string(), images: z.array(assistantImageSchema).optional(), files: z.array(assistantFileSchema).optional(), at: isoTime }),
   z.object({ kind: z.literal("assistant"), id: z.string(), text: z.string(), at: isoTime }),
   /** 查了什么：一行 Trace，展开看输入输出摘要 */
   z.object({

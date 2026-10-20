@@ -4,6 +4,7 @@
 // 第 10 节：选模型的顺序（本对话设的 → 助手默认 → plan 默认）；本对话的设置（只能改自己的、上限盖过全局、新对话第一句带上）；defaults 接口。
 // 第 11 节（看图、上传图片）：带图的消息库里只存编号、模型收到图；模型看不了图时不收；view_image 看运行截图和图库的图；
 // 换成看不了图的模型 / 图被删了，历史里的图换成一句话；attach_files_to_task 出卡、应用后挂到任务附件。
+// 第 12 节（上传文本文件，12.5 节 PDF、Word）：库里只存编号、模型收到 <file> 段；超长的只放开头；发文件被拒；read_file 分段读；文件删了换成一句话。
 import type { AssistantEntry, AssistantStreamEvent } from "@heyagent/shared"
 import { SETTING_KEYS } from "@heyagent/shared"
 import { convertArrayToReadableStream, MockLanguageModelV4 } from "ai/test"
@@ -15,6 +16,7 @@ import * as t from "../src/db/schema.js"
 import { configureEngine } from "../src/engine/runtime.js"
 import { saveFile } from "../src/files/service.js"
 import { login, mutate, query, setupApp, type TestApp } from "./helpers.js"
+import { makeZip } from "./import-helpers.js"
 
 // 引擎的对接函数（定时、待办调度）这里不测，换成空的
 const engine = vi.hoisted(() => ({ syncTaskSchedule: vi.fn(async () => {}), syncTodo: vi.fn(async () => {}) }))
@@ -875,5 +877,218 @@ describe("右下角助手：看图、上传图片", () => {
     const badRequest = await mutate(ctx.app, "engine.attachToTask", lin, { taskId: id, fileId: shot.id })
     expect(badRequest.error?.data?.code).toBe("BAD_REQUEST")
     expect(badRequest.error?.message).toBe("这个文件已经用在别处，请重新上传")
+  })
+})
+
+// ---------- 第 12 节：上传文本文件（12.5 节：PDF、Word） ----------
+
+/** 第 index 次调模型时，发过去的所有文字（消息里的文字段、工具结果），按顺序接起来 */
+function allText(index: number) {
+  return script.prompts[index]!.prompt
+    .flatMap((message) => {
+      if (typeof message.content === "string") return [message.content]
+      return (message.content as { type: string; text?: string; output?: { value?: unknown } }[]).map((part) =>
+        part.type === "text" ? (part.text ?? "") : part.type === "tool-result" ? String(part.output?.value ?? "") : ""
+      )
+    })
+    .join("\n")
+}
+
+/** 手写的最小 PDF：一页一段文字（ASCII，Helvetica）；空字符串的页没有文字（像扫描件） */
+function pdfOf(pages: string[]): Buffer {
+  const objects: string[] = []
+  objects[1] = "<< /Type /Catalog /Pages 2 0 R >>"
+  objects[2] = `<< /Type /Pages /Kids [${pages.map((_, index) => `${4 + index * 2} 0 R`).join(" ")}] /Count ${pages.length} >>`
+  objects[3] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
+  pages.forEach((text, index) => {
+    const stream = text ? `BT /F1 12 Tf 72 720 Td (${text}) Tj ET` : ""
+    objects[4 + index * 2] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents ${5 + index * 2} 0 R >>`
+    objects[5 + index * 2] = `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`
+  })
+  let out = "%PDF-1.4\n"
+  const offsets: number[] = []
+  for (let id = 1; id < objects.length; id++) {
+    offsets.push(out.length)
+    out += `${id} 0 obj\n${objects[id]}\nendobj\n`
+  }
+  const xref = out.length
+  out += `xref\n0 ${objects.length}\n0000000000 65535 f \n${offsets.map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("")}`
+  out += `trailer\n<< /Size ${objects.length} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`
+  return Buffer.from(out, "latin1")
+}
+
+/** 最小的 .docx：一段一个 <w:p> */
+const docxOf = (paragraphs: string[]) =>
+  makeZip({
+    "[Content_Types].xml":
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+    "_rels/.rels":
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+    "word/document.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${paragraphs.map((text) => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`).join("")}</w:body></w:document>`,
+  })
+
+const PDF_MIME = "application/pdf"
+const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+describe("右下角助手：上传文本文件", () => {
+  it("带文件发消息：库里 texts 只存编号，模型收到附件一句和 <file> 段；GBK 能读、HTML 清理过；记录和 get 一致；只发文件的标题是文件名；文件删了换成一句话", async () => {
+    const md = await uploadFile(lin, "需求.md", "# 需求\n每天导出订单。", "text/markdown")
+    // 浏览器没给 mime：服务器按扩展名推
+    const gbk = await uploadFile(lin, "旧系统.txt", Buffer.concat([Buffer.from("gbk "), Buffer.from([0xd6, 0xd0, 0xce, 0xc4])]), "")
+    const html = await uploadFile(lin, "page.html", '<html><head><style>.a{color:red}</style><script>alert("x")</script></head><body><!-- 注释 --><p>正文</p><img src="data:image/png;base64,iVBORw0KGgo="><svg><path d="M0"/></svg></body></html>', "text/html")
+    const image = await uploadImage(lin, "图.png")
+    useScript([{ parts: [say("看完了。")] }])
+    const first = await send(lin, { message: "看看这几个文件", images: [image.id], files: [md.id, gbk.id, html.id], settings: visionSettings })
+    expect(of(first.events, "error")).toEqual([])
+    const chatId = chatIdOf(first.events)
+    const [row] = await ctx.db.select().from(t.assistantMessages).where(and(eq(t.assistantMessages.chatId, chatId), eq(t.assistantMessages.role, "user")))
+    expect(row!.message).toEqual({ role: "user", content: [{ type: "text", text: "看看这几个文件" }], files: [image.id], texts: [md.id, gbk.id, html.id] })
+
+    const sent = allText(0)
+    expect(sent).toContain(`（附图：${image.id} 图.png）`)
+    expect(sent).toContain(`（附件：${md.id} 需求.md、${gbk.id} 旧系统.txt、${html.id} page.html）`)
+    expect(sent).toContain(`<file id="${md.id}" name="需求.md" chars="${"# 需求\n每天导出订单。".length}">\n# 需求\n每天导出订单。\n</file>`)
+    expect(sent).toContain("gbk 中文")
+    expect(sent).toContain("（HTML，已去掉 script、style、svg 和注释）")
+    expect(sent).toContain("<p>正文</p>")
+    expect(sent).toContain('src="data:…"')
+    for (const gone of ["alert", "color:red", "<!--", "<svg", "iVBORw0KGgo"]) expect(sent).not.toContain(gone)
+    expect(script.promptText(0)).not.toContain('"texts"')
+    expect(filePartsOf(0)).toHaveLength(1)
+
+    const user = replay(first.events).find((entry) => entry.kind === "user")!
+    expect(user).toMatchObject({ text: "看看这几个文件", images: [{ id: image.id }], files: [{ id: md.id, name: "需求.md", mime: "text/markdown", url: `/api/files/${md.id}` }, { id: gbk.id, mime: "text/plain" }, { id: html.id }] })
+    const got = await query(ctx.app, "assistant.get", lin, { id: chatId })
+    expect(withoutAt(got.data.entries)).toEqual(withoutAt(replay(first.events)))
+
+    // 只发文件：标题是第一个文件名去掉扩展名；不用能看图的模型
+    useScript([{ parts: [say("好")] }])
+    const only = await send(lin, { files: [md.id] })
+    expect(of(only.events, "chat")[0]!.title).toBe("需求")
+    expect(replay(only.events).find((entry) => entry.kind === "user")).toMatchObject({ text: "", files: [{ id: md.id }] })
+    const [onlyRow] = await ctx.db.select().from(t.assistantMessages).where(and(eq(t.assistantMessages.chatId, chatIdOf(only.events)), eq(t.assistantMessages.role, "user")))
+    expect(onlyRow!.message).toEqual({ role: "user", content: [], texts: [md.id] })
+
+    // 文件被删了：历史里换成一句话，记录里不列
+    await ctx.db.delete(t.files).where(eq(t.files.id, md.id))
+    useScript([{ parts: [say("好")] }])
+    await send(lin, { chatId: chatIdOf(only.events), message: "接着说" })
+    expect(allText(0)).toContain(`[文件 ${md.id} 已经删了]`)
+    expect(allText(0)).toContain(`（附件：${md.id} （已经删了））`)
+    const after = await query(ctx.app, "assistant.get", lin, { id: chatIdOf(only.events) })
+    expect(after.data.entries.find((entry: AssistantEntry) => entry.kind === "user").files).toBeUndefined()
+  })
+
+  it("超长的文件：一条消息里合起来最多放 60,000 字，放不下的只放开头、后面的不放内容，都提示用 read_file 按 offset 接着读", async () => {
+    const big = await uploadFile(lin, "big.txt", "a".repeat(70_000), "text/plain")
+    useScript([{ parts: [say("好")] }])
+    await send(lin, { message: "一个大文件", files: [big.id] })
+    const one = allText(0)
+    expect(one).toContain(`chars="70000"`)
+    expect(one).toContain(`${"a".repeat(60_000)}\n…（共 70000 字，这里只放了前 60000 字，用 read_file 按 offset = 60000 接着读）\n</file>`)
+    expect(one).not.toContain("a".repeat(60_001))
+
+    const a = await uploadFile(lin, "a.txt", "b".repeat(50_000), "text/plain")
+    const b = await uploadFile(lin, "b.txt", "c".repeat(20_000), "text/plain")
+    const c = await uploadFile(lin, "c.txt", "d".repeat(100), "text/plain")
+    useScript([{ parts: [say("好")] }])
+    await send(lin, { message: "三个文件", files: [a.id, b.id, c.id] })
+    const three = allText(0)
+    expect(three).toContain(`${"b".repeat(50_000)}\n</file>`)
+    expect(three).toContain(`${"c".repeat(10_000)}\n…（共 20000 字，这里只放了前 10000 字，用 read_file 按 offset = 10000 接着读）`)
+    expect(three).not.toContain("c".repeat(10_001))
+    expect(three).toContain(`<file id="${c.id}" name="c.txt" chars="100">\n\n…（共 100 字，这里只放了前 0 字，用 read_file 按 offset = 0 接着读）`)
+    expect(three).not.toContain("d".repeat(100))
+  })
+
+  it("发文件被拒：不是文本、二进制、找不到、太大、旧版 .doc、扫描件 PDF、打不开的 PDF / Word；不建对话、不多插消息", async () => {
+    const before = await chatCount("u-wang")
+    const image = await uploadImage(wang, "x.png")
+    const binary = await uploadFile(wang, "bin.txt", Buffer.from([0x41, 0x00, 0x42]), "text/plain")
+    const big = await uploadFile(wang, "big.md", "x".repeat(5 * 1024 * 1024 + 1), "text/markdown")
+    const doc = await uploadFile(wang, "旧.doc", Buffer.from([0xd0, 0xcf, 0x11, 0xe0]), "application/msword")
+    const scanned = await uploadFile(wang, "扫描.pdf", pdfOf(["", ""]), PDF_MIME)
+    const broken = await uploadFile(wang, "坏.pdf", Buffer.from("%PDF-1.4\nnot really a pdf"), PDF_MIME)
+    const brokenDocx = await uploadFile(wang, "坏.docx", Buffer.from("not a zip"), DOCX_MIME)
+    const cases: [string, string][] = [
+      [image.id, `x.png（${image.id}）不是文本文件，只能发 md、txt、html、csv、json 这类文本和 PDF、Word（.docx），重新上传再发`],
+      [binary.id, `bin.txt（${binary.id}）看着是二进制，不是文本，重新上传再发`],
+      ["f-nope", "找不到文件 f-nope（可能已经删了），重新上传再发"],
+      [big.id, `big.md（${big.id}）太大，文本文件最多 5 MB`],
+      [doc.id, "旧.doc 是旧版 Word 格式，另存为 .docx 再发"],
+      [scanned.id, "扫描.pdf 里抽不出文字（可能是扫描件），截图发图片吧"],
+      [broken.id, "坏.pdf 打不开（可能加密或损坏）"],
+      [brokenDocx.id, "坏.docx 打不开（可能加密或损坏）"],
+    ]
+    for (const [id, message] of cases) {
+      const res = await send(wang, { message: "看文件", files: [id] })
+      expect(of(res.events, "error")[0]?.message).toBe(message)
+      expect(of(res.events, "chat")).toHaveLength(0)
+    }
+    expect(await chatCount("u-wang")).toBe(before)
+
+    // 已有的对话：不插消息
+    useScript([{ parts: [say("你好")] }])
+    const chatId = chatIdOf((await send(wang, { message: "你好" })).events)
+    const rows = async () => (await ctx.db.select().from(t.assistantMessages).where(eq(t.assistantMessages.chatId, chatId))).length
+    const count = await rows()
+    const again = await send(wang, { chatId, message: "看文件", files: [binary.id] })
+    expect(of(again.events, "error")[0]?.message).toContain("看着是二进制")
+    expect(await rows()).toBe(count)
+  })
+
+  it("PDF、Word：抽出的文字发给模型（PDF 按页标出来）；read_file 一段段读、offset 接着读（PDF 也是）；不是文本、找不到的报错", async () => {
+    const pdf = await uploadFile(lin, "报价.pdf", pdfOf(["Quote for March", "Total 1200 USD"]), PDF_MIME)
+    const docx = await uploadFile(lin, "说明.docx", await docxOf(["第一段说明", "第二段说明"]), DOCX_MIME)
+    useScript([{ parts: [say("看完了")] }])
+    const res = await send(lin, { message: "看看", files: [pdf.id, docx.id] })
+    expect(of(res.events, "error")).toEqual([])
+    const sent = allText(0)
+    expect(sent).toContain("（PDF，共 2 页，已抽出文字）\n--- 第 1 页 ---\nQuote for March\n\n--- 第 2 页 ---\nTotal 1200 USD")
+    expect(sent).toContain("（Word 文档，已抽出文字）\n第一段说明\n\n第二段说明")
+
+    // read_file：长文本分段读；PDF 也能分段读
+    const long = await uploadFile(lin, "long.txt", "e".repeat(45_000), "text/plain")
+    const longPdf = await uploadFile(lin, "long.pdf", pdfOf(["A".repeat(9000), "B".repeat(9000), "C".repeat(9000)]), PDF_MIME)
+    const image = await uploadImage(lin, "y.png")
+    useScript([
+      { parts: [use("read_file", { fileId: long.id }), use("read_file", { fileId: long.id, offset: 40_000 })] },
+      { parts: [use("read_file", { fileId: longPdf.id }), use("read_file", { fileId: longPdf.id, offset: 20_000 })] },
+      { parts: [use("read_file", { fileId: image.id }), use("read_file", { fileId: "f-nope" })] },
+      { parts: [say("读完了")] },
+    ])
+    const reading = await send(lin, { message: "读一下" })
+    const step1 = allText(1)
+    expect(step1).toContain(`long.txt（共 45000 字，从第 0 字开始）：\n${"e".repeat(20_000)}\n…（还有 25000 字，用 offset = 20000 接着读）`)
+    expect(step1).toContain(`long.txt（共 45000 字，从第 40000 字开始）：\n${"e".repeat(5000)}`)
+    expect(step1).not.toContain("e".repeat(20_001))
+    const step2 = allText(2)
+    expect(step2).toContain("long.pdf（PDF，共 3 页，已抽出文字）（共 ")
+    expect(step2).toContain("--- 第 2 页 ---")
+    expect(step2).toContain("用 offset = 20000 接着读")
+    expect(step2).toContain("从第 20000 字开始）：\n")
+    const step3 = allText(3)
+    expect(step3).toContain(`y.png（${image.id}）不是文本文件`)
+    expect(step3).toContain("找不到文件 f-nope")
+    const tools = replay(reading.events).filter((entry) => entry.kind === "tool")
+    expect(tools.map((entry) => entry.kind === "tool" && [entry.label, entry.status])).toEqual([
+      [`读文件 ${long.id}`, "done"],
+      [`读文件 ${long.id}（从第 40000 字）`, "done"],
+      [`读文件 ${longPdf.id}`, "done"],
+      [`读文件 ${longPdf.id}（从第 20000 字）`, "done"],
+      [`读文件 ${image.id}`, "error"],
+      ["读文件 f-nope", "error"],
+    ])
+  })
+
+  it("list_run_files 标出能用 read_file 读的文件，运行的文件也能读", async () => {
+    const taskId = await makeTask({ title: "文件任务" })
+    const runId = `R-${taskId.slice(2)}-3`
+    await ctx.db.insert(t.sessions).values({ id: runId, taskId, status: "done", modelId: MODEL, startedAt: new Date() })
+    const log = await saveFile(ctx.db, { data: Buffer.from("运行日志第一行"), name: "out.log", kind: "tool_output", sessionId: runId })
+    useScript([{ parts: [use("list_run_files", { runId })] }, { parts: [use("read_file", { fileId: log.id })] }, { parts: [say("好")] }])
+    await send(lin, { message: "看看运行的日志" })
+    expect(script.promptText(1)).toContain('\\"text\\":true')
+    expect(allText(2)).toContain("out.log（共 7 字，从第 0 字开始）：\n运行日志第一行")
   })
 })

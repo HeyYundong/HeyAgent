@@ -3,7 +3,7 @@
 // 结束后写回缓存。这样请求中途别处让查询重新拉（useAction 成功后会让全部查询失效），也不会冲掉正在接的文字。
 import * as React from "react"
 import { skipToken, useQuery } from "@tanstack/react-query"
-import type { AssistantChat, AssistantChatSettings, AssistantEntry, AssistantImage, AssistantPageContext, AssistantStreamEvent } from "@heyagent/shared"
+import type { AssistantChat, AssistantChatSettings, AssistantEntry, AssistantFile, AssistantImage, AssistantPageContext, AssistantStreamEvent } from "@heyagent/shared"
 
 import { SESSION_QUERY_KEY } from "@/lib/auth"
 import { useRoute } from "@/lib/router"
@@ -95,8 +95,9 @@ function pageContext(route: ReturnType<typeof useRoute>): AssistantPageContext {
 
 // ---------- hook ----------
 
-/** 没发出去时还给输入框的原文和图 */
-export type SendResult = { ok: true } | { ok: false; restore: { text: string; images: AssistantImage[] } }
+/** 没发出去时还给输入框的原文、图和文件 */
+type Restore = { text: string; images: AssistantImage[]; files: AssistantFile[] }
+export type SendResult = { ok: true } | { ok: false; restore: Restore }
 
 export function useAssistant() {
   const [chatId, setChatIdState] = React.useState<string | null>(() => readStored(CHAT_KEY))
@@ -185,7 +186,7 @@ export function useAssistant() {
 
   /** 请求结束：把 live 写回缓存，按结果补一句 */
   async function finish(outcome: StreamOutcome): Promise<SendResult> {
-    let restore: { text: string; images: AssistantImage[] } | null = null
+    let restore: Restore | null = null
     if (outcome.kind === "aborted") {
       mutateLive((current) => ({
         ...current,
@@ -200,9 +201,9 @@ export function useAssistant() {
       if (outcome.kind === "error" && outcome.unauthorized) void queryClient.invalidateQueries({ queryKey: SESSION_QUERY_KEY })
     }
     const final = liveRef.current
-    // 服务器没收下这条消息（没回 user 记录，例如这个模型不能看图）：去掉先显示的那条，文字和图还给输入框
+    // 服务器没收下这条消息（没回 user 记录，例如这个模型不能看图、文件不是文本）：去掉先显示的那条，文字、图和文件还给输入框
     const unsent = final?.entries.find((entry) => entry.id === LOCAL_USER_ID)
-    if (unsent && unsent.kind === "user") restore = { text: unsent.text, images: unsent.images ?? [] }
+    if (unsent && unsent.kind === "user") restore = { text: unsent.text, images: unsent.images ?? [], files: unsent.files ?? [] }
     if (final?.id) {
       const cleaned = unsent ? { ...final, entries: final.entries.filter((entry) => entry.id !== LOCAL_USER_ID) } : final
       const key = trpc.assistant.get.queryKey({ id: final.id })
@@ -230,12 +231,12 @@ export function useAssistant() {
     return controller.signal
   }
 
-  /** 发一条消息（可以只发图，images 是传好的图）；没发出去时返回原文和图，输入框放回去 */
-  async function send(text: string, images: AssistantImage[] = []): Promise<SendResult> {
+  /** 发一条消息（可以只发图、文件，images、files 是传好的）；没发出去时返回原文、图和文件，输入框放回去 */
+  async function send(text: string, images: AssistantImage[] = [], files: AssistantFile[] = []): Promise<SendResult> {
     const message = text.trim()
-    if ((!message && images.length === 0) || abortRef.current) return { ok: false, restore: { text, images } }
+    if ((!message && images.length === 0 && files.length === 0) || abortRef.current) return { ok: false, restore: { text, images, files } }
     const base = chat && chatId ? expirePending(chat) : emptyChat(draftSettings ?? FOLLOW_DEFAULTS)
-    const user: AssistantEntry = { kind: "user", id: LOCAL_USER_ID, text: message, ...(images.length ? { images } : {}), at: now() }
+    const user: AssistantEntry = { kind: "user", id: LOCAL_USER_ID, text: message, ...(images.length ? { images } : {}), ...(files.length ? { files } : {}), at: now() }
     const signal = begin("send", { ...base, entries: [...base.entries, user] })
     const outcome = await postAssistant(
       "/api/assistant/chat",
@@ -243,6 +244,7 @@ export function useAssistant() {
         chatId: chatId ?? undefined,
         message,
         images: images.map((image) => image.id),
+        files: files.map((file) => file.id),
         context: pageContext(routeRef.current),
         ...(!chatId && draftSettings ? { settings: draftSettings } : {}),
       },

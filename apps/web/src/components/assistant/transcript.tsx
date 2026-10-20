@@ -3,14 +3,15 @@
 // 看起来像「每次回答都跳到顶上」（先显示的那条换成服务器回来的那条时还会再定位一次）。改成普通聊天的跟随：
 // 跟着新字到最底下，人往上翻时不打扰；发新消息、点「应用 / 不要」时滚到最底下。
 // 图（2026-10-20）：人发的图在那句话上面靠右，助手用 view_image 看过的图在那行 Trace 下面；都是缩略图，点了看大图（components/files 的 FileViewer）。
+// 文件（第 12 节）：人发的文件在图下面靠右，一个一张小卡（图标、名字、大小），文本点了看内容（FileViewer），PDF、Word 点了下载。
 import * as React from "react"
 import { CircleAlertIcon, CircleCheckIcon, InfoIcon, LoaderCircleIcon, XIcon } from "lucide-react"
-import type { AssistantEntry, AssistantImage } from "@heyagent/shared"
+import type { AssistantEntry, AssistantFile, AssistantImage } from "@heyagent/shared"
 
-import { FileViewer } from "@/components/files"
+import { canPreviewFile, FileViewer, fileTypeIcon } from "@/components/files"
 import { MarkdownView } from "@/components/markdown"
 import { Alert, AlertAction, AlertDescription } from "@/components/ui/alert"
-import { Attachment, AttachmentMedia, AttachmentTrigger } from "@/components/ui/attachment"
+import { Attachment, AttachmentContent, AttachmentDescription, AttachmentMedia, AttachmentTitle, AttachmentTrigger } from "@/components/ui/attachment"
 import { Bubble, BubbleContent } from "@/components/ui/bubble"
 import { Button } from "@/components/ui/button"
 import { CodeBlock, CodeBlockContent } from "@/components/ui/code-block"
@@ -26,6 +27,7 @@ import {
   useMessageScroller,
 } from "@/components/ui/message-scroller"
 import { Trace, TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigger, TraceIcon, TraceLine, TraceTitle } from "@/components/ui/trace"
+import { fmtSize } from "@/lib/files"
 import { cn } from "@/lib/utils"
 
 import { ProposalCard } from "./proposal-card"
@@ -146,7 +148,8 @@ const EntryView = React.memo(function EntryView({
         <Message align="end">
           <MessageContent>
             {entry.images && entry.images.length > 0 && <ImageThumbs images={entry.images} align="end" />}
-            {/* 只发了图时没有字，不显示空气泡 */}
+            {entry.files && entry.files.length > 0 && <FileCards files={entry.files} />}
+            {/* 只发了图、文件时没有字，不显示空气泡 */}
             {entry.text && (
               <Bubble align="end" variant="muted">
                 <BubbleContent className="whitespace-pre-wrap">{entry.text}</BubbleContent>
@@ -249,6 +252,36 @@ function ImageThumbs({ images, align = "start", small }: { images: AssistantImag
         </Attachment>
       ))}
       {viewing && <FileViewer file={viewing} images={images} onShow={(file) => setViewingId(file.id)} onClose={() => setViewingId(null)} />}
+    </div>
+  )
+}
+
+/** 人发的文件：一个一张小卡，靠右。能预览的（文本）点了看内容，PDF、Word 点了下载 */
+function FileCards({ files }: { files: AssistantFile[] }) {
+  const [viewingId, setViewingId] = React.useState<string | null>(null)
+  const viewing = files.find((file) => file.id === viewingId)
+  return (
+    <div className="flex flex-wrap justify-end gap-1">
+      {files.map((file) => {
+        const Icon = fileTypeIcon(file)
+        return (
+          <Attachment key={file.id} size="sm" className="max-w-full sm:max-w-64">
+            <AttachmentMedia>
+              <Icon />
+            </AttachmentMedia>
+            <AttachmentContent>
+              <AttachmentTitle title={file.name}>{file.name}</AttachmentTitle>
+              <AttachmentDescription>{fmtSize(file.size)}</AttachmentDescription>
+            </AttachmentContent>
+            {canPreviewFile(file) ? (
+              <AttachmentTrigger aria-label={`看内容：${file.name}`} onClick={() => setViewingId(file.id)} />
+            ) : (
+              <AttachmentTrigger aria-label={`下载 ${file.name}`} render={<a href={file.url} download={file.name} />} />
+            )}
+          </Attachment>
+        )
+      })}
+      {viewing && <FileViewer file={viewing} images={[]} onShow={(file) => setViewingId(file.id)} onClose={() => setViewingId(null)} />}
     </div>
   )
 }

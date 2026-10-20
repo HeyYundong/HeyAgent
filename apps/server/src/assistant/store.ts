@@ -8,6 +8,8 @@
 //   （没带图的照旧 content 是字符串）。files 是自己加的字段，发给模型前去掉，换成「（附图：……）」一句和每张图；
 // - role = image 的行：这一步 view_image 看的图，message = { images: [{ callId, fileId }] }，紧跟在这一步的 tool 行后面。
 //   发给模型时是一条 user 消息（很多模型的工具结果里放不了图），面板上不单独成一条，图挂到对应的 tool 记录的 images 上。
+// 文本文件（第 12 节，texts.ts）：同样只存编号，放在 user 行的 texts 字段（files 是图的，旧数据不动），content 照样是数组；
+//   发给模型前去掉 texts，换成「（附件：……）」一句和每个文件的 <file> 段。
 import { randomBytes } from "node:crypto"
 
 import { ASSISTANT_MAX_CHATS, type AssistantChat, type AssistantChatSettings, type AssistantChatSummary, type AssistantEntry, type AssistantImage, type AssistantProposal } from "@heyagent/shared"
@@ -19,6 +21,7 @@ import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
 import type { FileRow } from "../files/service.js"
 import { assistantImageOf, fileRows, userContent, viewedContent, type ImageLoader } from "./images.js"
+import { textsContent, type TextLoader } from "./texts.js"
 import { isReadTool, toolLabel } from "./tools.js"
 
 export type ChatRow = typeof t.assistantChats.$inferSelect
@@ -27,8 +30,9 @@ export type ProposalRow = typeof t.assistantProposals.$inferSelect
 
 export const newId = (prefix: string) => `${prefix}-${randomBytes(8).toString("hex")}`
 
-/** 新对话的标题：第一条消息的前 30 个字（换行换成空格）；只发了图的是「图片」 */
-export const chatTitle = (message: string, images = 0) => message.replace(/\s+/g, " ").trim().slice(0, 30) || (images > 0 ? "图片" : "")
+/** 新对话的标题：第一条消息的前 30 个字（换行换成空格）；只发了文件的是第一个文件名（去掉扩展名），只发了图的是「图片」 */
+export const chatTitle = (message: string, images = 0, fileName?: string) =>
+  message.replace(/\s+/g, " ").trim().slice(0, 30) || (fileName ? fileName.replace(/\.[^.]+$/, "").trim().slice(0, 30) || fileName.slice(0, 30) : "") || (images > 0 ? "图片" : "")
 
 export const entryIdOf = (seq: number) => `m${seq}`
 export const toolEntryId = (callId: string) => `t-${callId}`
@@ -147,11 +151,12 @@ export interface NoticeMessage {
   tone: "info" | "error"
 }
 
-/** 人发的带图的消息（存库的样子）：content 只有文字，files 是图的文件编号 */
+/** 人发的带图 / 文件的消息（存库的样子）：content 只有文字，files 是图的文件编号，texts 是文本文件的编号；没有的不带 */
 export interface UserFilesMessage {
   role: "user"
   content: TextPart[]
-  files: string[]
+  files?: string[]
+  texts?: string[]
 }
 
 /** role = image 的行：这一步 view_image 看的图 */
@@ -160,10 +165,11 @@ export interface ImageRowMessage {
 }
 
 export const userFilesOf = (row: MessageRow): string[] => (row.role === "user" ? ((row.message as Partial<UserFilesMessage>).files ?? []) : [])
+export const userTextsOf = (row: MessageRow): string[] => (row.role === "user" ? ((row.message as Partial<UserFilesMessage>).texts ?? []) : [])
 
-/** 一段对话里所有图的文件编号（人发的 + view_image 看的） */
+/** 一段对话里所有图和文件的编号（人发的图、文件 + view_image 看的） */
 export function messageFileIds(rows: MessageRow[]): string[] {
-  return rows.flatMap((row) => (row.role === "image" ? (row.message as ImageRowMessage).images.map((image) => image.fileId) : userFilesOf(row)))
+  return rows.flatMap((row) => (row.role === "image" ? (row.message as ImageRowMessage).images.map((image) => image.fileId) : [...userFilesOf(row), ...userTextsOf(row)]))
 }
 
 const textOf = (message: Extract<ModelMessage, { role: "user" }>) =>
@@ -171,9 +177,10 @@ const textOf = (message: Extract<ModelMessage, { role: "user" }>) =>
 
 /**
  * 发给模型的历史：去掉 notice；带图的 user 消息、image 行换成文字 + 图（读文件、缩图，当前模型看不了图或文件没了换成一句话）；
+ * 带文件的 user 消息把文件的文字放进去（texts.ts 的 textsContent）；
  * 某次调用没有结果的（进程中途挂了、卡还没处理）补一个「没有执行」的结果，AI SDK 要求每个 tool-call 后面都有 tool-result
  */
-export async function historyForModel(rows: MessageRow[], images: { loader: ImageLoader; vision: boolean }): Promise<ModelMessage[]> {
+export async function historyForModel(rows: MessageRow[], images: { loader: ImageLoader; texts: TextLoader; vision: boolean }): Promise<ModelMessage[]> {
   await images.loader.prefetch(messageFileIds(rows))
   const messages: ModelMessage[] = []
   for (const row of rows) {
@@ -184,8 +191,10 @@ export async function historyForModel(rows: MessageRow[], images: { loader: Imag
       continue
     }
     const files = userFilesOf(row)
-    if (files.length) {
-      messages.push({ role: "user", content: await userContent(images.loader, textOf(row.message as Extract<ModelMessage, { role: "user" }>), files, images.vision) })
+    const texts = userTextsOf(row)
+    if (files.length || texts.length) {
+      const attached = texts.length ? await textsContent(images.texts, texts) : ""
+      messages.push({ role: "user", content: await userContent(images.loader, textOf(row.message as Extract<ModelMessage, { role: "user" }>), files, images.vision, attached) })
       continue
     }
     messages.push(row.message as ModelMessage)
@@ -278,7 +287,7 @@ export function resultText(part: ToolResultPart): { text: string; error: boolean
   return { text: value, error }
 }
 
-/** files：对话里图的文件行（messageFileIds 一批查好的）；查不到的（删了）不列 */
+/** files：对话里图和文件的行（messageFileIds 一批查好的）；查不到的（删了）不列 */
 export function buildEntries(messages: MessageRow[], proposals: ProposalRow[], files: Map<string, FileRow> = new Map()): AssistantEntry[] {
   const results = new Map<string, ToolResultPart>()
   const viewed = new Map<string, AssistantImage[]>()
@@ -319,7 +328,8 @@ export function buildEntries(messages: MessageRow[], proposals: ProposalRow[], f
       entries.push({ kind: "notice", id: entryIdOf(row.seq), text: notice.text, tone: notice.tone, at })
     } else if (row.role === "user") {
       const images = imagesOf(userFilesOf(row))
-      entries.push({ kind: "user", id: entryIdOf(row.seq), text: textOf(row.message as Extract<ModelMessage, { role: "user" }>), ...(images.length ? { images } : {}), at })
+      const texts = imagesOf(userTextsOf(row))
+      entries.push({ kind: "user", id: entryIdOf(row.seq), text: textOf(row.message as Extract<ModelMessage, { role: "user" }>), ...(images.length ? { images } : {}), ...(texts.length ? { files: texts } : {}), at })
     } else if (row.role === "assistant") {
       const message = row.message as Extract<ModelMessage, { role: "assistant" }>
       const parts = typeof message.content === "string" ? [{ type: "text" as const, text: message.content }] : message.content

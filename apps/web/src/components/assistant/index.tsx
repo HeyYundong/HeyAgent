@@ -2,10 +2,11 @@
 // 用中文说要新建、修改、删除什么，助手查清楚后列成改动确认卡，人点「应用」才改；改了库，开着的页面由 LiveSync 刷新。
 // 面板：宽屏是固定在右下角的 Card（不挡整页，可以边看边说），窄屏是全屏的 Sheet。开关和当前对话记在 localStorage。
 // 「浮动面板」registry 里没有，用 Card 加 fixed 定位，只是定位、不改外观（docs/ui-rules.md 第 8 节登记）。
-// 可以发图（2026-10-20）：输入框左下「加图片」、在输入框里粘贴、拖到面板上，见 composer-images.tsx。
+// 可以发图和文件（2026-10-20）：输入框左下「加附件」、在输入框里粘贴、拖到面板上，见 composer-images.tsx。
+// 文件是文本（md、txt、html、csv、json……）和 PDF、Word（.docx），服务器抽出文字给模型（docs/dev/copilot.md 第 12 节）。
 import * as React from "react"
-import { ArrowUpIcon, BotIcon, CircleAlertIcon, ImagePlusIcon, Maximize2Icon, Minimize2Icon, MinusIcon, SquareIcon, SquarePenIcon } from "lucide-react"
-import { ASSISTANT_MAX_IMAGES, ASSISTANT_MAX_MESSAGE } from "@heyagent/shared"
+import { ArrowUpIcon, BotIcon, CircleAlertIcon, Maximize2Icon, Minimize2Icon, MinusIcon, PaperclipIcon, SquareIcon, SquarePenIcon } from "lucide-react"
+import { ASSISTANT_MAX_FILES, ASSISTANT_MAX_IMAGES, ASSISTANT_MAX_MESSAGE } from "@heyagent/shared"
 
 import { Alert, AlertAction, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
@@ -20,7 +21,7 @@ import { useIsMobile } from "@/hooks/use-mobile"
 import { errorMessage } from "@/lib/mutations"
 import { cn } from "@/lib/utils"
 
-import { hasFiles, IMAGE_ACCEPT, PendingImageList, usePendingImages, type PendingImages } from "./composer-images"
+import { ATTACHMENT_ACCEPT, hasFiles, PendingAttachmentList, usePendingAttachments, type PendingAttachments } from "./composer-images"
 import { HistoryButton } from "./history"
 import { ChatSettingsButton } from "./settings"
 import { useAssistant, useStoredExpanded, useStoredOpen, type AssistantState } from "./use-assistant"
@@ -39,7 +40,7 @@ export function AssistantWidget() {
   const buttonRef = React.useRef<HTMLButtonElement>(null)
   const inputRef = React.useRef<HTMLTextAreaElement>(null)
   const [draft, setDraft] = React.useState("")
-  const images = usePendingImages()
+  const attachments = usePendingAttachments()
   const [dragging, setDragging] = React.useState(false)
 
   const close = () => {
@@ -53,8 +54,8 @@ export function AssistantWidget() {
   }
 
   const body = <PanelBody assistant={assistant} onExample={pickExample} onNavigate={isMobile ? close : undefined} />
-  const composer = <Composer assistant={assistant} draft={draft} onDraft={setDraft} images={images} dragging={dragging} inputRef={inputRef} />
-  // 图片拖到面板上任何地方都算（不然拖到记录上松手，浏览器会打开那张图、离开当前页）
+  const composer = <Composer assistant={assistant} draft={draft} onDraft={setDraft} attachments={attachments} dragging={dragging} inputRef={inputRef} />
+  // 图片、文件拖到面板上任何地方都算（不然拖到记录上松手，浏览器会打开那个文件、离开当前页）
   const dropProps = {
     onDragOver: (event: React.DragEvent) => {
       if (!hasFiles(event)) return
@@ -69,7 +70,7 @@ export function AssistantWidget() {
       if (!hasFiles(event)) return
       event.preventDefault()
       setDragging(false)
-      images.add(event.dataTransfer.files)
+      attachments.add(event.dataTransfer.files)
     },
   }
 
@@ -190,7 +191,7 @@ function PanelBody({ assistant, onExample, onNavigate }: { assistant: AssistantS
               <BotIcon />
             </EmptyMedia>
             <EmptyTitle>要改点什么？</EmptyTitle>
-            <EmptyDescription>说要新建、修改或删除什么，也可以发截图给我看。我先列出改动，你点「应用」才会改。</EmptyDescription>
+            <EmptyDescription>说要新建、修改或删除什么，也可以发截图、文件给我看。我先列出改动，你点「应用」才会改。</EmptyDescription>
           </EmptyHeader>
           <EmptyContent>
             {EXAMPLES.map((text) => (
@@ -233,39 +234,39 @@ const costText = (usd: number) => `$${usd < 0.01 ? usd.toFixed(4) : usd.toFixed(
 
 /**
  * 输入框：回车发送，Shift+回车换行，输入法组字时回车不发送；请求进行中发送按钮变「停止」。
- * 上面一排是要一起发的图：有字或有传好的图才能发；还在上传、有没传上去的（先移除）时不能发
+ * 上面一排是要一起发的图和文件：有字或有传好的附件才能发；还在上传、有没传上去的（先移除）时不能发
  */
 function Composer({
   assistant,
   draft,
   onDraft,
-  images,
+  attachments,
   dragging,
   inputRef,
 }: {
   assistant: AssistantState
   draft: string
   onDraft: React.Dispatch<React.SetStateAction<string>>
-  images: PendingImages
+  attachments: PendingAttachments
   dragging: boolean
   inputRef: React.Ref<HTMLTextAreaElement>
 }) {
   const pickRef = React.useRef<HTMLInputElement>(null)
   const busy = !!assistant.busy
   const cost = assistant.chat?.costUsd ?? 0
-  const canSend = !busy && !assistant.loading && (draft.trim().length > 0 || images.ready > 0) && !images.uploading && !images.failed
-  const problem = images.notice ?? (images.failed ? "有图没传上去，移除后才能发。" : null)
+  const canSend = !busy && !assistant.loading && (draft.trim().length > 0 || attachments.ready > 0) && !attachments.uploading && !attachments.failed
+  const problem = attachments.notice ?? (attachments.failed ? "有附件没传上去，移除后才能发。" : null)
 
   const submit = async () => {
     if (!canSend) return
     const text = draft
-    const sent = images.take()
+    const sent = attachments.take()
     onDraft("")
-    const result = await assistant.send(text, sent)
-    // 没发出去（例如这个模型不能看图）：原文和图放回输入框（人这期间又打了字、加了图就不覆盖）
+    const result = await assistant.send(text, sent.images, sent.files)
+    // 没发出去（例如这个模型不能看图、文件不是文本）：原文、图和文件放回输入框（人这期间又打了字、加了附件就不覆盖）
     if (!result.ok) {
       onDraft((current) => (current.trim() ? current : result.restore.text))
-      images.restore(result.restore.images)
+      attachments.restore(result.restore)
     }
   }
 
@@ -280,23 +281,23 @@ function Composer({
       <input
         ref={pickRef}
         type="file"
-        accept={IMAGE_ACCEPT}
+        accept={ATTACHMENT_ACCEPT}
         multiple
         className="hidden"
-        aria-label="选择图片"
+        aria-label="选择图片或文件"
         onChange={(event) => {
-          images.add(event.target.files ?? [])
+          attachments.add(event.target.files ?? [])
           event.target.value = ""
         }}
       />
       <InputGroup>
-        {(images.items.length > 0 || dragging || problem) && (
+        {(attachments.items.length > 0 || dragging || problem) && (
           <InputGroupAddon align="block-start" className="flex-col items-start">
-            {images.items.length > 0 && <PendingImageList images={images} />}
+            {attachments.items.length > 0 && <PendingAttachmentList attachments={attachments} />}
             {dragging ? (
               <InputGroupText>
-                <ImagePlusIcon />
-                松开就加上图片
+                <PaperclipIcon />
+                松开就加上
               </InputGroupText>
             ) : (
               problem && <span className="text-destructive">{problem}</span>
@@ -310,15 +311,15 @@ function Composer({
           maxLength={ASSISTANT_MAX_MESSAGE}
           className="max-h-40"
           value={draft}
-          placeholder="说要改什么（可以贴图），回车发送"
+          placeholder="说要改什么（可以贴图、加文件），回车发送"
           aria-label="给助手的话"
           onChange={(event) => onDraft(event.target.value)}
           onPaste={(event) => {
-            // 截图、「复制图片」只有图没有文字：加成图片；同时带文字的（例如从表格里复制）照常粘贴文字
+            // 截图、「复制图片」、复制的文件只有文件没有文字：加成附件；同时带文字的（例如从表格里复制）照常粘贴文字
             const files = [...event.clipboardData.files]
             if (files.length === 0 || event.clipboardData.getData("text/plain")) return
             event.preventDefault()
-            images.add(files)
+            attachments.add(files)
           }}
           onKeyDown={(event) => {
             // 输入法组字时的回车是选字（Safari 上 isComposing 已经是 false，但 keyCode 是 229）
@@ -329,10 +330,10 @@ function Composer({
         />
         <InputGroupAddon align="block-end">
           <Tooltip>
-            <TooltipTrigger render={<InputGroupButton variant="ghost" size="icon-sm" aria-label="加图片" disabled={images.full} onClick={() => pickRef.current?.click()} />}>
-              <ImagePlusIcon />
+            <TooltipTrigger render={<InputGroupButton variant="ghost" size="icon-sm" aria-label="加附件" disabled={attachments.full} onClick={() => pickRef.current?.click()} />}>
+              <PaperclipIcon />
             </TooltipTrigger>
-            <TooltipContent>{images.full ? `最多 ${ASSISTANT_MAX_IMAGES} 张` : "加图片"}</TooltipContent>
+            <TooltipContent>{attachments.full ? `最多 ${ASSISTANT_MAX_IMAGES} 张图、${ASSISTANT_MAX_FILES} 个文件` : "加附件（图片、文本文件、PDF、Word）"}</TooltipContent>
           </Tooltip>
           {cost > 0 && <InputGroupText>这段对话花了 {costText(cost)}</InputGroupText>}
           {busy ? (

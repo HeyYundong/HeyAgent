@@ -134,10 +134,10 @@ async function idList(loader: ImageLoader, ids: string[]) {
   return names.join("、")
 }
 
-/** 人发的带图的消息给模型的内容：文字 + 「（附图：编号 名字……）」+ 每张图 */
-export async function userContent(loader: ImageLoader, text: string, ids: string[], vision: boolean): Promise<(TextPart | FilePart)[]> {
-  const note = `（附图：${await idList(loader, ids)}）`
-  return [{ type: "text", text: text ? `${text}\n${note}` : note }, ...(await Promise.all(ids.map((id) => imagePart(loader, id, vision))))]
+/** 人发的带图（或文件）的消息给模型的内容：文字 + 「（附图：编号 名字……）」+ attached（文件那段，texts.ts 的 textsContent）+ 每张图 */
+export async function userContent(loader: ImageLoader, text: string, ids: string[], vision: boolean, attached = ""): Promise<(TextPart | FilePart)[]> {
+  const note = ids.length ? `（附图：${await idList(loader, ids)}）` : ""
+  return [{ type: "text", text: [text, note, attached].filter(Boolean).join("\n") }, ...(await Promise.all(ids.map((id) => imagePart(loader, id, vision))))]
 }
 
 /** view_image 看的图给模型的内容（工具结果里放不了图，接在工具结果后面作为一条 user 消息） */

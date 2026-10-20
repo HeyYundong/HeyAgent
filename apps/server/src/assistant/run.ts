@@ -8,6 +8,7 @@
 // - 断线（浏览器中止请求）就停掉模型调用，已经存下的照常保留。
 // - 图（第 11 节）：人随消息发的图先校验（是图片、能看、当前模型能看图），库里只存文件编号；view_image 看的图接在这一步的工具结果后面
 //   作为一条 user 消息发给模型（很多模型的工具结果里放不了图），存成 role = image 的一行。
+// - 文本文件（第 12 节）：人随消息发的文件先校验（能读、是文本、不太大、解得开），库里只存编号；发给模型时文字放进那条消息（texts.ts）。
 // 每条 ModelMessage 原样存进 assistant_messages（图只存编号，见 store.ts）；面板上的记录由 store.ts 拼出来，和这里发出去的一致。
 import { setTimeout as sleep } from "node:timers/promises"
 
@@ -24,6 +25,7 @@ import type { FileRow } from "../files/service.js"
 import type { Keyring } from "../lib/crypto.js"
 import { assistantImageOf, checkChatImages, ImageLoader, VIEW_IMAGE_MAX_PER_STEP, viewedContent } from "./images.js"
 import { systemPrompt } from "./prompt.js"
+import { checkChatTexts, TextLoader } from "./texts.js"
 import { effectiveLimits, modelProblem, modelVision, pickModel } from "./settings.js"
 import {
   appendToolResults,
@@ -49,7 +51,7 @@ import {
   type UserFilesMessage,
 } from "./store.js"
 import { collectMissing } from "./describe.js"
-import { errorText, parseToolInput, ToolError, TOOLS, VIEW_IMAGE, type ToolCtx } from "./tools.js"
+import { errorText, parseToolInput, READ_FILE, ToolError, TOOLS, VIEW_IMAGE, type ToolCtx } from "./tools.js"
 
 export interface AssistantActor {
   id: string
@@ -118,11 +120,18 @@ interface Loop {
   seq: number
   /** 这次请求里读图的缓存（同一张图只读、缩一次） */
   images: ImageLoader
+  /** 这次请求里读文本文件的缓存（文件行和 images 共用） */
+  texts: TextLoader
   /** 这次用的模型能不能看图（runLoop 拿到模型后填） */
   vision?: boolean
 }
 
 const now = () => new Date().toISOString()
+
+/** texts：发消息前检查文件时已经抽过文字的那一份（这次请求不再读、不再解析） */
+function newLoop(deps: RunDeps, chat: ChatRow, context: AssistantPageContext | undefined, seq: number, texts = new TextLoader(new ImageLoader(deps.db))): Loop {
+  return { deps, chat, context, spent: 0, seq, images: texts.images, texts }
+}
 
 async function notice(loop: Loop, text: string, tone: NoticeMessage["tone"] = "info") {
   const seq = loop.seq++
@@ -225,7 +234,7 @@ const objectOf = (value: unknown) => (value && typeof value === "object" ? (valu
 /** 执行一步里的工具调用：查的直接查；改的校验、查权限后进卡；进不了卡的错误交回模型 */
 async function handleCalls(loop: Loop, calls: StepCall[]) {
   const { emit } = loop.deps
-  const ctx: ToolCtx = { db: loop.deps.db, actor: { id: loop.deps.actor.id, isAdmin: loop.deps.actor.isAdmin }, keyring: loop.deps.keyring }
+  const ctx: ToolCtx = { db: loop.deps.db, actor: { id: loop.deps.actor.id, isAdmin: loop.deps.actor.isAdmin }, keyring: loop.deps.keyring, texts: loop.texts }
   const outputs: ToolResultPart[] = []
   const changes: AssistantChange[] = []
   const proposalCalls: ProposalRow["calls"] = []
@@ -254,6 +263,9 @@ async function handleCalls(loop: Loop, calls: StepCall[]) {
           viewed.push({ callId: call.toolCallId, fileId: found.fileId })
           image = assistantImageOf(loaded.row)
           text = JSON.stringify({ ...found, note: "图片在下一条消息里" })
+        } else if (call.toolName === READ_FILE) {
+          // 自己分好段了（一段 READ_FILE_LIMIT 字），不再按 JSON 截
+          text = String(await def.run(ctx, parsed.input as never))
         } else text = clipOutput(JSON.stringify(await def.run(ctx, parsed.input as never)))
       } catch (error) {
         text = errorText(error)
@@ -309,7 +321,7 @@ async function runLoop(loop: Loop, modelId: string): Promise<string | null> {
   }
   loop.vision = resolved.vision
   const system = await systemPrompt(db, { actor: loop.deps.actor, context: loop.context })
-  const messages = await historyForModel(await loadMessages(db, loop.chat.id), { loader: loop.images, vision: resolved.vision })
+  const messages = await historyForModel(await loadMessages(db, loop.chat.id), { loader: loop.images, texts: loop.texts, vision: resolved.vision })
 
   for (let step = 0; ; step++) {
     if (signal.aborted) throw new Aborted()
@@ -397,22 +409,33 @@ async function checkImages(db: Db, ids: string[], chatModelId: string | null) {
   return checked.rows
 }
 
+/** 随消息发的文本文件：都要能读、是文本（或 PDF、Word）、不太大、抽得出文字。不行就报错、什么都不存。不用看模型能不能看图 */
+async function checkTexts(loader: TextLoader, ids: string[]) {
+  const checked = await checkChatTexts(loader, ids)
+  if ("error" in checked) throw new AssistantError(checked.error)
+  return checked.rows
+}
+
 export async function runChat(deps: RunDeps, input: AssistantChatInput) {
   const { db, actor, emit } = deps
   let chat: ChatRow
   let files: FileRow[] = []
+  let texts: FileRow[] = []
+  const loader = new TextLoader(new ImageLoader(db))
   if (input.chatId) {
     const found = await loadChat(db, input.chatId, actor.id)
     if (!found) throw new AssistantError("找不到这段对话（可能已经删了），开一段新对话吧")
     chat = found
     if (input.images.length) files = await checkImages(db, input.images, chat.modelId)
+    if (input.files.length) texts = await checkTexts(loader, input.files)
   } else {
     // 新对话发第一句之前设好的本对话设置，建对话时一起存；选的模型用不了就不建，原话退回输入框
     const settings = input.settings ?? { modelId: null, maxSteps: null, maxCostUsd: null }
     const problem = settings.modelId ? await modelProblem(db, settings.modelId) : undefined
     if (problem) throw new AssistantError(`本对话设的模型用不了：${problem}`)
     if (input.images.length) files = await checkImages(db, input.images, settings.modelId)
-    chat = await createChat(db, { userId: actor.id, title: chatTitle(input.message, files.length), ...settings })
+    if (input.files.length) texts = await checkTexts(loader, input.files)
+    chat = await createChat(db, { userId: actor.id, title: chatTitle(input.message, files.length, texts[0]?.name), ...settings })
     await trimChats(db, actor.id)
   }
   await withChatLock(chat.id, async () => {
@@ -425,15 +448,24 @@ export async function runChat(deps: RunDeps, input: AssistantChatInput) {
         await appendToolResults(tx, chat.id, proposal.afterSeq, sameResult(proposal, { expired: true, message: "人没有处理这张确认卡，又说了新的话，这些改动没有执行" }))
       })
     }
-    const loop: Loop = { deps, chat, context: input.context, spent: 0, seq: await nextSeq(db, chat.id), images: new ImageLoader(db) }
+    const loop = newLoop(deps, chat, input.context, await nextSeq(db, chat.id), loader)
     for (const file of files) loop.images.remember(file)
     const userSeq = loop.seq++
-    // 带图的只存文件编号（store.ts 开头）；没带图的照旧
-    const message = files.length
-      ? ({ role: "user", content: input.message ? [{ type: "text", text: input.message }] : [], files: files.map((file) => file.id) } satisfies UserFilesMessage)
-      : { role: "user", content: input.message }
+    // 带图、文件的只存文件编号（store.ts 开头）；都没带的照旧
+    const message =
+      files.length || texts.length
+        ? ({
+            role: "user",
+            content: input.message ? [{ type: "text", text: input.message }] : [],
+            ...(files.length ? { files: files.map((file) => file.id) } : {}),
+            ...(texts.length ? { texts: texts.map((file) => file.id) } : {}),
+          } satisfies UserFilesMessage)
+        : { role: "user", content: input.message }
     await insertMessages(db, chat.id, [{ seq: userSeq, role: "user", message }])
-    emit({ type: "entry", entry: { kind: "user", id: entryIdOf(userSeq), text: input.message, ...(files.length ? { images: files.map(assistantImageOf) } : {}), at: now() } })
+    emit({
+      type: "entry",
+      entry: { kind: "user", id: entryIdOf(userSeq), text: input.message, ...(files.length ? { images: files.map(assistantImageOf) } : {}), ...(texts.length ? { files: texts.map(assistantImageOf) } : {}), at: now() },
+    })
     for (const proposal of expired) emit({ type: "update", entry: proposalEntry({ ...proposal, status: "expired" }) })
 
     const model = await pickModel(db, chat.modelId)
@@ -501,7 +533,7 @@ export async function runApply(deps: RunDeps, input: AssistantApplyInput) {
     }
     await appendToolResults(db, chat.id, proposal.afterSeq, results)
 
-    const loop: Loop = { deps, chat, context: input.context, spent: 0, seq: await nextSeq(db, chat.id), images: new ImageLoader(db) }
+    const loop = newLoop(deps, chat, input.context, await nextSeq(db, chat.id))
     const model = await pickModel(db, chat.modelId)
     if ("error" in model) {
       await notice(loop, model.error, "error")

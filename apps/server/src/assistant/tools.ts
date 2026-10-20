@@ -47,10 +47,12 @@ import * as t from "../db/schema.js"
 import { compileRuleText } from "../engine/rule-compile.js"
 import { isImageMime, listSessionFiles } from "../files/service.js"
 import { viewableImage } from "./images.js"
+import { isTextFile, READ_FILE_LIMIT, readFilePart, type TextLoader } from "./texts.js"
 import { clip, changedFields, DIFF_MAX, Names, riskText, scheduleText, skillStatusText, stepsText, stepText, triggerText, yesNo, type FieldChange } from "./describe.js"
 
 /** 工具执行的上下文：谁在做（当前登录的人）、库、主密钥 */
-export type ToolCtx = WriteCtx
+/** texts：这次请求读文件的缓存（read_file 接着读同一个 PDF 时不再解析），run.ts 给 */
+export type ToolCtx = WriteCtx & { texts?: TextLoader }
 
 /** 给模型看的错误（没有权限、找不到、字段不对）：原样作为 tool-result 交回模型 */
 export class ToolError extends Error {}
@@ -527,7 +529,7 @@ export const TOOLS: Record<string, ToolDef> = {
     },
   }),
   list_run_files: read({
-    description: "列一次运行的文件（截图、产物、浏览器下载、附件、工具输出全文）：编号、路径（空间里的位置，例如 state/progress.json、attachments/报价.xlsx）、类型、大小。image = true 的可以用 view_image 看",
+    description: "列一次运行的文件（截图、产物、浏览器下载、附件、工具输出全文）：编号、路径（空间里的位置，例如 state/progress.json、attachments/报价.xlsx）、类型、大小。image = true 的可以用 view_image 看，text = true 的可以用 read_file 读",
     input: z.object({
       runId: z.string().min(1).describe("运行编号（R-…），用 list_sessions 查"),
       kind: z.enum(["screenshot", "artifact", "download", "attachment", "upload", "tool_output"]).optional().describe("可选：只看这一类（screenshot 截图）"),
@@ -545,7 +547,7 @@ export const TOOLS: Record<string, ToolDef> = {
         runId: session.id,
         taskId: session.taskId,
         total: rows.length,
-        files: shown.map((file) => ({ id: file.id, path: file.path, kind: file.kind, mime: file.mime, size: file.size, updatedAt: file.updatedAt, image: isImageMime(file.mime) })),
+        files: shown.map((file) => ({ id: file.id, path: file.path, kind: file.kind, mime: file.mime, size: file.size, updatedAt: file.updatedAt, image: isImageMime(file.mime), text: isTextFile(file) })),
         more: rows.length > shown.length ? `只列了最后 ${RUN_FILES_MAX} 个，带 kind 筛一下` : undefined,
       }
     },
@@ -564,6 +566,16 @@ export const TOOLS: Record<string, ToolDef> = {
       const { row, from } = await viewableImage(ctx.db, input)
       return { fileId: row.id, name: row.name, mime: row.mime, size: row.size, from }
     },
+  }),
+  read_file: read({
+    description: `读一个文本文件（md、txt、html、csv、json、代码、PDF、Word……）的内容：人发的文件（消息里「附件」后面的编号，没放全的从提示的 offset 接着读）、运行的文件（用 list_run_files 查，text = true 的）。一次给 ${READ_FILE_LIMIT} 字，后面还有会提示下一个 offset；HTML 去掉了 script、style、svg 和注释，PDF、Word 是抽出来的文字（PDF 每页前有「--- 第 N 页 ---」）`,
+    input: z.object({
+      fileId: z.string().min(1).max(64).describe("文件编号 f-…"),
+      offset: z.number().int().min(0).optional().describe("从第几个字开始读，默认 0"),
+    }),
+    label: (input) => `读文件 ${str(input.fileId)}${input.offset ? `（从第 ${input.offset} 字）` : ""}`,
+    // 结果是一段文字（不是对象），run.ts 原样交回模型
+    run: (ctx, input) => readFilePart(ctx.db, input.fileId, input.offset, ctx.texts),
   }),
   list_staff: read({
     description: "列全部的人（编号、名字、职位、是不是主管）：指派负责人、审核人时用",
@@ -662,8 +674,8 @@ export const TOOLS: Record<string, ToolDef> = {
   }),
 
   attach_files_to_task: write({
-    description: "把人随消息发的图（上传的文件）放进任务的附件，任务每次运行都能读到。只收人刚上传、还没用在别处的文件",
-    input: z.object({ taskId: z.string().min(1), fileIds: z.array(z.string().min(1).max(64)).min(1).max(20).describe("文件编号 f-…（消息里「附图」后面的）") }),
+    description: "把人随消息发的图、文件（上传的文件）放进任务的附件，任务每次运行都能读到。只收人刚上传、还没用在别处的文件",
+    input: z.object({ taskId: z.string().min(1), fileIds: z.array(z.string().min(1).max(64)).min(1).max(20).describe("文件编号 f-…（消息里「附图」「附件」后面的）") }),
     label: (input) => `给任务 ${str(input.taskId)} 加附件`,
     prepare: async (ctx, input) => {
       const task = await loadTask(ctx, input.taskId)
@@ -1271,6 +1283,8 @@ export const isReadTool = (name: string) => TOOLS[name]?.kind === "read"
 
 /** 看图的工具：结果里的图由 run.ts 读出来，接在工具结果后面发给模型 */
 export const VIEW_IMAGE = "view_image"
+/** 读文本文件的工具：结果是分好段的文字，run.ts 不再按 JSON 截 */
+export const READ_FILE = "read_file"
 
 /** Trace 上显示的中文；不认识的工具照原名 */
 export function toolLabel(name: string, input: unknown): string {

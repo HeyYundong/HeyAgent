@@ -4,7 +4,7 @@
 // 下载走 GET /api/files/:id（要求登录，cookie 自动带上）。
 // 代码文件（.py .js .ts .sh .sql .toml .ini 等，docs/dev/session-space.md 3.1）按语言高亮显示（CodeView，复用 use-highlighted-code）。
 // 有 path（空间里的路径，例如 state/progress.json）的文件显示路径，覆盖过的（updatedAt ≠ createdAt）会标出来。
-// 另外导出 FileViewer（看图 / 看内容的弹窗）、CodeView（带高亮的代码块）、fileSourceLabel（来源文字）、fileTypeIcon（按类型选图标）、isImageFile、filePathOf、isOverwritten，给运行详情的「空间文件」列表等别的页面用。
+// 另外导出 FileViewer（看图 / 看内容的弹窗）、CodeView（带高亮的代码块）、fileSourceLabel（来源文字）、fileTypeIcon（按类型选图标）、isImageFile、canPreviewFile、filePathOf、isOverwritten，给运行详情的「空间文件」列表等别的页面用。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
 import { ChevronLeftIcon, ChevronRightIcon, DownloadIcon, FileCodeIcon, FileIcon, FileSpreadsheetIcon, FileTextIcon, ImageIcon, PaperclipIcon, XIcon, type LucideIcon } from "lucide-react"
@@ -61,9 +61,14 @@ const isText = (file: ShownFile) => TEXT_MIME.test(file.mime) || TEXT_EXT.test(f
 /** 代码文件的高亮语言；不是代码文件返回 undefined */
 const codeLanguage = (file: ShownFile) => CODE_EXT[/\.([a-z0-9]+)$/i.exec(file.name)?.[1]?.toLowerCase() ?? ""] ?? CODE_MIME[file.mime]
 const isMarkdown = (file: ShownFile) => file.mime === "text/markdown" || /\.(md|markdown)$/i.test(file.name)
+/** PDF、Word：不能在这里预览，图标和文本一样 */
+const isDocument = (file: ShownFile) => /^application\/(pdf|msword|vnd\.openxmlformats-officedocument\.wordprocessingml\.document)$/.test(file.mime) || /\.(pdf|docx?)$/i.test(file.name)
 
 /** 是不是图片（看大图时能左右切换） */
 export const isImageFile = isImage
+
+/** FileViewer 能不能显示内容（图片、表格、文本）；不能的（PDF、Word 等）直接下载 */
+export const canPreviewFile = (file: ShownFile) => isImage(file) || isSheet(file) || isText(file)
 
 /** 空间里显示用的路径；没有路径（上传的附件等）退回文件名 */
 export const filePathOf = (file: Pick<ShownFile, "name" | "path">) => file.path || file.name
@@ -81,7 +86,7 @@ export function fileTypeIcon(file: ShownFile): LucideIcon {
   if (isImage(file)) return ImageIcon
   if (isSheet(file)) return FileSpreadsheetIcon
   if (codeLanguage(file)) return FileCodeIcon
-  if (isText(file)) return FileTextIcon
+  if (isText(file) || isDocument(file)) return FileTextIcon
   return FileIcon
 }
 
