@@ -139,6 +139,10 @@ export const taskInputSchema = z.object({
   allowBrowserEvaluate: z.boolean().default(false),
   /** 三方验收模型（M3）；不填（或空串）用默认验收模型。必须和执行模型不是同一家 */
   verifyModelId: z.string().optional(),
+  /** 运行结束后让 AI 轻量复核结果（默认开；配了三方验收的不复核） */
+  reviewEnabled: z.boolean().default(true),
+  /** 复核模型；不填（或空串）用默认复核模型 */
+  reviewModelId: z.string().optional(),
   /** 派活：能被派活（参数声明 + 名额）；null = 不能被派活 */
   dispatch: taskDispatchSchema.nullable().default(null),
   /** 派活：谁能派活给这个任务（任务 id） */

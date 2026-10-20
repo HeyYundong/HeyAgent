@@ -4,7 +4,7 @@
 // 设计稿：design/BRIEF-dispatch.md（本地）。平台通用：这里不出现任何业务。
 import { z } from "zod"
 
-import { isoTime, runStatusSchema } from "./schemas.js"
+import { isoTime, runOutcomeSchema, runStatusSchema } from "./schemas.js"
 
 /** 内置工具「派活」的 id（模型看到的名字是 work_dispatch） */
 export const WORK_DISPATCH_TOOL_ID = "work.dispatch"
@@ -39,9 +39,19 @@ export const taskDispatchParamSchema = z.object({
 })
 export type TaskDispatchParam = z.infer<typeof taskDispatchParamSchema>
 
+/** 要交回的结果（run-outcome 6.1）：被派来的运行用 work.report 交；必填的没交，单记没办成（missing_result） */
+export const taskDispatchResultSchema = z.object({
+  name: z.string().trim().min(1, "写结果名，例如「价格」").max(40, "结果名最多 40 个字"),
+  description: z.string().trim().max(200, "说明最多 200 个字").default(""),
+  required: z.boolean().default(true),
+})
+export type TaskDispatchResult = z.infer<typeof taskDispatchResultSchema>
+
 export const taskDispatchSchema = z
   .object({
     params: z.array(taskDispatchParamSchema).max(20, "最多 20 个参数"),
+    /** 要交回的结果；旧数据没有 = 不要求 */
+    results: z.array(taskDispatchResultSchema).max(20, "最多 20 个结果").default([]),
     /** 同时最多几个在跑（名额）：执行中、验收中、等浏览器的占名额；agent 自己挂起、等人处理不占 */
     maxRunning: z.number().int().min(1, "至少 1 个").max(20, "最多 20 个").default(1),
     /** 没办成自动重试几次（第二期）：只对运行出错重试，人取消、人选不继续、agent 报办不成、规则让它失败的不重试。不写 = 0（旧数据没有） */
@@ -54,6 +64,11 @@ export const taskDispatchSchema = z
     value.params.forEach((param, index) => {
       if (seen.has(param.name)) ctx.addIssue({ code: "custom", path: ["params", index, "name"], message: `参数「${param.name}」重复了` })
       seen.add(param.name)
+    })
+    const results = new Set<string>()
+    value.results.forEach((result, index) => {
+      if (results.has(result.name)) ctx.addIssue({ code: "custom", path: ["results", index, "name"], message: `结果「${result.name}」重复了` })
+      results.add(result.name)
     })
   })
 export type TaskDispatch = z.infer<typeof taskDispatchSchema>
@@ -99,9 +114,10 @@ export const WORK_REPORT_MAX_FIELDS = 20
 
 /**
  * 没办成的种类（第二期）：error = 运行出错（自动重试用完了，或者不重试的那几种）；
- * not_done = agent 用 work.report 报了办不成（运行本身正常结束）；cancelled_run = 人取消了运行、人选了不继续、人判验收失败
+ * not_done = 运行正常结束但没办成（agent 报的、检查点没达成、复核判的）；cancelled_run = 人取消了运行、人选了不继续、人判验收失败；
+ * run-outcome 加：partial = 部分办成；missing_result = 必交的结果没交。这几种都不重试
  */
-export const workFailKindSchema = z.enum(["error", "not_done", "cancelled_run"])
+export const workFailKindSchema = z.enum(["error", "not_done", "cancelled_run", "partial", "missing_result"])
 export type WorkFailKind = z.infer<typeof workFailKindSchema>
 
 /** 结构化结果压成一行：「源商品数=3，后台已回填=是」 */
@@ -155,6 +171,9 @@ export const workItemSchema = z.object({
   error: z.string().nullable(),
   /** 没办成的种类（第二期）；不是没办成为 null */
   failKind: workFailKindSchema.nullable(),
+  /** 结果（run-outcome 6.2，跟着最后那次运行的结果）：单结束了才有。办完的单也可能是「没核实」 */
+  outcome: runOutcomeSchema.nullable(),
+  outcomeReason: z.string().nullable(),
   /** 排队等自动重试：到这个时间才会领（第二期）；不等为 null */
   notBefore: isoTime.nullable(),
   /** 这一轮已经自动重试了几次（人点重办清零） */
@@ -172,6 +191,7 @@ export type WorkItem = z.infer<typeof workItemSchema>
 export const workRunSchema = z.object({
   sessionId: z.string(),
   status: runStatusSchema,
+  outcome: runOutcomeSchema.nullable(),
   startedAt: isoTime,
   endedAt: isoTime.nullable(),
   costUsd: z.number(),
@@ -200,6 +220,8 @@ export const workListInputSchema = z.object({
   q: z.string().trim().max(200).optional(),
   /** 不填 = 全部；可以给几种（派活页「没办成」= 没办成 + 不办了） */
   status: z.union([workItemStatusSchema, z.array(workItemStatusSchema).min(1)]).optional(),
+  /** 结果筛选（run-outcome）：可以给几种，例如只看「没核实」 */
+  outcome: z.union([runOutcomeSchema, z.array(runOutcomeSchema).min(1)]).optional(),
   /** 被派的任务 */
   taskId: z.string().optional(),
   /** 派活的任务 / 运行（任务抽屉、运行详情的「派出去的活」） */

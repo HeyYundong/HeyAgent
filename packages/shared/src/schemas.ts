@@ -85,12 +85,19 @@ export const modelProviderSchema = z.object({
 })
 export type ModelProvider = z.infer<typeof modelProviderSchema>
 
-/** embed = 图库的 embedding 模型（以图搜图、比对、按描述找图）；assistant = 右下角助手（可选，不配时用 plan） */
-export const modelRoleSchema = z.enum(["run", "plan", "verify", "embed", "assistant"])
+/** embed = 图库的 embedding 模型（以图搜图、比对、按描述找图）；assistant = 右下角助手（可选，不配时用 plan）；review = 运行结束后的轻量复核（可选，不配时不复核） */
+export const modelRoleSchema = z.enum(["run", "plan", "verify", "embed", "assistant", "review"])
 export type ModelRole = z.infer<typeof modelRoleSchema>
 
 /** 默认用哪个模型：执行任务 / 规划拆解 / 三方验收 / 图库的 embedding（没配时没有）/ 右下角助手（没配时没有，助手用 plan） */
-export const modelDefaultsSchema = z.object({ run: z.string(), plan: z.string(), verify: z.string(), embed: z.string().optional(), assistant: z.string().optional() })
+export const modelDefaultsSchema = z.object({
+  run: z.string(),
+  plan: z.string(),
+  verify: z.string(),
+  embed: z.string().optional(),
+  assistant: z.string().optional(),
+  review: z.string().optional(),
+})
 export type ModelDefaults = z.infer<typeof modelDefaultsSchema>
 
 // ---------- 浏览器（Chrome） ----------
@@ -340,10 +347,16 @@ export const taskSchema = z.object({
   allowBrowserEvaluate: z.boolean(),
   /** M3：这个任务自己选的三方验收模型；没有就用默认验收模型。必须和执行模型不是同一家 */
   verifyModelId: z.string().optional(),
+  /** 运行结束后让 AI 轻量复核结果（docs/dev/run-outcome.md 第 5 节）；默认开。配了三方验收的不复核 */
+  reviewEnabled: z.boolean(),
+  /** 这个任务自己选的复核模型；没有就用默认复核模型 */
+  reviewModelId: z.string().optional(),
   /** 派活：能被派活时的参数声明和名额；没有 = 不能被派活 */
   dispatch: z
     .object({
       params: z.array(z.object({ name: z.string(), description: z.string(), required: z.boolean(), dedupe: z.boolean() })),
+      /** 要交回的结果（run-outcome 6.1）：必填的没用 work.report 交，单记没办成 */
+      results: z.array(z.object({ name: z.string(), description: z.string(), required: z.boolean() })).optional(),
       maxRunning: z.number().int(),
       /** 第二期：没办成自动重试几次、隔多久（分钟）；不写 = 不重试 / 默认间隔（同 taskDispatchSchema） */
       retries: z.number().int().optional(),
@@ -359,11 +372,48 @@ export type TaskDef = z.infer<typeof taskSchema>
 
 // ---------- 运行（session） ----------
 
-/** incomplete = 没完成：运行正常结束，但事情没做成（agent 报了没完成，或者检查点没达成）；failed = 出错、中断、验收不通过 */
+/**
+ * 状态只管流程（docs/dev/run-outcome.md）：done = 已结束（正常跑完）；failed = 出错、中断、取消。办没办成看 outcome。
+ * incomplete（没完成）是 2026-10-19 加的，2026-10-20 起不再写入：迁移 0024 把它改成 done + outcome = not_achieved，枚举值留着不用
+ */
 export const runStatusSchema = z.enum(["running", "needs_human", "waiting", "verifying", "done", "incomplete", "failed"])
 export type RunStatus = z.infer<typeof runStatusSchema>
 
-/** 已经结束的运行状态（已完成 / 没完成 / 失败） */
+/**
+ * 运行的结果（事情办没办成，和状态分开）：achieved 办成（有依据）/ partial 部分办成 / not_achieved 没办成 / unverified 没核实（agent 说办成了但没依据）。
+ * 结果导向：只看任务目标要的东西拿没拿到；确认「没有」也是没办成。运行没结束时没有结果
+ */
+export const runOutcomeSchema = z.enum(["achieved", "partial", "not_achieved", "unverified"])
+export type RunOutcome = z.infer<typeof runOutcomeSchema>
+
+/** 从低到高：取最低时用（没办成 < 部分办成 < 没核实 < 办成） */
+export const RUN_OUTCOME_RANK: Record<RunOutcome, number> = { not_achieved: 0, partial: 1, unverified: 2, achieved: 3 }
+export const lowerOutcome = (a: RunOutcome, b: RunOutcome): RunOutcome => (RUN_OUTCOME_RANK[a] <= RUN_OUTCOME_RANK[b] ? a : b)
+
+/** 结果是谁定的：agent 自己报的 / 规则（检查点、必交结果、出错、取消）/ 轻量复核 / 三方验收 / 人改的 */
+export const runOutcomeBySchema = z.enum(["agent", "rule", "review", "verify", "human"])
+export type RunOutcomeBy = z.infer<typeof runOutcomeBySchema>
+
+/** 复核模型的结论：unsure = 证据不足，结果记没核实 */
+export const reviewVerdictSchema = z.enum(["achieved", "partial", "not_achieved", "unsure"])
+export type ReviewVerdict = z.infer<typeof reviewVerdictSchema>
+
+/** 轻量复核的报告（sessions.review）：出错时没有 verdict，写 error */
+export const runReviewSchema = z.object({
+  at: isoTime,
+  modelId: z.string(),
+  verdict: reviewVerdictSchema.optional(),
+  reason: z.string(),
+  /** 带没带最后一张截图 */
+  screenshot: z.boolean(),
+  tokensIn: z.number().int(),
+  tokensOut: z.number().int(),
+  costUsd: z.number(),
+  error: z.string().optional(),
+})
+export type RunReview = z.infer<typeof runReviewSchema>
+
+/** 已经结束的运行状态（已结束 / 没完成（旧）/ 出错） */
 export const ENDED_RUN_STATUSES = ["done", "incomplete", "failed"] as const satisfies readonly RunStatus[]
 export const isRunEnded = (status: RunStatus) => (ENDED_RUN_STATUSES as readonly RunStatus[]).includes(status)
 
@@ -506,6 +556,13 @@ export const sessionSummarySchema = z.object({
   startedAt: isoTime,
   endedAt: isoTime.optional(),
   status: runStatusSchema,
+  /** 结果（run-outcome）：运行结束才有 */
+  outcome: runOutcomeSchema.optional(),
+  /** 结果的原因：没办成缺了什么、复核的理由、人改结果的理由 */
+  outcomeReason: z.string().optional(),
+  outcomeBy: runOutcomeBySchema.optional(),
+  /** 轻量复核的报告（跑过复核才有） */
+  review: runReviewSchema.optional(),
   modelId: z.string(),
   tokensIn: z.number().int(),
   tokensOut: z.number().int(),

@@ -43,6 +43,9 @@ export const sessionSnapshotSchema = z.object({
   modelId: z.string(),
   /** M3：任务自己选的验收模型（没有就在验收时取默认验收模型） */
   verifyModelId: z.string().optional(),
+  /** run-outcome：结束后要不要轻量复核、用哪个模型（没有就在复核时取默认复核模型）。加这两个字段之前开始的运行没有 = 不复核 */
+  reviewEnabled: z.boolean().optional(),
+  reviewModelId: z.string().optional(),
   memories: z.array(
     z.object({ id: z.string(), content: z.string(), appliesTo: z.string() })
   ),
@@ -406,7 +409,16 @@ export const builtinToolInputs = {
       .describe("not_done = 这件事办不成（例如找不到、对方拒绝），写了这张单就记「没办成」，不会重试"),
     reason: z.string().max(1000).optional().describe("outcome = not_done 时必填：为什么办不成"),
   }),
-  // 报没完成（每个任务都自带）：做不成时调用，运行结束、状态记「没完成」
+  // 报结果（每个任务都自带，run-outcome 第 3 节）：结束时调用，运行到此结束；结果按 docs/dev/run-outcome.md 第 4、5 节再核
+  "run.finish": z.object({
+    outcome: z
+      .enum(["achieved", "partial", "not_achieved"])
+      .describe("只看任务目标要的东西拿没拿到：achieved = 办成；partial = 只拿到一部分；not_achieved = 没拿到（包括确认「没有」）"),
+    summary: z.string().min(1).max(4000).describe("做了什么、结果在哪（给人看的总结）"),
+    evidence: z.string().min(1).max(4000).describe("对照目标逐条写依据：拿到了什么、在哪能看到；没拿到的写清楚"),
+    reason: z.string().max(2000).optional().describe("partial / not_achieved 必填：缺了什么、为什么"),
+  }),
+  // 报没完成（2026-10-19 起每个任务都自带，2026-10-20 起被 run.finish 取代）：只为旧运行快照保留，等价于 run.finish outcome = not_achieved
   "run.not_done": z.object({
     reason: z.string().min(1).max(2000).describe("为什么没做成：卡在哪、试过哪些办法、还差什么"),
   }),
@@ -421,8 +433,11 @@ export const builtinToolInputs = {
 
 export type BuiltinToolId = keyof typeof builtinToolInputs
 
-/** 「报没完成」：调用后运行结束，状态记「没完成」 */
+/** 「报没完成」（旧）：调用后运行结束，结果记没办成。新运行不再带它，用 run.finish */
 export const RUN_NOT_DONE_TOOL_ID = "run.not_done" satisfies BuiltinToolId
+
+/** 「报结果」：结束时调用，运行到此结束 */
+export const RUN_FINISH_TOOL_ID = "run.finish" satisfies BuiltinToolId
 
 /** 每个任务都自带的内置工具 */
 export const ALWAYS_ON_BUILTIN_TOOLS: readonly BuiltinToolId[] = [
@@ -430,7 +445,7 @@ export const ALWAYS_ON_BUILTIN_TOOLS: readonly BuiltinToolId[] = [
   "session.wait",
   "ask.human",
   "plan.set",
-  RUN_NOT_DONE_TOOL_ID,
+  RUN_FINISH_TOOL_ID,
 ]
 
 // ---------- 引擎接口（engine-router）的输入输出 ----------

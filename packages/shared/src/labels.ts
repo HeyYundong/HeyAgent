@@ -9,6 +9,8 @@ import type {
   ModelRole,
   ProviderStatus,
   Risk,
+  RunOutcome,
+  RunOutcomeBy,
   RunStatus,
   SkillStatus,
   ToolSource,
@@ -76,9 +78,26 @@ export const runStatusLabel: Record<RunStatus, string> = {
   needs_human: "等人处理",
   waiting: "等待中",
   verifying: "验收中",
-  done: "已完成",
+  done: "已结束",
   incomplete: "没完成",
-  failed: "失败",
+  failed: "出错",
+}
+
+/** 运行 / 派活单的结果（run-outcome） */
+export const runOutcomeLabel: Record<RunOutcome, string> = {
+  achieved: "办成",
+  partial: "部分办成",
+  not_achieved: "没办成",
+  unverified: "没核实",
+}
+
+/** 结果是谁定的 */
+export const runOutcomeByLabel: Record<RunOutcomeBy, string> = {
+  agent: "agent 自己报的",
+  rule: "规则",
+  review: "AI 复核",
+  verify: "三方验收",
+  human: "人改的",
 }
 
 export const humanItemKindLabel: Record<HumanItemKind, string> = {
