@@ -47,7 +47,7 @@ import * as t from "../db/schema.js"
 import { compileRuleText } from "../engine/rule-compile.js"
 import { isImageMime, listSessionFiles } from "../files/service.js"
 import { viewableImage } from "./images.js"
-import { clip, changedFields, Names, riskText, scheduleText, skillStatusText, stepsText, triggerText, yesNo, type FieldChange } from "./describe.js"
+import { clip, changedFields, DIFF_MAX, Names, riskText, scheduleText, skillStatusText, stepsText, stepText, triggerText, yesNo, type FieldChange } from "./describe.js"
 
 /** 工具执行的上下文：谁在做（当前登录的人）、库、主密钥 */
 export type ToolCtx = WriteCtx
@@ -600,7 +600,9 @@ export const TOOLS: Record<string, ToolDef> = {
       if (given.has("ownerId") && input.ownerId && input.ownerId !== task.ownerId && !ctx.actor.isAdmin) throw new ToolError("你没有权限：员工不能把任务转给别人")
       const before = taskInputOf(task)
       const after = check(taskInputSchema, { ...before, ...pick(input, given) })
-      const fields = await changedFields(before, after, given, TASK_LABELS, taskFormatter(new Names(ctx.db)))
+      const fields = await changedFields(before, after, given, TASK_LABELS, taskFormatter(new Names(ctx.db)), (key, value) =>
+        key === "steps" ? ((value as TaskInput["steps"]) ?? []).map(stepText) : undefined
+      )
       if (fields.length === 0) throw new ToolError("给的字段和现在一样，没有要改的")
       return { title: `修改任务 ${taskTitle(task.id, task.title)}`, fields }
     },
@@ -692,7 +694,7 @@ export const TOOLS: Record<string, ToolDef> = {
       const task = await loadTask(ctx, entry.taskId)
       need(ctx, "task.manage", { ownerId: task.ownerId }, "只有任务负责人和主管能改任务记忆")
       if (entry.content === input.content) throw new ToolError("内容和现在一样，没有要改的")
-      return { title: `改任务 ${taskTitle(task.id, task.title)} 的一条记忆`, fields: [{ label: "内容", before: clip(entry.content), after: clip(input.content) }] }
+      return { title: `改任务 ${taskTitle(task.id, task.title)} 的一条记忆`, fields: [{ label: "内容", before: clip(entry.content, DIFF_MAX), after: clip(input.content, DIFF_MAX) }] }
     },
     apply: async (ctx, input) => {
       const entry = await loadTaskMemoryEntry(ctx, input.id)

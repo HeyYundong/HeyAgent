@@ -168,7 +168,7 @@
 - **记录**：`MessageScroller` 里按 entries 显示：
   - user / assistant：`Message` + `Bubble`（人的靠右），assistant 文字用 `MarkdownView`；流式时文字一段段接上；
   - tool：`Trace` 一行（`TraceLine status`，running 有 shimmer），`TraceCollapsible` 展开看 detail（`CodeBlock` 或纯文字）；连续几个 tool 合在一个 Trace 里；
-  - proposal：`Item` 列表，每项标题 + fields（`改前 → 改后`，before 用 `text-muted-foreground line-through`），底部「应用」「不要」。有 destructive 的：「应用」是 `variant="destructive"`，按钮文字「应用（会删除 N 项）」，不再弹 AlertDialog（卡本身就是确认）。点「不要」后可以在输入框补一句为什么（`note`）。应用后每项显示 ✓ / ✗ 和 message，有 link 的显示「去看看」链接；
+  - proposal：`Item` 列表，每项标题 + fields（只有一边的直接显示值；两边都有的用 `field-diff.tsx` 像 Git diff 一样对比：`lib/text-diff.ts` 先按句对齐、改了的句子里再按词标出增删，删红底「-」、加绿底「+」，没改的长段收起；有 `steps` 的任务步骤逐条对比、标第几步；宽屏「左右对照」弹窗），底部「应用」「不要」。有 destructive 的：「应用」是 `variant="destructive"`，按钮文字「应用（会删除 N 项）」，不再弹 AlertDialog（卡本身就是确认）。点「不要」后可以在输入框补一句为什么（`note`）。应用后每项显示 ✓ / ✗ 和 message，有 link 的显示「去看看」链接；
   - notice：`Marker`（error 用 `Alert` destructive）。
 - **输入**：`InputGroup` + `InputGroupTextarea` + 发送 `InputGroupButton`；回车发送、Shift+回车换行、输入法组字时回车不发送；请求进行中发送按钮变「停止」（`AbortController`）。有 pending 卡时输入框照常能用（发新消息 = 旧卡过期）。
 - **空对话**：`Empty`，下面三四个示例句（`Button variant="outline" size="sm"`），点了填进输入框。

@@ -112,11 +112,13 @@ export type AssistantApplyInput = z.infer<typeof assistantApplyInputSchema>
 
 // ---------- 改动确认卡 ----------
 
-/** 卡上一项改动里的一个字段：改前 → 改后（新建只有 after，删除只有 before） */
+/** 卡上一项改动里的一个字段：改前 → 改后（新建只有 after，删除只有 before）。前端按句、按词对比两边，标出加了 / 删了什么 */
 export const assistantFieldChangeSchema = z.object({
   label: z.string(),
   before: z.string().optional(),
   after: z.string().optional(),
+  /** 按条对比的列表（任务步骤）：一条一个字符串，不带编号。有它时前端逐条对比、标第几步；老卡没有，退回按文字对比 */
+  steps: z.object({ before: z.array(z.string()), after: z.array(z.string()) }).optional(),
 })
 
 /** 做完以后能跳过去看的地方（前端用 href(page, params)） */

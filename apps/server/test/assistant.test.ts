@@ -422,6 +422,21 @@ describe("右下角助手", () => {
     expect(card.proposal.changes[0]!.fields).toEqual([{ label: "完成标准", before: "按步骤做完", after: "改好的完成标准" }])
   })
 
+  it("改步骤：卡上带逐步的文字给前端按步对比；长文字不截到 600 字", async () => {
+    const id = await makeTask()
+    const goal = `${"很长的完成标准。".repeat(100)}最后一句改了`
+    useScript([{ parts: [use("update_task", { id, goal, steps: [{ id: "s1", text: "第一步", wait: false }, { text: "新加的一步", wait: true }] })] }])
+    const res = await send(lin, { message: "加一步" })
+    const card = of(res.events, "entry").find((event) => event.entry.kind === "proposal")!.entry as Extract<AssistantEntry, { kind: "proposal" }>
+    const fields = card.proposal.changes[0]!.fields
+    expect(fields.find((field) => field.label === "完成标准")!.after).toBe(goal)
+    expect(fields.find((field) => field.label === "步骤")).toMatchObject({
+      before: "1. 第一步",
+      after: "1. 第一步\n2. 新加的一步（这一步可以停下等）",
+      steps: { before: ["第一步"], after: ["第一步", "新加的一步（这一步可以停下等）"] },
+    })
+  })
+
   it("超步数、超花费都停下，发提示", async () => {
     await setSetting(SETTING_KEYS.assistantMaxSteps, 2)
     useScript([{ parts: [use("list_tasks", {})] }, { parts: [use("list_rules", {})] }, { parts: [say("不该走到这里")] }])

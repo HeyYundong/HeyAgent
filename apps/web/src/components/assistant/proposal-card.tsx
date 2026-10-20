@@ -1,4 +1,4 @@
-// 改动确认卡：助手这一轮要做的改动，一项一行（改前 → 改后），人点「应用」才做，点「不要」可以顺便说为什么。
+// 改动确认卡：助手这一轮要做的改动，一项一行（修改的字段像 Git diff 一样逐句、逐词对比，见 field-diff.tsx），人点「应用」才做，点「不要」可以顺便说为什么。
 // 有删除 / 归档 / 驳回的，「应用」是 destructive，写明「会删除 N 项」。卡本身就是确认，不再弹 AlertDialog（docs/dev/copilot.md 9.4）。
 import * as React from "react"
 import { ArrowUpRightIcon, CircleAlertIcon, CircleCheckIcon, SendIcon, Trash2Icon, XIcon } from "lucide-react"
@@ -10,6 +10,8 @@ import { Card, CardAction, CardContent, CardFooter, CardHeader, CardTitle } from
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupTextarea } from "@/components/ui/input-group"
 import { Item, ItemContent, ItemGroup, ItemMedia, ItemTitle } from "@/components/ui/item"
 import { Spinner } from "@/components/ui/spinner"
+
+import { FieldDiff } from "./field-diff"
 
 import { href, type PageId } from "@/lib/router"
 
@@ -134,10 +136,14 @@ function ChangeItem({ change, onNavigate }: { change: AssistantChange; onNavigat
           <ul className="flex flex-col gap-0.5 text-muted-foreground">
             {change.fields.map((field, index) => (
               <li key={index} className="wrap-break-word">
-                <span>{field.label}：</span>
-                {field.before !== undefined && <FieldValue value={field.before} crossed={field.after !== undefined} />}
-                {field.before !== undefined && field.after !== undefined && <span> → </span>}
-                {field.after !== undefined && <FieldValue value={field.after} />}
+                {field.before !== undefined && field.after !== undefined ? (
+                  <FieldDiff title={change.title} field={field} />
+                ) : (
+                  <>
+                    <span>{field.label}：</span>
+                    <FieldValue value={field.before ?? field.after ?? ""} />
+                  </>
+                )}
               </li>
             ))}
           </ul>
@@ -158,14 +164,14 @@ function ChangeItem({ change, onNavigate }: { change: AssistantChange; onNavigat
   )
 }
 
-/** 一个字段的值：改前的划掉；太长的先收起来 */
-function FieldValue({ value, crossed = false }: { value: string; crossed?: boolean }) {
+/** 只有一边的字段（新建只有改后、删除只有改前）：直接显示值；太长的先收起来。两边都有的走 FieldDiff */
+function FieldValue({ value }: { value: string }) {
   const [open, setOpen] = React.useState(false)
   const long = value.length > LONG_VALUE
   const text = long && !open ? `${value.slice(0, LONG_VALUE)}…` : value
   return (
     <>
-      <span className={crossed ? "text-muted-foreground line-through" : "whitespace-pre-wrap text-foreground"}>{text || "（空）"}</span>
+      <span className="whitespace-pre-wrap text-foreground">{text || "（空）"}</span>
       {long && (
         <Button variant="link" size="xs" onClick={() => setOpen(!open)}>
           {open ? "收起" : "展开"}

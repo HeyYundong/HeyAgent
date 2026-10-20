@@ -14,6 +14,9 @@ export type FieldChange = z.infer<typeof assistantFieldChangeSchema>
 /** 卡上一个值最多显示多少字：太长的人也看不过来，要看全文去对应的页面 */
 const FIELD_MAX = 600
 
+/** 修改时两边的值：前端要逐句对比，截断了就看不出后面改了什么，所以放宽很多 */
+export const DIFF_MAX = 50_000
+
 export const clip = (value: string, max = FIELD_MAX) => (value.length > max ? `${value.slice(0, max)}…（共 ${value.length} 字）` : value)
 
 export const yesNo = (value: boolean) => (value ? "是" : "否")
@@ -53,10 +56,15 @@ export function triggerText(trigger: { kind: string; at?: string; cron?: string;
 export const riskText = (risk: Risk) => riskLabel[risk] ?? risk
 export const skillStatusText = (status: SkillStatus) => skillStatusLabel[status] ?? status
 
-/** 步骤列表：一步一行，「（可以停下等）」「检查点：……」跟在后面 */
-export function stepsText(steps: { text: string; wait?: boolean; checkpoint?: string }[]) {
+type Step = { text: string; wait?: boolean; checkpoint?: string }
+
+/** 一步的文字（不带编号）：「（可以停下等）」「检查点：……」跟在后面 */
+export const stepText = (step: Step) => `${step.text}${step.wait ? "（这一步可以停下等）" : ""}${step.checkpoint ? `［检查点：${step.checkpoint}］` : ""}`
+
+/** 步骤列表：一步一行 */
+export function stepsText(steps: Step[]) {
   if (steps.length === 0) return "（没有步骤）"
-  return steps.map((step, index) => `${index + 1}. ${step.text}${step.wait ? "（这一步可以停下等）" : ""}${step.checkpoint ? `［检查点：${step.checkpoint}］` : ""}`).join("\n")
+  return steps.map((step, index) => `${index + 1}. ${stepText(step)}`).join("\n")
 }
 
 const KIND_TEXT = { user: "人", model: "模型", skill: "技能", memory: "记忆", tool: "工具", rule: "规则", browser: "Chrome", task: "任务" } as const
@@ -133,22 +141,30 @@ export class Names {
 }
 
 /**
- * 修改：只列给了、而且真的变了的字段。format 把值转成给人看的文字（两边用同一个，比较的是文字）
+ * 修改：只列给了、而且真的变了的字段。format 把值转成给人看的文字（两边用同一个，比较的是文字）。
+ * 两边放宽到 DIFF_MAX，前端才能逐句对比；steps 给出逐条的文字（任务步骤），前端按步对比
  */
 export async function changedFields<T extends object>(
   before: T,
   after: object,
   given: Set<string>,
   labels: Partial<Record<keyof T & string, string>>,
-  format: (key: keyof T & string, value: unknown) => string | Promise<string>
+  format: (key: keyof T & string, value: unknown) => string | Promise<string>,
+  steps?: (key: keyof T & string, value: unknown) => string[] | undefined
 ): Promise<FieldChange[]> {
   const fields: FieldChange[] = []
   for (const key of Object.keys(labels) as (keyof T & string)[]) {
     if (!given.has(key)) continue
-    const old = await format(key, (before as Record<string, unknown>)[key])
-    const next = await format(key, (after as Record<string, unknown>)[key])
+    const oldValue = (before as Record<string, unknown>)[key]
+    const nextValue = (after as Record<string, unknown>)[key]
+    const old = await format(key, oldValue)
+    const next = await format(key, nextValue)
     if (old === next) continue
-    fields.push({ label: labels[key]!, before: clip(old), after: clip(next) })
+    const field: FieldChange = { label: labels[key]!, before: clip(old, DIFF_MAX), after: clip(next, DIFF_MAX) }
+    const oldSteps = steps?.(key, oldValue)
+    const nextSteps = steps?.(key, nextValue)
+    if (oldSteps && nextSteps) field.steps = { before: oldSteps, after: nextSteps }
+    fields.push(field)
   }
   return fields
 }
