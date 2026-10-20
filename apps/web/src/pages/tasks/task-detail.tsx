@@ -207,6 +207,7 @@ function BrowserConfig({ task }: { task: TaskDef }) {
         : <ConfigLine label="Chrome">全部 Chrome 配置都能用，agent 自己选</ConfigLine>}
       <ConfigLine label="白名单">{task.allowedDomains.length ? task.allowedDomains.join("、") : "不限制"}</ConfigLine>
       <ConfigLine label="脚本">{task.allowBrowserEvaluate ? "允许在网页里执行脚本" : "不允许在网页里执行脚本"}</ConfigLine>
+      <ConfigLine label="看画面">{task.allowBrowserVision ? "允许截图看画面、按坐标点" : "不允许看画面"}</ConfigLine>
     </>
   )
 }

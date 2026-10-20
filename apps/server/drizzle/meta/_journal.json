@@ -176,6 +176,13 @@
       "when": 1792480556735,
       "tag": "0024_run_outcome",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1792488492326,
+      "tag": "0025_browser_vision",
+      "breakpoints": true
     }
   ]
 }

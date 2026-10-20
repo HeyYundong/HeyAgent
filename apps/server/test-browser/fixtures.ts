@@ -199,8 +199,11 @@ export interface SocksUpstream {
   close(): Promise<void>
 }
 
-/** 测试用的带认证 SOCKS5 上游（RFC 1928 + 1929，改自 spikes/browser/lib/socks.mjs）：记下认证结果和 CONNECT 的地址类型 */
-export async function startSocks(user: string, pass: string): Promise<SocksUpstream> {
+/**
+ * 测试用的带认证 SOCKS5 上游（RFC 1928 + 1929，改自 spikes/browser/lib/socks.mjs）：记下认证结果和 CONNECT 的地址类型。
+ * hosts：自己解析的假域名（Chrome 开了代理后所有域名都交给代理解析，假域名只有经代理才连得上）
+ */
+export async function startSocks(user: string, pass: string, options: { hosts?: Record<string, string> } = {}): Promise<SocksUpstream> {
   const log: SocksUpstream["log"] = []
   const server = net.createServer((client) => {
     client.on("error", () => {})
@@ -238,8 +241,8 @@ export async function startSocks(user: string, pass: string): Promise<SocksUpstr
           }
           const port = request.readUInt16BE(offset)
           log.push({ ev: "connect", host, atyp: atyp === 3 ? "DOMAIN" : atyp === 1 ? "IPv4" : "IPv6" })
-          let ip = host
-          if (!net.isIP(host)) {
+          let ip = options.hosts?.[host] ?? host
+          if (!net.isIP(ip)) {
             try {
               ip = (await dns.promises.resolve4(host))[0]!
             } catch {

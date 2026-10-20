@@ -157,6 +157,7 @@ const taskInputOf = (task: TaskDef): TaskInput => ({
   browserProfileIds: task.browserProfileIds,
   allowedDomains: task.allowedDomains,
   allowBrowserEvaluate: task.allowBrowserEvaluate,
+  allowBrowserVision: task.allowBrowserVision,
   verifyModelId: task.verifyModelId,
   reviewEnabled: task.reviewEnabled,
   reviewModelId: task.reviewModelId,
@@ -297,6 +298,7 @@ const TASK_LABELS: Partial<Record<keyof TaskInput, string>> = {
   browserProfileIds: "Chrome",
   allowedDomains: "网址白名单",
   allowBrowserEvaluate: "允许在网页里执行脚本",
+  allowBrowserVision: "允许看画面",
   cronSkipIfRunning: "上一次没跑完就跳过这次",
 }
 
@@ -330,6 +332,7 @@ function taskFormatter(names: Names) {
       case "enabled":
       case "reviewEnabled":
       case "allowBrowserEvaluate":
+      case "allowBrowserVision":
       case "cronSkipIfRunning":
         return yesNo(Boolean(value))
       default:
@@ -587,6 +590,7 @@ export const TOOLS: Record<string, ToolDef> = {
           if (value === undefined || value === "" || (Array.isArray(value) && value.length === 0)) continue
           if (key === "enabled" && value === true) continue
           if (key === "allowBrowserEvaluate" && value === false) continue
+          if (key === "allowBrowserVision" && value === false) continue
           if (key === "cronSkipIfRunning" && value === true) continue
         }
         fields.push({ label, after: clip(await format(key, value)) })

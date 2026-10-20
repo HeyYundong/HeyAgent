@@ -120,7 +120,7 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
     summary:
       "按路径把文件存进这次运行的空间（文本和代码：csv、md、json、txt、py、js、sh 等；Excel：xlsx、xls），同一路径再存就是覆盖；界面里能看能下载",
     description:
-      "要交付表格、文档、数据，或者保存中间状态、脚本时调用。path 是空间里的相对路径（例如 result.csv、state/progress.json、scripts/clean.py），同一路径再存就是覆盖（文件 id 不变，不留旧版本）；不能以 attachments/ downloads/ screenshots/ tool-outputs/ 开头（那几个目录是只读的）。文本和代码文件：content 是完整的文件文本（小改动用 file.edit，不用整份重发）。Excel：路径用 .xlsx 或 .xls，给 sheets（每个工作表一项：name 和 rows，rows 每行一个数组，格子是文字、数字、true/false 或 null），不用给 content；第一行一般写表头，日期写成文字（例如 2026-01-02），列宽自动按内容定。xls 最多 65536 行、256 列，没有特别要求就用 xlsx。返回文件 id，以及是新建还是覆盖。",
+      "要交付表格、文档、数据，或者保存中间状态、脚本时调用。path 是空间里的相对路径（例如 result.csv、state/progress.json、scripts/clean.py），同一路径再存就是覆盖（文件 id 不变，不留旧版本）；不能以 attachments/ downloads/ screenshots/ tool-outputs/ clipboard/ 开头（那几个目录是只读的）。文本和代码文件：content 是完整的文件文本（小改动用 file.edit，不用整份重发）。Excel：路径用 .xlsx 或 .xls，给 sheets（每个工作表一项：name 和 rows，rows 每行一个数组，格子是文字、数字、true/false 或 null），不用给 content；第一行一般写表头，日期写成文字（例如 2026-01-02），列宽自动按内容定。xls 最多 65536 行、256 列，没有特别要求就用 xlsx。返回文件 id，以及是新建还是覆盖。",
     risk: "write",
   },
   {
@@ -128,7 +128,7 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
     name: "列出文件",
     summary: "列出这次运行空间里的全部文件：路径、id、来源、大小、更新时间，可以只看一个目录",
     description:
-      "空间里有 agent 写的文件（file.save、file.edit、code.run 产生的，在它们自己的路径）和别的来源的文件（只读）：attachments/ 附件、downloads/ 浏览器下载、screenshots/ 截图、tool-outputs/ 太长的工具输出全文。prefix 只列一个目录下的（例如 state/）。列出的路径可以直接给 file.read、file.edit、file.delete 和 code.run 用。",
+      "空间里有 agent 写的文件（file.save、file.edit、code.run 产生的，在它们自己的路径）和别的来源的文件（只读）：attachments/ 附件、downloads/ 浏览器下载、screenshots/ 截图、tool-outputs/ 太长的工具输出全文、clipboard/ 剪贴板工具存的（复制的图片、读到的剪贴板内容）。prefix 只列一个目录下的（例如 state/）。列出的路径可以直接给 file.read、file.edit、file.delete 和 code.run 用。",
     risk: "read",
     implied: true,
   },

@@ -119,7 +119,7 @@ export const sessionSnapshotSchema = z.object({
       })
     )
     .optional(),
-  /** M2：任务选了「浏览器」工具时才有：允许的 Chrome 配置（含给 agent 看的说明）、网址白名单、是否允许执行脚本 */
+  /** M2：任务选了「浏览器」工具时才有：允许的 Chrome 配置（含给 agent 看的说明）、网址白名单、是否允许执行脚本、是否允许看画面 */
   browser: z
     .object({
       profiles: z.array(
@@ -127,6 +127,8 @@ export const sessionSnapshotSchema = z.object({
       ),
       allowedDomains: z.array(z.string()),
       allowEvaluate: z.boolean(),
+      /** 允许看画面（browser.look + 坐标工具）；老快照没有这一项 = 不允许 */
+      allowVision: z.boolean().default(false),
     })
     .optional(),
 })
@@ -255,7 +257,7 @@ export const builtinToolInputs = {
       .min(1)
       .max(300)
       .describe(
-        "在这次运行空间里的路径，带扩展名，例如 result.csv、state/progress.json、scripts/clean.py、报表.xlsx。同一路径再存就是覆盖（文件 id 不变）。不能以 attachments/ downloads/ screenshots/ tool-outputs/ 开头。文本和代码都能存（csv、md、json、txt、py、js、sh 等）；Excel 用 .xlsx 或 .xls（要给 sheets）"
+        "在这次运行空间里的路径，带扩展名，例如 result.csv、state/progress.json、scripts/clean.py、报表.xlsx。同一路径再存就是覆盖（文件 id 不变）。不能以 attachments/ downloads/ screenshots/ tool-outputs/ clipboard/ 开头。文本和代码都能存（csv、md、json、txt、py、js、sh 等）；Excel 用 .xlsx 或 .xls（要给 sheets）"
       ),
     content: z
       .string()
@@ -501,7 +503,7 @@ export const sessionFileSchema = z.object({
   name: z.string(),
   mime: z.string(),
   size: z.number(),
-  /** attachment = 附件；artifact = agent 写的文件（file.save / file.edit / code.run 产生的）；tool_output = 太长的工具输出全文；screenshot = 截图；download = 在浏览器里下载的文件 */
+  /** attachment = 附件；artifact = agent 写的文件（file.save / file.edit / code.run 产生的）；tool_output = 太长的工具输出全文；screenshot = 截图；download = 在浏览器里下载的文件；clipboard = 浏览器剪贴板工具存的（复制的图片、读到的剪贴板内容） */
   kind: z.enum([
     "attachment",
     "artifact",
@@ -509,12 +511,13 @@ export const sessionFileSchema = z.object({
     "screenshot",
     "upload",
     "download",
+    "clipboard",
   ]),
   /** 任务附件（跨运行一直有效）还是只属于这次运行 */
   scope: z.enum(["task", "session"]),
   /**
    * 在空间里的路径（docs/dev/session-space.md 2.3）：agent 写的是它给的路径（例如 state/progress.json）；
-   * 别的来源放在固定目录下：attachments/ downloads/ screenshots/ tool-outputs/（同名加 -2 -3）。
+   * 别的来源放在固定目录下：attachments/ downloads/ screenshots/ tool-outputs/ clipboard/（同名加 -2 -3）。
    */
   path: z.string(),
   createdAt: isoTime,

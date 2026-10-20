@@ -148,7 +148,7 @@ export async function buildSnapshot(
       checkpoints.push({ ...recognized, stepId: step.id })
   }
 
-  // 浏览器（M2）：允许的 Chrome 配置（空 = 全部）连同给 agent 看的说明、网址白名单、是否允许执行脚本，都冻结进快照
+  // 浏览器（M2）：允许的 Chrome 配置（空 = 全部）连同给 agent 看的说明、网址白名单、是否允许执行脚本、是否允许看画面，都冻结进快照
   let browser: SessionSnapshot["browser"]
   if (tools.some((tool) => tool.id === BROWSER_TOOL_ID)) {
     const profiles = await db
@@ -168,6 +168,7 @@ export async function buildSnapshot(
       profiles,
       allowedDomains: task.allowedDomains,
       allowEvaluate: task.allowBrowserEvaluate,
+      allowVision: task.allowBrowserVision,
     }
   }
 

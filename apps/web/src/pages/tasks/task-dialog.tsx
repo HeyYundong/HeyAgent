@@ -143,7 +143,7 @@ export function StepEditor({ index, control, register, error, checkpointError, o
   )
 }
 
-/** 选了「浏览器」工具才出现：允许用哪些 Chrome 配置、网址白名单、是否允许执行脚本（导入时改任务没有这一项：hideEvaluate） */
+/** 选了「浏览器」工具才出现：允许用哪些 Chrome 配置、网址白名单、是否允许执行脚本、是否允许看画面（导入时改任务没有这两项：hideEvaluate） */
 export function BrowserFields({ control, domainText, domainError, onDomainText, hideEvaluate = false }: { control: Control<TaskInput>; domainText: string; domainError?: string; onDomainText: (text: string) => void; hideEvaluate?: boolean }) {
   const profiles = useBrowsersQuery().data ?? []
   const options = profiles.map((profile) => ({ value: profile.id, label: profile.name, hint: profile.description }))
@@ -179,6 +179,19 @@ export function BrowserFields({ control, domainText, domainError, onDomainText, 
             </Field>
           )}
         />}
+        {!hideEvaluate && <Controller
+          control={control}
+          name="allowBrowserVision"
+          render={({ field }) => (
+            <Field orientation="horizontal" className="sm:col-span-2">
+              <Checkbox id="task-allowVision" checked={!!field.value} onCheckedChange={(on) => field.onChange(Boolean(on))} />
+              <FieldContent>
+                <FieldLabel htmlFor="task-allowVision">允许看画面</FieldLabel>
+                <FieldDescription>agent 可以截当前画面给模型看、按坐标点击（在线表格、画布类网页用得上）。每看一次多花一张图的模型费用。</FieldDescription>
+              </FieldContent>
+            </Field>
+          )}
+        />}
       </div>
     </FieldSet>
   )
@@ -210,6 +223,7 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
           browserProfileIds: task.browserProfileIds,
           allowedDomains: task.allowedDomains,
           allowBrowserEvaluate: task.allowBrowserEvaluate,
+          allowBrowserVision: task.allowBrowserVision,
           verifyModelId: task.verifyModelId ?? "",
           // 复核设置是 run-outcome 加的，旧接口没有时按默认开
           reviewEnabled: task.reviewEnabled ?? true,
@@ -220,7 +234,7 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
         }
       : {
           title: "", goal: "", steps: [{ text: "", wait: false }], modelId: defaults.run, ownerId: user.id, schedule: null, enabled: true,
-          memoryIds: [], skillIds: [], toolIds: [], ruleIds: [], browserProfileIds: [], allowedDomains: [], allowBrowserEvaluate: false, verifyModelId: "",
+          memoryIds: [], skillIds: [], toolIds: [], ruleIds: [], browserProfileIds: [], allowedDomains: [], allowBrowserEvaluate: false, allowBrowserVision: false, verifyModelId: "",
           reviewEnabled: true, reviewModelId: "",
           dispatch: null, dispatchFrom: [], cronSkipIfRunning: true,
         },

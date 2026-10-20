@@ -137,6 +137,8 @@ export const taskInputSchema = z.object({
   allowedDomains: z.array(domainSchema).max(100).default([]),
   /** 是否允许 agent 在网页里执行脚本（M2，Playwright MCP 的 browser_evaluate），默认不允许 */
   allowBrowserEvaluate: z.boolean().default(false),
+  /** 是否允许 agent 看画面：browser.look 截当前画面发给模型、按坐标点击拖动（Playwright MCP 的 --caps vision），默认不允许 */
+  allowBrowserVision: z.boolean().default(false),
   /** 三方验收模型（M3）；不填（或空串）用默认验收模型。必须和执行模型不是同一家 */
   verifyModelId: z.string().optional(),
   /** 运行结束后让 AI 轻量复核结果（默认开；配了三方验收的不复核） */

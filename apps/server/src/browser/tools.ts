@@ -4,7 +4,9 @@
 // - 一个运行从头到尾只用一个 Chrome，绝不切换：分到以后（记在 sessions.browser_profile_id）挂起再继续时它被占着，就等它；
 // - browser.use({ profileId })：可选，只能在还没分到 Chrome 时调，任务要求用某个特定 Chrome 时才用（被占着就等它）；
 // - Playwright MCP 的工具，browser_xxx 统一换成 browser.xxx（给模型的名字把点换成下划线，又变回 browser_xxx）；
-//   一律屏蔽 browser_run_code_unsafe，browser_evaluate 要任务里打开「允许执行脚本」才给。
+//   一律屏蔽 browser_run_code_unsafe，browser_evaluate 要任务里打开「允许执行脚本」才给；
+//   按坐标操作的工具（browser_mouse_click_xy 等）和 browser.look（截当前画面发给模型）要打开「允许看画面」才给；
+// - 剪贴板工具 browser.copy_image / clipboard_read / clipboard_paste（browser/clipboard.ts），在线表格、文档大块读写数据、贴图用。
 // 每次调用：调之前查导航参数（白名单、账号租约）→ 交给 MCP → 调完后兜底扫一遍页面、取走被拦下的导航、
 // 截图存成 session 文件、检测验证码和登录页。验证码先自己试着过（设置里的开关，captcha.ts），
 // 过不了的和登录页（存了密码的先自动登录）截图、生成「登录」类要人办的事、session 等人处理，Chrome 保留着。
@@ -41,10 +43,11 @@ import { executeMcpTool, type McpConnection } from "../engine/tools/mcp.js"
 import { judgePage, parseVisionAnswer, providerCaptchaNote, VISION_PROMPT, type Verdict } from "./detect.js"
 import { autoLogin, loadAccountPassword, loginModelId, type AutoLoginCaptcha } from "./auto-login.js"
 import { CAPTCHA_MAX_TRIES, solveCaptcha, type CaptchaResult, type CaptchaTry } from "./captcha.js"
+import { ClipboardTools, imageSize } from "./clipboard.js"
 import { ProfileFullError, type BlockedNavigation, type BrowserInstance } from "./instance.js"
 import { accountForHost, busyProfileIds } from "./leases.js"
 import { getBrowserManager } from "./manager.js"
-import { BLOCKED_MCP_TOOLS, EVALUATE_TOOL, listBrowserMcpTools } from "./mcp.js"
+import { BLOCKED_MCP_TOOLS, EVALUATE_TOOL, listBrowserMcpTools, VISION_MCP_TOOLS } from "./mcp.js"
 
 export interface BrowserToolEntry {
   id: string
@@ -67,6 +70,7 @@ type Hit = NonNullable<Awaited<ReturnType<BrowserInstance["detect"]>>>
 type HumanHit = Omit<Hit, "verdict"> & { verdict: Exclude<Verdict, { kind: "none" | "uncertain" }>; byVision?: boolean }
 
 const FILL_CAPTCHA_TOOL = "browser.fill_captcha"
+const LOOK_TOOL = "browser.look"
 
 /** 同一个页面（主机名 + 路径）：自动过验证码按页面数次数 */
 function pageKey(url: string) {
@@ -161,11 +165,27 @@ export class BrowserTools {
   private captchaTool = false
   /** 遇到验证码 / 登录页挂起时：Chrome 保留多少分钟（gateway 关闭时交给 manager） */
   holdMinutes?: number
+  private readonly clipboard: ClipboardTools
 
   private constructor(ctx: Ctx, mcpTools: McpToolInfo[]) {
     this.ctx = ctx
     this.mcpTools = mcpTools
     this.assigned = ctx.session.browserProfileId ?? undefined
+    this.clipboard = new ClipboardTools({
+      db: ctx.db,
+      session: ctx.session,
+      attachmentIds: () => ctx.snapshot.attachments.map((file) => file.id),
+      allowVision: () => this.allowVision,
+      ensure: () => this.ensure(),
+      // 网关内部用（找 ref 指的图）：不受「允许执行脚本」开关限制，也不给 agent
+      evaluate: async (instance, input) => executeMcpTool(this.connection(instance, (await instance.ensureMcp()).client), EVALUATE_TOOL, input),
+      record: (name, failed, url) => this.record(name, failed, url),
+    })
+  }
+
+  /** 任务打开了「允许看画面」：browser.look + 坐标工具 */
+  private get allowVision() {
+    return Boolean(this.ctx.snapshot.browser?.allowVision)
   }
 
   static async create(ctx: Ctx): Promise<BrowserTools> {
@@ -237,9 +257,27 @@ export class BrowserTools {
         validator: z.object({}).passthrough(),
         execute: () => this.fillCaptcha(),
       })
+    entries.push(...this.clipboard.entries())
+    if (this.allowVision)
+      entries.push({
+        id: LOOK_TOOL,
+        def: {
+          id: LOOK_TOOL,
+          name: "浏览器：看画面",
+          summary: "截当前标签页的可见区域，作为图片发给你看（坐标和按坐标操作的工具一致）",
+          description:
+            "截当前标签页的可见区域，作为图片发给你看；截图里的像素和页面坐标一比一（视口 CSS 像素，原点在左上角），可以直接用于 browser_mouse_click_xy 等坐标工具。找菜单、确认操作结果、canvas 画出来的页面（在线表格的格子等）快照看不到时用；每看一次多一张图的费用，别每步都看。",
+          source: "builtin",
+          risk: "read",
+        },
+        jsonSchema: { type: "object", properties: {}, additionalProperties: false },
+        validator: z.object({}).passthrough(),
+        execute: () => this.look(),
+      })
     for (const tool of this.mcpTools) {
       if (BLOCKED_MCP_TOOLS.has(tool.name)) continue
       if (tool.name === EVALUATE_TOOL && !browser?.allowEvaluate) continue
+      if (VISION_MCP_TOOLS.has(tool.name) && !this.allowVision) continue
       const id = browserToolId(tool.name)
       const schema = adaptSchema(tool)
       entries.push({
@@ -728,6 +766,37 @@ export class BrowserTools {
     if (solved.unsupported || (this.captchaTries.get(pageKey(page.url())) ?? 0) >= CAPTCHA_MAX_TRIES)
       return this.humanOutcome(instance, await hit("页面上的验证码要人过"), "", `自动过验证码没成功：${solved.detail}`)
     return fail(`没认出验证码：${solved.detail}`)
+  }
+
+  /**
+   * agent 调 browser.look：截当前标签页可见区域发给模型（只有这个工具发图，别的截图照旧只存档）。
+   * 按视口 CSS 像素截（scale: css），DPR 不是 1 时也和坐标工具对得上；同时存成运行文件。
+   */
+  private async look(): Promise<ToolOutcome> {
+    const ready = await this.ensure()
+    if (!("id" in ready)) return ready
+    const instance = ready
+    instance.touch()
+    const page = await instance.frontPage()
+    if (!page || page.url() === "about:blank") return fail("还没打开网页")
+    if (instance.dialogs.has(page)) return fail("页面上开着弹框（截不了图），先用 browser_handle_dialog 处理")
+    instance.viewer.announce(browserActionLabel("browser_look", {}))
+    // 后台标签页不出画面：先拿到前台（它本来就是 agent 在操作的页面）
+    await page.bringToFront().catch(() => {})
+    const shot = await page.screenshot({ type: "jpeg", quality: 70, scale: "css", timeout: 10_000 }).catch(() => undefined)
+    if (!shot) {
+      await this.record("browser_look", true, page.url())
+      return fail("截图没成功（页面可能卡住了），稍后再试")
+    }
+    const { width, height } = await imageSize(shot)
+    const name = `look-${Date.now()}.jpg`
+    const row = await saveFile(this.ctx.db, { data: shot, name, mime: "image/jpeg", kind: "screenshot", sessionId: this.ctx.session.id })
+    await this.record("browser_look", false, page.url())
+    const title = await page.title().catch(() => "")
+    return {
+      output: `当前标签页（${title ? `「${title}」` : ""}${page.url()}）可见区域的截图已作为下一条消息发给你：宽 ${width}、高 ${height}，单位是视口 CSS 像素，原点在左上角，x 向右、y 向下，可以直接用于 browser_mouse_click_xy 等坐标工具。截图也存成了这次运行的文件 ${row.id}。`,
+      images: [{ name, mime: "image/jpeg", base64: shot.toString("base64") }],
+    }
   }
 
   /** 导航被拦下：白名单的告诉 agent 原因；账号租约满了的，session 挂起「等待浏览器」 */

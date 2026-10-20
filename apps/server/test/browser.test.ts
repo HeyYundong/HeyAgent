@@ -183,15 +183,16 @@ describe("配置：新字段的读写和快照", () => {
       browserProfileIds: ["br-us"],
       allowedDomains: ["Example.com"],
       allowBrowserEvaluate: true,
+      allowBrowserVision: true,
     })
     expect(task.error).toBeUndefined()
     const got = await query(ctx.app, "tasks.get", wang, { id: task.data.id })
-    expect(got.data).toMatchObject({ toolIds: ["browser"], browserProfileIds: ["br-us"], allowedDomains: ["example.com"], allowBrowserEvaluate: true })
+    expect(got.data).toMatchObject({ toolIds: ["browser"], browserProfileIds: ["br-us"], allowedDomains: ["example.com"], allowBrowserEvaluate: true, allowBrowserVision: true })
     expect((await mutate(ctx.app, "tasks.create", lin, { title: "x", goal: "y", steps: [], schedule: null, modelId, browserProfileIds: ["br-nope"] })).error?.message).toContain("br-nope")
 
     const snapshot = await buildSnapshot(ctx.db, task.data.id, { source: "manual", runAttachments: [] })
     expect(snapshot.tools.map((tool) => tool.id)).toContain("browser")
-    expect(snapshot.browser).toMatchObject({ allowedDomains: ["example.com"], allowEvaluate: true })
+    expect(snapshot.browser).toMatchObject({ allowedDomains: ["example.com"], allowEvaluate: true, allowVision: true })
     expect(snapshot.browser!.profiles.map((profile) => profile.id)).toEqual(["br-us"])
 
     const defaults = { maxPerWorker: 4, visionCheck: false, visionModel: "openrouter/qwen/qwen3.8-flash", captchaSolve: true, humanHoldMinutes: 30 }
@@ -532,7 +533,17 @@ describe("工具网关：浏览器工具组", () => {
     expect(names).toEqual(expect.arrayContaining(["browser_use", "browser_fill_captcha", "browser_navigate", "browser_snapshot", "browser_click", "browser_file_upload"]))
     expect(names).not.toContain("browser_run_code_unsafe")
     expect(names).not.toContain("browser_evaluate")
+    // 剪贴板工具选了浏览器就有；看画面（browser_look + 坐标工具）要开关
+    expect(names).toEqual(expect.arrayContaining(["browser_copy_image", "browser_clipboard_read", "browser_clipboard_paste"]))
+    for (const name of ["browser_look", "browser_mouse_click_xy", "browser_mouse_move_xy", "browser_mouse_drag_xy", "browser_mouse_down", "browser_mouse_up", "browser_mouse_wheel"])
+      expect(names).not.toContain(name)
+    const copySchema = JSON.stringify(script.prompts[0]!.tools!.find((tool) => tool.name === "browser_copy_image"))
+    expect(copySchema).toContain("target")
+    expect(copySchema).not.toContain('"x"')
     const system = JSON.stringify(script.prompts[0]!.prompt[0])
+    expect(system).toContain("browser_clipboard_read（copy: true）")
+    expect(system).toContain("browser_copy_image")
+    expect(system).not.toContain("browser_look")
     expect(system).toContain("## 浏览器")
     expect(system).toContain("depth")
     expect(system).toContain("example.com")
@@ -547,7 +558,7 @@ describe("工具网关：浏览器工具组", () => {
     const events = await eventsOf(ctx.db, sessionId)
     expect(events.some((event) => event.toolId === "browser.navigate")).toBe(true)
 
-    await ctx.db.update(t.tasks).set({ allowBrowserEvaluate: true }).where(eq(t.tasks.id, taskId))
+    await ctx.db.update(t.tasks).set({ allowBrowserEvaluate: true, allowBrowserVision: true }).where(eq(t.tasks.id, taskId))
     const script2 = useScript("test/browser-tools2", new Script([step([text("好")])]))
     await ctx.db.update(t.tasks).set({ modelId: "test/browser-tools2" }).where(eq(t.tasks.id, taskId))
     // 关掉「遇到验证码先自己试着过」：没有填验证码的工具，系统提示里也不提
@@ -562,5 +573,9 @@ describe("工具网关：浏览器工具组", () => {
     expect(names2).toContain("browser_use")
     expect(names2).not.toContain("browser_fill_captcha")
     expect(JSON.stringify(script2.prompts[0]!.prompt[0])).not.toContain("fill_captcha")
+    // 开了看画面：browser_look、坐标工具；复制图片可以给坐标；系统提示说什么时候看
+    expect(names2).toEqual(expect.arrayContaining(["browser_look", "browser_mouse_click_xy", "browser_mouse_drag_xy", "browser_mouse_wheel", "browser_copy_image"]))
+    expect(JSON.stringify(script2.prompts[0]!.tools!.find((tool) => tool.name === "browser_copy_image"))).toContain('"x"')
+    expect(JSON.stringify(script2.prompts[0]!.prompt[0])).toContain("browser_look 截当前画面")
   })
 })

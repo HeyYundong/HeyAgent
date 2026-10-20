@@ -128,6 +128,7 @@ function columns(input: TaskInput, modelId: string, verifyModelId: string | null
     browserProfileIds: [...new Set(input.browserProfileIds)],
     allowedDomains: [...new Set(input.allowedDomains)],
     allowBrowserEvaluate: input.allowBrowserEvaluate,
+    allowBrowserVision: input.allowBrowserVision,
     verifyModelId,
     reviewEnabled: input.reviewEnabled,
     reviewModelId,

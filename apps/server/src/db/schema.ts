@@ -500,6 +500,8 @@ export const tasks = pgTable(
     allowedDomains: text("allowed_domains").array().notNull().default(sql`'{}'::text[]`),
     /** M2：是否允许 agent 在网页里执行脚本（Playwright MCP 的 browser_evaluate），默认不允许 */
     allowBrowserEvaluate: boolean("allow_browser_evaluate").notNull().default(false),
+    /** 是否允许 agent 看画面（browser.look 截图发给模型 + 按坐标操作），默认不允许 */
+    allowBrowserVision: boolean("allow_browser_vision").notNull().default(false),
     /** M3：这个任务自己选的三方验收模型；为空用默认验收模型 */
     verifyModelId: text("verify_model_id"),
     /** 运行结束后让 AI 轻量复核结果（run-outcome），默认开 */

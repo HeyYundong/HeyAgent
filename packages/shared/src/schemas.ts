@@ -345,6 +345,8 @@ export const taskSchema = z.object({
   allowedDomains: z.array(z.string()),
   /** M2：是否允许 agent 在网页里执行脚本 */
   allowBrowserEvaluate: z.boolean(),
+  /** 是否允许 agent 看画面（browser.look 截图发给模型 + 按坐标操作的工具） */
+  allowBrowserVision: z.boolean(),
   /** M3：这个任务自己选的三方验收模型；没有就用默认验收模型。必须和执行模型不是同一家 */
   verifyModelId: z.string().optional(),
   /** 运行结束后让 AI 轻量复核结果（docs/dev/run-outcome.md 第 5 节）；默认开。配了三方验收的不复核 */

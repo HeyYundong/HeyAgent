@@ -38,6 +38,7 @@ describe("域名", () => {
     expect(task.allowedDomains).toEqual(["a.example.com"])
     expect(task.browserProfileIds).toEqual([])
     expect(task.allowBrowserEvaluate).toBe(false)
+    expect(task.allowBrowserVision).toBe(false)
   })
 })
 
