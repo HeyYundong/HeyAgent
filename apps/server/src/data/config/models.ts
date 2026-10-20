@@ -112,7 +112,7 @@ function parseOllamaModels(body: unknown): CatalogModel[] {
 type NativeKind = "anthropic" | "openai" | "deepseek"
 const isNative = (kind: ModelProviderKind): kind is NativeKind => kind === "anthropic" || kind === "openai" || kind === "deepseek"
 
-/** 厂商自己列出的模型：Anthropic 还给显示名、上下文长度、能不能看图；OpenAI、DeepSeek 只有 id 和发布时间 */
+/** 厂商自己列出的模型：Anthropic 还给显示名、上下文长度、能不能看图；DeepSeek 给 input_modalities（能不能看图）；OpenAI 只有 id 和发布时间 */
 export interface NativeModel {
   id: string
   /** 发布时间（毫秒），新的排前面 */
@@ -122,13 +122,29 @@ export interface NativeModel {
   vision?: boolean
 }
 
-interface NativeListItem {
+export interface NativeListItem {
   id?: unknown
   created?: number
   created_at?: string
   display_name?: string
   max_input_tokens?: number
+  /** Anthropic */
   capabilities?: { image_input?: { supported?: boolean } }
+  /** DeepSeek，例如 ["text", "image"] */
+  input_modalities?: unknown
+}
+
+/** /models 里的一项；能不能看图厂商没说时是 undefined，留给 OpenRouter 公开目录补 */
+export function parseNativeItem(item: NativeListItem): NativeModel | undefined {
+  if (typeof item.id !== "string") return undefined
+  const created = item.created_at ? Date.parse(item.created_at) : (item.created ?? 0) * 1000
+  return {
+    id: item.id,
+    created: Number.isFinite(created) ? created : 0,
+    displayName: item.display_name,
+    contextK: item.max_input_tokens ? Math.round(item.max_input_tokens / 1000) : undefined,
+    vision: item.capabilities?.image_input?.supported ?? (Array.isArray(item.input_modalities) ? item.input_modalities.includes("image") : undefined),
+  }
 }
 
 /** 列模型：GET /models（要 key，不花钱）。Anthropic 分页（每页最多 1000 个），OpenAI、DeepSeek 一次给全 */
@@ -146,15 +162,8 @@ async function listNativeModels(kind: NativeKind, base: string, apiKey: string) 
     const body = res.body as { data?: NativeListItem[]; has_more?: boolean; last_id?: string } | undefined
     if (!Array.isArray(body?.data)) throw new Error(`${providerKindLabel[kind]} 返回的模型列表格式不对`)
     for (const item of body.data) {
-      if (typeof item.id !== "string") continue
-      const created = item.created_at ? Date.parse(item.created_at) : (item.created ?? 0) * 1000
-      models.push({
-        id: item.id,
-        created: Number.isFinite(created) ? created : 0,
-        displayName: item.display_name,
-        contextK: item.max_input_tokens ? Math.round(item.max_input_tokens / 1000) : undefined,
-        vision: item.capabilities?.image_input?.supported,
-      })
+      const model = parseNativeItem(item)
+      if (model) models.push(model)
     }
     if (!body.has_more || !body.last_id) break
     afterId = body.last_id

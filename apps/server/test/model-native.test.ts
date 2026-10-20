@@ -5,7 +5,7 @@ import { MockLanguageModelV4 } from "ai/test"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { z } from "zod"
 
-import { customCatalog, nativeCatalog, type NativeModel } from "../src/data/config/models.js"
+import { customCatalog, nativeCatalog, parseNativeItem, type NativeModel } from "../src/data/config/models.js"
 import { callModel, callStructured, costOf, languageModel, schemaInPrompt, type ResolvedModel } from "../src/engine/model.js"
 
 const tools = { web_open: tool({ description: "打开网页", inputSchema: z.object({ url: z.string() }) }) }
@@ -367,6 +367,23 @@ describe("nativeCatalog：厂商列出的模型 + OpenRouter 公开目录里的�
       { name: "deepseek-flash", contextK: 0, priceIn: 0, priceOut: 0 },
     ])
     expect(nativeCatalog("deepseek", listed, undefined).every((model) => model.priceIn === 0)).toBe(true)
+  })
+
+  it("DeepSeek 自己给的 input_modalities 优先：Flash 能看图、V4 Pro 不能；公开目录没连上也一样", () => {
+    const listed = [
+      parseNativeItem({ id: "deepseek-v4-pro", created: 2, input_modalities: ["text"] })!,
+      parseNativeItem({ id: "deepseek-flash", created: 1, input_modalities: ["text", "image"] })!,
+    ]
+    expect(listed.map((model) => model.vision)).toEqual([false, true])
+    for (const reference of [REFERENCE, undefined]) {
+      expect(nativeCatalog("deepseek", listed, reference).map((model) => [model.name, model.vision])).toEqual([["deepseek-v4-pro", false], ["deepseek-flash", true]])
+    }
+  })
+
+  it("parseNativeItem：Anthropic 的 capabilities.image_input 照旧；厂商没说能不能看图时留给公开目录补", () => {
+    expect(parseNativeItem({ id: "claude-x", created_at: "2026-01-01T00:00:00Z", max_input_tokens: 200_000, capabilities: { image_input: { supported: true } } })).toMatchObject({ contextK: 200, vision: true })
+    expect(parseNativeItem({ id: "gpt-9", created: 1 })?.vision).toBeUndefined()
+    expect(parseNativeItem({ id: 1 })).toBeUndefined()
   })
 })
 
