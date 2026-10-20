@@ -13,7 +13,7 @@ import { Spinner } from "@/components/ui/spinner"
 import { Switch } from "@/components/ui/switch"
 import { alwaysOnToolIds, BROWSER_TOOL_ID, can, findById, sameShanghaiDay, toolIdsOfTask, WORK_DISPATCH_TOOL_ID, type SessionSummary, type TaskDef } from "@heyagent/shared"
 
-import { useBrowsersQuery, useHumanItems, useMemoriesQuery, useModels, useRulesQuery, useSkillsQuery, useTasksQuery, useToolName, useToolsQuery } from "@/lib/data"
+import { useBrowsersQuery, useMemoriesQuery, useModels, useRulesQuery, useSkillsQuery, useTasksQuery, useToolName, useToolsQuery } from "@/lib/data"
 import { useAction } from "@/lib/mutations"
 import { href, navigate, setParams, type PageId } from "@/lib/router"
 import { useMe } from "@/lib/session"
@@ -28,13 +28,13 @@ import { CancelRunDialog, isActive, ResumeButton, RunWithFilesDialog, TaskAttach
 import { retryText } from "./dispatch-fields"
 import { TaskDialog } from "./task-dialog"
 import { TaskMemorySection } from "./task-memory"
+import { TaskScheduleSection } from "./task-schedule"
 
 /** 抽屉底部的操作（负责人和主管）：启动开关 + 编辑 / 带附件运行 / 取消 / 删除 + 主按钮。
- * 主按钮按最近一次运行的状态变：挂起等待 → 立即继续；等人处理 → 去待办处理；执行中 → 正在运行；其他 → 立即运行 */
+ * 主按钮按最近一次运行的状态变：挂起等待 → 立即继续；等人处理 → 去处理（会话页打开这次运行，顶上就能处理）；执行中 → 正在运行；其他 → 立即运行 */
 export function TaskActions({ task, state }: { task: TaskDef; state: TasksState }) {
   const runs = state.runsOf(task.id)
   const latest = runs[0]
-  const blocker = useHumanItems().find((item) => latest && item.runId === latest.id && ["approval", "verify", "login"].includes(item.kind))
   const [editing, setEditing] = React.useState(false)
   const [deleting, setDeleting] = React.useState(false)
   const [withFiles, setWithFiles] = React.useState(false)
@@ -49,7 +49,7 @@ export function TaskActions({ task, state }: { task: TaskDef; state: TasksState 
     primary = <Button onClick={() => setDispatching(true)}><SendIcon data-icon="inline-start" />派一张</Button>
   else if (latest?.status === "waiting") primary = <ResumeButton run={latest} />
   else if (latest?.status === "needs_human")
-    primary = <Button nativeButton={false} render={<a href={href("todos", { id: blocker?.id ?? latest.id })} />}><HandIcon data-icon="inline-start" />去待办处理</Button>
+    primary = <Button nativeButton={false} render={<a href={href("sessions", { status: "human", id: latest.id })} />}><HandIcon data-icon="inline-start" />去处理</Button>
   else if (latest?.status === "running" || latest?.status === "verifying") primary = <Button disabled><Spinner data-icon="inline-start" />正在运行</Button>
   else
     primary = (
@@ -98,7 +98,7 @@ export function TaskActions({ task, state }: { task: TaskDef; state: TasksState 
             <>
               <AlertDialogHeader>
                 <AlertDialogTitle>删除任务 {task.id}「{task.title}」？</AlertDialogTitle>
-                <AlertDialogDescription>它还没运行过。删除后步骤、检查点和选用的配置都会清掉，不能恢复；挂在它上面的待办也会一起删除。</AlertDialogDescription>
+                <AlertDialogDescription>它还没运行过。删除后步骤、检查点和选用的配置都会清掉，不能恢复；挂在它上面的人加的待办也会一起删除。</AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
                 <AlertDialogCancel>先不删</AlertDialogCancel>
@@ -112,7 +112,7 @@ export function TaskActions({ task, state }: { task: TaskDef; state: TasksState 
   )
 }
 
-/** 抽屉里的任务详情：只说明任务，分区卡（目标和步骤 / 任务记忆 / 附件 / 用到的配置）。标题和操作在抽屉的头和底。
+/** 抽屉里的任务详情：只说明任务，分区卡（目标和步骤 / 什么时候跑 / 任务记忆 / 附件 / 用到的配置）。标题和操作在抽屉的头和底。
  * 不放运行状态和运行记录：每次运行在「会话」页看（抽屉头部的「会话」按钮带上这个任务筛好） */
 export function TaskDetail({ task, state, canEdit }: { task: TaskDef; state: TasksState; canEdit: boolean }) {
   const taskRuns = state.runsOf(task.id)
@@ -121,6 +121,7 @@ export function TaskDetail({ task, state, canEdit }: { task: TaskDef; state: Tas
       {task.dispatch && <DispatchSection task={task} />}
       {task.toolIds.includes(WORK_DISPATCH_TOOL_ID) && <DispatchOutSection task={task} />}
       <GoalAndSteps task={task} latest={taskRuns[0]} />
+      <TaskScheduleSection task={task} canEdit={canEdit} />
       <TaskMemorySection task={task} runs={taskRuns} canEdit={canEdit} />
       <DetailSection title="附件" description="任务附件每次运行都会带上，agent 用「读附件」工具读。只想这一次带的，用「⋯ → 带附件运行」。">
         <TaskAttachments task={task} canEdit={canEdit} />

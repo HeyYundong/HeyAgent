@@ -415,7 +415,7 @@ export const TOOLS: Record<string, ToolDef> = {
     },
   }),
   list_todos: read({
-    description: "看待办看板：人加的待办（到点 / 等事件让 agent 去做），和还没处理的「要人办的事」（只读）",
+    description: "看人加的待办（到点 / 等事件让 agent 去做，挂在任务的「什么时候跑」里），和还没处理的「要人办的事」（只读，在「会话」的「等人处理」里）",
     input: z.object({}),
     label: () => "查待办",
     run: async (ctx) => {
@@ -769,7 +769,8 @@ export const TOOLS: Record<string, ToolDef> = {
     },
     apply: async (ctx, input) => {
       const { id } = await todos.createTodo(ctx, input)
-      return { message: `已建好待办 ${id}`, link: { page: "todos", params: {} }, output: { id } }
+      // 人加的待办在任务详情的「什么时候跑」里
+      return { message: `已建好待办 ${id}`, link: { page: "tasks", params: { id: input.taskId } }, output: { id } }
     },
   }),
   update_todo: write({
@@ -796,7 +797,7 @@ export const TOOLS: Record<string, ToolDef> = {
       const row = await loadTodoRow(ctx, input.id)
       const merged = check(todoInputSchema, { taskId: row.taskId, title: row.title, trigger: todoTriggerOf(row), ...pick(input, given) })
       await todos.updateTodo(ctx, { ...merged, id: row.id })
-      return { message: `已改好待办 ${row.id}`, link: { page: "todos", params: {} }, output: { id: row.id } }
+      return { message: `已改好待办 ${row.id}`, link: { page: "tasks", params: { id: merged.taskId } }, output: { id: row.id } }
     },
   }),
   delete_todo: write({

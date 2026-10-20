@@ -52,7 +52,7 @@ export function RulesLesson() {
       <DetailSection title="结果">
         <p>
           {scenario.result}{" "}
-          {scenario.todoId && <TextLink to={href("todos", { id: scenario.todoId })}>看待办里这张卡 →</TextLink>}
+          {scenario.todoId && <TextLink to={href("sessions", { status: "human", id: scenario.todoId })}>看「等人处理」里这件事 →</TextLink>}
         </p>
       </DetailSection>
     </Lesson>

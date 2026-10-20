@@ -5,20 +5,22 @@ export const LIVE_CHANNEL = "heyagent_changes"
 
 export const liveQueriesByTable: Record<string, string[]> = {
   users: ["me.get", "staff.list", "users.list"],
-  tasks: ["tasks.list", "work.taskStats"],
+  // 会话页的一页（sessions.page）能按任务名搜
+  tasks: ["tasks.list", "work.taskStats", "sessions.page"],
   task_memories: ["tasks.list"],
   task_skills: ["tasks.list"],
   task_tools: ["tasks.list"],
   task_rules: ["tasks.list"],
   task_memory_entries: ["taskMemory.list"],
   // 被派的运行状态变了，派活单的徽章（sessionStatus）和名额数跟着变。
-  // sessions.list 只是摘要（不带过程），跑起来常变也不重；sessions.get（带全部过程）只让推来的那个 session 的失效，见 liveQueriesById
-  sessions: ["sessions.list", "sessions.get", "work.list", "work.get", "work.taskStats"],
-  session_events: ["sessions.list", "sessions.get"],
-  checkpoints: ["sessions.list", "sessions.get"],
-  checkpoint_records: ["sessions.list", "sessions.get"],
-  session_waits: ["sessions.list", "sessions.get", "browser.accountStatus"],
-  human_items: ["todos.board", "me.get", "memories.list", "skills.list"],
+  // sessions.list / sessions.page 只是摘要（不带过程），跑起来常变也不重；sessions.get（带全部过程）只让推来的那个 session 的失效，见 liveQueriesById
+  sessions: ["sessions.list", "sessions.page", "sessions.get", "work.list", "work.get", "work.taskStats"],
+  session_events: ["sessions.list", "sessions.page", "sessions.get"],
+  checkpoints: ["sessions.list", "sessions.page", "sessions.get"],
+  checkpoint_records: ["sessions.list", "sessions.page", "sessions.get"],
+  session_waits: ["sessions.list", "sessions.page", "sessions.get", "browser.accountStatus"],
+  // 会话页「只看等我处理」按没处理的事筛
+  human_items: ["todos.board", "me.get", "memories.list", "skills.list", "sessions.page"],
   human_todos: ["todos.board"],
   memories: ["memories.list"],
   skills: ["skills.list"],

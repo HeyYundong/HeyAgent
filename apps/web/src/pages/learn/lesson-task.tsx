@@ -89,8 +89,8 @@ export function TaskLesson() {
           {task.schedule
             ? "某一天的运行要等，就挂起当天这个 session，等到了接着它跑；第二天到点，是另一次新的运行。"
             : "挂起时，看过的页面、发过的消息、勾过的检查点都原样留在 session 里，继续时不用从头再读一遍。"}
-          待办看板上，每次运行是一张卡，在「执行中」和「等待中」之间来回移动，卡上写着在等什么。{" "}
-          <TextLink to={href("learn", { id: "todo" })}>看待办看板 →</TextLink>
+          「会话」页上，每次运行一行，在「执行中」和「等待中」之间来回换，写着在等什么。{" "}
+          <TextLink to={href("learn", { id: "todo" })}>看会话的五个状态 →</TextLink>
         </p>
       </DetailSection>
     </Lesson>

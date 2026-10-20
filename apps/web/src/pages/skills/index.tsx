@@ -1,5 +1,5 @@
 // 技能页（v3）：左边按岗位分组，右边一个技能的详情（标题卡 + 分区卡：什么时候用、用到的工具、哪些任务选用了、操作手册）。
-// 只负责「看」和主管的「新建 / 编辑 / 发布 / 停用」；agent 提的修改建议在「待办」里审核（审核人也可以在这里直接批）。
+// 只负责「看」和主管的「新建 / 编辑 / 发布 / 停用」；agent 提的修改建议在「会话」的「等人处理」里审核（审核人也可以在这里直接批）。
 // 每次保存记一个新版本；被任务选用的技能不能停用（后端拦）。
 import * as React from "react"
 import { BookOpenIcon, CheckIcon, EllipsisIcon, FileTextIcon, InboxIcon, ListChecksIcon, PencilIcon, PlusIcon, WrenchIcon, XIcon } from "lucide-react"
@@ -200,13 +200,13 @@ function SkillDetail({ skill, tasks, tools, isAdmin, canReview, onEdit }: {
           <ItemContent>
             <ItemTitle>agent 提了修改建议：{suggestion.summary}</ItemTitle>
             <ItemDescription>
-              来自 {suggestion.taskId} · {fmtDateTime(suggestion.createdAt)} · 等 {staffName(suggestion.reviewerId)} 在「待办」里审核，通过后记为第 {skill.version + 1} 版。
+              来自 {suggestion.taskId} · {fmtDateTime(suggestion.createdAt)} · 等 {staffName(suggestion.reviewerId)} 审核（这里或「会话」的「等人处理」里都能审），通过后记为第 {skill.version + 1} 版。
             </ItemDescription>
           </ItemContent>
           {canReview && (
             <ItemActions>
               {suggestion.itemId && (
-                <Button size="sm" variant="ghost" nativeButton={false} render={<a href={href("todos", { id: suggestion.itemId })} />}>
+                <Button size="sm" variant="ghost" nativeButton={false} render={<a href={href("sessions", { status: "human", id: suggestion.itemId })} />}>
                   看改动
                 </Button>
               )}

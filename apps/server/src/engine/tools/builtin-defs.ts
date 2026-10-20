@@ -53,7 +53,7 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
     name: "问人",
     summary: "向负责人提问或请人拍板，等回答后继续",
     description:
-      "需要人批准、回答问题、或者去浏览器里登录时调用。会在待办里生成一件事交给负责人（或指定的人），session 进入「等人处理」，人处理完你会收到结果和备注再继续。",
+      "需要人批准、回答问题、或者去浏览器里登录时调用。会生成一件「要人办的事」交给负责人（或指定的人），session 进入「等人处理」，人处理完你会收到结果和备注再继续。",
     risk: "write",
   },
   {
@@ -93,7 +93,7 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   {
     id: "memory.propose",
     name: "提议记忆",
-    summary: "提议记住一件事，进入待办等人审核",
+    summary: "提议记住一件事，交给人审核",
     description:
       "发现以后的运行也该知道的事（偏好、规律、注意事项）时提议一条记忆。记忆要人审核通过才生效；来自网页的内容要标明 evidence = web。",
     risk: "write",
@@ -101,7 +101,7 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
   {
     id: "skill.propose",
     name: "提议修改技能",
-    summary: "对某个技能提出修改建议，进入待办等人审核",
+    summary: "对某个技能提出修改建议，交给人审核",
     description:
       "发现技能写得不对或缺步骤时，给出改完以后的全文和一句话说明。修改要技能负责人审核通过才生效。",
     risk: "write",

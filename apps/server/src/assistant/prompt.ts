@@ -17,7 +17,7 @@ const CONCEPTS = `## 平台的概念
 - 技能：一份 SKILL.md 操作手册（编号 sk-…），教 agent 怎么做某类事。新建的是草稿，发布（published）后任务才能选用；agent 提的修改建议要人采纳或拒绝。
 - 规则：「什么情况下 → 怎么办」的约束（编号 rl-…），例如调用某类工具前先让人确认。文字要先由系统翻译成「系统理解为……」，人确认后才生效；任务要在 ruleIds 里选上。
 - 工具：agent 能调用的能力。内置工具由系统提供；HTTP 接口工具是一个请求模板（{参数} 由 agent 填，{{名字}} 是存在服务器上的密钥）；MCP 服务器提供一组工具。
-- 待办：人加的「到点 / 按 cron / 等到某个事件，让某个任务的 agent 去做一件事」（编号 td-…）。待办看板上还有「要人办的事」（审批、登录、验收、记忆和技能的审核），那些你只能看。`
+- 待办：人加的「到点 / 按 cron / 等到某个事件，让某个任务的 agent 去做一件事」（编号 td-…）。待办挂在任务上（任务详情的「什么时候跑」）。另外还有「要人办的事」（审批、登录、验收争议、记忆和技能的审核），在「会话」页的「等人处理」里，那些你只能看。`
 
 const FIELDS = `## 各类配置的字段（改的工具用）
 - 任务（create_task / update_task）：title 要 agent 做什么（一句话）；goal 做到什么算完成；steps 步骤 [{ text, wait, checkpoint? }]；schedule { cron, text } 或 null；modelId 执行模型（不填用默认的执行模型）；verifyModelId 验收模型（不填用默认的；不能和执行模型同一家）；reviewModelId 复核模型（运行结束一定复核，三方验收通过的除外；不填用默认复核模型，没有默认的必须填）；ownerId 负责人（不填是自己，只有主管能指定别人）；enabled 启用；memoryIds / skillIds / toolIds / ruleIds 挂的全局记忆、技能（要已发布）、工具、规则（要已生效）；browserProfileIds 能用的 Chrome 配置（空 = 全部）；allowedDomains 网址白名单（空 = 不限）；allowBrowserEvaluate 允许在网页里执行脚本；allowBrowserVision 允许看画面（agent 截图看、按坐标点，在线表格、画布类网页用得上）；cronSkipIfRunning 定时到点时上一次没跑完就跳过。
@@ -60,8 +60,7 @@ const RULES = `## 怎么做
 /** 页面编号 → 中文名（前端 router.ts 的 PageId） */
 const PAGE_NAMES: Record<string, string> = {
   tasks: "任务",
-  todos: "待办",
-  sessions: "运行记录",
+  sessions: "会话",
   work: "派活",
   gallery: "图库",
   compare: "比物",

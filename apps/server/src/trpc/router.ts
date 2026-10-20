@@ -56,6 +56,8 @@ import {
   saveStepsFromSessionInputSchema,
   sessionDigestSchema,
   sessionRunSchema,
+  sessionPageInputSchema,
+  sessionPageSchema,
   sessionSummarySchema,
   settingsAgentInputSchema,
   settingsBrowserInputSchema,
@@ -101,6 +103,7 @@ import * as todos from "../data/config/todos.js"
 import * as tools from "../data/config/tools.js"
 import * as users from "../data/config/users.js"
 import * as load from "../data/loaders.js"
+import { pageSessions } from "../data/session-page.js"
 import * as t from "../db/schema.js"
 import { setOutcomeImpl } from "../engine/control.js"
 import { EngineError } from "../engine/sessions.js"
@@ -126,7 +129,7 @@ const wa = (ctx: AuthedContext): users.AuthCtx => ({ ...w(ctx), auth: ctx.auth, 
 
 export const appRouter = router({
   me: router({
-    /** 当前登录的人 + 侧边栏「待办」数字 */
+    /** 当前登录的人 + 侧边栏「会话」上的数字（等我处理的事） */
     get: protectedProcedure.output(meSchema).query(async ({ ctx }) => {
       const me = await load.loadMe(ctx.db, ctx.user.id)
       if (!me) throw notFound("用户", ctx.user.id)
@@ -216,6 +219,11 @@ export const appRouter = router({
           ...(input?.outcome ? { outcome: Array.isArray(input.outcome) ? input.outcome : [input.outcome] } : {}),
         })
       ),
+    /** 会话页的一页：按标签（状态分组）或「只看等我处理」、来源、任务、结果、搜索筛，一页 pageSize 个；带各标签个数和今天的花费（data/session-page.ts） */
+    page: protectedProcedure
+      .input(sessionPageInputSchema)
+      .output(sessionPageSchema)
+      .query(({ ctx, input }) => pageSessions(ctx.db, input, ctx.user)),
     /** 人改结果（run-outcome 第 8 节）：只有任务负责人和主管；只改已经结束的运行的结果列，写过程记录和审计 */
     setOutcome: protectedProcedure
       .input(setOutcomeInputSchema)
@@ -247,7 +255,7 @@ export const appRouter = router({
   }),
 
   todos: router({
-    /** 看板要的「要人办的事」（还没处理的）和「人加的待办」；运行卡用 sessions.list + shared 的 boardCards 拼 */
+    /** 还没处理的「要人办的事」（会话页「等人处理」、运行详情顶上的处理面板）和「人加的待办」（任务详情「什么时候跑」）。名字沿用以前的看板 */
     board: protectedProcedure
       .output(z.object({ humanItems: z.array(humanItemSchema), humanTodos: z.array(humanTodoSchema) }))
       .query(async ({ ctx }) => {

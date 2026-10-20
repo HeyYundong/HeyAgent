@@ -1117,7 +1117,7 @@ export const humanTodos: HumanTodo[] = [
   { id: "td-08", taskId: "T-1035", title: "每个工作日 10:00 看一眼有没有新报价", trigger: { kind: "cron", cron: "0 10 * * 1-5", text: "每个工作日 10:00", next: "2026-10-19 10:00" }, createdById: "u-li", createdAt: "2026-10-16 15:30" },
 ]
 
-// ---------- 待办看板 ----------
+// ---------- 会话的五个状态（原来的待办看板） ----------
 
 export type BoardColumn = "running" | "needs_human" | "waiting" | "verifying" | "done"
 
@@ -1126,7 +1126,7 @@ export const boardColumns: { id: BoardColumn; name: string; hint: string }[] = [
   { id: "needs_human", name: "等人处理", hint: "要你拍板或动手" },
   { id: "waiting", name: "等待中", hint: "session 已挂起，等到了就继续" },
   { id: "verifying", name: "验收中", hint: "三方 AI 在核对检查点" },
-  { id: "done", name: "已结束", hint: "最近结束的运行，卡上写结果" },
+  { id: "done", name: "已结束", hint: "跑完的运行，写着结果" },
 ]
 
 export type BoardCard =

@@ -1,7 +1,7 @@
 // 任务、运行、待办之间的纯函数（原型 mock/shared.ts、tasks/parts.tsx）。
 // 原型里这些函数直接读全局的假数据数组，这里改成「数据作为参数传入」，前端传查询结果，后端传库里读出的数据。
-import { runOutcomeLabel, type BoardColumn } from "./labels.js"
-import type { HumanItem, HumanTodo, RunCheckpoint, RunOutcome, SessionSummary, Staff, TaskDef, Tool, Trigger } from "./schemas.js"
+import { runOutcomeLabel } from "./labels.js"
+import type { HumanItem, RunCheckpoint, RunOutcome, SessionSummary, Staff, TaskDef, Tool, Trigger } from "./schemas.js"
 import { fmtDateTime } from "./time.js"
 
 export function findById<T extends { id: string }>(list: readonly T[], id: string | null | undefined): T | undefined {
@@ -58,61 +58,12 @@ export function triggerText(trigger: Trigger): string {
   return `到 ${fmtDateTime(trigger.at)}，或等到「${trigger.event}」（先到先继续）`
 }
 
-export type BoardCard =
-  | { kind: "run"; id: string; column: BoardColumn; run: SessionSummary; task: TaskDef }
-  | { kind: "human"; id: string; column: "needs_human"; item: HumanItem }
-  | { kind: "todo"; id: string; column: "waiting"; todo: HumanTodo }
-  /** 第二期：同一个任务被派来、在「挂起等待」的运行有 2 个及以上时收成一张（id = group-<任务 id>）；列头数字按 runs.length 算 */
-  | { kind: "group"; id: string; column: "waiting"; task: TaskDef; runs: SessionSummary[] }
+/** 是不是「等我处理」的事：主管算全部，员工只算分给自己的（会话页「只看等我处理」、侧边栏「会话」上的数字） */
+export const isNeedsMe = (item: Pick<HumanItem, "assigneeId">, userId: string, isAdmin: boolean) => isAdmin || item.assigneeId === userId
 
-/** 看板上的全部卡片。已定：员工也能看全部（只读），能不能操作由页面按负责人判断 */
-export function boardCards(data: { runs: readonly SessionSummary[]; tasks: readonly TaskDef[]; humanItems: readonly HumanItem[]; humanTodos: readonly HumanTodo[] }): BoardCard[] {
-  const { runs, tasks, humanItems, humanTodos } = data
-  const cards: BoardCard[] = []
-  for (const run of runs) {
-    const task = findById(tasks, run.taskId)
-    if (!task) continue
-    // 等人处理的运行，由下面「要人办的事」的卡片代表，不重复放；出错、没完成（旧状态）的不上看板（在「会话」页看）
-    if (run.status === "needs_human" || run.status === "failed" || run.status === "incomplete") continue
-    // 已结束的只放每个任务最近一次（卡上写结果：办成 / 没办成，复核还在跑的写复核中），更早的历史在「会话」页
-    if (run.status === "done" && runs.some((other) => other.taskId === run.taskId && other.status === "done" && other.startedAt > run.startedAt)) continue
-    cards.push({ kind: "run", id: run.id, column: run.status, run, task })
-  }
-  for (const item of humanItems) cards.push({ kind: "human", id: item.id, column: "needs_human", item })
-  for (const todo of humanTodos) cards.push({ kind: "todo", id: todo.id, column: "waiting", todo })
-  return groupDispatchedWaiting(cards)
-}
-
-/**
- * 派活第二期（开发说明 5.1）：同一个任务被派来（source = dispatch）、在「挂起等待」的运行有 2 个及以上时收成一张，
- * 放在其中第一张原来的位置，runs 按开始时间先后。只收这一列：执行中、验收中受名额限制、每个都在变；「要人办的事」要一件件处理
- */
-function groupDispatchedWaiting(cards: BoardCard[]): BoardCard[] {
-  const byTask = new Map<string, Extract<BoardCard, { kind: "run" }>[]>()
-  for (const card of cards) {
-    if (card.kind !== "run" || card.column !== "waiting" || card.run.source !== "dispatch") continue
-    byTask.set(card.task.id, [...(byTask.get(card.task.id) ?? []), card])
-  }
-  const grouped = new Set([...byTask.values()].filter((group) => group.length >= 2).flatMap((group) => group.map((card) => card.id)))
-  if (!grouped.size) return cards
-  const out: BoardCard[] = []
-  for (const card of cards) {
-    if (card.kind !== "run" || !grouped.has(card.id)) {
-      out.push(card)
-      continue
-    }
-    const group = byTask.get(card.task.id)!
-    // 只在这一组的第一张那里放收起的卡片，其余的跳过
-    if (group[0] !== card) continue
-    const runs = group.map((each) => each.run).sort((a, b) => a.startedAt.localeCompare(b.startedAt) || a.id.localeCompare(b.id))
-    out.push({ kind: "group", id: `group-${card.task.id}`, column: "waiting", task: card.task, runs })
-  }
-  return out
-}
-
-/** 侧边栏「待办」上的数字：等我处理的事（主管算全部） */
+/** 侧边栏「会话」上的数字：等我处理的事（主管算全部） */
 export function needsMeCount(humanItems: readonly Pick<HumanItem, "assigneeId">[], userId: string, isAdmin: boolean): number {
-  return humanItems.filter((item) => isAdmin || item.assigneeId === userId).length
+  return humanItems.filter((item) => isNeedsMe(item, userId, isAdmin)).length
 }
 
 /** 一次运行此刻的一句话：在等什么（加什么时候继续）/ 正在做什么 / 验收到哪（原型 tasks/parts.tsx 的 runNow） */

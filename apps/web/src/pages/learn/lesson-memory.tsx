@@ -42,7 +42,7 @@ export function MemoryLesson() {
 
       <DetailSection title="新记忆从哪来">
         <p>
-          其余 {memories.length - picked.length} 条这个任务没选，agent 一个字也看不到。运行中 agent 学到新东西，只能调「提议记忆」：待办「等人处理」里多一张记忆审核卡，人通过后它才能被任务选用。来自网页、没核实的会标出来，提醒审核的人「可能不实」。{" "}
+          其余 {memories.length - picked.length} 条这个任务没选，agent 一个字也看不到。运行中 agent 学到新东西，只能调「提议记忆」：「会话」的「等人处理」里多一件记忆审核，人通过后它才能被任务选用。来自网页、没核实的会标出来，提醒审核的人「可能不实」。{" "}
           <TextLink to={href("memory")}>去记忆页 →</TextLink>
         </p>
       </DetailSection>

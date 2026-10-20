@@ -23,7 +23,7 @@ import { useMe } from "@/lib/session"
 import { trpc } from "@/lib/trpc"
 
 import { TaskDialog } from "./task-dialog"
-import { nextRunText, type TasksState } from "./parts"
+import type { TasksState } from "./parts"
 import { RunDetail } from "./run-detail"
 import { TaskActions, TaskDetail } from "./task-detail"
 
@@ -96,7 +96,7 @@ export default function TasksPage() {
   )
 }
 
-/** 抽屉：头部是任务（编号、标题、负责人和定时，右边「会话」按钮去会话页只看这个任务的 session），中间是任务详情或某次 session，底部是主管操作 */
+/** 抽屉：头部是任务（编号、标题、负责人，定时在详情的「什么时候跑」里；右边「会话」按钮去会话页只看这个任务的 session），中间是任务详情或某次 session，底部是主管操作 */
 function TaskSheetBody({ task, runId, state, canEdit }: { task: TaskDef; runId: string | null; state: TasksState; canEdit: boolean }) {
   const staffName = useStaffName()
   const runs = state.runsOf(task.id)
@@ -111,7 +111,7 @@ function TaskSheetBody({ task, runId, state, canEdit }: { task: TaskDef; runId: 
         </div>
         <SheetTitle>{task.title}</SheetTitle>
         <SheetDescription>
-          负责人 {staffName(task.ownerId)} · 创建于 {fmtDateTime(task.createdAt)} · {task.schedule ? `定时：${task.schedule.text}（${task.schedule.cron}）` : task.dispatch ? "被派活，不定时" : "只跑一次"} {(task.schedule || task.dispatch || !task.enabled) && `· 预计下次运行：${nextRunText(task)}`}
+          负责人 {staffName(task.ownerId)} · 创建于 {fmtDateTime(task.createdAt)}
         </SheetDescription>
       </SheetHeader>
       <Separator />

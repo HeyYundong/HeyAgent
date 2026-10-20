@@ -1,5 +1,5 @@
 // 记忆页（v3）：左边按「适用于」的分类分组，右边一条记忆的详情（标题卡 + 分区卡）。
-// 只负责「看」和主管的「新建 / 编辑 / 归档 / 删除」；agent 提议的记忆在「待办」里审核（审核人也可以在这里直接批）。
+// 只负责「看」和主管的「新建 / 编辑 / 归档 / 删除」；agent 提议的记忆在「会话」的「等人处理」里审核（审核人也可以在这里直接批）。
 // 被任务选用的记忆不能删（后端拦，页面先说明），归档前提醒哪些任务会读不到。
 import * as React from "react"
 import { BrainIcon, CheckIcon, EllipsisIcon, InboxIcon, ListChecksIcon, PencilIcon, PlusIcon, XIcon } from "lucide-react"
@@ -213,7 +213,7 @@ function MemoryDetail({
           </ItemMedia>
           <ItemContent>
             <ItemTitle>等 {staffName(memory.reviewerId)} 审核</ItemTitle>
-            <ItemDescription>agent 提议的记忆要在「待办」里审核，通过后才生效、才能被任务选用。</ItemDescription>
+            <ItemDescription>agent 提议的记忆要在「会话」的「等人处理」里审核，通过后才生效、才能被任务选用。</ItemDescription>
           </ItemContent>
           {canReview && (
             <ItemActions>

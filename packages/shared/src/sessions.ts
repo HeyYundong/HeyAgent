@@ -1,27 +1,76 @@
 // Session 页的分组和时长（原型 sessions/data.ts）。原型里的「现在」是写死的 2026-10-16 16:30，这里改成参数，默认取当前时间。
-import type { RunEvent, RunStatus, SessionSummary } from "./schemas.js"
+import { z } from "zod"
+
+import { runOutcomeSchema, sessionSummarySchema, type RunEvent, type RunStatus, type SessionSummary } from "./schemas.js"
 import { browserIdsOf } from "./browsers.js"
 import { relativeDayText, sameShanghaiDay } from "./time.js"
 
-export type SessionGroup = "all" | "active" | "paused" | "ended"
+/** 会话页的状态标签（网址 ?status=，执行中是默认，不写）。等人处理里还有不属于运行的「要人办的事」（记忆审核、技能修改），页面自己加 */
+export type SessionGroup = "running" | "human" | "waiting" | "verifying" | "ended"
 
 export const sessionGroups: { id: SessionGroup; name: string }[] = [
-  { id: "all", name: "全部" },
-  { id: "active", name: "进行中" },
-  { id: "paused", name: "挂起" },
+  { id: "running", name: "执行中" },
+  { id: "human", name: "等人处理" },
+  { id: "waiting", name: "等待中" },
+  { id: "verifying", name: "验收中" },
   { id: "ended", name: "已结束" },
 ]
 
-const GROUP_OF: Record<RunStatus, Exclude<SessionGroup, "all">> = {
-  running: "active",
-  verifying: "active",
-  waiting: "paused",
-  needs_human: "paused",
+const GROUP_OF: Record<RunStatus, SessionGroup> = {
+  running: "running",
+  needs_human: "human",
+  waiting: "waiting",
+  verifying: "verifying",
   done: "ended",
   incomplete: "ended",
   failed: "ended",
 }
 export const groupOf = (run: Pick<SessionSummary, "status">) => GROUP_OF[run.status]
+
+/** 每个标签包含哪些状态（服务端 sessions.page 按它在库里筛） */
+export const statusesOfGroup = (group: SessionGroup): RunStatus[] => (Object.keys(GROUP_OF) as RunStatus[]).filter((status) => GROUP_OF[status] === group)
+
+export const sessionGroupSchema = z.enum(["running", "human", "waiting", "verifying", "ended"])
+/** 运行怎么开始的：手动 / 定时 / 人加的待办到点 / 外部事件 / 派活 */
+export const sessionSourceSchema = z.enum(["manual", "cron", "todo", "event", "dispatch"])
+
+/** 会话页的一页（sessions.page）：筛选、搜索、数数、翻页都在库里做 */
+export const sessionPageInputSchema = z.object({
+  group: sessionGroupSchema.default("running"),
+  /** 只看等我处理：等人处理、而且有一件挡住它的事（审批 / 验收争议 / 登录）是我的（主管算全部，同侧边栏数字的算法）。开着时不看 group */
+  mine: z.boolean().optional(),
+  source: sessionSourceSchema.optional(),
+  taskId: z.string().optional(),
+  outcome: runOutcomeSchema.optional(),
+  /** 搜 session 编号、任务编号、任务名、派活单号（不分大小写） */
+  q: z.string().trim().max(200).optional(),
+  page: z.number().int().min(1).default(1),
+  pageSize: z.number().int().min(1).max(200).default(50),
+})
+export type SessionPageInput = z.input<typeof sessionPageInputSchema>
+
+export const sessionCountsSchema = z.object({
+  running: z.number().int(),
+  human: z.number().int(),
+  waiting: z.number().int(),
+  verifying: z.number().int(),
+  ended: z.number().int(),
+})
+export type SessionCounts = z.infer<typeof sessionCountsSchema>
+
+export const sessionPageSchema = z.object({
+  items: z.array(sessionSummarySchema),
+  /** 符合条件的一共几个（翻页用） */
+  total: z.number().int(),
+  /** 实际给的是第几页：超出就给最后一页 */
+  page: z.number().int(),
+  pageSize: z.number().int(),
+  /** 各标签的个数：同样的来源、任务、结果、搜索，不算标签和「只看等我处理」 */
+  counts: sessionCountsSchema,
+  /** 今天（上海时间）开始的运行一共花了多少，美元。不看任何筛选 */
+  spentToday: z.number(),
+})
+export type SessionPage = z.infer<typeof sessionPageSchema>
 
 /** 进行中的排最上面（执行中在验收中前面），其余按开始时间倒序 */
 export function sortRuns<R extends Pick<SessionSummary, "status" | "startedAt">>(list: readonly R[]): R[] {
