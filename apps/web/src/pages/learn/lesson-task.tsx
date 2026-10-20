@@ -18,7 +18,7 @@ const rowOf: Partial<Record<RunEventKind, Omit<Row, "title" | "tools">>> = {
   rule: { tone: "block", icon: <ShieldIcon />, badge: "规则拦下" },
   wait: { tone: "wait", icon: <CirclePauseIcon />, badge: "挂起" },
   resume: { tone: "pass", icon: <CirclePlayIcon />, badge: "同一个 session" },
-  done: { tone: "pass", icon: <CircleCheckIcon />, badge: "已完成" },
+  done: { tone: "pass", icon: <CircleCheckIcon />, badge: "已结束" },
 }
 
 /** 把一次运行的事件压成几行：开始 → 挂起 → 继续 → …… → 现在；中间调了几次工具写在上一行 */

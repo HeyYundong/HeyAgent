@@ -24,7 +24,7 @@ export function nextRunText(task: TaskDef, latest?: SessionSummary) {
   return sharedNextRunText(task, latest)
 }
 
-/** 分档：执行中 = 实心主色 + 转圈（全墙唯一红色实心、唯一会动的）；等人处理 = 实心灰；失败 = 浅红底、没完成 = 描边加感叹号（同一档：都要人看一眼）；等待中 / 验收中 = 描边；已完成 = 无框 */
+/** 状态只管流程（办没办成看结果徽章，components/shell/outcome-badge.tsx）。分档：执行中 = 实心主色 + 转圈（全墙唯一红色实心、唯一会动的）；等人处理 = 实心灰；出错 = 浅红底、没完成（旧状态）= 描边加感叹号；等待中 / 验收中 = 描边；已结束 = 无框 */
 export function RunStatusBadge({ status }: { status: RunStatus }) {
   if (status === "running") return <Badge><Spinner data-icon="inline-start" />{runStatusLabel.running}</Badge>
   if (status === "needs_human") return <Badge variant="secondary"><HandIcon data-icon="inline-start" />{runStatusLabel.needs_human}</Badge>

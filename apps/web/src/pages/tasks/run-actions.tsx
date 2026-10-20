@@ -46,7 +46,7 @@ export function CancelRunDialog({ run, open, onOpenChange }: { run: SessionSumma
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>取消运行 {run.id}？</AlertDialogTitle>
-          <AlertDialogDescription>取消后这次运行标为失败，不能恢复；在等的事、没处理的待办一起作废。已经做完的操作（发出去的消息、存下的文件）不会撤回。</AlertDialogDescription>
+          <AlertDialogDescription>取消后这次运行标为出错、结果记没办成，不能恢复；在等的事、没处理的待办一起作废。已经做完的操作（发出去的消息、存下的文件）不会撤回。</AlertDialogDescription>
         </AlertDialogHeader>
         <Field>
           <FieldLabel htmlFor={`cancel-reason-${run.id}`}>原因（可以不填）</FieldLabel>

@@ -20,6 +20,17 @@ export const compileOf = (rule: Pick<RuleRef, "compile">): RuleCompileView => ru
 /** 建任务时能不能选：有确认过的版本才行 */
 export const ruleSelectable = (rule: Pick<RuleRef, "compile">) => compileOf(rule).effective
 
+/**
+ * 生效的这条规则会不会「交给三方验收」：任务选了这样的规则，结果按验收定，不再轻量复核（run-outcome 5.1）。
+ * 文字改过还没确认时引擎按旧版本执行，旧版本只有「系统理解为」那句话，按里面有没有「三方验收」判断
+ */
+export function ruleVerifies(rule: Pick<RuleRef, "compile">) {
+  const compile = compileOf(rule)
+  if (!compile.effective) return false
+  if (compile.outdated) return Boolean(compile.enforced?.understood.includes("三方验收"))
+  return Boolean(compile.draft?.actions.some((action) => action.type === "verify"))
+}
+
 /** 为什么选不了 / 选了会怎样：建任务的下拉、任务详情里用 */
 export function ruleHint(rule: Pick<RuleRef, "compile">): string | undefined {
   const compile = compileOf(rule)

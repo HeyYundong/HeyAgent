@@ -115,7 +115,7 @@ export const boardColumns: { id: BoardColumn; name: string; hint: string }[] = [
   { id: "needs_human", name: "等人处理", hint: "要你拍板或动手" },
   { id: "waiting", name: "等待中", hint: "session 已挂起，等到了就继续" },
   { id: "verifying", name: "验收中", hint: "三方 AI 在核对检查点" },
-  { id: "done", name: "已完成", hint: "最近完成的运行" },
+  { id: "done", name: "已结束", hint: "最近结束的运行，卡上写结果" },
 ]
 
 export type LoopStage = "task_start" | "model" | "pre_tool" | "tool" | "post_tool" | "task_end"

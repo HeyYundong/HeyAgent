@@ -32,7 +32,7 @@ export function TodoLesson() {
     >
       <DetailSection
         title="五列，从左到右"
-        description="一张运行卡常见的路线：执行中 ⇄ 等待中 → 验收中 → 已完成；中途要人办的事，另起一张卡放进「等人处理」"
+        description="一张运行卡常见的路线：执行中 ⇄ 等待中 → 验收中 → 已结束（卡上写结果）；中途要人办的事，另起一张卡放进「等人处理」"
       >
         <Tiles items={tiles} activeId={column.id} className="grid grid-cols-2 gap-1 sm:grid-cols-5" />
       </DetailSection>

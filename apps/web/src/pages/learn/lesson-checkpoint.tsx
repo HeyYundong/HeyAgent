@@ -98,10 +98,29 @@ export function CheckpointLesson() {
         ) : (
           <p>
             这次运行还没说做完（{run.waiting?.what ?? "还在跑"}），所以没到验收。到时三方 AI 会逐条核对：现在还有 {open} 条没完成，它会反问
-            agent 为什么，agent 要么补做，要么说明理由。说做完了时检查点还有没勾的、或者全部跳过了（三方验收通过的除外），这次运行记「没完成」。
+            agent 为什么，agent 要么补做，要么说明理由。说做完了时检查点还有没勾的、或者全部跳过了（三方验收通过的除外），结果记「没办成」；跳过一部分、其余都勾了的，最多记「部分办成」。
           </p>
         )}
+      </DetailSection>
+      <DetailSection
+        title="结束以后：结果"
+        description="状态只管流程（已结束、出错），办没办成看结果。只看目标要的东西拿没拿到：要找的东西没找到，确认「没有」也是没办成。"
+      >
+        <ItemGroup className="gap-1">
+          {OUTCOME_STEPS.map((step) => <Step key={step.badge} tone={step.tone} title={step.title} badge={step.badge} />)}
+        </ItemGroup>
+        <p className="mt-3 text-muted-foreground">
+          agent 结束时用「报结果」报办成、部分办成还是没办成，并写依据。没配三方验收的任务，结束后再让便宜的 AI 复核一遍：只会往低判。负责人觉得不对，可以在运行详情里「改结果」，要写理由。
+        </p>
       </DetailSection>
     </Lesson>
   )
 }
+
+/** 四种结果什么时候出现（docs/dev/run-outcome.md 2.1 节） */
+const OUTCOME_STEPS: { tone: StepTone; title: string; badge: string }[] = [
+  { tone: "pass", title: "三方验收通过；或者 agent 报办成、复核也判办成；复核关着时，要检查点全部达成", badge: "办成" },
+  { tone: "wait", title: "agent 报只拿到一部分；检查点有跳过的（其余都达成）；或者复核判部分办成", badge: "部分办成" },
+  { tone: "block", title: "agent 报没办成；检查点有没达成的或者全部跳过；缺必交的结果；复核判没办成；运行出错或被取消", badge: "没办成" },
+  { tone: "skip", title: "agent 说办成了，但没有依据：没设检查点、复核关着、复核说不准或者没配复核模型", badge: "没核实" },
+]

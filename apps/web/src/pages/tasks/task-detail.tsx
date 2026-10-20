@@ -21,7 +21,7 @@ import { trpc } from "@/lib/trpc"
 import { DispatchDialog, dispatchedToast } from "@/pages/work/dialogs"
 import { useWorkTaskStats } from "@/pages/work/parts"
 
-import { compileOf, ruleSelectable } from "@/pages/rules/compile"
+import { compileOf, ruleSelectable, ruleVerifies } from "@/pages/rules/compile"
 
 import { StepList, type TasksState } from "./parts"
 import { CancelRunDialog, isActive, ResumeButton, RunWithFilesDialog, TaskAttachments, useStartRun } from "./run-actions"
@@ -186,6 +186,7 @@ function UsedConfig({ task }: { task: TaskDef }) {
     <div className="flex flex-col gap-3">
       <LinkBadges label="模型" page="models" items={[{ id: providerId, name: modelName(task.modelId) }]} />
       <ConfigLine label="验收">{task.verifyModelId ? modelName(task.verifyModelId) : `默认验收模型（${modelName(defaults.verify)}）`} · 任务选了「交给三方验收」的规则时才用</ConfigLine>
+      <ConfigLine label="复核">{reviewText(task, named(rules, task.ruleIds).some(ruleVerifies), modelName, defaults.review)}</ConfigLine>
       <LinkBadges label="记忆" page="memory" items={task.memoryIds.flatMap((id) => findById(memories, id) ?? []).map((m) => ({ id: m.id, name: clip(m.content) }))} />
       <LinkBadges label="技能" page="skills" items={named(skills, task.skillIds)} />
       <LinkBadges label="工具" page="tools" items={toolIdsOfTask(task, alwaysOn).map((id) => ({ id, name: alwaysOn.includes(id) ? `${toolName(id)} · 自带` : toolName(id) }))} />
@@ -208,6 +209,14 @@ function BrowserConfig({ task }: { task: TaskDef }) {
       <ConfigLine label="脚本">{task.allowBrowserEvaluate ? "允许在网页里执行脚本" : "不允许在网页里执行脚本"}</ConfigLine>
     </>
   )
+}
+
+/** 「结束后 AI 复核 · DeepSeek V4.1 Flash（默认）」；关着、已有三方验收、没配复核模型的写清楚 */
+function reviewText(task: TaskDef, verifies: boolean, modelName: (id: string) => string, defaultReview?: string) {
+  if (verifies) return "已有三方验收，不复核"
+  if (task.reviewEnabled === false) return "关了：结束后不复核"
+  const model = task.reviewModelId ? modelName(task.reviewModelId) : defaultReview ? `${modelName(defaultReview)}（默认）` : undefined
+  return model ? `结束后 AI 复核 · ${model}` : "开着，但还没配复核模型：不会复核"
 }
 
 const ConfigLine = ({ label, children }: { label: string; children: React.ReactNode }) => (
@@ -269,6 +278,7 @@ function DispatchSection({ task }: { task: TaskDef }) {
         </p>
         <p className="text-muted-foreground">
           参数：{dispatch.params.map((p) => `${p.name}（${[p.required ? "必填" : "可选", p.dedupe && "去重"].filter(Boolean).join("，")}）`).join("、") || "没有"} · 同时最多 {dispatch.maxRunning} 个在跑 ·
+          {dispatch.results?.length ? `要交回：${dispatch.results.map((r) => `${r.name}${r.required ? "（必填）" : ""}`).join("、")} · ` : ""}
           谁能派活给它：{task.dispatchFrom.length ? task.dispatchFrom.map((id) => `「${title(id)}」`).join("、") : "只能人派"} · {retryText(dispatch)}
         </p>
       </div>
