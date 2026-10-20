@@ -5,6 +5,7 @@
 import { tracked, TRPCError } from "@trpc/server"
 import { z } from "zod"
 import {
+  setOutcomeInputSchema,
   browserAccountInputSchema,
   browserAccountUpdateSchema,
   browserProfileInputSchema,
@@ -203,6 +204,10 @@ export const appRouter = router({
         if (!run) throw notFound("session", input.id)
         return run
       }),
+    /** 人改结果（run-outcome 第 8 节）。网页先用的占位：后端分支落地后换成真的实现 */
+    setOutcome: protectedProcedure.input(setOutcomeInputSchema).mutation(() => {
+      throw new TRPCError({ code: "NOT_IMPLEMENTED", message: "改结果还没做好" })
+    }),
   }),
 
   todos: router({

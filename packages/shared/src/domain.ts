@@ -1,7 +1,7 @@
 // 任务、运行、待办之间的纯函数（原型 mock/shared.ts、tasks/parts.tsx）。
 // 原型里这些函数直接读全局的假数据数组，这里改成「数据作为参数传入」，前端传查询结果，后端传库里读出的数据。
-import type { BoardColumn } from "./labels.js"
-import type { HumanItem, HumanTodo, RunCheckpoint, SessionSummary, Staff, TaskDef, Tool, Trigger } from "./schemas.js"
+import { runOutcomeLabel, type BoardColumn } from "./labels.js"
+import type { HumanItem, HumanTodo, RunCheckpoint, RunOutcome, SessionSummary, Staff, TaskDef, Tool, Trigger } from "./schemas.js"
 import { fmtDateTime } from "./time.js"
 
 export function findById<T extends { id: string }>(list: readonly T[], id: string | null | undefined): T | undefined {
@@ -72,9 +72,9 @@ export function boardCards(data: { runs: readonly SessionSummary[]; tasks: reado
   for (const run of runs) {
     const task = findById(tasks, run.taskId)
     if (!task) continue
-    // 等人处理的运行，由下面「要人办的事」的卡片代表，不重复放；失败、没完成的不上看板（在「Session」页看）
+    // 等人处理的运行，由下面「要人办的事」的卡片代表，不重复放；出错、没完成（旧状态）的不上看板（在「会话」页看）
     if (run.status === "needs_human" || run.status === "failed" || run.status === "incomplete") continue
-    // 已完成的只放每个任务最近一次，更早的历史在「Session」页
+    // 已结束的只放每个任务最近一次（卡上写结果：办成 / 部分办成 / 没办成 / 没核实），更早的历史在「会话」页
     if (run.status === "done" && runs.some((other) => other.taskId === run.taskId && other.status === "done" && other.startedAt > run.startedAt)) continue
     cards.push({ kind: "run", id: run.id, column: run.status, run, task })
   }
@@ -125,16 +125,29 @@ export function runNow(run: SessionSummary, humanItems: readonly HumanItem[], st
   }
   if (run.status === "running") return { label: "正在", text: run.lastEvent?.title ?? "刚开始" }
   if (run.status === "verifying") return { label: "验收中", text: run.verification?.headline ?? "三方 AI 在核对检查点" }
-  // M1 还没有三方验收（M3 做），没验收过的只写「完成」，不说「验收通过」
-  if (run.status === "done") return { label: "结果", text: `${run.verification?.status === "passed" ? "验收通过" : "完成"} · ${run.endedAt ? fmtDateTime(run.endedAt) : ""}` }
-  if (run.status === "incomplete") return { label: "结果", text: `没完成 · ${incompleteReason(run) ?? "agent 没做成"}` }
-  return { label: "结果", text: `失败 · ${run.lastError?.title ?? "运行失败"}` }
+  // 结束了：状态只管流程，办没办成写结果（run-outcome）。出错的写错误标题；其余写结果、原因（办成的不写）、结束时间
+  if (run.status === "failed") return { label: "结果", text: `出错 · ${run.lastError?.title ?? "运行出错"}` }
+  const outcome = outcomeOf(run)
+  const reason = outcome && outcome !== "achieved" ? outcomeReasonOf(run) : undefined
+  const when = run.endedAt ? fmtDateTime(run.endedAt) : ""
+  return { label: "结果", text: [outcome ? runOutcomeLabel[outcome] : "已结束", reason, when].filter(Boolean).join(" · ") }
 }
 
-/** 没完成的原因：结束时写的那条 done 事件的说明（agent 报的原因，或者哪些检查点没达成） */
-export function incompleteReason(run: Pick<SessionSummary, "status" | "doneDetail">): string | undefined {
-  if (run.status !== "incomplete") return undefined
-  return run.doneDetail
+/**
+ * 运行的结果（run-outcome）：结束了才有。接口没给 outcome 的老数据：没完成（旧状态）、出错的算没办成（和迁移 0024 补的一样），
+ * 其余的不猜，返回 undefined（页面上写「—」）
+ */
+export function outcomeOf(run: Pick<SessionSummary, "status" | "outcome">): RunOutcome | undefined {
+  if (run.outcome) return run.outcome
+  return run.status === "incomplete" || run.status === "failed" ? "not_achieved" : undefined
+}
+
+/** 结果的原因：outcomeReason（没办成缺了什么、复核的理由、人改的理由）；老数据退回没完成时的说明、出错的标题 */
+export function outcomeReasonOf(run: Pick<SessionSummary, "status" | "outcomeReason" | "doneDetail" | "lastError">): string | undefined {
+  if (run.outcomeReason) return run.outcomeReason
+  if (run.status === "incomplete") return run.doneDetail
+  if (run.status === "failed") return run.lastError?.title
+  return undefined
 }
 
 /** 「完成 3/5」；有跳过的写成「完成 2/3 · 跳过 1」 */

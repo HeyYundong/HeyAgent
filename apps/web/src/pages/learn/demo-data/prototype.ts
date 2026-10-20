@@ -643,9 +643,9 @@ export const runStatusLabel: Record<RunStatus, string> = {
   needs_human: "等人处理",
   waiting: "等待中",
   verifying: "验收中",
-  done: "已完成",
+  done: "已结束",
   incomplete: "没完成",
-  failed: "失败",
+  failed: "出错",
 }
 
 export type Trigger =
@@ -1126,7 +1126,7 @@ export const boardColumns: { id: BoardColumn; name: string; hint: string }[] = [
   { id: "needs_human", name: "等人处理", hint: "要你拍板或动手" },
   { id: "waiting", name: "等待中", hint: "session 已挂起，等到了就继续" },
   { id: "verifying", name: "验收中", hint: "三方 AI 在核对检查点" },
-  { id: "done", name: "已完成", hint: "最近完成的运行" },
+  { id: "done", name: "已结束", hint: "最近结束的运行，卡上写结果" },
 ]
 
 export type BoardCard =
@@ -1143,7 +1143,7 @@ export function boardCards(): BoardCard[] {
     if (!task) continue
     // 等人处理的运行，由下面「要人办的事」的卡片代表，不重复放
     if (run.status === "needs_human" || run.status === "failed" || run.status === "incomplete") continue
-    // 已完成的只放每个任务最近一次，更早的历史在「Session」页
+    // 已结束的只放每个任务最近一次，更早的历史在「Session」页
     if (run.status === "done" && runs.some((other) => other.taskId === run.taskId && other.status === "done" && other.startedAt > run.startedAt)) continue
     cards.push({ kind: "run", id: run.id, column: run.status, run, task })
   }

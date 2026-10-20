@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query"
 import { ArrowRightIcon, BrainIcon, CircleCheckIcon, CircleDashedIcon, CircleDotIcon, CircleSlashIcon, EllipsisIcon, FlagIcon, ListTodoIcon, PauseIcon } from "lucide-react"
 import { PlayIcon, ShieldIcon, ShieldQuestionIcon, TriangleAlertIcon, UserIcon, UserPenIcon, WrenchIcon, ZapIcon, type LucideIcon } from "lucide-react"
 
+import { OutcomeBadge } from "@/components/shell/outcome-badge"
 import { DetailSection } from "@/components/shell/simple-page"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -22,7 +23,7 @@ import { trpc } from "@/lib/trpc"
 import { focusedCheckpoint, money } from "@/pages/tasks/parts"
 import { VerificationReport } from "@/pages/tasks/verification"
 import { ResumeButton } from "@/pages/tasks/run-actions"
-import { addDaysIso, boardColumns, eventTimeText, findById, fmtDateTime, fmtShort, suspendedRun, triggerText } from "@heyagent/shared"
+import { addDaysIso, boardColumns, eventTimeText, findById, fmtDateTime, fmtShort, outcomeOf, outcomeReasonOf, suspendedRun, triggerText } from "@heyagent/shared"
 import type { BoardColumn, HumanTodo, RunEventKind, SessionSummary, TaskDef, Trigger } from "@heyagent/shared"
 
 import { useModels, useSessionQuery, useStaffName } from "@/lib/data"
@@ -101,7 +102,10 @@ export function RunSheet({ run, task, column, note, canAct, isAdmin, open, onClo
   return (
     <DetailSheet
       open={open} onClose={onClose} title={task.title}
-      badges={<Badge variant={column === "done" ? "outline" : "secondary"}>{findById(boardColumns, column)?.name}</Badge>}
+      badges={<>
+        <Badge variant={column === "done" ? "outline" : "secondary"}>{findById(boardColumns, column)?.name}</Badge>
+        {column === "done" && <OutcomeBadge outcome={outcomeOf(run)} reason={outcomeReasonOf(run)} />}
+      </>}
       meta={dots(run.id, modelName(run.modelId), `开始 ${fmtShort(run.startedAt)}`, `${k(run.tokensIn)} / ${k(run.tokensOut)} token`, money(run.costUsd))}
       footer={<>
         {waiting && column === "waiting" && run.status === "waiting" && canAct && <ResumeButton run={run} />}
@@ -118,7 +122,7 @@ export function RunSheet({ run, task, column, note, canAct, isAdmin, open, onClo
       )}
       {run.status === "running" && <DetailSection title="正在做什么"><p className="flex items-center gap-2"><Spinner />{run.lastEvent?.title ?? "刚开始"}</p></DetailSection>}
       {note && (
-        <DetailSection title={column === "done" ? "已完成" : run.status === "waiting" ? "已手动继续同一个 session" : "已处理，继续同一个 session"} description="没有新开 session">
+        <DetailSection title={column === "done" ? "已结束" : run.status === "waiting" ? "已手动继续同一个 session" : "已处理，继续同一个 session"} description="没有新开 session">
           <p className="flex items-center gap-2 text-base">{column === "running" && <Spinner />}{note}</p>
           <p className="mt-2 text-muted-foreground">{column === "done" ? "验收通过（同意跳过），这次运行结束。" : `agent 从挂起的地方接着做（${run.id}），之前的上下文和检查点都还在。`}</p>
         </DetailSection>

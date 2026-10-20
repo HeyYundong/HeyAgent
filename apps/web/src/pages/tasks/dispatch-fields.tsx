@@ -1,5 +1,5 @@
 // 「被派活」一组：任务弹窗（新建 / 编辑任务）和导入向导的「修改要导入的任务」共用（派活第二期，docs/dev/dispatch-p2.md 1.7、4.1 节）。
-// 开关「可以被派活」→ 每件事带的参数、同时最多几个在跑、谁能派活给它、没办成自动重试和间隔。
+// 开关「可以被派活」→ 每件事带的参数、要交回的结果（run-outcome 6.1）、同时最多几个在跑、谁能派活给它、没办成自动重试和间隔。
 // 两边都是 React Hook Form + TaskInput；「谁能派活给它」的选项由外面传：任务弹窗里是系统里的其他任务，导入向导里是方案里的其他任务（值是方案里的 key）。
 import * as React from "react"
 import { zodResolver } from "@hookform/resolvers/zod"
@@ -44,7 +44,8 @@ const MAX_RUNNING_ITEMS = Array.from({ length: 10 }, (_, i) => ({ value: String(
 const RETRY_ITEMS = [{ value: "0", label: "不重试" }, ...Array.from({ length: 5 }, (_, i) => ({ value: String(i + 1), label: `${i + 1} 次` }))]
 const DELAY_ITEMS = [1, 5, 10, 30, 60, 120, 360, 1440].map((minutes) => ({ value: String(minutes), label: delayText(minutes) }))
 const NEW_PARAM = { name: "", description: "", required: false, dedupe: false }
-const FIRST_DRAFT = { params: [{ name: "", description: "", required: true, dedupe: true }], maxRunning: 1 }
+const NEW_RESULT = { name: "", description: "", required: true }
+const FIRST_DRAFT = { params: [{ name: "", description: "", required: true, dedupe: true }], results: [], maxRunning: 1 }
 
 /**
  * shared 的 taskInputSchema 之外再查一条：打开了「可以被派活」就至少写一个参数（和别的错误一起显示）。
@@ -142,13 +143,72 @@ function DispatchParams({ id, control, register, errors }: {
   )
 }
 
-export function DispatchFields({ id, control, register, errors, fromOptions, fromNote }: {
+/** 要交回的一个结果：结果名 + 说明 + 必填 + 删除（写法照参数） */
+function ResultEditor({ id, index, control, register, error, onRemove }: { id: string; index: number; control: Control<TaskInput>; register: UseFormRegister<TaskInput>; error?: string; onRemove: () => void }) {
+  return (
+    <Field data-invalid={!!error}>
+      <div className="flex flex-col gap-2 border-l-2 pl-3 sm:flex-row sm:items-center">
+        <div className="flex min-w-0 flex-1 gap-2">
+          <Input className="w-28 shrink-0" aria-label={`结果 ${index + 1} 的名字`} aria-invalid={!!error} placeholder="例如：价格" {...register(`dispatch.results.${index}.name`)} />
+          <Input className="min-w-0 flex-1" aria-label={`结果 ${index + 1} 的说明`} placeholder="给办事的 agent 看：交什么" {...register(`dispatch.results.${index}.description`)} />
+        </div>
+        <div className="flex items-center gap-4">
+          <Controller
+            control={control}
+            name={`dispatch.results.${index}.required`}
+            render={({ field }) => (
+              <Field orientation="horizontal" className="w-auto">
+                <Checkbox id={`${id}-${index}-required`} checked={!!field.value} onCheckedChange={(on) => field.onChange(Boolean(on))} />
+                <FieldLabel htmlFor={`${id}-${index}-required`} className="font-normal">必填</FieldLabel>
+              </Field>
+            )}
+          />
+          <Button type="button" variant="ghost" size="icon-xs" aria-label={`删除结果 ${index + 1}`} onClick={onRemove}><XIcon /></Button>
+        </div>
+      </div>
+      {error && <FieldError>{error}</FieldError>}
+    </Field>
+  )
+}
+
+/** 「要交回的结果」：可以一个都不写（不要求交）。和参数一样，只在打开「可以被派活」时挂上 */
+function DispatchResults({ id, control, register, errors }: {
+  id: string
+  control: Control<TaskInput>
+  register: UseFormRegister<TaskInput>
+  errors: FieldErrors<TaskInput>
+}) {
+  const results = useFieldArray({ control, name: "dispatch.results" })
+  const rootError = errors.dispatch?.results?.message ?? errors.dispatch?.results?.root?.message
+  const resultError = (index: number) => errors.dispatch?.results?.[index]?.name?.message ?? errors.dispatch?.results?.[index]?.description?.message
+  return (
+    <Field data-invalid={!!rootError}>
+      <FieldLabel className="flex items-center gap-1">
+        要交回的结果
+        <HelpTip>办事的 agent 用「报结果」把这些交回派活单。必填的没交，这张单记没办成（缺要交回的结果），不自动重试。可以一个都不写：不要求交。</HelpTip>
+      </FieldLabel>
+      <div className="flex flex-col gap-3">
+        {results.fields.map((result, index) => (
+          <ResultEditor key={result.id} id={`${id}-result`} index={index} control={control} register={register} error={resultError(index)} onRemove={() => results.remove(index)} />
+        ))}
+        <Button type="button" variant="outline" size="sm" className="self-start" onClick={() => results.append(NEW_RESULT)}>
+          <PlusIcon data-icon="inline-start" />加一个结果
+        </Button>
+      </div>
+      {rootError && <FieldError>{rootError}</FieldError>}
+    </Field>
+  )
+}
+
+export function DispatchFields({ id, control, register, errors, fromOptions, fromNote, hideResults = false }: {
   id: string
   control: Control<TaskInput>
   register: UseFormRegister<TaskInput>
   errors: FieldErrors<TaskInput>
   fromOptions: Option[]
   fromNote?: string
+  /** 导入方案里的任务还不能声明要交回的结果，导入时不显示这一项 */
+  hideResults?: boolean
 }) {
   const dispatch = useWatch({ control, name: "dispatch" })
   // 关掉再打开，刚才写的参数还在
@@ -175,6 +235,7 @@ export function DispatchFields({ id, control, register, errors, fromOptions, fro
       {dispatch && (
         <>
           <DispatchParams id={id} control={control} register={register} errors={errors} />
+          {!hideResults && <DispatchResults id={id} control={control} register={register} errors={errors} />}
           <div className="grid gap-4 sm:grid-cols-2">
             <Field>
               <FieldLabel htmlFor={`${id}-max-running`} className="flex items-center gap-1">
@@ -193,7 +254,7 @@ export function DispatchFields({ id, control, register, errors, fromOptions, fro
             <Field>
               <FieldLabel htmlFor={`${id}-retries`} className="flex items-center gap-1">
                 没办成自动重试
-                <HelpTip>只对运行出错重试（模型调用失败、程序出错、验收判失败等）；人取消的、选了不继续的、agent 判断办不成的不重试。会对外发消息的任务慎用：重试可能重复发。</HelpTip>
+                <HelpTip>只对运行出错重试（模型调用失败、程序出错、验收判失败等）；人取消的、选了不继续的、没办成或者只办成一部分的（agent 报的、检查点、复核判的）不重试。会对外发消息的任务慎用：重试可能重复发。</HelpTip>
               </FieldLabel>
               <Controller control={control} name="dispatch.retries" render={({ field }) => <NumberSelect id={`${id}-retries`} items={RETRY_ITEMS} value={field.value ?? 0} onChange={field.onChange} />} />
             </Field>
