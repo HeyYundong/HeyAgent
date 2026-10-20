@@ -2,6 +2,7 @@
 // 表单：React Hook Form + shared 的 taskInputSchema；执行模型和三方验收模型不许同一家（前端先拦，后端也拦）。
 // M3：规则只能选已经生效的（没生效的列出来但选不了，写明原因）；可以给任务单独选验收模型。
 // tasks.update 是整体替换：verifyModelId、浏览器的三项、派活的三项（dispatch、dispatchFrom、cronSkipIfRunning）都要带上，不然会被清空。
+// 运行结果（docs/dev/run-outcome.md 5.4 节）：「完成」一组放三方验收模型、「结束后让 AI 复核」（默认开）和复核模型；选了「交给三方验收」的规则时复核不起作用，写「已有三方验收」。
 // 派活（docs/dev/dispatch.md 9.1 节）：「被派活」一组（参数、名额、谁能派活给它，第二期加自动重试，组件在 dispatch-fields.tsx，导入向导也用）；定时那里「上一次还没跑完就跳过」；选了内置工具「派活」时写能派给谁。
 import * as React from "react"
 import { Controller, useFieldArray, useForm, useWatch, type Control, type UseFormRegister } from "react-hook-form"
@@ -22,6 +23,7 @@ import {
 
 import { FileList, UploadButton } from "@/components/files"
 import { ModelCombobox } from "@/components/shell/model-combobox"
+import { HelpTip } from "@/components/shell/simple-page"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -31,6 +33,7 @@ import { Input } from "@/components/ui/input"
 import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from "@/components/ui/input-group"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Spinner } from "@/components/ui/spinner"
+import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 
 import { useBrowsersQuery, useMemoriesQuery, useModels, useRulesQuery, useSkillsQuery, useStaffQuery, useTasksQuery, useToolName, useToolsQuery } from "@/lib/data"
@@ -40,7 +43,7 @@ import { navigate } from "@/lib/router"
 import { useMe } from "@/lib/session"
 import { trpc } from "@/lib/trpc"
 
-import { compileOf, ruleHint, ruleSelectable } from "@/pages/rules/compile"
+import { compileOf, ruleHint, ruleSelectable, ruleVerifies } from "@/pages/rules/compile"
 
 import { cronText } from "./cron"
 import { DispatchFields, retriesOf, taskResolver } from "./dispatch-fields"
@@ -208,6 +211,9 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
           allowedDomains: task.allowedDomains,
           allowBrowserEvaluate: task.allowBrowserEvaluate,
           verifyModelId: task.verifyModelId ?? "",
+          // 复核设置是 run-outcome 加的，旧接口没有时按默认开
+          reviewEnabled: task.reviewEnabled ?? true,
+          reviewModelId: task.reviewModelId ?? "",
           dispatch: task.dispatch ? { ...task.dispatch, ...retriesOf(task.dispatch) } : null,
           dispatchFrom: task.dispatchFrom,
           cronSkipIfRunning: task.cronSkipIfRunning,
@@ -215,6 +221,7 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
       : {
           title: "", goal: "", steps: [{ text: "", wait: false }], modelId: defaults.run, ownerId: user.id, schedule: null, enabled: true,
           memoryIds: [], skillIds: [], toolIds: [], ruleIds: [], browserProfileIds: [], allowedDomains: [], allowBrowserEvaluate: false, verifyModelId: "",
+          reviewEnabled: true, reviewModelId: "",
           dispatch: null, dispatchFrom: [], cronSkipIfRunning: true,
         },
   })
@@ -222,7 +229,7 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
   const [domainText, setDomainText] = React.useState(() => domainsText(task?.allowedDomains ?? []))
   const { errors } = form.formState
   const steps = useFieldArray({ control: form.control, name: "steps" })
-  const [modelId, schedule, memoryIds, skillIds, toolIds, ruleIds, verifyModelId, dispatch] = useWatch({ control: form.control, name: ["modelId", "schedule", "memoryIds", "skillIds", "toolIds", "ruleIds", "verifyModelId", "dispatch"] })
+  const [modelId, schedule, memoryIds, skillIds, toolIds, ruleIds, verifyModelId, dispatch, reviewEnabled] = useWatch({ control: form.control, name: ["modelId", "schedule", "memoryIds", "skillIds", "toolIds", "ruleIds", "verifyModelId", "dispatch", "reviewEnabled"] })
   const allTasks = useTasksQuery().data ?? []
   // 「谁能派活给它」：系统里的其他任务
   const clip = (title: string) => (title.length > 12 ? `${title.slice(0, 12)}…` : title)
@@ -247,6 +254,8 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
     const hint = rule && ruleHint(rule)
     return rule && hint ? [`「${rule.name}」${ruleSelectable(rule) ? hint : `${hint}。这次保存会留着它，但运行时不执行`}`] : []
   })
+  // 选了「交给三方验收」的规则：结果按验收定，复核不起作用
+  const verifyRule = (ruleIds ?? []).map((id) => rules.find((each) => each.id === id)).find((rule) => rule && ruleVerifies(rule))
   const create = useAction(trpc.tasks.create.mutationOptions(), { success: (data) => `任务 ${data.id} 建好了` })
   const update = useAction(trpc.tasks.update.mutationOptions(), { success: "任务已保存" })
   const attach = useAction(trpc.engine.attachToTask.mutationOptions(), { errorTitle: "附件没加上" })
@@ -286,6 +295,8 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
       steps: values.steps.map((step) => ({ ...step, checkpoint: step.checkpoint?.trim() || undefined })),
       // 空 = 用默认验收模型
       verifyModelId: values.verifyModelId || undefined,
+      // 空 = 用默认复核模型
+      reviewModelId: values.reviewModelId || undefined,
       schedule: values.schedule ? { cron: values.schedule.cron.trim(), text: cronText(values.schedule.cron) ?? values.schedule.cron.trim() } : null,
       // 不能被派活时，「谁能派活给它」留着也没用，一起清掉
       dispatchFrom: values.dispatch ? values.dispatchFrom : [],
@@ -396,19 +407,6 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
                     />
                     <FieldDescription>默认是「模型」页设置的执行模型。</FieldDescription>
                   </Field>
-                  <Field data-invalid={!!modelClash} className="sm:col-span-2">
-                    <FieldLabel htmlFor="task-verifyModel">三方验收模型</FieldLabel>
-                    <Controller
-                      control={form.control}
-                      name="verifyModelId"
-                      render={({ field }) => (
-                        <ModelCombobox id="task-verifyModel" className="w-full sm:w-1/2" models={models} value={field.value ?? ""} onValueChange={field.onChange} clearable aria-invalid={!!modelClash}
-                          placeholder={defaults.verify ? `默认：${modelName(defaults.verify)}` : "搜模型名"} />
-                      )}
-                    />
-                    <FieldDescription>任务选了「交给三方验收」的规则时，agent 说做完了由它逐条核对检查点。不能和执行模型同一家；不选就用「模型」页的默认验收模型。</FieldDescription>
-                    {modelClash && <FieldError>{modelClash}</FieldError>}
-                  </Field>
                   {canAssign && (
                     <Field className="sm:col-span-2">
                       <FieldLabel htmlFor="task-owner">负责人</FieldLabel>
@@ -425,6 +423,62 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
                         )}
                       />
                       <FieldDescription>负责人能开关、运行这个任务，要人办的事默认分给他。</FieldDescription>
+                    </Field>
+                  )}
+                </div>
+              </FieldSet>
+              <FieldSeparator />
+              <FieldSet>
+                <FieldLegend variant="label" className="flex items-center gap-1">
+                  完成
+                  <HelpTip>运行结束时 agent 要报结果：办成、部分办成还是没办成。只看任务目标要的东西拿没拿到。检查点没达成、缺了要交回的结果，直接记没办成；agent 说办成了，再由三方验收或 AI 复核核一遍，没有依据的记「没核实」。</HelpTip>
+                </FieldLegend>
+                <div className="grid gap-4 sm:grid-cols-2">
+                <Field data-invalid={!!modelClash}>
+                  <FieldLabel htmlFor="task-verifyModel">三方验收模型</FieldLabel>
+                  <Controller
+                    control={form.control}
+                    name="verifyModelId"
+                    render={({ field }) => (
+                      <ModelCombobox id="task-verifyModel" className="w-full" models={models} value={field.value ?? ""} onValueChange={field.onChange} clearable aria-invalid={!!modelClash}
+                        placeholder={defaults.verify ? `默认：${modelName(defaults.verify)}` : "搜模型名"} />
+                    )}
+                  />
+                  <FieldDescription>任务选了「交给三方验收」的规则时，agent 说做完了由它逐条核对检查点。不能和执行模型同一家；不选就用「模型」页的默认验收模型。</FieldDescription>
+                  {modelClash && <FieldError>{modelClash}</FieldError>}
+                </Field>
+                  <Controller
+                    control={form.control}
+                    name="reviewEnabled"
+                    render={({ field }) => (
+                      <Field orientation="horizontal" className="sm:col-span-2">
+                        <Switch id="task-review" checked={field.value ?? true} onCheckedChange={(on) => field.onChange(Boolean(on))} />
+                        <FieldContent>
+                          <FieldLabel htmlFor="task-review" className="flex items-center gap-1">
+                            结束后让 AI 复核
+                            <HelpTip>运行结束后用便宜的模型看一遍目标、检查点、agent 的报告、最后几步和最后一张截图，判办没办成。只会往低判，不会把没办成改成办成；说不准的记「没核实」。每次不到 0.001 美元，记在这次运行上。</HelpTip>
+                          </FieldLabel>
+                          {verifyRule ? (
+                            <FieldDescription>已有三方验收（选了规则「{verifyRule.name}」）：结果按验收定，不再复核。</FieldDescription>
+                          ) : (
+                            !(field.value ?? true) && <FieldDescription>关了以后，检查点全部达成才记办成；没设检查点的，agent 说办成了也只记「没核实」。</FieldDescription>
+                          )}
+                        </FieldContent>
+                      </Field>
+                    )}
+                  />
+                  {(reviewEnabled ?? true) && !verifyRule && (
+                    <Field>
+                      <FieldLabel htmlFor="task-reviewModel">复核模型</FieldLabel>
+                      <Controller
+                        control={form.control}
+                        name="reviewModelId"
+                        render={({ field }) => (
+                          <ModelCombobox id="task-reviewModel" className="w-full" models={models} value={field.value ?? ""} onValueChange={field.onChange} clearable
+                            placeholder={defaults.review ? `默认：${modelName(defaults.review)}` : "默认还没配：不复核"} />
+                        )}
+                      />
+                      <FieldDescription>不选就用「模型」页的默认复核模型{defaults.review ? "" : "（现在没配，不会复核，结果记「没核实」）"}。</FieldDescription>
                     </Field>
                   )}
                 </div>

@@ -1,4 +1,4 @@
-// 某次运行的 session 详情：标题卡 + 检查点 / 验收 / 总结和记忆（结束后）/ agent 的步骤 / 空间文件 / 过程。
+// 某次运行的 session 详情：标题卡 + 结果（结束后，run-outcome.tsx：原因、谁定的、复核报告、改结果）/ 检查点 / 验收 / 总结和记忆（结束后）/ agent 的步骤 / 空间文件 / 过程。
 // 右上角「空间文件」（run-space.tsx）弹窗按来源、名字筛这次运行的全部文件。
 // M3：过程里标出规则命中、agent 写下步骤（plan.set）、上下文压缩；验收逐条显示结论和理由；agent 的步骤可以「存为任务步骤」（tasks.saveStepsFromSession）。
 // 派活：meta 前面写怎么开始的（派活触发写清哪张单、谁派的）；被派来的加「派来的活」，派过活的加「派出去的活」（docs/dev/dispatch.md 9.4 节）。
@@ -9,6 +9,7 @@ import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
 import { BrainIcon, ChevronRightIcon, CircleAlertIcon, CircleCheckIcon, CircleStopIcon, FlagIcon, FoldVerticalIcon, ListTreeIcon, PauseIcon, PlayIcon, SaveIcon, ScanSearchIcon, SearchXIcon, SendIcon, ShieldIcon, TriangleAlertIcon, UserIcon, WrenchIcon, type LucideIcon } from "lucide-react"
 
+import { OutcomeBadge } from "@/components/shell/outcome-badge"
 import { DetailPanel, DetailSection, EmptyState } from "@/components/shell/simple-page"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
@@ -20,7 +21,7 @@ import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Spinner } from "@/components/ui/spinner"
 import { Trace, TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigger, TraceDescription, TraceIcon, TraceLine, TraceTitle } from "@/components/ui/trace"
-import { can, eventTimeText, fmtDateTime, incompleteReason, isRunEnded, WORK_DISPATCH_TOOL_ID } from "@heyagent/shared"
+import { can, eventTimeText, fmtDateTime, isRunEnded, outcomeOf, outcomeReasonOf, WORK_DISPATCH_TOOL_ID } from "@heyagent/shared"
 import type { RunEvent, RunEventKind, SessionSummary, TaskDef, Verification } from "@heyagent/shared"
 
 import { CodeView } from "@/components/files"
@@ -30,7 +31,7 @@ import { useAction } from "@/lib/mutations"
 import { href } from "@/lib/router"
 import { useMe } from "@/lib/session"
 import { trpc } from "@/lib/trpc"
-import { ParamsTable, WorkStatusBadge, shortName, timeText } from "@/pages/work/parts"
+import { ParamsTable, WorkStatusBadge, shortName, showItemOutcome, timeText } from "@/pages/work/parts"
 
 import { VerificationReport } from "./verification"
 import { CheckpointList, Elapsed, RunStatusBadge, StepList, WaitingAlert, checkpointSummary, focusedCheckpoint, money } from "./parts"
@@ -38,6 +39,7 @@ import { CancelRunDialog, isActive, ResumeButton, SessionFiles } from "./run-act
 import { RunBrowserButton } from "./run-browser"
 import { RunSpaceButton } from "./run-space"
 import { RunDigestSection } from "./run-digest"
+import { RunOutcomeSection } from "./run-outcome"
 
 const EVENT_ICON: Record<RunEventKind, LucideIcon> = { plan: ListTreeIcon, think: BrainIcon, tool: WrenchIcon, checkpoint: FlagIcon, rule: ShieldIcon, wait: PauseIcon, resume: PlayIcon, human: UserIcon, verify: ScanSearchIcon, done: CircleCheckIcon, error: TriangleAlertIcon }
 
@@ -60,17 +62,18 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionSummary }
   const ruleHits = events?.filter((event) => event.kind === "rule").length ?? 0
   // 失败原因先用摘要里的标题，详情等过程取到再补上
   const error = run.status === "failed" && run.lastError ? { ...run.lastError, detail: events?.findLast((event) => event.kind === "error")?.detail } : undefined
-  const notDone = incompleteReason(run)
+  const ended = isRunEnded(run.status)
+  const canManage = can(user, "task.manage", { ownerId: task.ownerId })
   return (
     <DetailPanel
       title={`${run.id} · ${task.title}`}
-      badges={<><RunStatusBadge status={run.status} />{run.status === "running" && <span className="text-xs text-muted-foreground"><Elapsed since={run.startedAt} /></span>}</>}
+      badges={<><RunStatusBadge status={run.status} />{ended && <OutcomeBadge outcome={outcomeOf(run)} reason={outcomeReasonOf(run)} />}{run.status === "running" && <span className="text-xs text-muted-foreground"><Elapsed since={run.startedAt} /></span>}</>}
       meta={<RunMeta run={run} rest={`模型 ${modelName(run.modelId)} · 输入 ${num(run.tokensIn)} / 输出 ${num(run.tokensOut)} token · 花费 ${money(run.costUsd)} · 开始 ${fmtDateTime(run.startedAt)} · ${run.endedAt ? `结束 ${fmtDateTime(run.endedAt)}` : "还没结束"}`} />}
       actions={<>
         <RunSpaceButton run={run} />
         <RunBrowserButton run={run} />
         {run.status === "waiting" && can(user, "session.resume", { taskOwnerId: task.ownerId }) && <ResumeButton run={run} size="sm" />}
-        {isActive(run) && can(user, "task.manage", { ownerId: task.ownerId }) && (
+        {isActive(run) && canManage && (
           <Button variant="outline" size="sm" onClick={() => setCancelling(true)}><CircleStopIcon data-icon="inline-start" />取消运行</Button>
         )}
       </>}
@@ -80,26 +83,20 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionSummary }
       {error && (
         <Alert variant="destructive">
           <TriangleAlertIcon />
-          <AlertTitle>这次运行失败：{error.title}</AlertTitle>
+          <AlertTitle>这次运行出错：{error.title}</AlertTitle>
           {error.detail && <AlertDescription>{error.detail}</AlertDescription>}
         </Alert>
       )}
-      {run.status === "incomplete" && (
-        <Alert>
-          <CircleAlertIcon />
-          <AlertTitle>这次运行没完成</AlertTitle>
-          {notDone && <AlertDescription>{notDone}</AlertDescription>}
-        </Alert>
-      )}
+      {ended && <RunOutcomeSection run={run} canEdit={canManage} />}
       {run.workItemId && <DispatchedIn run={run} itemId={run.workItemId} />}
       {task.toolIds.includes(WORK_DISPATCH_TOOL_ID) && <DispatchedOut run={run} events={events} />}
       <DetailSection title={`检查点 · ${checkpointSummary(run.checkpoints)}`}>
         <CheckpointList run={run} focused={detail.data && focusedCheckpoint(detail.data)} />
       </DetailSection>
       {run.verification && <VerificationSection run={run} verification={run.verification} />}
-      {isRunEnded(run.status) && <RunDigestSection task={task} run={run} canEdit={can(user, "task.manage", { ownerId: task.ownerId })} />}
+      {ended && <RunDigestSection task={task} run={run} canEdit={canManage} />}
       {run.exploredSteps && run.exploredSteps.length > 0 && (
-        <AgentSteps task={task} run={run} steps={run.exploredSteps} events={events} canSave={can(user, "task.manage", { ownerId: task.ownerId })} />
+        <AgentSteps task={task} run={run} steps={run.exploredSteps} events={events} canSave={canManage} />
       )}
       <DetailSection title="空间文件" description="这次运行的文件空间：agent 存的文件、浏览器下载、截图、带的附件都在这里，新文件会自动出现。点文件看内容或下载；要按来源筛、按名字搜，点右上角「空间文件」。">
         <SessionFiles run={run} />
@@ -136,6 +133,8 @@ function EventsSkeleton({ count }: { count: number }) {
 /** 过程里几类 M3 的事件加个小标签，一眼分清：规则命中、agent 写下步骤、上下文压缩、验收 */
 function eventTag(event: RunEvent): { label: string; variant: "outline" | "secondary"; icon?: LucideIcon } | undefined {
   if (event.kind === "rule") return { label: "规则", variant: "outline" }
+  // 轻量复核也写成 verify 事件，标题以「AI 复核」开头（「AI 复核：办成」「AI 复核出错：…」，run-outcome 5.2）
+  if (event.kind === "verify" && event.title.startsWith("AI 复核")) return { label: "复核", variant: "outline" }
   if (event.kind === "verify") return { label: "验收", variant: "outline" }
   if (event.kind === "plan" && event.toolId === "plan.set") return { label: "步骤", variant: "secondary" }
   // 压缩也写成 plan 事件，按标题区分（api.md 11.6）
@@ -145,8 +144,9 @@ function eventTag(event: RunEvent): { label: string; variant: "outline" | "secon
 
 function EventRow({ event, run, running }: { event: RunEvent; run: SessionSummary; running: boolean }) {
   const toolName = useToolName()
-  // 没完成的运行：结束事件（kind = done）用感叹号，不用打勾
-  const Icon = event.kind === "done" && run.status === "incomplete" ? CircleAlertIcon : EVENT_ICON[event.kind]
+  // 没办成、部分办成、没核实的运行：结束事件（kind = done）用感叹号，不用打勾
+  const outcome = outcomeOf(run)
+  const Icon = event.kind === "done" && outcome && outcome !== "achieved" ? CircleAlertIcon : EVENT_ICON[event.kind]
   const at = eventTimeText(event.at, run)
   // 挂起 / 继续：用分隔线标出来，一眼看出 session 在哪停、在哪接着跑
   if (event.kind === "wait" || event.kind === "resume") {
@@ -437,6 +437,7 @@ function DispatchedIn({ run, itemId }: { run: SessionSummary; itemId: string }) 
             <span className="font-mono">{item.id}</span>
             {item.title}
             <WorkStatusBadge item={item} />
+            {showItemOutcome(item) && <OutcomeBadge outcome={item.outcome} reason={item.outcomeReason} />}
             {item.runs.length >= 2 && nth > 0 && <Badge variant="outline">这是第 {nth} 次</Badge>}
           </p>
           <ParamsTable declared={item.taskDispatch?.params ?? []} values={item.params} />
@@ -469,6 +470,7 @@ function DispatchedOut({ run, events }: { run: SessionSummary; events?: RunEvent
               </ItemContent>
               <ItemActions>
                 <WorkStatusBadge item={item} />
+                {showItemOutcome(item) && <OutcomeBadge outcome={item.outcome} />}
                 <ChevronRightIcon className="size-4 text-muted-foreground" />
               </ItemActions>
             </Item>

@@ -156,11 +156,12 @@ function DefaultsSection({ providers, defaults, readOnly, nameOf, saving, onSave
   // 图库只能用能处理图片的 embedding 模型
   const embeddingModels = providers.flatMap((p) => p.embeddingModels ?? []).filter((m) => m.vision)
   const clash = sameFamily(draft.run, draft.verify)
-  const dirty = ROLES.some((role) => draft[role.id] !== defaults[role.id]) || (draft.embed ?? "") !== (defaults.embed ?? "") || (draft.assistant ?? "") !== (defaults.assistant ?? "")
+  const optional = ["embed", "assistant", "review"] as const
+  const dirty = ROLES.some((role) => draft[role.id] !== defaults[role.id]) || optional.some((role) => (draft[role] ?? "") !== (defaults[role] ?? ""))
   return (
     <DetailSection title="默认用哪个模型" description="三方验收不能和执行用同一家的模型：同一家容易犯同样的错，验收看不出来，就不算第三方了。"
       action={!readOnly && (
-        <Button size="sm" disabled={!dirty || clash || saving} onClick={() => onSave({ ...draft, embed: draft.embed ?? "", assistant: draft.assistant ?? "" })}>
+        <Button size="sm" disabled={!dirty || clash || saving} onClick={() => onSave({ ...draft, embed: draft.embed ?? "", assistant: draft.assistant ?? "", review: draft.review ?? "" })}>
           {saving ? <Spinner data-icon="inline-start" /> : <SaveIcon data-icon="inline-start" />}
           保存
         </Button>
@@ -189,6 +190,14 @@ function DefaultsSection({ providers, defaults, readOnly, nameOf, saving, onSave
           </div>
           <ModelCombobox id="default-assistant" className="w-full sm:w-96" models={models} value={draft.assistant ?? ""} disabled={readOnly} clearable placeholder={`不选（用规划：${nameOf(draft.plan)}）`}
             onValueChange={(next) => setDraft({ ...draft, assistant: next || undefined })} />
+        </Field>
+        <Field>
+          <div className="flex items-center gap-1">
+            <FieldLabel htmlFor="default-review">复核模型</FieldLabel>
+            <HelpTip>运行结束后用它轻量复核一次：看目标、检查点、agent 的报告、最后几步和最后一张截图，判办成、部分办成、没办成还是说不准。只会往低判。用便宜、能看图的模型就够，每次不到 0.001 美元。任务里可以单独换。</HelpTip>
+          </div>
+          <ModelCombobox id="default-review" className="w-full sm:w-96" models={models} value={draft.review ?? ""} disabled={readOnly} clearable placeholder="不选（不复核，agent 说办成的记「没核实」）"
+            onValueChange={(next) => setDraft({ ...draft, review: next || undefined })} />
         </Field>
         <Field>
           <FieldLabel htmlFor="default-embed">图库的 embedding 模型</FieldLabel>

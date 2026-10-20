@@ -139,6 +139,10 @@ export const taskInputSchema = z.object({
   allowBrowserEvaluate: z.boolean().default(false),
   /** 三方验收模型（M3）；不填（或空串）用默认验收模型。必须和执行模型不是同一家 */
   verifyModelId: z.string().optional(),
+  /** 运行结束后让 AI 轻量复核结果（默认开；配了三方验收的不复核） */
+  reviewEnabled: z.boolean().default(true),
+  /** 复核模型；不填（或空串）用默认复核模型 */
+  reviewModelId: z.string().optional(),
   /** 派活：能被派活（参数声明 + 名额）；null = 不能被派活 */
   dispatch: taskDispatchSchema.nullable().default(null),
   /** 派活：谁能派活给这个任务（任务 id） */
@@ -412,9 +416,10 @@ export type ProviderInput = z.input<typeof providerInputSchema>
 export const providerUpdateSchema = providerInputSchema.omit({ kind: true }).extend({ id: z.string().min(1) })
 /**
  * embed 不传 = 不改；传空字符串 = 不用 embedding 模型（图库就不能以图搜图）。
- * assistant 同样：不传 = 不改；传空字符串 = 不单独配，助手用 plan 默认模型
+ * assistant 同样：不传 = 不改；传空字符串 = 不单独配，助手用 plan 默认模型。
+ * review（复核，run-outcome 5.2）同样：不传 = 不改；传空字符串 = 不配复核模型，运行结束不复核，结果落到「没核实」
  */
-export const modelDefaultsInputSchema = z.object({ run: z.string().min(1), plan: z.string().min(1), verify: z.string().min(1), embed: z.string().optional(), assistant: z.string().optional() })
+export const modelDefaultsInputSchema = z.object({ run: z.string().min(1), plan: z.string().min(1), verify: z.string().min(1), embed: z.string().optional(), assistant: z.string().optional(), review: z.string().optional() })
 
 /** 测试连接、刷新模型列表的结果 */
 export const providerCheckSchema = z.object({

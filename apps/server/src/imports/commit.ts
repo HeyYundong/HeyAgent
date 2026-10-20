@@ -205,6 +205,7 @@ async function commitInTx(tx: Tx, ctx: WriteCtx, importId: string, written: stri
       dispatch: task.dispatch
         ? {
             params: task.dispatch.params,
+            results: task.dispatch.results ?? [],
             maxRunning: task.dispatch.maxRunning,
             ...(task.dispatch.retries !== undefined ? { retries: task.dispatch.retries } : {}),
             ...(task.dispatch.retryDelayMinutes !== undefined ? { retryDelayMinutes: task.dispatch.retryDelayMinutes } : {}),

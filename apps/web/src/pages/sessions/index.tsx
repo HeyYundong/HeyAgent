@@ -11,7 +11,9 @@ import { Separator } from "@/components/ui/separator"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { href, setParams, useRoute } from "@/lib/router"
-import { findById, groupOf, isToday, sessionGroups as groups, sortRuns, type SessionGroup as Group, type SessionSummary } from "@heyagent/shared"
+import { findById, groupOf, isToday, outcomeOf, sessionGroups as groups, sortRuns, type SessionGroup as Group, type SessionSummary } from "@heyagent/shared"
+
+import { OUTCOME_FILTERS } from "@/components/shell/outcome-badge"
 
 import { useBoardQuery, useModelsQuery, useSessionsQuery, useStaffQuery, useTasksQuery, useToolsQuery } from "@/lib/data"
 import { money } from "@/pages/tasks/parts"
@@ -21,6 +23,7 @@ import { SOURCE_LABEL, SessionItems, SessionTable } from "./list"
 import { TaskFilter } from "./task-filter"
 
 const SOURCE_ITEMS = [{ value: "all", label: "全部来源" }, ...Object.entries(SOURCE_LABEL).map(([value, label]) => ({ value, label }))]
+const OUTCOME_ITEMS = [{ value: "all", label: "全部结果" }, ...OUTCOME_FILTERS]
 
 export default function SessionsPage() {
   const { params } = useRoute()
@@ -30,6 +33,8 @@ export default function SessionsPage() {
   const [source, setSource] = React.useState(() => params.get("source") ?? "all")
   // 任务：只看某个任务的 session（别的页面可以带 ?task=T-… 过来）
   const [taskId, setTaskId] = React.useState(() => params.get("task") ?? "all")
+  // 结果：办成 / 部分办成 / 没办成 / 没核实（别的页面可以带 ?outcome= 过来）
+  const [outcome, setOutcome] = React.useState(() => params.get("outcome") ?? "all")
 
   const sessionsQuery = useSessionsQuery()
   const tasksQuery = useTasksQuery()
@@ -45,6 +50,7 @@ export default function SessionsPage() {
     if (group !== "all" && groupOf(run) !== group) return false
     if (source !== "all" && run.source !== source) return false
     if (taskId !== "all" && run.taskId !== taskId) return false
+    if (outcome !== "all" && outcomeOf(run) !== outcome) return false
     if (!q) return true
     const title = findById(tasks, run.taskId)?.title ?? ""
     return run.id.toLowerCase().includes(q) || run.taskId.toLowerCase().includes(q) || title.toLowerCase().includes(q) || Boolean(run.workItemId?.toLowerCase().includes(q))
@@ -61,6 +67,7 @@ export default function SessionsPage() {
     setGroup("all")
     setSource("all")
     setTaskId("all")
+    setOutcome("all")
     setQuery("")
   }
 
@@ -90,6 +97,12 @@ export default function SessionsPage() {
               <SelectTrigger className="w-32" aria-label="按来源筛选"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {SOURCE_ITEMS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Select items={OUTCOME_ITEMS} value={outcome} onValueChange={(value) => value && setOutcome(String(value))}>
+              <SelectTrigger className="w-32" aria-label="按结果筛选"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {OUTCOME_ITEMS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}
               </SelectContent>
             </Select>
             <TaskFilter value={taskId} onValueChange={setTaskId} runs={allRuns} tasks={tasks} />
@@ -124,7 +137,7 @@ export default function SessionsPage() {
               <SheetHeader className="flex-row flex-wrap items-center justify-between gap-2 pr-12">
                 <div className="flex min-w-0 flex-col gap-0.5">
                   <SheetTitle>Session 详情</SheetTitle>
-                  <SheetDescription>任务 {task.id} 的一次运行：检查点、每次工具调用、验收都在下面。</SheetDescription>
+                  <SheetDescription>任务 {task.id} 的一次运行：结果、检查点、验收、每次工具调用都在下面。</SheetDescription>
                 </div>
                 <Button variant="outline" size="sm" nativeButton={false} render={<a href={href("tasks", { id: task.id })} />}>
                   查看任务 {task.id}

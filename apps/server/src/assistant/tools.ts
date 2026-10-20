@@ -158,7 +158,9 @@ const taskInputOf = (task: TaskDef): TaskInput => ({
   allowedDomains: task.allowedDomains,
   allowBrowserEvaluate: task.allowBrowserEvaluate,
   verifyModelId: task.verifyModelId,
-  dispatch: task.dispatch ?? null,
+  reviewEnabled: task.reviewEnabled,
+  reviewModelId: task.reviewModelId,
+  dispatch: task.dispatch ? { ...task.dispatch, results: task.dispatch.results ?? [] } : null,
   dispatchFrom: task.dispatchFrom ?? [],
   cronSkipIfRunning: task.cronSkipIfRunning ?? true,
 })
@@ -284,6 +286,8 @@ const TASK_LABELS: Partial<Record<keyof TaskInput, string>> = {
   schedule: "定时",
   modelId: "执行模型",
   verifyModelId: "验收模型",
+  reviewEnabled: "结束后让 AI 复核",
+  reviewModelId: "复核模型",
   ownerId: "负责人",
   enabled: "启用",
   skillIds: "技能",
@@ -307,6 +311,8 @@ function taskFormatter(names: Names) {
         return names.one("model", value as string, "默认执行模型")
       case "verifyModelId":
         return names.one("model", value as string, "默认验收模型")
+      case "reviewModelId":
+        return names.one("model", value as string, "默认复核模型")
       case "ownerId":
         return names.one("user", value as string, "自己")
       case "skillIds":
@@ -322,6 +328,7 @@ function taskFormatter(names: Names) {
       case "allowedDomains":
         return (value as string[])?.length ? (value as string[]).join("、") : "不限"
       case "enabled":
+      case "reviewEnabled":
       case "allowBrowserEvaluate":
       case "cronSkipIfRunning":
         return yesNo(Boolean(value))
@@ -375,6 +382,7 @@ export const TOOLS: Record<string, ToolDef> = {
           owner: await names.one("user", task.ownerId),
           model: await names.one("model", task.modelId),
           verifyModel: await names.one("model", task.verifyModelId, "默认验收模型"),
+          reviewModel: await names.one("model", task.reviewModelId, "默认复核模型"),
           memories: await names.list("memory", task.memoryIds),
           skills: await names.list("skill", task.skillIds),
           tools: await names.list("tool", task.toolIds),

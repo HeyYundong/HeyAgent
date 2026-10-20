@@ -168,7 +168,7 @@ export const columnLessons: Record<BoardColumn, { comes: string; goes: string }>
   },
   verifying: {
     comes: "agent 说做完了。另一家的模型逐条核对检查点，没做完的反问执行 agent。",
-    goes: "核对通过移到「已完成」；说不清的，「等人处理」里多一张验收卡。",
+    goes: "核对通过移到「已结束」，结果记办成；说不清的，「等人处理」里多一张验收卡。",
   },
   done: {
     comes: "验收通过的运行。定时任务每触发一次是新的一次运行，所以每天都会多一张卡。",

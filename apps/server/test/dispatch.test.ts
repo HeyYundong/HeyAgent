@@ -19,6 +19,7 @@ import { occupiedSlots } from "../src/work/service.js"
 import { login, query } from "./helpers.js"
 import {
   call,
+  finishWith,
   createTask,
   eventsOf,
   messagesOf,
@@ -54,6 +55,7 @@ afterAll(async () => {
 })
 
 const DISPATCH: TaskDispatch = {
+  results: [],
   params: [
     { name: "单号", description: "要办的单号", required: true, dedupe: true },
     { name: "备注", description: "", required: false, dedupe: false },
@@ -152,15 +154,15 @@ describe("agent 派活 → 领单 → 办完回写", () => {
             }),
           ])
         },
-        step([text("派完了")]),
+        step(finishWith("派完了")),
         (options) => {
           const workerId = /T-\d+「办一件事」/.exec(promptOf(options))![0].split("「")[0]
           return step([call("work.dispatch", { task: workerId, items: [{ title: "单 A-1", params: { 单号: "A-1" } }, { title: "单 A-2", params: { 单号: "A-2" } }] })])
         },
-        step([text("又派了一次")]),
+        step(finishWith("又派了一次")),
       ])
     )
-    const workerScript = responder("test/d-worker", (options) => step([text(`办完了：${promptOf(options).includes("A-1") ? "A-1" : "A-2"} 已处理`)]))
+    const workerScript = responder("test/d-worker", (options) => step(finishWith(`办完了：${promptOf(options).includes("A-1") ? "A-1" : "A-2"} 已处理`)))
     const { patrol, worker } = await makePair({ workerModel: "test/d-worker", patrolModel: "test/d-patrol" })
 
     const run1 = await mutate(ctx.app, "engine.runNow", wang, { taskId: patrol })
@@ -212,7 +214,7 @@ describe("agent 派活 → 领单 → 办完回写", () => {
     await waitStatus(ctx.db, run2.data.sessionId, "done")
     const second = JSON.stringify((await messagesOf(ctx.db, run2.data.sessionId)).filter((m) => m.role === "tool").map((m) => m.content))
     expect(second).toContain("新建 0 张，已有 2 张，被拒 0 张")
-    expect(second).toMatch(/已经有了：办完（[^）]+）：办完了：A-1 已处理/)
+    expect(second).toMatch(/已经有了：办完（[^）]+），结果没核实（[^）]+）：办完了：A-1 已处理/)
     expect(await itemsOf(worker)).toHaveLength(2)
 
     // 页面接口能读出来

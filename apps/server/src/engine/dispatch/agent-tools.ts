@@ -2,6 +2,7 @@
 // - work.list「查派过的活」：派活方查自己任务派出去的单（选了「派活」自动带上）；
 // - work.report「报结果」：被派来的运行把几个「名字 → 值」写回自己那张单，也能报「这件办不成」（被派来的运行自动带上）。
 import {
+  RUN_FINISH_TOOL_ID,
   WORK_REPORT_MAX_FIELDS,
   workItemStatusLabel,
   workReportLine,
@@ -106,7 +107,9 @@ export async function reportFromAgent(ctx: ToolContext, input: ReportInput): Pro
     const line = workReportLine(merged)
     if (input.outcome === "not_done")
       return {
-        output: `已记在派活单 ${item.id}：这件办不成（${reason}）${line ? `；结果 ${line}` : ""}。这次运行结束后单记「没办成」，不会自动重试。接着照常回复一段总结（为什么办不成、试过哪些办法），不要再调工具。`,
+        output: snapshot.tools.some((tool) => tool.id === RUN_FINISH_TOOL_ID)
+          ? `已记在派活单 ${item.id}：这件办不成（${reason}）${line ? `；结果 ${line}` : ""}。这次运行结束后单记「没办成」，不会自动重试。接着调用 run_finish 报没办成（reason 写为什么办不成、试过哪些办法）。`
+          : `已记在派活单 ${item.id}：这件办不成（${reason}）${line ? `；结果 ${line}` : ""}。这次运行结束后单记「没办成」，不会自动重试。接着照常回复一段总结（为什么办不成、试过哪些办法），不要再调工具。`,
       }
     return { output: `已写到派活单 ${item.id}：${line || "（没有字段）"}${"failKind" in outcome && outcome.failKind === null ? "。之前报的「办不成」已撤回" : ""}。` }
   })

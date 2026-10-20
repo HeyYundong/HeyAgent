@@ -2,7 +2,9 @@
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "@/components/ui/item"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { href } from "@/lib/router"
-import { endedText, findById, groupOf, startText, type SessionSummary, type TaskDef } from "@heyagent/shared"
+import { endedText, findById, groupOf, outcomeOf, outcomeReasonOf, startText, type SessionSummary, type TaskDef } from "@heyagent/shared"
+
+import { OutcomeBadge } from "@/components/shell/outcome-badge"
 
 import { useModels, useRunNow, useStaffName } from "@/lib/data"
 import { Elapsed, RunStatusBadge, money, tokens } from "@/pages/tasks/parts"
@@ -15,6 +17,11 @@ export function NowText({ run }: { run: SessionSummary }) {
   const text = group === "ended" ? endedText(run) : `${group === "active" ? "验收中" : "在等"}：${runNow(run).text}`
   return <span title={text} className={group === "paused" ? "text-foreground" : "text-muted-foreground"}>{text}</span>
 }
+
+/** 一次运行的结果徽章：还没结束写「—」，悬停看原因 */
+export const RunOutcome = ({ run, className }: { run: SessionSummary; className?: string }) => (
+  <OutcomeBadge outcome={outcomeOf(run)} reason={outcomeReasonOf(run)} className={className} />
+)
 
 const link = (run: SessionSummary) => href("sessions", { id: run.id })
 
@@ -40,6 +47,7 @@ export function SessionTable({ list, tasks, selectedId }: ListProps) {
         <TableHeader>
           <TableRow>
             <TableHead>状态</TableHead>
+            <TableHead>结果</TableHead>
             <TableHead>Session</TableHead>
             <TableHead>任务</TableHead>
             <TableHead>来源</TableHead>
@@ -57,6 +65,8 @@ export function SessionTable({ list, tasks, selectedId }: ListProps) {
             return (
               <TableRow key={run.id} className="relative" data-state={run.id === selectedId ? "selected" : undefined}>
                 <TableCell><RunStatusBadge status={run.status} /></TableCell>
+                {/* 结果徽章浮在整行链接上面，鼠标放上去能看到原因 */}
+                <TableCell><RunOutcome run={run} className="relative z-10" /></TableCell>
                 <TableCell className="font-mono">
                   {/* 整行可点：链接铺满这一行 */}
                   <a href={link(run)} className="after:absolute after:inset-0 hover:underline">{run.id}</a>
@@ -78,7 +88,7 @@ export function SessionTable({ list, tasks, selectedId }: ListProps) {
   )
 }
 
-/** 窄屏：一条一个 Item，三行——编号和任务 / 在等什么或时长 / 负责人、开始、花费 */
+/** 窄屏：一条一个 Item，三行——编号和任务 / 在等什么或时长 / 负责人、开始、花费；右边是状态和结果 */
 export function SessionItems({ list, tasks, selectedId }: ListProps) {
   const staffName = useStaffName()
   return (
@@ -97,7 +107,10 @@ export function SessionItems({ list, tasks, selectedId }: ListProps) {
                 {sourceText(run)} · {staffName(task?.ownerId)} · {startText(run.startedAt)} · {money(run.costUsd)}
               </ItemDescription>
             </ItemContent>
-            <ItemActions className="self-start"><RunStatusBadge status={run.status} /></ItemActions>
+            <ItemActions className="flex-col items-end self-start">
+              <RunStatusBadge status={run.status} />
+              {outcomeOf(run) && <RunOutcome run={run} />}
+            </ItemActions>
           </Item>
         )
       })}

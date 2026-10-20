@@ -1,14 +1,16 @@
 // 派活第二期：同一个任务被派来、在「等待中」的运行有 2 个及以上时，shared 的 boardCards 收成一张（kind = group），点开右侧 GroupSheet；列头数字按运行数算。
 // 看板：五列横排，列宽固定，放不下就横向滚动，可以按住鼠标左右拖动或用方向键平移。每张卡是一个链接（?id=），点开右侧 Sheet。
 import type { ReactNode } from "react"
-import { BanknoteIcon, CircleCheckIcon, InboxIcon, PauseIcon, ShieldQuestionIcon, UserPenIcon } from "lucide-react"
+import { BanknoteIcon, InboxIcon, PauseIcon, ShieldQuestionIcon, UserPenIcon } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Item, ItemContent, ItemDescription, ItemFooter, ItemHeader, ItemTitle } from "@/components/ui/item"
 import { Spinner } from "@/components/ui/spinner"
 import { href } from "@/lib/router"
 import { cn } from "@/lib/utils"
-import { boardColumns, fmtShort, humanItemKindLabel, type BoardCard } from "@heyagent/shared"
+import { boardColumns, fmtShort, humanItemKindLabel, outcomeOf, outcomeReasonOf, type BoardCard } from "@heyagent/shared"
+
+import { OutcomeBadge } from "@/components/shell/outcome-badge"
 
 import { useStaffName } from "@/lib/data"
 
@@ -110,7 +112,15 @@ function CardLink({ card, userId }: { card: Card; userId: string }) {
         <Line icon={<PauseIcon className="size-3" />}><span className="text-muted-foreground">{fmtShort(run.waiting.since)} 挂起，到了继续同一个 session</span></Line>
       </>}
       {column === "verifying" && <Line icon={<ShieldQuestionIcon className="size-3" />}>{run.verification?.headline}</Line>}
-      {column === "done" && <Line icon={<CircleCheckIcon className="size-3" />}>{note ? "验收通过（同意跳过）" : `${run.endedAt ? fmtShort(run.endedAt) : ""} 完成${run.verification?.status === "passed" ? " · 验收通过" : ""}`}</Line>}
+      {/* 已结束：写结束时间和结果（办成 / 部分办成 / 没办成 / 没核实），不再写「完成」 */}
+      {column === "done" && (
+        <Line>
+          <span className="inline-flex flex-wrap items-center gap-1.5">
+            {note ? "验收通过（同意跳过）" : `${run.endedAt ? fmtShort(run.endedAt) : ""} 结束`}
+            <OutcomeBadge outcome={outcomeOf(run)} reason={outcomeReasonOf(run)} />
+          </span>
+        </Line>
+      )}
       {note && <p className="text-xs/relaxed text-muted-foreground">{note}</p>}
     </Shell>
   )

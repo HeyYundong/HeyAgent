@@ -1,7 +1,7 @@
 // 派活：领单（work.pump 的处理函数，方案 5.2）。同一个任务的领单排成一队（事务级 advisory lock），
 // 按名额数空位、取最早的排队单（for update skip locked）、开运行、单改成「在办」，全在一个事务里：
 // 要么单和运行一起成，要么都不成，一张单不会被两个运行领到。
-import type { SessionSnapshot } from "@heyagent/shared"
+import type { SessionSnapshot, TaskDispatchResult } from "@heyagent/shared"
 import { and, asc, eq, isNull, lte, or, sql } from "drizzle-orm"
 
 import type { Db } from "../../db/client.js"
@@ -19,7 +19,7 @@ export const lockTaskInTx = (tx: Tx, scope: "pump" | "dispatch", taskId: string)
   tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`work.${scope}:${taskId}`}))`)
 
 /** 快照里的「被派来的」：单号、参数、谁派的 */
-async function snapshotDispatch(tx: Tx, item: WorkItemRow): Promise<NonNullable<SessionSnapshot["dispatch"]>> {
+async function snapshotDispatch(tx: Tx, item: WorkItemRow, results: TaskDispatchResult[]): Promise<NonNullable<SessionSnapshot["dispatch"]>> {
   let from: NonNullable<SessionSnapshot["dispatch"]>["from"]
   if (item.fromTaskId && item.fromSessionId) {
     const [task] = await tx.select({ title: t.tasks.title }).from(t.tasks).where(eq(t.tasks.id, item.fromTaskId))
@@ -39,6 +39,8 @@ async function snapshotDispatch(tx: Tx, item: WorkItemRow): Promise<NonNullable<
     depth: item.depth,
     ...(from ? { from } : {}),
     ...(fromUser ? { fromUser } : {}),
+    // 要交回的结果（run-outcome 6.1）：按领单时的配置冻进来，收尾时按它查必填的交没交
+    ...(results.length ? { results: results.map(({ name, description, required }) => ({ name, description, required })) } : {}),
   }
 }
 
@@ -49,6 +51,7 @@ export async function pumpTask(db: Db, taskId: string): Promise<{ started: { ite
     const [task] = await tx.select({ id: t.tasks.id, enabled: t.tasks.enabled, dispatch: t.tasks.dispatch }).from(t.tasks).where(eq(t.tasks.id, taskId))
     // 停用了、关了被派活：单留着排队，重新打开时接着领
     if (!task || !task.enabled || !task.dispatch) return { started: [] }
+    const results = task.dispatch.results ?? []
     const free = task.dispatch.maxRunning - (await occupiedSlots(tx, taskId))
     if (free <= 0) return { started: [] }
     const items = await tx
@@ -67,7 +70,7 @@ export async function pumpTask(db: Db, taskId: string): Promise<{ started: { ite
           const { sessionId } = await startSessionInTx(db, sp, {
             taskId,
             source: "dispatch",
-            dispatch: await snapshotDispatch(sp, item),
+            dispatch: await snapshotDispatch(sp, item, results),
             parentSessionId: item.fromSessionId,
             createdById: item.fromUserId,
           })

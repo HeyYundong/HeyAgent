@@ -9,6 +9,8 @@ import type {
   ModelRole,
   ProviderStatus,
   Risk,
+  RunOutcome,
+  RunOutcomeBy,
   RunStatus,
   SkillStatus,
   ToolSource,
@@ -76,9 +78,26 @@ export const runStatusLabel: Record<RunStatus, string> = {
   needs_human: "等人处理",
   waiting: "等待中",
   verifying: "验收中",
-  done: "已完成",
+  done: "已结束",
   incomplete: "没完成",
-  failed: "失败",
+  failed: "出错",
+}
+
+/** 运行 / 派活单的结果（run-outcome） */
+export const runOutcomeLabel: Record<RunOutcome, string> = {
+  achieved: "办成",
+  partial: "部分办成",
+  not_achieved: "没办成",
+  unverified: "没核实",
+}
+
+/** 结果是谁定的 */
+export const runOutcomeByLabel: Record<RunOutcomeBy, string> = {
+  agent: "agent 自己报的",
+  rule: "规则",
+  review: "AI 复核",
+  verify: "三方验收",
+  human: "人改的",
 }
 
 export const humanItemKindLabel: Record<HumanItemKind, string> = {
@@ -96,7 +115,7 @@ export const boardColumns: { id: BoardColumn; name: string; hint: string }[] = [
   { id: "needs_human", name: "等人处理", hint: "要你拍板或动手" },
   { id: "waiting", name: "等待中", hint: "session 已挂起，等到了就继续" },
   { id: "verifying", name: "验收中", hint: "三方 AI 在核对检查点" },
-  { id: "done", name: "已完成", hint: "最近完成的运行" },
+  { id: "done", name: "已结束", hint: "最近结束的运行，卡上写结果" },
 ]
 
 export type LoopStage = "task_start" | "model" | "pre_tool" | "tool" | "post_tool" | "task_end"
@@ -117,8 +136,8 @@ export const providerKindLabel: Record<ModelProviderKind, string> = { ollama: "O
 export const providerStatusLabel: Record<ProviderStatus, string> = { ok: "正常", error: "连不上", unconfigured: "未配置" }
 
 /** 各角色的默认模型（原型 models/data.ts 的 ROLES） */
-/** 必须配的三个聊天模型角色；图库的 embedding 模型（embed）、助手（assistant，可选）单独选，见模型页「默认设置」 */
-export const modelRoles: { id: Exclude<ModelRole, "embed" | "assistant">; label: string; hint: string }[] = [
+/** 必须配的三个聊天模型角色；图库的 embedding 模型（embed）、助手（assistant，可选）、复核（review，可选）单独选，见模型页「默认设置」 */
+export const modelRoles: { id: Exclude<ModelRole, "embed" | "assistant" | "review">; label: string; hint: string }[] = [
   { id: "run", label: "执行任务", hint: "每一步干活、调工具都用它，任务没写步骤时也由它自己探索步骤，花费主要在这里。" },
   { id: "plan", label: "规划", hint: "保存规则时把那句话翻译成程序能执行的结构；长对话压缩上下文时写摘要。" },
   { id: "verify", label: "三方验收", hint: "检查执行 agent 是不是真的做完了检查点。" },

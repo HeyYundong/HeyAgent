@@ -26,6 +26,7 @@ import { login, query } from "./helpers.js"
 import {
   bossJobs,
   call,
+  finishWith,
   createTask,
   messagesOf,
   mutate,
@@ -57,6 +58,7 @@ afterAll(async () => {
 })
 
 const DISPATCH: TaskDispatch = {
+  results: [],
   params: [
     { name: "单号", description: "要办的单号", required: true, dedupe: true },
     { name: "备注", description: "", required: false, dedupe: false },
@@ -333,7 +335,7 @@ describe("导入直接导成派活", () => {
     const { id, result } = await commitPlan(plan)
     const ids = Object.fromEntries(result.tasks.map((each) => [each.key, each.id]))
     const [receiver] = await ctx.db.select().from(t.tasks).where(eq(t.tasks.id, ids.t2!))
-    expect(receiver!.dispatch).toEqual({ params: [{ name: "单号", description: "", required: true, dedupe: true }], maxRunning: 2, retries: 2, retryDelayMinutes: 30 })
+    expect(receiver!.dispatch).toEqual({ params: [{ name: "单号", description: "", required: true, dedupe: true }], results: [], maxRunning: 2, retries: 2, retryDelayMinutes: 30 })
     // 任务列表接口带出重试两项（TaskDef 的形状里有，保存一次不会被剥掉）
     expect((await query(ctx.app, "tasks.list", lin)).data.find((task: { id: string }) => task.id === ids.t2).dispatch).toMatchObject({ retries: 2, retryDelayMinutes: 30 })
     expect(await sourcesOf(ids.t2!)).toEqual([ids.t1])
@@ -380,7 +382,7 @@ describe("导入直接导成派活", () => {
 describe("派活方等结果：单结束时叫醒", () => {
   it("办完：叫醒等 work.done 的运行，消息里有总结和报的结果", async () => {
     responder("test/p2-wake-done", (options) =>
-      promptOf(options).includes("已写到派活单") ? step([text("办完了：已处理")]) : step([call("work.report", { data: { 件数: 3, 已回填: true } })])
+      promptOf(options).includes("已写到派活单") ? step(finishWith("办完了：已处理")) : step([call("work.report", { data: { 件数: 3, 已回填: true } })])
     )
     const { patrol, worker } = await makePair({ workerModel: "test/p2-wake-done", enabled: false })
     const { ids } = await agentDispatch(patrol, worker, ["D-1"])
@@ -390,7 +392,10 @@ describe("派活方等结果：单结束时叫醒", () => {
     await waitFired(waitId)
     const message = await lastMessage(session.id)
     expect(message).toContain(`等到了事件「work.done:${ids[0]}」（派活单结束）`)
-    expect(message).toContain(`${ids[0]}「单 D-1」办完：办完了：已处理 · 结果：件数=3，已回填=是`)
+    // 没配复核模型：单办完，结果没核实（一句话里标出来）
+    expect(message).toContain(`${ids[0]}「单 D-1」办完（没核实：`)
+    expect(message).toContain("：办完了：已处理 · 结果：件数=3，已回填=是")
+    expect(message).toContain('\\"outcome\\":\\"unverified\\"')
     expect(message).toContain('\\"report\\":{\\"件数\\":3,\\"已回填\\":true}')
   })
 
@@ -466,7 +471,7 @@ describe("派活方等结果：单结束时叫醒", () => {
   it("真跑一遍：派活方派完用 session.wait 等，被派的办完后派活方被叫醒接着办完", async () => {
     const g = gate()
     responder("test/p2-e2e-worker", async (options) => {
-      if (promptOf(options).includes("已写到派活单")) return step([text("办完了：E2E 已处理")])
+      if (promptOf(options).includes("已写到派活单")) return step(finishWith("办完了：E2E 已处理"))
       await g.promise
       return step([call("work.report", { data: { 件数: 2 } })])
     })
@@ -494,7 +499,8 @@ describe("派活方等结果：单结束时叫醒", () => {
     await waitStatus(ctx.db, sessionId, "done")
     expect(await itemRow(itemId)).toMatchObject({ status: "done", result: { summary: "办完了：E2E 已处理", data: { 件数: 2 } } })
     const resumed = JSON.stringify((await messagesOf(ctx.db, sessionId)).map((message) => message.content))
-    expect(resumed).toContain(`${itemId}「单 E2E-1」办完：办完了：E2E 已处理 · 结果：件数=2`)
+    expect(resumed).toContain(`${itemId}「单 E2E-1」办完（没核实：`)
+    expect(resumed).toContain("：办完了：E2E 已处理 · 结果：件数=2")
   }, 60_000)
 })
 
@@ -591,7 +597,7 @@ describe("work.report：报结果", () => {
     const dispatched = await buildSnapshot(ctx.db, worker, { source: "dispatch", runAttachments: [], dispatch: { itemId: "W-1", key: "k", title: "k", params: {}, depth: 1 } })
     expect(ids(dispatched)).toContain("work.report")
     const system = buildSystemPrompt(dispatched, new Map([["work.report", "work_report"]]))
-    expect(system).toContain("有要交回去的结果（数字、是 / 否、编号），用 work_report 写；办不成（例如找不到、对方拒绝）就用它报 not_done 并写原因。")
+    expect(system).toContain("有要交回去的结果（数字、是 / 否、编号），用 work_report 写；办不成（例如找不到、对方拒绝）就调用 run_finish 报没办成并写清原因。")
     expect(ids(await buildSnapshot(ctx.db, patrol, { source: "manual", runAttachments: [] }))).toContain("work.list")
     expect(await ctx.db.select().from(t.tools).where(inArray(t.tools.id, ["work.list", "work.report"]))).toEqual([])
   })
@@ -609,9 +615,9 @@ describe("work.report：报结果", () => {
     expect(row).toMatchObject({ failKind: "not_done", autoRetries: 0, attempts: 1, error: "agent 判断办不成：14 个候选都不是同一个东西" })
     expect(row.result).toMatchObject({ summary: "办不成：14 个候选都不是同一个东西", data: { 候选数: 14 } })
     expect(row.log.map((entry) => entry.kind)).toEqual(["created", "run_started", "reported", "run_ended"])
-    expect((await sessionRow(ctx.db, row.sessionId!))!).toMatchObject({ status: "incomplete", error: "agent 判断办不成：14 个候选都不是同一个东西" })
+    expect((await sessionRow(ctx.db, row.sessionId!))!).toMatchObject({ status: "done", outcome: "not_achieved", outcomeBy: "agent", outcomeReason: "agent 判断办不成：14 个候选都不是同一个东西" })
     const notes = await ctx.db.select().from(t.notifications).where(eq(t.notifications.sessionId, row.sessionId!))
-    expect(notes.map((note) => [note.title, note.body])).toEqual([[expect.stringContaining("：没完成"), "agent 判断办不成：14 个候选都不是同一个东西"]])
+    expect(notes.map((note) => [note.title, note.body])).toEqual([[expect.stringContaining("：没办成"), "agent 判断办不成：14 个候选都不是同一个东西"]])
     const detail = (await query(ctx.app, "work.get", wang, { id })).data
     expect(detail.failKind).toBe("not_done")
   })
@@ -719,8 +725,9 @@ describe("没有检查点就不提检查点", () => {
     const b = await createTask(ctx.db, { modelId: "test/p2-cp", steps: [{ id: "s1", text: "存一张表", wait: false, checkpoint: "表已经存好" }] })
     for (const taskId of [a, b]) {
       const res = await mutate(ctx.app, "engine.runNow", wang, { taskId })
-      // 有检查点的那个没勾就说做完了：记「没完成」
-      await waitStatus(ctx.db, res.data.sessionId, taskId === a ? "done" : "incomplete")
+      // 有检查点的那个没勾就说做完了：已结束，结果没办成
+      const row = await waitStatus(ctx.db, res.data.sessionId, "done")
+      expect(row.outcome).toBe(taskId === a ? "unverified" : "not_achieved")
     }
     const toolNames = (script: Script) => (script.prompts[0]!.tools ?? []).map((each) => each.name)
     expect(toolNames(plain)).not.toContain("checkpoint_mark")
@@ -729,7 +736,7 @@ describe("没有检查点就不提检查点", () => {
     expect(promptOf(plain.prompts[0]!)).toContain("验收员会按目标核对结果和证据")
     expect(toolNames(withCp)).toContain("checkpoint_mark")
     expect(promptOf(withCp.prompts[0]!)).toContain("## 检查点清单")
-    expect(promptOf(withCp.prompts[0]!)).toContain("哪些检查点没完成以及原因")
+    expect(promptOf(withCp.prompts[0]!)).toContain("检查点有没勾的、全部跳过的记没办成")
     // 快照的 tools 不改（任务页、规则页照样显示它是自带的）
     const [session] = await ctx.db.select().from(t.sessions).where(and(eq(t.sessions.taskId, a), like(t.sessions.id, "R-%"))).orderBy(asc(t.sessions.startedAt))
     expect(session!.snapshot!.tools.map((tool) => tool.id)).toContain("checkpoint.mark")

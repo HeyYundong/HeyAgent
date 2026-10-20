@@ -375,12 +375,23 @@ function organizeDispatch(plan: ImportPlan, catalog: ImportCatalog, toolKeys: Se
         return [{ name: paramName, description: (param.description ?? "").trim().slice(0, 200), required: Boolean(param.required), dedupe: Boolean(param.dedupe) }]
       })
       .slice(0, 20)
+    // 要交回的结果（run-outcome，人在向导里改的）：去空白、同名去重，最多 20 个
+    const resultNames = new Set<string>()
+    const results = (task.dispatch.results ?? [])
+      .flatMap((result) => {
+        const resultName = result.name.trim().slice(0, 40)
+        if (!resultName || resultNames.has(resultName)) return []
+        resultNames.add(resultName)
+        return [{ name: resultName, description: (result.description ?? "").trim().slice(0, 200), required: result.required !== false }]
+      })
+      .slice(0, 20)
     const clamp = (value: unknown, min: number, max: number, fallback: number) => Math.min(max, Math.max(min, Number.isFinite(Number(value)) ? Math.round(Number(value)) : fallback))
     const maxRunning = clamp(task.dispatch.maxRunning, 1, 20, 1) || 1
     // 自动重试（人在向导里改的）：次数 0～5、间隔 1～1440 分钟；没写的不加
     const { retries, retryDelayMinutes } = task.dispatch
     task.dispatch = {
       params,
+      ...(results.length ? { results } : {}),
       maxRunning,
       ...(retries !== undefined && retries !== null ? { retries: clamp(retries, 0, 5, 0) } : {}),
       ...(retryDelayMinutes !== undefined && retryDelayMinutes !== null ? { retryDelayMinutes: clamp(retryDelayMinutes, 1, 1440, 10) } : {}),

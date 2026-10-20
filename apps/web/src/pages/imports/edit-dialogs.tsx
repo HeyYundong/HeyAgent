@@ -293,7 +293,7 @@ function TaskForm({ plan, task, onSave }: { plan: ImportPlan; task: PlanTask; on
               </>
             )}
             <FieldSeparator />
-            <DispatchFields id="import-task-dispatch" control={form.control} register={form.register} errors={errors} fromOptions={fromOptions} fromNote="只能选这次要导入的任务；系统里已有的任务，导入后到它的任务弹窗里加。" />
+            <DispatchFields id="import-task-dispatch" control={form.control} register={form.register} errors={errors} fromOptions={fromOptions} fromNote="只能选这次要导入的任务；系统里已有的任务，导入后到它的任务弹窗里加。" hideResults />
             <FieldSeparator />
             <FieldSet>
               <Controller

@@ -22,6 +22,8 @@
 14. 导入（2026-10-18）
 15. 比物（2026-10-18）
 16. 派活（2026-10-18）
+17. Session 空间和运行代码（2026-10-20）
+18. 运行结果（2026-10-20）
 
 ---
 
@@ -597,7 +599,7 @@ curl -s -X POST http://localhost:3100/api/events \
 | 图库（第 13 节） | `gallery.create` `gallery.update` `gallery.delete`（`detail.via` 是 web / api / mcp / agent；agent 传的 `actor_id` 为空，`detail.sessionId` 是哪次运行）`api_key.create` `api_key.delete` |
 | 比物（第 15 节） | `compare.create`（`detail.via`、`apiKeyId`、`sessionId`；agent 发起的 `actor_id` 为空）`compare.delete` `compare_standard.create`（启动时自动建的 `detail.by = "bootstrap"`，`actor_id` 为空）`compare_standard.update` `compare_standard.delete` `compare_standard.set_default` |
 | 设置 | `settings.update` `settings.event_token.regenerate` `settings.event_token.clear` `settings.channel.create` `settings.channel.update` `settings.channel.delete` `settings.browser.update`（M2） `settings.agent.update`（M3） |
-| 运行 | `session.digest`（第 12 节）`session.start`（`runNow`）`session.cancel` `session.resume.resume_now` `session.resume.human` `session.resume.event`（控制台触发，webhook 没有操作人所以不记）`human_item.resolve` `event.fire` |
+| 运行 | `session.set_outcome`（第 18 节）`session.digest`（第 12 节）`session.start`（`runNow`）`session.cancel` `session.resume.resume_now` `session.resume.human` `session.resume.event`（控制台触发，webhook 没有操作人所以不记）`human_item.resolve` `event.fire` |
 
 ### 9.2 已知限制（写代码时要知道）
 
@@ -1323,3 +1325,59 @@ claude mcp add --transport http heyagent-compare http://<host>:8080/api/compare/
 - worker 的环境变量（都可选）：`HEYAGENT_SANDBOX_DIR`（默认 `<os.tmpdir()>/heyagent-sandbox`）、`HEYAGENT_SANDBOX_ROOTFS`（默认 `/opt/sandbox-root`）、`HEYAGENT_SANDBOX_TIMEOUT_SECONDS`（60）、`HEYAGENT_SANDBOX_MEMORY_MB`（1024，Python / bash 的 `ulimit -v`，也是 Node 的 `--max-old-space-size`）、`HEYAGENT_SANDBOX_NODE_VIRTUAL_MB`（4096）、`HEYAGENT_SANDBOX_MAX_PROCESSES`（1024）、`HEYAGENT_SANDBOX_TMP_MB`（512，沙箱 `/tmp` 的大小）、`HEYAGENT_SANDBOX_SYNC_MAX_FILES`（200）、`HEYAGENT_SANDBOX_SYNC_MAX_FILE_MB`（50）、`HEYAGENT_SANDBOX_SYNC_MAX_TOTAL_MB`（200）、`HEYAGENT_SPACE_MAX_MB`（1024）、`HEYAGENT_SANDBOX_OUTPUT_CAPTURE_MB`（8，stdout / stderr 各在内存里最多留多少，超出的只留开头和最后 256 KB）、`HEYAGENT_SANDBOX_PROXY_PORTS`（`80,443,8080,8443`；`*` = 不限）。
 - 每个 session 的目录在 worker 本地：运行结束（已完成 / 没完成 / 失败）时删掉；worker 启动时、之后每小时最多一次，删掉已经结束或库里没有的 session 的目录。
 - 代理日志（worker 的 stdout）：`[sandbox] 出网 <session> <主机[:端口]> 允许|拒绝 <字节数或原因>`。代理拦的地址：回环、私有、链路本地、CGNAT、组播 / 保留、文档网段，IPv6 的 ::、::1、IPv4 兼容 / 映射、NAT64、Teredo、6to4、唯一本地、链路本地、组播；**不拦** 198.18.0.0/15（fake-ip DNS 用这个网段，见 session-space.md 9.3）。沙箱里 `NO_PROXY=localhost,127.0.0.1,::1`：那是沙箱自己的回环，碰不到 pod 的。
+
+
+## 18. 运行结果（2026-10-20）
+
+方案见 `docs/dev/run-outcome.md`。**状态只管流程，结果单独一列**：正常结束的运行状态都是 `done`（显示「已结束」），办没办成看 `outcome`。`incomplete` 不再写入（迁移 0024 改成 `done` + `outcome = not_achieved`，枚举值留着，`ENDED_RUN_STATUSES` 照旧认它）。
+
+### 18.1 新字段
+
+| 在哪 | 字段 |
+|---|---|
+| `SessionSummary` / `SessionRun`（`sessions.list` `sessions.get`） | `outcome?`（`achieved` 办成 / `partial` 部分办成 / `not_achieved` 没办成 / `unverified` 没核实；运行没结束时没有）、`outcomeReason?`、`outcomeBy?`（`agent` / `rule` / `review` / `verify` / `human`）、`review?`（复核报告 `RunReview`：`at modelId verdict? reason screenshot tokensIn tokensOut costUsd error? pending?`；`pending: true` = 复核还在跑） |
+| `WorkItem`（`work.list` `work.get` 等） | `outcome`、`outcomeReason`：单结束了才有（排队、在办的为 null）；办完的单也可能是 `unverified`。`failKind` 多了 `partial`（部分办成）、`missing_result`（必交的结果没交） |
+| `WorkRun`（`work.get` 的 `runs[]`） | `outcome` |
+| `TaskDef` / `TaskInput` | `reviewEnabled`（默认 true）、`reviewModelId?`（空 = 用默认复核模型；要是聊天模型，不要求和执行模型不同家）；`dispatch.results`（要交回的结果 `[{ name, description, required }]`，最多 20 个、名字不重复；旧数据没有 = 不要求，`TaskDef` 里可能没有这一项） |
+| `ModelDefaults` / `models.setDefaults` | `review?`：默认复核模型。不传不改，空字符串 = 不配（不复核） |
+| 快照 `SessionSnapshot` | `reviewEnabled?` `reviewModelId?`（没有 `reviewEnabled` 的旧快照不复核）；`dispatch.results?`（领单时冻进来） |
+
+### 18.2 接口
+
+| 接口 | 权限 | 输入 → 输出 |
+|---|---|---|
+| `sessions.list` | 登录即可 | 多一个可选的 `outcome`（一种或几种），只筛列表的行 |
+| `work.list` | 同前 | 多一个可选的 `outcome`（一种或几种）；`counts` 照旧只按状态算，不受结果筛选影响 |
+| 新 `sessions.setOutcome` | 任务负责人、主管 | `setOutcomeInputSchema { id, outcome, reason }`（理由必填，≤500 字）→ `{ sessionId, outcome }`。只能改已经结束的运行（没结束 → `BAD_REQUEST`）；只改结果列（`outcome_by = human`），不重开运行；追加过程记录（`human`「某某把结果改成「办成」」，详情写理由和原来的结果）；审计 `session.set_outcome`。被派的单（还是这次运行的、已经结束的）跟着改 `outcome / outcomeReason`，不改状态 |
+
+### 18.3 收尾怎么定结果
+
+- 内置工具 `run.finish`「收尾报结果」（`run_finish`，read，每个任务都自带、同步进 `tools` 表、`alwaysOn`）：`{ outcome: achieved | partial | not_achieved, summary, evidence, reason? }`；`partial` / `not_achieved` 没写 `reason` → `isError`，运行不结束。调了它运行就到此结束：`partial` / `not_achieved` 直接收尾；`achieved` 也算「说做完了」，先过三方验收的规则。旧快照里的 `run.not_done` 照旧能用（= `not_achieved`，`outcome_by = agent`），它不再同步进 `tools` 表。
+- 只回文字、没调 `run.finish`（快照里有 `run.finish` 时）：第一次追加一条 user 消息「要结束请调用 run_finish 报结果（办成 / 部分办成 / 没办成），并对照目标写依据。」接着跑（过程记录 `plan`「agent 只回了文字、没报结果，提醒它调用 run_finish」，标记存在 `sessions.rule_state.finishNudged`，挂起再继续也只提醒一次）；再回文字就按「说做完了、没报结果」收尾。
+- 硬规则（`engine/outcome.ts`，在收尾的事务里），取最低（没办成 < 部分办成 < 没核实 < 办成）：agent 的报告（`run.finish` / `run.not_done` / 这次运行 `work.report not_done`）；检查点（有没达成的、全部跳过 → 没办成；部分跳过 → 部分办成；三方验收通过的不按检查点判）；被派的运行必填的结果没用 `work.report` 交（值为空也算没交；字段名末尾多了单位括号、大小写不同照样认）→ 没办成，原因「缺结果：价格、链接」。同样低的几条原因用「；」连起来。
+- 没有降低、三方验收通过 → 办成（`verify`；负责人在验收争议里判通过的记 `human`）；agent 报办成且检查点全部达成 → 办成（`rule`）；其余「办成」没有依据 → 复核，或者（不复核时）没核实（`rule`，原因写为什么没复核：任务关了复核 / 没配复核模型 / 这次运行开始时还没有复核）。
+- 出错、取消、人选不继续 → 状态 `failed`，结果没办成（`rule`，原因 = 错误信息）；验收争议判失败 → 没办成（`human`）。
+- 结束事件（`done`）的标题：「agent 报没办成」「agent 报办成，结果记没办成」「agent 报办成，等 AI 复核」「agent 说做完了（没报结果）」「验收通过，运行结束」……详情是 agent 的报告（结果、总结、依据、原因）和「结果：…（原因）」。
+
+### 18.4 轻量复核（`engine/review.ts`）
+
+- 什么时候跑：收尾事务之后、在 worker 上（`finishRun` 里），硬规则的结论是办成 / 部分办成、快照 `reviewEnabled = true`、没有三方验收通过、有复核模型（`snapshot.reviewModelId` ?? 默认复核模型）。收尾的事务先写结果（办成没依据的先写「没核实」，原因「等 AI 复核」）和 `review = { pending: true, at, modelId, … }`。
+- 输入：任务、目标、检查点（状态、记录、跳过理由）、派活参数 / 要交回的结果 / 交回的结果、agent 的报告、产物摘录（最多 4 个）、最近 30 条过程记录（工具调用输入输出各截 300 字）、最后一张截图（复核模型 `vision` 才带；不能看图时报告里写一句）；总长超过 4 万字从中间截。`callStructured` 输出 `{ verdict: achieved | partial | not_achieved | unsure, reason }`，超时 120 秒。
+- 结论：`min(硬规则的结论, 复核结论)`，`unsure` 记没核实；复核改低了或者确认了的 `outcome_by = review`，否则保留硬规则那边的。复核出错：结果没核实（或者保留更低的），`review.error` 写原因，不重试，不影响运行状态。复核期间负责人手动改过结果的，不覆盖。
+- 写 `sessions.review`、过程记录 `verify`「AI 复核：办成」「AI 复核：说不准，结果记没核实」「AI 复核出错，结果记没核实」（标题都以「AI 复核」开头），复核的 token 和花费加进运行。
+- 被派的运行：复核完才结算派活单、叫醒派活方。清扫（`work.sweep`）不结算复核中的运行；复核标记超过 10 分钟（`REVIEW_PENDING_TIMEOUT_MS`，worker 中途没了）的，清扫清掉标记、`review.error` 写「复核 10 分钟没有结果…」、过程记录「AI 复核超时没有结果，结果按硬规则的结论」，再按现在的结果结算单。没被派的运行同样清掉过时的标记。
+
+### 18.5 通知和派活单
+
+- 没办成、部分办成：和失败一样通知负责人（标题「<任务>：没办成」「<任务>：部分办成」，正文是原因；被派的也发）。没核实：「<任务>：运行结束，没核实」，不推送；办成：「<任务>：办成」，不推送。被派的运行办成、没核实不发通知。
+- 单跟着运行的结果走（`settleWorkItemInTx` 的 `outcome`）：办成 → `done / achieved`；没核实 → `done / unverified`；部分办成 → `failed / partial`；没办成 → `failed / not_done`（缺结果的 `missing_result`）；这几种都不重试，单上照样写总结、产物、报的结果。运行出错 → 照旧重试，最终没办成的 `outcome = not_achieved`、原因 = 错误；排队等重试的清空结果。不办了 → `outcome = not_achieved`、原因 = 「某某点了不办了」；重办清空结果。
+- 叫醒派活方的一句话：「W-57「标题」办完（没核实：原因）：总结… · 结果：…」「W-57「标题」没办成（部分办成）：原因」；事件数据多 `outcome`、`outcomeReason`。`work.list`（agent 用的）每行同样带上：办完的写「，结果没核实（原因）」，部分办成写「部分办成（原因）」；`partial` / `missing_result` / `not_done` 不写「等人处理」。
+- 系统提示：被派来的运行「派来的活」一节写「办不成…就调用 run_finish 报没办成并写清原因」，有要交回的结果时逐条列出（必填 / 可选、说明）并写「必填的没交，这张单记「没办成」」；第一条消息改成「结束时调用 run_finish 报结果…」。派活方「可以派活给」一节加「拿到没办成或没核实的单，要自己判断要不要重派或者报给人」。`work.report not_done` 照旧认（返回文字改成让它接着调 run_finish 报没办成）。
+
+### 18.6 补跑复核：`pnpm --filter @heyagent/server outcome:review`
+
+容器里 `node dist/scripts/outcome-review.js`。列出已结束、结果没核实、不在复核中的运行（最近结束的在前，`--limit` 默认 200），按复核模型的价格估花费（每条按输入 1 万、输出 300 token 估）；加 `--yes` 才真跑。只写结果列、复核报告、一条过程记录（「AI 复核：…（命令补跑）」）；被派的单只跟着改结果。不改状态、不发通知、不叫醒派活方；复核的花费只记在复核报告里，不加进运行的花费。
+
+### 18.7 审计
+
+`session.set_outcome`（`detail: { from, to, reason }`）。

@@ -4,6 +4,7 @@
 import {
   fmtDateTime,
   fmtShort,
+  runOutcomeLabel,
   runStatusLabel,
   WORK_DISPATCH_TOOL_ID,
   workDedupeKey,
@@ -21,7 +22,7 @@ import type { z } from "zod"
 import { readDispatchSettings } from "../../data/config/settings.js"
 import type { Db } from "../../db/client.js"
 import * as t from "../../db/schema.js"
-import { startOfTodayShanghai, toWorkItems } from "../../work/service.js"
+import { normalizeDispatch, startOfTodayShanghai, toWorkItems } from "../../work/service.js"
 import { notifyUsers } from "../notify.js"
 import type { Tx } from "../queue.js"
 import type { ToolContext, ToolOutcome } from "../tools/builtin.js"
@@ -235,7 +236,7 @@ export async function loadTarget(db: Db | Tx, taskId: string): Promise<(Omit<Dis
     .select({ id: t.tasks.id, title: t.tasks.title, ownerId: t.tasks.ownerId, enabled: t.tasks.enabled, dispatch: t.tasks.dispatch })
     .from(t.tasks)
     .where(eq(t.tasks.id, taskId))
-  return task ? { ...task, dispatch: task.dispatch ?? null } : undefined
+  return task ? { ...task, dispatch: normalizeDispatch(task.dispatch) } : undefined
 }
 
 // ---------- 给模型的返回文字（方案 4.2） ----------
@@ -257,10 +258,11 @@ export function describeItem(item: WorkItem): string {
     case "running":
       return `在办（运行 ${item.sessionId ?? "—"}${item.sessionStatus ? `，${runStatusLabel[item.sessionStatus]}` : ""}）`
     case "done":
-      return `办完（${item.finishedAt ? fmtDateTime(item.finishedAt) : "—"}）${item.result?.summary ? `：${clip(item.result.summary)}` : ""}${tail}`
+      // 办完的单也可能「没核实」（run-outcome 6.2）：标出来，派活方自己判断
+      return `办完（${item.finishedAt ? fmtDateTime(item.finishedAt) : "—"}）${item.outcome === "unverified" ? `，结果没核实${item.outcomeReason ? `（${clip(item.outcomeReason)}）` : ""}` : ""}${item.result?.summary ? `：${clip(item.result.summary)}` : ""}${tail}`
     case "failed":
-      // agent 判断办不成的不用人处理（原因里已经写了「agent 判断办不成」）；运行出错的等人处理
-      return `没办成${item.failKind === "not_done" ? "" : "，等人处理"}${item.error ? `（${clip(item.error)}）` : ""}${tail}`
+      // 运行正常结束、结果没办成 / 部分办成的不用人处理（原因里写了缺什么）；运行出错的等人处理
+      return `${item.outcome === "partial" ? runOutcomeLabel.partial : "没办成"}${item.failKind === "not_done" || item.failKind === "partial" || item.failKind === "missing_result" ? "" : "，等人处理"}${item.error ? `（${clip(item.error)}）` : ""}${tail}`
     case "cancelled":
       return `不办了${item.error ? `（${clip(item.error)}）` : ""}`
   }

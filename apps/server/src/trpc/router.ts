@@ -3,8 +3,12 @@
 // M1 P2：配置的写操作（mutation）加在各自的命名空间里，输入用 shared/config.ts 的 schema 校验，
 // 权限用 can()，每次写都记 audit_events。具体逻辑在 data/config/*.ts，这里只做接线。
 import { tracked, TRPCError } from "@trpc/server"
+import { eq } from "drizzle-orm"
 import { z } from "zod"
 import {
+  can,
+  runOutcomeSchema,
+  setOutcomeInputSchema,
   browserAccountInputSchema,
   browserAccountUpdateSchema,
   browserProfileInputSchema,
@@ -95,6 +99,9 @@ import * as todos from "../data/config/todos.js"
 import * as tools from "../data/config/tools.js"
 import * as users from "../data/config/users.js"
 import * as load from "../data/loaders.js"
+import * as t from "../db/schema.js"
+import { setOutcomeImpl } from "../engine/control.js"
+import { EngineError } from "../engine/sessions.js"
 import { protectedProcedure, router, type Context, type SessionUser } from "./init.js"
 import { browserRouter } from "./browser-router.js"
 import { engineRouter } from "./engine-router.js"
@@ -191,9 +198,41 @@ export const appRouter = router({
   sessions: router({
     /** 全部 session（新的在前）的摘要：检查点、在等什么、验收，过程只有条数、最后一条等几样（不带过程，页面一直开着、实时刷新也不重）。可以按任务筛 */
     list: protectedProcedure
-      .input(z.object({ taskId: z.string().optional() }).optional())
+      .input(
+        z
+          .object({
+            taskId: z.string().optional(),
+            /** 结果筛选（run-outcome）：可以给几种，例如只看「没核实」 */
+            outcome: z.union([runOutcomeSchema, z.array(runOutcomeSchema).min(1)]).optional(),
+          })
+          .optional()
+      )
       .output(z.array(sessionSummarySchema))
-      .query(({ ctx, input }) => load.listSessions(ctx.db, { taskId: input?.taskId })),
+      .query(({ ctx, input }) =>
+        load.listSessions(ctx.db, {
+          taskId: input?.taskId,
+          ...(input?.outcome ? { outcome: Array.isArray(input.outcome) ? input.outcome : [input.outcome] } : {}),
+        })
+      ),
+    /** 人改结果（run-outcome 第 8 节）：只有任务负责人和主管；只改已经结束的运行的结果列，写过程记录和审计 */
+    setOutcome: protectedProcedure
+      .input(setOutcomeInputSchema)
+      .output(z.object({ sessionId: z.string(), outcome: runOutcomeSchema }))
+      .mutation(async ({ ctx, input }) => {
+        const [session] = await ctx.db
+          .select({ id: t.sessions.id, ownerId: t.tasks.ownerId })
+          .from(t.sessions)
+          .innerJoin(t.tasks, eq(t.tasks.id, t.sessions.taskId))
+          .where(eq(t.sessions.id, input.id))
+        if (!session) throw notFound("运行", input.id)
+        if (!can(ctx.user, "task.manage", { ownerId: session.ownerId })) throw new TRPCError({ code: "FORBIDDEN", message: "只有任务负责人和主管能改结果" })
+        try {
+          return await setOutcomeImpl(ctx.db, { ...input, actorId: ctx.user.id, actorName: ctx.user.name })
+        } catch (error) {
+          if (error instanceof EngineError) throw new TRPCError({ code: error.code, message: error.message })
+          throw error
+        }
+      }),
     /** 一个 session 的全部，带全部过程（工具的输入、输出）：运行详情里看过程时才取 */
     get: protectedProcedure
       .input(idInput)

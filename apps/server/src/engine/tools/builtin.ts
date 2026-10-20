@@ -59,6 +59,7 @@ import { toWorkItems } from "../../work/service.js"
 import { notifyUsers, sessionLink } from "../notify.js"
 import { appendEvent } from "../records.js"
 import { loadEngineSettings } from "../settings.js"
+import type { AgentClaim } from "../outcome.js"
 import type { SuspendInput } from "../waits.js"
 
 export type SessionRow = typeof t.sessions.$inferSelect
@@ -78,8 +79,8 @@ export interface ToolOutcome {
   isError?: boolean
   /** 这个工具要让 session 挂起（工具结果落库后，和挂起在同一个事务里做） */
   suspend?: SuspendPlan
-  /** 这个工具要让运行结束、记「没完成」（报没完成）：工具结果落库后，引擎按没完成收尾，不再调模型 */
-  incomplete?: { reason: string }
+  /** 这个工具要让运行结束（报结果 run.finish、旧的报没完成 run.not_done）：引擎按 agent 报的结果收尾（outcome.ts 再按硬规则核），不再调模型 */
+  finish?: AgentClaim
   /** 要交给模型看的图片（作为下一条用户消息） */
   images?: { name: string; mime: string; base64: string }[]
   /** 要从输出里隐藏的密钥原文 */
@@ -669,11 +670,25 @@ const handlers: {
   async "work.report"(ctx, input) {
     return reportFromAgent(ctx, input)
   },
-  // 报没完成：只把原因交给引擎，由引擎（loop.ts）在同一个事务里写最终状态、事件，被派的运行连带派活单
+  // 报结果：只把结果交给引擎，由引擎（loop.ts）收尾：办成的先过「说做完了」的规则（三方验收），再按硬规则、复核定最终结果
+  async "run.finish"(_ctx, input) {
+    const reason = input.reason?.trim()
+    if (input.outcome !== "achieved" && !reason)
+      return fail(`outcome = ${input.outcome} 时要写 reason：缺了什么、为什么。补上 reason 再调一次`)
+    const summary = input.summary.trim()
+    const evidence = input.evidence.trim()
+    if (!summary || !evidence) return fail("summary 和 evidence 都要写：做了什么、结果在哪；对照目标逐条写依据")
+    const label = { achieved: "办成", partial: "部分办成", not_achieved: "没办成" }[input.outcome]
+    return {
+      output: `已记下：这次运行的结果是「${label}」${reason ? `（${reason}）` : ""}。运行到此结束，系统还会按检查点、要交回的结果${input.outcome === "achieved" ? "和复核" : ""}再核一遍。`,
+      finish: { outcome: input.outcome, summary, evidence, ...(reason ? { reason } : {}), via: "finish" },
+    }
+  },
+  // 报没完成（旧运行的快照里还有）：等价于 run.finish outcome = not_achieved
   async "run.not_done"(_ctx, input) {
     const reason = input.reason.trim()
     if (!reason) return fail("要写 reason：为什么没做成")
-    return { output: `已记下：这次运行没完成（${reason}）。运行到此结束。`, incomplete: { reason } }
+    return { output: `已记下：这次运行没办成（${reason}）。运行到此结束。`, finish: { outcome: "not_achieved", summary: "", reason, via: "not_done" } }
   },
   async "plan.set"(ctx, input) {
     const steps = input.steps.map((step) => step.trim()).filter(Boolean)

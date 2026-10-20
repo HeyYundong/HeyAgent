@@ -2,6 +2,7 @@
 // 监工写好的读取部分；派活、领单、结束回写、清扫、重办、不办了、改参数由包 A 写（engine/dispatch/ 和这里）。
 import {
   TIME_ZONE,
+  type TaskDispatch,
   type WorkItem,
   type WorkItemDetail,
   type WorkListInput,
@@ -16,6 +17,10 @@ import type { DbOrTx } from "../data/config/common.js"
 import * as t from "../db/schema.js"
 
 type WorkItemRow = typeof t.workItems.$inferSelect
+
+/** 库里的派活配置 → 接口形状：run-outcome 以前存的没有 results（要交回的结果），当作空 */
+export const normalizeDispatch = (dispatch: t.StoredTaskDispatch | null | undefined): TaskDispatch | null =>
+  dispatch ? { ...dispatch, results: dispatch.results ?? [] } : null
 
 export class WorkError extends Error {
   readonly code: "NOT_FOUND" | "BAD_REQUEST" | "FORBIDDEN" | "CONFLICT"
@@ -73,6 +78,9 @@ function toWorkItem(
     result: row.result ?? null,
     error: row.error,
     failKind: row.status === "failed" ? (row.failKind ?? "error") : null,
+    // 结果跟着最后那次运行（run-outcome 6.2）：单结束了才有；排队、在办的没有
+    outcome: row.status === "queued" || row.status === "running" ? null : (row.outcome ?? null),
+    outcomeReason: row.status === "queued" || row.status === "running" ? null : (row.outcomeReason ?? null),
     notBefore: row.status === "queued" ? isoOrNull(row.notBefore) : null,
     autoRetries: row.autoRetries,
     queuePosition: row.status === "queued" ? (extra.queuePosition.get(row.id) ?? null) : null,
@@ -135,6 +143,8 @@ export async function listWorkItems(db: DbOrTx, rawInput: WorkListInput): Promis
 
   const where: SQL[] = [...base]
   if (input.status) where.push(Array.isArray(input.status) ? inArray(t.workItems.status, input.status) : eq(t.workItems.status, input.status))
+  // 结果筛选（run-outcome）：和状态筛选一样不算进各状态的张数
+  if (input.outcome) where.push(Array.isArray(input.outcome) ? inArray(t.workItems.outcome, input.outcome) : eq(t.workItems.outcome, input.outcome))
   if (input.cursor) {
     const [cursor] = await db.select({ createdAt: t.workItems.createdAt, id: t.workItems.id }).from(t.workItems).where(eq(t.workItems.id, input.cursor))
     if (cursor) where.push(or(lt(t.workItems.createdAt, cursor.createdAt), and(eq(t.workItems.createdAt, cursor.createdAt), lt(t.workItems.id, cursor.id)))!)
@@ -170,7 +180,7 @@ export async function getWorkItem(db: DbOrTx, id: string): Promise<WorkItemDetai
     toWorkItems(db, [row]),
     db.select({ dispatch: t.tasks.dispatch, enabled: t.tasks.enabled, ownerId: t.tasks.ownerId }).from(t.tasks).where(eq(t.tasks.id, row.taskId)),
     db
-      .select({ id: t.sessions.id, status: t.sessions.status, startedAt: t.sessions.startedAt, endedAt: t.sessions.endedAt, costUsd: t.sessions.costUsd, error: t.sessions.error })
+      .select({ id: t.sessions.id, status: t.sessions.status, outcome: t.sessions.outcome, startedAt: t.sessions.startedAt, endedAt: t.sessions.endedAt, costUsd: t.sessions.costUsd, error: t.sessions.error })
       .from(t.sessions)
       .where(eq(t.sessions.workItemId, id))
       .orderBy(asc(t.sessions.startedAt), asc(t.sessions.id)),
@@ -194,6 +204,7 @@ export async function getWorkItem(db: DbOrTx, id: string): Promise<WorkItemDetai
   const runs: WorkRun[] = sessions.map((session) => ({
     sessionId: session.id,
     status: session.status,
+    outcome: session.outcome,
     startedAt: iso(session.startedAt),
     endedAt: isoOrNull(session.endedAt),
     costUsd: session.costUsd,
@@ -202,7 +213,7 @@ export async function getWorkItem(db: DbOrTx, id: string): Promise<WorkItemDetai
     waitingWhat: session.status === "waiting" ? (waitBy.get(session.id) ?? null) : null,
     error: session.error,
   }))
-  return { ...item!, log: row.log, runs, taskDispatch: task?.dispatch ?? null, taskEnabled: task?.enabled ?? false, taskOwnerId: task?.ownerId ?? "" }
+  return { ...item!, log: row.log, runs, taskDispatch: normalizeDispatch(task?.dispatch), taskEnabled: task?.enabled ?? false, taskOwnerId: task?.ownerId ?? "" }
 }
 
 /** 上海时间今天 0 点 */

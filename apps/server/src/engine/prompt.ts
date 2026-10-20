@@ -4,6 +4,7 @@ import {
   checkpointKindLabel,
   compiledRuleSchema,
   riskLabel,
+  RUN_FINISH_TOOL_ID,
   RUN_NOT_DONE_TOOL_ID,
   WORK_DISPATCH_TOOL_ID,
   WORK_LIST_TOOL_ID,
@@ -33,15 +34,28 @@ export function buildSystemPrompt(
     `## 任务\n${task.title}\n\n## 目标（做到什么算完成）\n${task.goal}`
   )
 
-  // 被派来的运行：只加固定的话（所有被派的运行都一样，前缀缓存才有用），参数在第一条消息里
-  if (snapshot.dispatch)
+  // 「报结果」（run.finish）每个任务都自带；2026-10-20 以前开始的运行快照里没有，提示词照旧（「报没完成」那套）
+  const finishName = snapshot.tools.some((tool) => tool.id === RUN_FINISH_TOOL_ID) ? (toolNames.get(RUN_FINISH_TOOL_ID) ?? "run_finish") : undefined
+  const reportName = toolNames.get(WORK_REPORT_TOOL_ID) ?? "work_report"
+
+  // 被派来的运行：只加同一个被派任务都一样的话（前缀缓存才有用），参数在第一条消息里
+  if (snapshot.dispatch) {
+    const results = snapshot.dispatch.results ?? []
     sections.push(
       [
         "## 派来的活",
         "这次运行是被派来办一件事的，参数在第一条消息里。",
-        `有要交回去的结果（数字、是 / 否、编号），用 ${toolNames.get(WORK_REPORT_TOOL_ID) ?? "work_report"} 写；办不成（例如找不到、对方拒绝）就用它报 not_done 并写原因。`,
-      ].join("\n")
+        finishName
+          ? `有要交回去的结果（数字、是 / 否、编号），用 ${reportName} 写；办不成（例如找不到、对方拒绝）就调用 ${finishName} 报没办成并写清原因。`
+          : `有要交回去的结果（数字、是 / 否、编号），用 ${reportName} 写；办不成（例如找不到、对方拒绝）就用它报 not_done 并写原因。`,
+        results.length
+          ? `要交回的结果（用 ${reportName} 的 data 交，字段名用下面的名字、一字不差，不要另加单位或括号）：\n${results.map((result) => `- ${result.name}（${result.required ? "必填" : "可选"}${result.description ? `：${result.description}` : ""}）`).join("\n")}\n必填的没交，这张单记「没办成」。`
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n")
     )
+  }
 
   if (task.steps.length) {
     const lines = task.steps.map(
@@ -93,8 +107,8 @@ export function buildSystemPrompt(
   }
 
   const hasCheckpoints = snapshot.checkpoints.length > 0
-  // 「报没完成」每个任务都自带；这个功能以前开始的运行快照里没有它，就不提
-  const notDoneName = snapshot.tools.some((tool) => tool.id === RUN_NOT_DONE_TOOL_ID) ? (toolNames.get(RUN_NOT_DONE_TOOL_ID) ?? "run_not_done") : undefined
+  // 「报没完成」（旧）：2026-10-19 到 10-20 开始的运行快照里有它（没有 run.finish）
+  const notDoneName = !finishName && snapshot.tools.some((tool) => tool.id === RUN_NOT_DONE_TOOL_ID) ? (toolNames.get(RUN_NOT_DONE_TOOL_ID) ?? "run_not_done") : undefined
   const toolLines = snapshot.tools.filter((tool) => !isCheckpointToolHidden(snapshot, tool.id)).map(
     (tool) =>
       `- ${toolNames.get(tool.id) ?? tool.id}（${tool.name}，${riskLabel[tool.risk]}）：${tool.summary}`
@@ -116,6 +130,7 @@ export function buildSystemPrompt(
                 `- ${target.taskId}「${target.title}」${target.enabled ? "" : "（停用中，派了先排着）"}：${target.params.length ? `参数 ${target.params.map(paramText).join("、")}` : "没有参数"}`
             ),
             `要等结果时：用 ${toolNames.get("session.wait") ?? "session_wait"} 等事件 work.done:<单号>，一次等一张；醒来后用 ${toolNames.get(WORK_LIST_TOOL_ID) ?? "work_list"} 看其余的。`,
+            "每张单有结果（办成 / 部分办成 / 没办成 / 没核实）和原因：拿到没办成或没核实的单，要自己判断要不要重派或者报给人。",
           ].join("\n")
         : `## 可以派活给\n现在没有任务允许你派活（要对方任务的负责人在「谁能派活给它」里加上这个任务），不要调 ${name}。`
     )
@@ -212,9 +227,14 @@ export function buildSystemPrompt(
         : "- 要交付的表格、文档用 file.save 存成文件。",
       `- 工具输出太长时只给你开头部分，全文存成了文件（空间的 tool-outputs/ 下），需要时用 ${name("file.read")} 读。`,
       // 没有检查点的任务（例如被派来办一件事的）不提检查点：提了 agent 会去找、会在总结里写「检查点清单为空」
-      hasCheckpoints
-        ? "- 全部做完后，直接回复一段总结（做了什么、结果在哪、哪些检查点没完成以及原因），不要再调工具。回复不调工具就表示你认为任务做完了；检查点有没勾的、或者全部跳过的，这次运行会记成「没完成」。"
-        : "- 全部做完后，直接回复一段总结（做了什么、结果在哪、没做成的以及原因），不要再调工具。回复不调工具就表示你认为任务做完了。",
+      finishName
+        ? `- 结束时一定调用 ${finishName} 报结果。只看任务目标要的东西拿没拿到：拿到了是办成，拿到一部分是部分办成，没拿到（包括确认「没有」）是没办成，并写清原因。不要把没做成说成做完了。`
+        : hasCheckpoints
+          ? "- 全部做完后，直接回复一段总结（做了什么、结果在哪、哪些检查点没完成以及原因），不要再调工具。回复不调工具就表示你认为任务做完了；检查点有没勾的、或者全部跳过的，这次运行会记成「没完成」。"
+          : "- 全部做完后，直接回复一段总结（做了什么、结果在哪、没做成的以及原因），不要再调工具。回复不调工具就表示你认为任务做完了。",
+      finishName
+        ? `- ${finishName} 的 summary 写做了什么、结果在哪，evidence 对照目标逐条写依据（拿到了什么、在哪能看到）。${hasCheckpoints ? "检查点有没勾的、全部跳过的记没办成，部分跳过的最多记部分办成。" : ""}系统还会核一遍，只会往低判。`
+        : "",
       notDoneName
         ? `- 做不成（试过了、能补救的也补救了，还是不行）就调用 ${notDoneName} 写清原因，这次运行记「没完成」并通知负责人；不要直接回复总结、把没做成说成做完了。`
         : "",

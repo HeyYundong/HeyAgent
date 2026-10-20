@@ -62,7 +62,7 @@ const VERIFY_SYSTEM = [
   "- 只输出要求的 JSON。",
 ].join("\n")
 
-interface CheckpointView {
+export interface CheckpointView {
   index: number
   title: string
   kind: string
@@ -73,7 +73,8 @@ interface CheckpointView {
   records: { text: string; synced: boolean; at: Date }[]
 }
 
-async function loadCheckpoints(ctx: RunContext): Promise<CheckpointView[]> {
+/** 每条检查点：状态、进度、跳过理由、记录（轻量复核也用） */
+export async function loadCheckpoints(ctx: Pick<RunContext, "db" | "session">): Promise<CheckpointView[]> {
   const rows = await ctx.db
     .select()
     .from(t.checkpoints)
@@ -105,14 +106,21 @@ async function loadCheckpoints(ctx: RunContext): Promise<CheckpointView[]> {
   }))
 }
 
-const statusText: Record<string, string> = {
+export const statusText: Record<string, string> = {
   done: "agent 标了完成",
   open: "没有勾",
   skipped: "agent 标了跳过",
 }
 
-/** 证据：产物的摘录（文本）、截图（验收模型能看图时） */
-async function loadEvidence(ctx: RunContext, vision: boolean) {
+/**
+ * 证据：产物的摘录（文本）、过程记录（系统记的工具调用、规则、人的处理）、截图（模型能看图时，最近的几张）。
+ * 轻量复核也用它（limits 收窄：只要最后一张截图、少一点过程记录）
+ */
+export async function loadEvidence(
+  ctx: Pick<RunContext, "db" | "session">,
+  vision: boolean,
+  limits: { artifacts?: number; events?: number; images?: number } = {}
+) {
   const files = await ctx.db
     .select()
     .from(t.files)
@@ -126,7 +134,7 @@ async function loadEvidence(ctx: RunContext, vision: boolean) {
   const artifacts: string[] = []
   for (const file of files
     .filter((row) => row.kind === "artifact")
-    .slice(0, 6)) {
+    .slice(0, limits.artifacts ?? 6)) {
     // Excel 等表格：给概览（每个工作表的范围和前几行）
     if (isSheetFile(file.name, file.mime) && !isPlainSheet(file.name, file.mime)) {
       const overview = await loadBook(file)
@@ -159,7 +167,7 @@ async function loadEvidence(ctx: RunContext, vision: boolean) {
       )
     )
     .orderBy(desc(t.sessionEvents.seq))
-    .limit(60)
+    .limit(limits.events ?? 60)
   const clip = (value: string | null, max: number) =>
     !value ? "" : value.length > max ? `${value.slice(0, max)}…` : value
   const log = events
@@ -173,7 +181,7 @@ async function loadEvidence(ctx: RunContext, vision: boolean) {
   if (vision) {
     for (const file of files
       .filter((row) => row.kind === "screenshot" && row.size <= 2 * 1024 * 1024)
-      .slice(0, 3)) {
+      .slice(0, limits.images ?? 3)) {
       const data = await readFileData(file).catch(() => undefined)
       if (data)
         images.push({

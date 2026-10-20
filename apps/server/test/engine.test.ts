@@ -21,6 +21,7 @@ import {
   call,
   createTask,
   eventsOf,
+  finishWith,
   messagesOf,
   mutate,
   saveSecret,
@@ -82,7 +83,7 @@ describe("场景 1：调内置工具再结束", () => {
             record: "表已经存好",
           }),
         ]),
-        step([text("全部完成，表在附件里")]),
+        step(finishWith("全部完成，表在附件里")),
       ])
     )
     const taskId = await createTask(ctx.db, {
@@ -125,12 +126,15 @@ describe("场景 1：调内置工具再结束", () => {
       "checkpoint",
       "tool",
       "think",
+      "tool",
       "done",
     ])
     const roles = (await messagesOf(ctx.db, sessionId)).map(
       (message) => message.role
     )
-    expect(roles).toEqual(["user", "assistant", "tool", "assistant"])
+    expect(roles).toEqual(["user", "assistant", "tool", "assistant", "tool"])
+    // 检查点全部达成 + 报办成（没配复核模型）：结果办成
+    expect(done).toMatchObject({ outcome: "achieved", outcomeBy: "rule" })
 
     // 界面读的 sessions.get 能读出来（形状照 M0 的契约）
     const run = await query(ctx.app, "sessions.get", wang, { id: sessionId })
@@ -144,7 +148,7 @@ describe("场景 1：调内置工具再结束", () => {
     expect(
       notes.data.items.some(
         (item: { title: string; sessionId?: string }) =>
-          item.sessionId === sessionId && item.title.includes("运行完成")
+          item.sessionId === sessionId && item.title.includes("办成")
       )
     ).toBe(true)
   })
@@ -167,8 +171,8 @@ describe("场景 1：调内置工具再结束", () => {
     const denied = await mutate(ctx.app, "engine.runNow", li, { taskId })
     expect(denied.error?.data?.code).toBe("FORBIDDEN")
     const sessionId = await runNow(taskId)
-    // 勾检查点的参数不对、检查点没勾上就结束：记「没完成」
-    await waitStatus(ctx.db, sessionId, "incomplete")
+    // 勾检查点的参数不对、检查点没勾上就结束：已结束，结果没办成
+    await waitFor(async () => (await sessionRow(ctx.db, sessionId))?.outcome === "not_achieved", { what: "结果没办成" })
     const rules = (await eventsOf(ctx.db, sessionId)).filter(
       (event) => event.kind === "rule"
     )
@@ -380,7 +384,7 @@ describe("场景 4：session.wait 到点继续", () => {
           text("等 3 秒"),
           call("session.wait", { what: "等一会儿", afterMinutes: 0.05 }),
         ]),
-        step([text("等到了，完成")]),
+        step(finishWith("等到了，完成")),
       ])
     )
     const taskId = await createTask(ctx.db, { modelId: "test/s4" })
@@ -401,7 +405,7 @@ describe("场景 4：session.wait 到点继续", () => {
     const roles = (await messagesOf(ctx.db, sessionId)).map(
       (message) => message.role
     )
-    expect(roles).toEqual(["user", "assistant", "tool", "user", "assistant"])
+    expect(roles).toEqual(["user", "assistant", "tool", "user", "assistant", "tool"])
     const kinds = (await eventsOf(ctx.db, sessionId)).map((event) => event.kind)
     expect(kinds).toEqual(expect.arrayContaining(["wait", "resume", "done"]))
     const [wait] = await ctx.db
@@ -756,7 +760,7 @@ describe("场景 8：超过花费上限转人工", () => {
             ],
             0.02
           ),
-          step([text("完成")], 0.001),
+          step(finishWith("完成"), 0.001),
         ])
       )
       const taskId = await createTask(ctx.db, {
@@ -1454,7 +1458,7 @@ describe("其他接口", () => {
   })
 
   it("停用的任务能手动运行一次、不会被重新启用，自动触发照样挡；内置工具已同步进 tools 表", async () => {
-    useScript("test/disabled", new Script([step([text("手动跑完了")])]))
+    useScript("test/disabled", new Script([step(finishWith("手动跑完了"))]))
     const taskId = await createTask(ctx.db, {
       modelId: "test/disabled",
       enabled: false,
@@ -1485,7 +1489,7 @@ describe("其他接口", () => {
       "memory.propose",
       "notify.staff",
       "plan.set",
-      "run.not_done",
+      "run.finish",
       "session.wait",
       "skill.load",
       "skill.propose",
@@ -1496,6 +1500,6 @@ describe("其他接口", () => {
         .filter((tool) => tool.alwaysOn)
         .map((tool) => tool.id)
         .sort()
-    ).toEqual(["ask.human", "checkpoint.mark", "plan.set", "run.not_done", "session.wait"])
+    ).toEqual(["ask.human", "checkpoint.mark", "plan.set", "run.finish", "session.wait"])
   })
 })

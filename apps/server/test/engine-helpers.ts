@@ -65,6 +65,12 @@ export const call = (
 
 export const text = (value: string): Content => ({ type: "text", text: value })
 
+/** 收尾：说一段话，同时调 run.finish 报结果（run-outcome：只回文字会先被提醒一次） */
+export const finishWith = (summary: string, outcome: "achieved" | "partial" | "not_achieved" = "achieved", reason?: string): Content[] => [
+  text(summary),
+  call("run.finish", { outcome, summary, evidence: summary, ...(reason ? { reason } : {}) }),
+]
+
 /** 照剧本回复的假模型：第 n 次调用用第 n 个函数；记下每次收到的提示 */
 export class Script {
   readonly prompts: CallOptions[] = []

@@ -2,7 +2,7 @@
 // 结束的那个事务里只发一个 work.notify（和单的结束一起提交）；worker 处理时按事件名找等待、resume。
 // 不在结束的事务里直接 resume：resume 自己开事务、还要发 session.run。叫醒是幂等的（等待 resume 一次就变成 fired），多发没有副作用。
 // 中间排队等自动重试的不算结束，不叫醒。
-import { WORK_DONE_EVENT_PREFIX, workDoneEvent, workReportLine, type WorkItem, type WorkItemStatus } from "@heyagent/shared"
+import { runOutcomeLabel, WORK_DONE_EVENT_PREFIX, workDoneEvent, workReportLine, type WorkItem, type WorkItemStatus } from "@heyagent/shared"
 import { eq } from "drizzle-orm"
 
 import type { Db } from "../../db/client.js"
@@ -41,18 +41,22 @@ export function workDoneData(item: WorkItem) {
     item: item.id,
     status: item.status as "done" | "failed" | "cancelled",
     title: item.title,
+    // 结果（run-outcome 6.2）：办完的也可能没核实，派活方自己判断要不要重派或者报给人
+    ...(item.outcome ? { outcome: item.outcome } : {}),
+    ...(item.outcomeReason ? { outcomeReason: item.outcomeReason.slice(0, 1000) } : {}),
     ...(item.result?.summary ? { summary: item.result.summary.slice(0, 2000) } : {}),
     ...(item.error && item.status !== "done" ? { error: item.error } : {}),
     ...(item.result?.data && Object.keys(item.result.data).length ? { report: item.result.data } : {}),
   }
 }
 
-/** 一句话：「W-57「标题」办完：总结… · 结果：件数=3」 */
+/** 一句话：「W-57「标题」办完（办成）：总结… · 结果：件数=3」 */
 export function workDoneText(item: WorkItem): string {
   const data = workReportLine(item.result?.data)
   const tail = data ? ` · 结果：${data}` : ""
-  if (item.status === "done") return `${item.id}「${item.title}」办完${item.result?.summary ? `：${clip(item.result.summary, 500)}` : ""}${tail}`
-  if (item.status === "failed") return `${item.id}「${item.title}」没办成${item.error ? `：${clip(item.error, 500)}` : ""}${tail}`
+  const outcome = item.outcome ? `（${runOutcomeLabel[item.outcome]}${item.outcome === "unverified" && item.outcomeReason ? `：${clip(item.outcomeReason, 200)}` : ""}）` : ""
+  if (item.status === "done") return `${item.id}「${item.title}」办完${outcome}${item.result?.summary ? `：${clip(item.result.summary, 500)}` : ""}${tail}`
+  if (item.status === "failed") return `${item.id}「${item.title}」没办成${item.outcome === "partial" ? "（部分办成）" : ""}${item.error ? `：${clip(item.error, 500)}` : ""}${tail}`
   if (item.status === "cancelled") return `${item.id}「${item.title}」不办了${item.error ? `：${clip(item.error, 500)}` : ""}`
   return `${item.id}「${item.title}」还没结束`
 }

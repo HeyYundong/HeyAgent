@@ -39,6 +39,13 @@ async function checkTask(db: DbOrTx, input: TaskInput, previousRuleIds: string[]
       throw badRequest(`执行模型和三方验收模型是同一家（${modelFamily(modelId)}），验收就不算第三方了。换一个执行模型，或去「模型」页换验收模型。`)
     }
   }
+  // 复核模型（run-outcome）：要是聊天模型；不要求和执行模型不同家（这不是三方验收）
+  const reviewModelId = input.reviewModelId || null
+  if (reviewModelId) {
+    const [found] = await db.select({ id: t.models.id, kind: t.models.kind }).from(t.models).where(eq(t.models.id, reviewModelId))
+    if (!found) throw badRequest(`复核模型 ${reviewModelId} 不存在，请换一个`)
+    if (found.kind !== "chat") throw badRequest(`${reviewModelId} 是 embedding 模型，不能用来复核，请换一个`)
+  }
   const dispatchFrom = await checkDispatchSources(db, input.dispatchFrom, selfId)
   const exist = async (table: typeof t.memories | typeof t.skills | typeof t.rules | typeof t.tools, list: string[], what: string) => {
     if (list.length === 0) return
@@ -70,7 +77,7 @@ async function checkTask(db: DbOrTx, input: TaskInput, previousRuleIds: string[]
   const alwaysOn = input.toolIds.length
     ? (await db.select({ id: t.tools.id }).from(t.tools).where(and(inArray(t.tools.id, input.toolIds), eq(t.tools.alwaysOn, true)))).map((row) => row.id)
     : []
-  return { modelId, verifyModelId, toolIds: input.toolIds.filter((id) => !alwaysOn.includes(id)), dispatchFrom }
+  return { modelId, verifyModelId, reviewModelId, toolIds: input.toolIds.filter((id) => !alwaysOn.includes(id)), dispatchFrom }
 }
 
 /** 派活：谁能派活给它（必须存在、不能是自己）。返回去重后的 */
@@ -95,7 +102,7 @@ export async function setDispatchSources(tx: Tx, taskId: string, sourceIds: stri
   if (dispatchFrom.length) await tx.insert(t.taskDispatchSources).values(dispatchFrom.map((sourceTaskId) => ({ taskId, sourceTaskId })))
 }
 
-function columns(input: TaskInput, modelId: string, verifyModelId: string | null) {
+function columns(input: TaskInput, modelId: string, verifyModelId: string | null, reviewModelId: string | null) {
   const steps = input.steps.map((step, index) => ({
     id: step.id || `s${index + 1}`,
     text: step.text,
@@ -122,6 +129,8 @@ function columns(input: TaskInput, modelId: string, verifyModelId: string | null
     allowedDomains: [...new Set(input.allowedDomains)],
     allowBrowserEvaluate: input.allowBrowserEvaluate,
     verifyModelId,
+    reviewEnabled: input.reviewEnabled,
+    reviewModelId,
     // 派活：参数声明和名额（已经按 shared 的 taskDispatchSchema 校验过：参数名不重复）；null = 不能被派活
     dispatch: input.dispatch ?? null,
     cronSkipIfRunning: input.cronSkipIfRunning,
@@ -157,11 +166,11 @@ async function loadTask(db: DbOrTx, id: string) {
  */
 export async function insertTask(tx: Tx, actor: Actor, input: TaskInput, options: { allowInactiveRuleIds?: string[]; audit?: Record<string, unknown> } = {}): Promise<string> {
   const ownerId = input.ownerId || actor.id
-  const { modelId, verifyModelId, toolIds, dispatchFrom } = await checkTask(tx, input, options.allowInactiveRuleIds ?? [])
+  const { modelId, verifyModelId, reviewModelId, toolIds, dispatchFrom } = await checkTask(tx, input, options.allowInactiveRuleIds ?? [])
   const [owner] = await tx.select({ id: t.users.id }).from(t.users).where(eq(t.users.id, ownerId))
   if (!owner) throw badRequest("负责人不存在")
   const id = taskId(await nextNo(tx, "task_no_seq"))
-  await tx.insert(t.tasks).values({ id, ownerId, ...columns(input, modelId, verifyModelId) })
+  await tx.insert(t.tasks).values({ id, ownerId, ...columns(input, modelId, verifyModelId, reviewModelId) })
   await writeLinks(tx, id, { ...input, toolIds, dispatchFrom })
   await audit(tx, actor.id, "task.create", "tasks", id, { title: input.title, ownerId, modelId, ...options.audit })
   return id
@@ -181,8 +190,8 @@ export async function updateTask(ctx: WriteCtx, input: TaskInput & { id: string 
     // 员工不能把任务转给别人
     const ownerId = ctx.actor.isAdmin && input.ownerId ? input.ownerId : before.ownerId
     const previousRuleIds = (await tx.select({ id: t.taskRules.refId }).from(t.taskRules).where(eq(t.taskRules.taskId, input.id))).map((row) => row.id)
-    const { modelId, verifyModelId, toolIds, dispatchFrom } = await checkTask(tx, input, previousRuleIds, input.id)
-    const next = columns(input, modelId, verifyModelId)
+    const { modelId, verifyModelId, reviewModelId, toolIds, dispatchFrom } = await checkTask(tx, input, previousRuleIds, input.id)
+    const next = columns(input, modelId, verifyModelId, reviewModelId)
     await tx.update(t.tasks).set({ ...next, ownerId }).where(eq(t.tasks.id, input.id))
     await writeLinks(tx, input.id, { ...input, toolIds, dispatchFrom })
     // 能被派活（刚打开、调大名额、改了别的）：领一次单。关掉时排着的单留着不动，重新打开接着领

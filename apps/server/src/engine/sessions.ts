@@ -5,6 +5,7 @@ import {
   BROWSER_TOOL_ID,
   COMPARE_TOOL_ID,
   GALLERY_TOOL_ID,
+  RUN_FINISH_TOOL_ID,
   WORK_DISPATCH_TOOL_ID,
   WORK_LIST_TOOL_ID,
   WORK_REPORT_TOOL_ID,
@@ -236,6 +237,9 @@ export async function buildSnapshot(
     },
     modelId: task.modelId,
     ...(task.verifyModelId ? { verifyModelId: task.verifyModelId } : {}),
+    // 结束后的轻量复核（run-outcome 第 5 节）：开关和模型冻进快照，复核模型为空时复核那一刻取默认复核模型
+    reviewEnabled: task.reviewEnabled,
+    ...(task.reviewModelId ? { reviewModelId: task.reviewModelId } : {}),
     memories: memories
       .filter((memory) => memory.status === "active")
       .map(({ id, content, appliesTo }) => ({ id, content, appliesTo })),
@@ -291,7 +295,9 @@ export function firstUserMessage(snapshot: SessionSnapshot): string {
       ...(snapshot.attachments.length
         ? [`这次运行带了 ${snapshot.attachments.length} 个附件，清单见系统提示，用 file.read 读取。`]
         : []),
-      "只办这一件。办完直接回复总结（结果是什么、做了哪些改动），这段总结会写回派活单。",
+      snapshot.tools.some((tool) => tool.id === RUN_FINISH_TOOL_ID)
+        ? "只办这一件。结束时调用 run_finish 报结果（办成 / 部分办成 / 没办成），summary 写结果是什么、做了哪些改动，会写回派活单。"
+        : "只办这一件。办完直接回复总结（结果是什么、做了哪些改动），这段总结会写回派活单。",
     ].join("\n")
   }
   const lines = [

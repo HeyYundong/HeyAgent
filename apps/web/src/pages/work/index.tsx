@@ -4,6 +4,8 @@
 // 筛选放在网址里（?task=&status=&from=&id=），任务抽屉点「排队 5」能直接跳过来并筛好。
 // 第二期（docs/dev/dispatch-p2.md 3.4、4.4 节）：结果区块加「报结果」写的字段表、在办时「已报：…」；没办成按 failKind 分「运行出错」「agent 判断办不成」；
 // 排队等自动重试的单徽章写「排队 · 16:38 重试」，顶部提示和处理记录里写第几次重试；?new=1 直接打开「派一张」（导入后的「派一张试试」用）。
+// 运行结果（docs/dev/run-outcome.md 第 6.2、8 节）：单的结果跟着最后那次运行的结果（办成 / 部分办成 / 没办成 / 没核实），列表和详情都有结果徽章；
+// 按结果筛（?outcome=，例如只看「没核实」）时不再按状态分（有结果的都是结束了的单）；没办成多两种：部分办成（partial）、缺要交回的结果（missing_result）。
 import * as React from "react"
 import { keepPreviousData, useInfiniteQuery, useQuery } from "@tanstack/react-query"
 import {
@@ -12,6 +14,7 @@ import {
   CircleCheckIcon,
   CircleSlashIcon,
   CircleAlertIcon,
+  CircleHelpIcon,
   CircleXIcon,
   EllipsisIcon,
   HandIcon,
@@ -33,6 +36,7 @@ import {
   sameShanghaiDay,
   WORK_LIST_DEFAULT_DAYS,
   WORK_RETRY_DELAY_DEFAULT,
+  runOutcomeLabel,
   type RunStatus,
   type SessionSummary,
   type TaskDef,
@@ -44,6 +48,7 @@ import {
 
 import { FileList } from "@/components/files"
 import { MarkdownView } from "@/components/markdown"
+import { OUTCOME_FILTERS, OutcomeBadge } from "@/components/shell/outcome-badge"
 import { DetailPanel, DetailSection, EmptyState, HelpTip, MasterDetail, PageFrame, PickGroup, PickItem, SimpleHeader } from "@/components/shell/simple-page"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
@@ -64,7 +69,7 @@ import { delayText } from "@/pages/tasks/dispatch-fields"
 import { WaitingAlert, money } from "@/pages/tasks/parts"
 
 import { CancelDialog, DispatchDialog, EditParamsDialog, RedoDoneDialog, dispatchedToast, useRedo } from "./dialogs"
-import { ParamsTable, ReportTable, WorkStatusBadge, reportText, retryAt, shortName, timeText, useWorkTaskStats } from "./parts"
+import { ParamsTable, ReportTable, WorkStatusBadge, failReason, reportText, retryAt, shortName, showItemOutcome, timeText, useWorkTaskStats } from "./parts"
 
 // 没有「全部」：网址里没写状态时看「在办」；「不办了」的单算在「没办成」里
 type Filter = Exclude<WorkItemStatus, "cancelled">
@@ -77,6 +82,8 @@ const FILTERS: { id: Filter; name: string }[] = [
 ]
 
 const PAGE_SIZE = 50
+
+const OUTCOME_ITEMS = [{ value: "all", label: "全部结果" }, ...OUTCOME_FILTERS]
 
 export default function WorkPage() {
   const { user } = useMe()
@@ -92,10 +99,12 @@ export default function WorkPage() {
   const redo = useRedo()
 
   const filter = (FILTERS.some((each) => each.id === params.get("status")) ? params.get("status") : "running") as Filter
+  // 按结果筛：选了结果就不再按状态分（排队、在办的单还没有结果）
+  const outcomeFilter = OUTCOME_FILTERS.find((each) => each.value === params.get("outcome"))?.value
   const taskFilter = params.get("task") ?? "all"
   const fromFilter = params.get("from")
   const selectedId = params.get("id")
-  const urlFilters = { status: filter === "running" ? null : filter, task: taskFilter === "all" ? null : taskFilter, from: fromFilter }
+  const urlFilters = { status: outcomeFilter || filter === "running" ? null : filter, outcome: outcomeFilter ?? null, task: taskFilter === "all" ? null : taskFilter, from: fromFilter }
 
   const q = useDebouncedText(query.trim())
   const tasksQuery = useTasksQuery()
@@ -105,7 +114,8 @@ export default function WorkPage() {
     trpc.work.list.infiniteQueryOptions(
       {
         q: q || undefined,
-        status: filter === "failed" ? ["failed", "cancelled"] : filter,
+        status: outcomeFilter ? undefined : filter === "failed" ? ["failed", "cancelled"] : filter,
+        outcome: outcomeFilter,
         taskId: taskFilter === "all" ? undefined : taskFilter,
         fromTaskId: fromFilter ?? undefined,
         days: allTime ? 0 : WORK_LIST_DEFAULT_DAYS,
@@ -127,7 +137,7 @@ export default function WorkPage() {
   const now = new Date()
   const today = items.filter((item) => sameShanghaiDay(item.createdAt, now))
   const earlier = items.filter((item) => !sameShanghaiDay(item.createdAt, now))
-  const filtered = Boolean(q) || taskFilter !== "all" || Boolean(fromFilter)
+  const filtered = Boolean(q) || taskFilter !== "all" || Boolean(fromFilter) || Boolean(outcomeFilter)
   const canMore = listQuery.hasNextPage || (!allTime && !q)
   // ?new=1：导入后「派一张试试」等直接打开「派一张」，任务按 ?task= 选好；关掉时把 new 从网址里去掉
   const creatingFromUrl = params.get("new") === "1" && manageable.length > 0
@@ -183,7 +193,7 @@ export default function WorkPage() {
                     </InputGroupAddon>
                   )}
                 </InputGroup>
-                <ToggleGroup variant="outline" size="sm" spacing={0} className="w-full" value={[filter]} onValueChange={(value) => value[0] && setParams({ status: value[0] === "running" ? null : value[0] })} aria-label="按状态筛选">
+                <ToggleGroup variant="outline" size="sm" spacing={0} className="w-full" value={outcomeFilter ? [] : [filter]} onValueChange={(value) => value[0] && setParams({ status: value[0] === "running" ? null : value[0], outcome: null })} aria-label="按状态筛选">
                   {FILTERS.map((each) => (
                     <ToggleGroupItem key={each.id} value={each.id} className="flex-1">
                       {each.name}
@@ -191,6 +201,18 @@ export default function WorkPage() {
                     </ToggleGroupItem>
                   ))}
                 </ToggleGroup>
+                <Select items={OUTCOME_ITEMS} value={outcomeFilter ?? "all"} onValueChange={(value) => value && setParams({ outcome: value === "all" ? null : String(value), status: null })}>
+                  <SelectTrigger className="w-full" aria-label="按结果筛选">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {OUTCOME_ITEMS.map((item) => (
+                      <SelectItem key={item.value} value={item.value}>
+                        {item.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
                 <Select
                   items={[{ value: "all", label: "全部被派的任务" }, ...taskOptions.map((task) => ({ value: task.id, label: `${task.id} ${task.title}` }))]}
                   value={taskFilter}
@@ -232,7 +254,12 @@ export default function WorkPage() {
                               selected={item.id === selectedId}
                               title={item.title}
                               description={`${item.id} · ${timeText(item.createdAt)} · ${item.via === "agent" ? `${shortName(item.fromTaskTitle)}派的` : `${staffName(item.fromUserId ?? undefined)}派的`} → ${shortName(item.taskTitle)}`}
-                              badge={<WorkStatusBadge item={item} />}
+                              badge={
+                                <span className="flex flex-col items-end gap-1">
+                                  <WorkStatusBadge item={item} />
+                                  {showItemOutcome(item) && <OutcomeBadge outcome={item.outcome} />}
+                                </span>
+                              }
                             />
                           ))}
                         </PickGroup>
@@ -262,7 +289,7 @@ export default function WorkPage() {
                         variant="outline"
                         onClick={() => {
                           setQuery("")
-                          setParams({ task: null, from: null })
+                          setParams({ task: null, from: null, outcome: null })
                         }}
                       >
                         清空筛选
@@ -334,7 +361,7 @@ function QuotaLine({ task }: { task: TaskDef }) {
 }
 
 const RUN_ICON: Record<RunStatus, typeof CircleCheckIcon> = { running: BotIcon, waiting: HourglassIcon, needs_human: HandIcon, verifying: ScanSearchIcon, done: CircleCheckIcon, incomplete: CircleAlertIcon, failed: CircleXIcon }
-const RUN_TEXT: Record<RunStatus, string> = { ...runStatusLabel, waiting: "挂起等待", done: "办完", incomplete: "没完成", failed: "失败" }
+const RUN_TEXT: Record<RunStatus, string> = { ...runStatusLabel, waiting: "挂起等待" }
 
 function WorkDetail({ id, onEdit, onCancel, onRedo }: { id: string; onEdit: (item: WorkItemDetail) => void; onCancel: (item: WorkItemDetail) => void; onRedo: (item: WorkItemDetail) => void }) {
   const { user } = useMe()
@@ -362,6 +389,7 @@ function WorkDetail({ id, onEdit, onCancel, onRedo }: { id: string; onEdit: (ite
       badges={
         <>
           <WorkStatusBadge item={item} long />
+          {showItemOutcome(item) && <OutcomeBadge outcome={item.outcome} reason={item.outcomeReason} />}
           {attempt >= 2 && <Badge variant="outline">第 {attempt} 次</Badge>}
         </>
       }
@@ -447,7 +475,7 @@ function WorkDetail({ id, onEdit, onCancel, onRedo }: { id: string; onEdit: (ite
         </div>
       </DetailSection>
 
-      <DetailSection title="结果" description="被派的运行办完后，agent 最后那段总结写回这里；有验收的，验收通过才算办完。">
+      <DetailSection title={item.outcome ? `结果 · ${runOutcomeLabel[item.outcome]}` : "结果"} description="被派的运行结束后，agent 最后那段总结写回这里。结果跟着那次运行：只看要的东西拿没拿到；agent 说办成了但没有依据的记「没核实」，派活方会看到，要自己判断要不要重派或者报给人。">
         <ResultBody item={item} run={run} canManage={canManage} />
       </DetailSection>
 
@@ -543,10 +571,18 @@ function QueuedAlert({ item, canManage }: { item: WorkItemDetail; canManage: boo
   )
 }
 
-/** 没办成的三种（第二期 failKind）：提示的标题和下面那句解释 */
+/** 运行正常结束、但事情没办成的几种（agent 报的、规则判的、复核判的）：都不自动重试 */
+const JUDGED_FAILS = ["not_done", "partial", "missing_result"] as const
+const isJudgedFail = (item: Pick<WorkItemDetail, "failKind">) => (JUDGED_FAILS as readonly string[]).includes(item.failKind ?? "")
+
+/** 没办成的几种（failKind）：提示的标题和下面那句解释 */
 function failText(item: WorkItemDetail) {
   if (item.failKind === "not_done")
-    return { title: "没办成 · agent 判断办不成", why: "这是 agent 认真办过以后的结论（它用「报结果」报了办不成），运行本身是正常结束的，所以不自动重试。" }
+    return { title: "没办成 · 要的东西没拿到", why: "运行是正常结束的，但任务要的东西没拿到（agent 自己报的、检查点没达成，或者 AI 复核判的），所以不自动重试。" }
+  if (item.failKind === "partial")
+    return { title: "没办成 · 只办成了一部分", why: "运行是正常结束的，但只拿到一部分（agent 自己报的、检查点有跳过的，或者 AI 复核判的）。部分办成不自动重试，剩下的要不要再派由派活方或人决定。" }
+  if (item.failKind === "missing_result")
+    return { title: "没办成 · 缺要交回的结果", why: "被派的任务声明了要交回的结果，必填的有没交的（agent 没用「报结果」交），所以不自动重试。" }
   if (item.failKind === "cancelled_run")
     return { title: "没办成 · 运行被人停了", why: "有人取消了运行、选了不继续，或者判了验收不通过，所以不自动重试。" }
   if (item.autoRetries > 0)
@@ -554,22 +590,62 @@ function failText(item: WorkItemDetail) {
   return { title: "没办成 · 运行出错", why: "运行出错（模型、浏览器、程序的问题），不是这件事办不成。" }
 }
 
+/**
+ * 办完的单，结果不是办成时放在总结上面：没核实（agent 说办成了，但没有依据）醒目标出来；
+ * 没办成 / 部分办成的办完单只有补旧数据时会有（单的状态不改，结果按那次运行补）
+ */
+function OutcomeAlert({ item }: { item: WorkItemDetail }) {
+  if (!item.outcome || item.outcome === "achieved") return null
+  const reason = item.outcomeReason
+  if (item.outcome === "unverified") {
+    return (
+      <Alert>
+        <CircleHelpIcon />
+        <AlertTitle>没核实</AlertTitle>
+        <AlertDescription>
+          <p>{reason ?? "agent 说办成了，但没有依据。"}</p>
+          <p>
+            单记成办完，{item.via === "agent" ? `「${shortName(item.fromTaskTitle)}」` : "派活方"}看得到它没核实。看一下产物和过程，确认办成了可以在运行详情里点「改结果」。
+          </p>
+        </AlertDescription>
+      </Alert>
+    )
+  }
+  return (
+    <Alert variant="destructive">
+      <CircleXIcon />
+      <AlertTitle>结果：{runOutcomeLabel[item.outcome]}</AlertTitle>
+      <AlertDescription>
+        {reason && <p>{reason}</p>}
+        <p>这张单以前记成了办完，结果是后来按那次运行补的，单的状态没改。</p>
+      </AlertDescription>
+    </Alert>
+  )
+}
+
 function ResultBody({ item, run, canManage }: { item: WorkItemDetail; run?: SessionSummary; canManage: boolean }) {
   const runNow = useRunNow()
   const data = item.result?.data && Object.keys(item.result.data).length > 0 ? item.result.data : undefined
-  if (item.status === "done" && item.result) return <ResultSummary item={item} />
+  if (item.status === "done" && item.result) {
+    return (
+      <div className="flex flex-col gap-3">
+        <OutcomeAlert item={item} />
+        <ResultSummary item={item} />
+      </div>
+    )
+  }
   if (item.status === "failed") {
     const fail = failText(item)
     const retried = item.failKind === "error" ? item.autoRetries : 0
-    const notDone = item.failKind === "not_done"
+    const notDone = isJudgedFail(item)
     return (
       <div className="flex flex-col gap-3">
         <Alert variant="destructive">
           <CircleXIcon />
           <AlertTitle>{fail.title}</AlertTitle>
           <AlertDescription>
-            {/* agent 报的办不成：后端存的原因带「agent 判断办不成：」前缀，标题里已经写了，这里去掉 */}
-            <p>{(notDone ? item.error?.replace(/^agent 判断办不成[：:]\s*/, "") : item.error) ?? item.runs.at(-1)?.error ?? "运行失败了，详情看那次运行。"}</p>
+            {/* 没办成的原因先用结果的原因；老数据退回 error（agent 报的办不成带「agent 判断办不成：」前缀，去掉） */}
+            <p>{failReason(item.outcomeReason) ?? (notDone ? failReason(item.error) : item.error) ?? item.runs.at(-1)?.error ?? "运行出错了，详情看那次运行。"}</p>
             <p>{fail.why}</p>
           </AlertDescription>
         </Alert>
@@ -673,9 +749,7 @@ function History({ item }: { item: WorkItemDetail }) {
         if (entry.kind === "run_ended" || entry.kind === "reported") return null
         if (entry.kind === "run_started") {
           const run = runs.find((each) => each.sessionId === entry.sessionId)
-          // agent 报了「办不成」：运行正常结束，单记没办成。现在这种运行记「没完成」（下面写原因）；有「没完成」以前的旧运行记的是「已完成」
-          const notDone = item.failKind === "not_done" && run === runs.at(-1) && run?.status === "done"
-          return run ? <RunLine key={index} run={run} attempt={runs.indexOf(run) + 1} notDone={notDone} /> : null
+          return run ? <RunLine key={index} run={run} attempt={runs.indexOf(run) + 1} /> : null
         }
         if (entry.kind === "retry_scheduled") return <RetryLine key={index} item={item} entry={entry} />
         return <EventLine key={index} item={item} entry={entry} />
@@ -731,7 +805,8 @@ function RetryLine({ item, entry }: { item: WorkItemDetail; entry: WorkLogEntry 
   )
 }
 
-function RunLine({ run, attempt, notDone = false }: { run: WorkRun; attempt: number; notDone?: boolean }) {
+/** 一次运行：第几次、编号、状态（已结束 / 出错……）、结果（办成 / 没办成……） */
+function RunLine({ run, attempt }: { run: WorkRun; attempt: number }) {
   const Icon = RUN_ICON[run.status]
   const active = run.status === "running"
   return (
@@ -739,7 +814,8 @@ function RunLine({ run, attempt, notDone = false }: { run: WorkRun; attempt: num
       <TraceLine status={active ? "running" : run.status === "failed" ? "error" : undefined}>
         <TraceIcon>{active ? <Spinner /> : <Icon />}</TraceIcon>
         <TraceTitle className="text-foreground">
-          第 {attempt} 次 · <span className="font-mono">{run.sessionId}</span> · {notDone ? "运行完成 · agent 报了办不成" : RUN_TEXT[run.status]}
+          第 {attempt} 次 · <span className="font-mono">{run.sessionId}</span> · {RUN_TEXT[run.status]}
+          {run.outcome && ` · ${runOutcomeLabel[run.outcome]}`}
         </TraceTitle>
         <TraceDescription>
           {timeText(run.startedAt)}

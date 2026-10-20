@@ -16,6 +16,7 @@ import {
   type MemoryRef,
   type ModelDefaults,
   type ModelRole,
+  type RunOutcome,
   type ModelProvider,
   type Platform,
   type RuleRef,
@@ -109,6 +110,8 @@ export async function listTasks(db: Db, ids?: string[]): Promise<TaskDef[]> {
       allowedDomains: row.allowedDomains,
       allowBrowserEvaluate: row.allowBrowserEvaluate,
       verifyModelId: opt(row.verifyModelId),
+      reviewEnabled: row.reviewEnabled,
+      reviewModelId: opt(row.reviewModelId),
       dispatch: row.dispatch ?? undefined,
       dispatchFrom: dispatchFrom.get(row.id) ?? [],
       cronSkipIfRunning: row.cronSkipIfRunning,
@@ -148,7 +151,8 @@ function toTrigger(row: {
   }
 }
 
-type SessionFilter = { ids?: string[]; taskId?: string }
+/** outcome 只筛列表的行（run-outcome：可以给几种），过程摘要等照 ids / taskId 的范围取 */
+type SessionFilter = { ids?: string[]; taskId?: string; outcome?: RunOutcome[] }
 
 /** 只取这些 session 的行：按 id，或按任务（子查询，不把 id 一个个拼进 SQL）；不筛返回 undefined */
 function sessionScope(db: Db, column: AnyColumn, filter: SessionFilter) {
@@ -230,7 +234,13 @@ export async function listSessions(db: Db, filter: SessionFilter = {}): Promise<
   const rows = await db
     .select()
     .from(t.sessions)
-    .where(and(filter.ids ? inArray(t.sessions.id, filter.ids) : undefined, filter.taskId ? eq(t.sessions.taskId, filter.taskId) : undefined))
+    .where(
+      and(
+        filter.ids ? inArray(t.sessions.id, filter.ids) : undefined,
+        filter.taskId ? eq(t.sessions.taskId, filter.taskId) : undefined,
+        filter.outcome?.length ? inArray(t.sessions.outcome, filter.outcome) : undefined
+      )
+    )
     .orderBy(desc(t.sessions.startedAt))
   if (rows.length === 0) return []
   const checkpointScope = sessionScope(db, t.checkpoints.sessionId, filter)
@@ -270,6 +280,10 @@ export async function listSessions(db: Db, filter: SessionFilter = {}): Promise<
       startedAt: iso(row.startedAt),
       endedAt: isoOpt(row.endedAt),
       status: row.status,
+      outcome: opt(row.outcome),
+      outcomeReason: opt(row.outcomeReason),
+      outcomeBy: opt(row.outcomeBy),
+      review: opt(row.review),
       modelId: row.modelId,
       tokensIn: row.tokensIn,
       tokensOut: row.tokensOut,
@@ -625,6 +639,13 @@ export async function loadModels(db: Db): Promise<{ providers: ModelProvider[]; 
         embeddingModels: embeddingModels.length ? embeddingModels : undefined,
       })
     }),
-    defaults: compact({ run: defaultOf("run"), plan: defaultOf("plan"), verify: defaultOf("verify"), embed: opt(defaultOf("embed") || null), assistant: opt(defaultOf("assistant") || null) }),
+    defaults: compact({
+      run: defaultOf("run"),
+      plan: defaultOf("plan"),
+      verify: defaultOf("verify"),
+      embed: opt(defaultOf("embed") || null),
+      assistant: opt(defaultOf("assistant") || null),
+      review: opt(defaultOf("review") || null),
+    }),
   }
 }

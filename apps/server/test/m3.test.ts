@@ -17,6 +17,7 @@ import {
   call,
   createTask,
   eventsOf,
+  finishWith,
   messagesOf,
   mutate,
   Script,
@@ -249,7 +250,7 @@ describe("规则执行：调工具前拦下、审批（批准后执行、拒绝�
   it("拦下：工具不执行，理由交给 agent，写 rule 事件；agent 提议记忆也能拦", async () => {
     const script = useScript(
       "test/m3-deny",
-      new Script([step([call("notify.staff", { title: "你好" }), call("memory.propose", { content: "记住这个", appliesTo: "测试", evidence: "chat" })]), step([text("好的，不发了")])])
+      new Script([step([call("notify.staff", { title: "你好" }), call("memory.propose", { content: "记住这个", appliesTo: "测试", evidence: "chat" })]), step(finishWith("好的，不发了"))])
     )
     const taskId = await createTask(ctx.db, { modelId: "test/m3-deny", toolIds: ["notify.staff", "memory.propose"] })
     await addRule(taskId, { trigger: { type: "before_tool", toolIds: ["notify.staff"], risks: [] }, actions: [{ type: "deny", reason: "这个任务不许发通知" }] }, "不许发通知")
@@ -265,7 +266,7 @@ describe("规则执行：调工具前拦下、审批（批准后执行、拒绝�
     expect(ruleEvents.find((event) => event.title === "拦下：通知员工")!.detail).toContain("规则「不许发通知」")
     // 没有发出通知（只有完成通知）、没有生成记忆
     const after = await ctx.db.select().from(t.notifications)
-    expect(after.filter((row) => !before.some((old) => old.id === row.id)).map((row) => row.title)).toEqual([expect.stringContaining("运行完成")])
+    expect(after.filter((row) => !before.some((old) => old.id === row.id)).map((row) => row.title)).toEqual([expect.stringContaining("没核实")])
     expect(await ctx.db.select().from(t.memories).where(eq(t.memories.sourceSessionId, sessionId))).toEqual([])
     // 系统提示里写的是「系统理解为」
     expect(JSON.stringify(script.prompts[0]!.prompt)).toContain("拦下，告诉 agent「这个任务不许发通知」")
@@ -291,7 +292,7 @@ describe("规则执行：调工具前拦下、审批（批准后执行、拒绝�
       "test/m3-approve",
       new Script([
         step([call("http.send", { to: "客户甲", text: "报价 100 元" }), call("checkpoint.mark", { checkpoint: 1, status: "done", record: "发了" })]),
-        step([text("发完了")]),
+        step(finishWith("发完了")),
       ])
     )
     const taskId = await createTask(ctx.db, { modelId: "test/m3-approve", toolIds: ["http.send"], steps: [{ id: "s1", text: "发消息", wait: false, checkpoint: "发消息已确认" }] })
@@ -315,7 +316,7 @@ describe("规则执行：调工具前拦下、审批（批准后执行、拒绝�
     expect(received.length).toBe(count + 1)
     expect(received.at(-1)).toContain("报价 100 元")
     const roles = (await messagesOf(ctx.db, sessionId)).map((row) => row.role)
-    expect(roles).toEqual(["user", "assistant", "tool", "tool", "assistant"])
+    expect(roles).toEqual(["user", "assistant", "tool", "tool", "assistant", "tool"])
     expect(script.promptText(1)).toContain("批准了这次调用，备注：可以发")
     expect(script.promptText(1)).toContain("已勾上第 1 个检查点")
     const titles = (await eventsOf(ctx.db, sessionId)).map((event) => event.title)
@@ -356,8 +357,11 @@ describe("规则执行：调模型前、调工具后、说做完了", () => {
     expect(item).toMatchObject({ kind: "approval", title: "花费超过 0.5 美元，要不要继续" })
     expect(item!.detail.pay).toBeDefined()
     await mutate(ctx.app, "engine.resolveHumanItem", wang, { itemId: item!.id, how: "approve" })
-    // 检查点只标了在做、没勾就说完成：记「没完成」
-    const done = await waitStatus(ctx.db, sessionId, "incomplete")
+    // 检查点只标了在做、没勾就说完成：已结束，结果没办成
+    const done = await waitFor(async () => {
+      const row = await sessionRow(ctx.db, sessionId)
+      return row?.outcome === "not_achieved" ? row : undefined
+    }, { what: "结果没办成" })
     expect(done.ruleState).toMatchObject({ costFired: [expect.any(String)] })
     // 同意后没有再问第二次
     expect(await itemsOf(sessionId)).toHaveLength(1)
@@ -439,8 +443,8 @@ describe("检查点自动记录（sync_checkpoint）", () => {
     })
     await addRule(taskId, { trigger: { type: "after_tool", toolIds: [], anyTool: true }, actions: [{ type: "sync_checkpoint" }] }, "同步检查点")
     const sessionId = await runNow(taskId)
-    // 「表 A 已保存」没达成：记「没完成」
-    await waitStatus(ctx.db, sessionId, "incomplete")
+    // 「表 A 已保存」没达成：结果没办成
+    await waitFor(async () => (await sessionRow(ctx.db, sessionId))?.outcome === "not_achieved", { what: "结果没办成" })
     const run = (await query(ctx.app, "sessions.get", wang, { id: sessionId })).data
     expect(run.checkpoints.map((cp: { title: string; kind: string; status: string }) => [cp.title, cp.kind, cp.status])).toEqual([
       ["表 A 已保存", "artifact", "open"],
@@ -473,7 +477,7 @@ async function verifyTask(modelId: string, verifyModelId: string) {
 
 describe("三方验收", () => {
   it("通过：验收模型逐条给结论，存进 sessions.verification，运行完成", async () => {
-    useScript("test/claude-v-pass", new Script([step([call("file.save", { path: "sum.csv", content: "x,y\n1,2" })]), step([call("checkpoint.mark", { checkpoint: 1, status: "done", record: "存了 sum.csv" })]), step([text("做完了，表是 sum.csv")])]))
+    useScript("test/claude-v-pass", new Script([step([call("file.save", { path: "sum.csv", content: "x,y\n1,2" })]), step([call("checkpoint.mark", { checkpoint: 1, status: "done", record: "存了 sum.csv" })]), step(finishWith("做完了，表是 sum.csv"))]))
     const verifier = useScript("test/gemini-v-pass", new Script([verifyJson({ items: [{ index: 1, verdict: "pass", reason: "有 sum.csv 文件" }], verdict: "pass", headline: "1 个检查点全部完成", question: "" })]))
     const taskId = await verifyTask("test/claude-v-pass", "test/gemini-v-pass")
     const sessionId = await runNow(taskId)
@@ -486,7 +490,8 @@ describe("三方验收", () => {
     expect(prompt).toContain("做完了，表是 sum.csv")
     expect(prompt).toContain("x,y")
     const kinds = (await eventsOf(ctx.db, sessionId)).map((event) => [event.kind, event.title])
-    expect(kinds.at(-1)).toEqual(["done", "验收通过，运行完成"])
+    expect(kinds.at(-1)).toEqual(["done", "agent 报办成"])
+    expect(done).toMatchObject({ outcome: "achieved", outcomeBy: "verify", outcomeReason: "1 个检查点全部完成" })
     expect(kinds.filter(([kind]) => kind === "verify").map(([, title]) => title)).toEqual(["agent 说做完了，三方 AI（test/gemini-v-pass）开始验收", "验收通过：1 个检查点全部完成"])
     // 验收的花费也算进这次运行
     expect(done.costUsd).toBeCloseTo(0.003 + 0.002, 6)
@@ -496,9 +501,9 @@ describe("三方验收", () => {
     const executor = useScript(
       "test/claude-v-ask",
       new Script([
-        step([text("做完了")]),
+        step(finishWith("做完了")),
         step([call("file.save", { path: "sum.csv", content: "补上的表" }), call("checkpoint.mark", { checkpoint: 1, status: "done", record: "补存了 sum.csv" })]),
-        step([text("刚才漏了存表，已经补上 sum.csv")]),
+        step(finishWith("刚才漏了存表，已经补上 sum.csv")),
       ])
     )
     useScript(
@@ -524,7 +529,7 @@ describe("三方验收", () => {
   it("仍有争议交给人：生成验收争议附报告；补充说明后继续 → 再验收仍有争议 → 算通过；另一次算失败", async () => {
     const executor = useScript(
       "test/claude-v-dispute",
-      new Script([step([text("做完了")]), step([text("页面打不开，只能这样")]), step([text("按说明重新确认过了")]), step([text("还是只能这样")])])
+      new Script([step(finishWith("做完了")), step(finishWith("页面打不开，只能这样")), step(finishWith("按说明重新确认过了")), step(finishWith("还是只能这样"))])
     )
     const fail = { items: [{ index: 1, verdict: "unsure", reason: "看不到文件" }], verdict: "unsure", headline: "汇总表存疑", question: "为什么没有文件？" }
     useScript("test/gemini-v-dispute", new Script([verifyJson(fail), verifyJson(fail), verifyJson(fail), verifyJson(fail)]))
@@ -561,9 +566,11 @@ describe("三方验收", () => {
     expect(row!.verification).toMatchObject({ status: "passed", resolution: { how: "pass", byId: "u-wang", note: "我核对过了" } })
     const last = (await eventsOf(ctx.db, sessionId)).at(-1)!
     expect(last).toMatchObject({ kind: "done", title: "王悦判定验收通过，运行完成" })
+    // 人判通过：结果办成（人定的），不再复核
+    expect(row).toMatchObject({ outcome: "achieved", outcomeBy: "human" })
 
     // 另一次：算失败
-    useScript("test/claude-v-dispute2", new Script([step([text("做完了")]), step([text("没法补")])]))
+    useScript("test/claude-v-dispute2", new Script([step(finishWith("做完了")), step(finishWith("没法补"))]))
     useScript("test/gemini-v-dispute2", new Script([verifyJson(fail), verifyJson(fail)]))
     const task2 = await verifyTask("test/claude-v-dispute2", "test/gemini-v-dispute2")
     const session2 = await runNow(task2)
@@ -574,6 +581,7 @@ describe("三方验收", () => {
     const row2 = await sessionRow(ctx.db, session2)
     expect(row2).toMatchObject({ status: "failed" })
     expect(row2!.error).toContain("林舟判定失败")
+    expect(row2).toMatchObject({ outcome: "not_achieved", outcomeBy: "human" })
   })
 
   it("验收模型和执行模型同一家：直接失败并写清原因", async () => {
