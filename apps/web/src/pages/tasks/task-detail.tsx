@@ -39,7 +39,7 @@ export function TaskActions({ task, state }: { task: TaskDef; state: TasksState 
   const [deleting, setDeleting] = React.useState(false)
   const [withFiles, setWithFiles] = React.useState(false)
   const [cancelling, setCancelling] = React.useState(false)
-  const setEnabled = useAction(trpc.tasks.setEnabled.mutationOptions(), { success: (_data, vars) => (vars.enabled ? "任务已启动" : "任务已停用，不会再运行") })
+  const setEnabled = useAction(trpc.tasks.setEnabled.mutationOptions(), { success: (_data, vars) => (vars.enabled ? "任务已启动" : "任务已停用，不会再自动运行") })
   const remove = useAction(trpc.tasks.delete.mutationOptions({ onSuccess: () => setParams({ id: null, run: null }) }), { success: `任务 ${task.id} 已删除` })
   const start = useStartRun(task)
   const [dispatching, setDispatching] = React.useState(false)
@@ -53,7 +53,7 @@ export function TaskActions({ task, state }: { task: TaskDef; state: TasksState 
   else if (latest?.status === "running" || latest?.status === "verifying") primary = <Button disabled><Spinner data-icon="inline-start" />正在运行</Button>
   else
     primary = (
-      <Button disabled={!task.enabled || start.isPending} onClick={() => start.mutate({ taskId: task.id })}>
+      <Button disabled={start.isPending} onClick={() => start.mutate({ taskId: task.id })}>
         {start.isPending ? <Spinner data-icon="inline-start" /> : <PlayIcon data-icon="inline-start" />}立即运行
       </Button>
     )
@@ -70,7 +70,7 @@ export function TaskActions({ task, state }: { task: TaskDef; state: TasksState 
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-44">
             <DropdownMenuItem onClick={() => setEditing(true)}><PencilIcon />编辑</DropdownMenuItem>
-            {!task.dispatch && <DropdownMenuItem disabled={!task.enabled || isActive(latest)} onClick={() => setWithFiles(true)}><PaperclipIcon />带附件运行…</DropdownMenuItem>}
+            {!task.dispatch && <DropdownMenuItem disabled={isActive(latest)} onClick={() => setWithFiles(true)}><PaperclipIcon />带附件运行…</DropdownMenuItem>}
             {latest && isActive(latest) && <DropdownMenuItem variant="destructive" onClick={() => setCancelling(true)}><CircleStopIcon />取消运行 {latest.id}</DropdownMenuItem>}
             <DropdownMenuItem variant="destructive" onClick={() => setDeleting(true)}><Trash2Icon />删除</DropdownMenuItem>
           </DropdownMenuContent>

@@ -10,7 +10,7 @@ import { and, eq, sql } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
 import * as t from "../src/db/schema.js"
-import { syncTaskSchedule, syncTodo } from "../src/engine/api.js"
+import { startSession, syncTaskSchedule, syncTodo } from "../src/engine/api.js"
 import { sha256Hex } from "../src/engine/http.js"
 import { QUEUES } from "../src/engine/queue.js"
 import { onTaskCron } from "../src/engine/schedule.js"
@@ -1453,15 +1453,22 @@ describe("其他接口", () => {
     ])
   })
 
-  it("停用的任务不能运行；内置工具已同步进 tools 表", async () => {
+  it("停用的任务能手动运行一次、不会被重新启用，自动触发照样挡；内置工具已同步进 tools 表", async () => {
+    useScript("test/disabled", new Script([step([text("手动跑完了")])]))
     const taskId = await createTask(ctx.db, {
-      modelId: "test/none",
+      modelId: "test/disabled",
       enabled: false,
     })
-    expect(
-      (await mutate(ctx.app, "engine.runNow", wang, { taskId })).error?.data
-        ?.code
-    ).toBe("BAD_REQUEST")
+    const sessionId = await runNow(taskId)
+    await waitStatus(ctx.db, sessionId, "done")
+    const [task] = await ctx.db
+      .select({ enabled: t.tasks.enabled })
+      .from(t.tasks)
+      .where(eq(t.tasks.id, taskId))
+    expect(task!.enabled).toBe(false)
+    await expect(
+      startSession(ctx.db, { taskId, source: "todo" })
+    ).rejects.toThrow("任务已停用")
     const builtin = await ctx.db
       .select()
       .from(t.tools)

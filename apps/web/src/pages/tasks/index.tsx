@@ -54,7 +54,7 @@ export default function TasksPage() {
   const visible = taskList.toSorted((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
   // 员工能看全部任务，只能操作自己负责的；主管能操作全部
   const canManage = (each: TaskDef) => can(user, "task.manage", { ownerId: each.ownerId })
-  const setEnabled = useAction(trpc.tasks.setEnabled.mutationOptions(), { success: (_data, vars) => (vars.enabled ? "任务已启动" : "任务已停用，不会再运行") })
+  const setEnabled = useAction(trpc.tasks.setEnabled.mutationOptions(), { success: (_data, vars) => (vars.enabled ? "任务已启动" : "任务已停用，不会再自动运行") })
 
   const header = (
     <SimpleHeader

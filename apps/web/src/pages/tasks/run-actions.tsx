@@ -90,7 +90,7 @@ export function RunWithFilesDialog({ task, open, onOpenChange }: { task: TaskDef
         </Field>
         <DialogFooter>
           <DialogClose render={<Button variant="outline" />}>取消</DialogClose>
-          <Button disabled={run.isPending || !task.enabled} onClick={() => void start()}>
+          <Button disabled={run.isPending} onClick={() => void start()}>
             {run.isPending ? <Spinner data-icon="inline-start" /> : <PlayIcon data-icon="inline-start" />}立即运行
           </Button>
         </DialogFooter>

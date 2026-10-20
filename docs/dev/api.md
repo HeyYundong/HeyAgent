@@ -392,7 +392,7 @@ curl -s -b 'better-auth.session_token=<COOKIE>' -H 'content-type: application/js
 ### 5.1 `engine.runNow`
 
 - 流程：校验任务和附件 → 在一个事务里**冻结快照**（任务当时的步骤、模型、记忆、技能、工具、规则、检查点、附件清单；之后改任务不影响这次运行。快照里有已发布的技能时自动加上 `skill.load`，有附件（任务附件或这次带的）时自动加上 `file.read`，任务没选也一样）→ 建 session（状态 `running`）、检查点、第一条消息和 `plan` 事件 → 排进 `session.run` 队列。
-- 错误：`NOT_FOUND`（任务；附件 id 不存在）；`FORBIDDEN`（「只有任务负责人和主管能运行这个任务」）；`BAD_REQUEST`：任务已停用（先启用）、附件「已经用在别处，请重新上传」。
+- 错误：`NOT_FOUND`（任务；附件 id 不存在）；`FORBIDDEN`（「只有任务负责人和主管能运行这个任务」）；`BAD_REQUEST`：附件「已经用在别处，请重新上传」。
 - 附件规则：`attachmentFileIds` 里的文件要么是刚上传、还没用过的（`kind = upload`、没有 `sessionId` 和 `taskId`），要么本来就是这个任务的附件；重复 id 会去重。刚上传的文件会变成这次运行的附件（`kind → attachment`、`sessionId` 写成新 session）。任务附件不用传，每次运行自动带。
 - 副作用：审计 `session.start`（detail 有 taskId、source: `manual`、attachments）；任务选用的记忆写上 `lastUsedAt`；推 `sessions`、`session_events`、`checkpoints`、`files`、`memories`。
 - 其他触发来源（cron、待办、外部事件）走同一个函数，`source` 分别是 `cron / todo / event`，不记 `session.start` 审计（没有操作人）。
@@ -1046,7 +1046,7 @@ claude mcp add --transport http heyagent-gallery http://<host>:8080/api/gallery/
 | `mcp_connect` | 新建的 MCP 服务器 | 已连接、有工具（地址是本机的，说明里提醒先改地址） | `#/tools?id=<服务器 id>` |
 | `mcp_tools` | 服务器连上以后，方案里有任务用它 | 这些任务都选了它的工具 | `action = attach_mcp_tools`、`serverId` |
 | `rule_confirm` | 导入时没确认的新规则 | 规则已生效 | `#/rules?id=<规则 id>` |
-| `try_run` | 每个导入的任务 | 有过运行 | 启用的任务 `action = run_task`、`taskId`；停用的没有按钮，`link` = `#/tasks?id=<任务 id>`（`engine.runNow` 不跑停用的任务） |
+| `try_run` | 每个导入的任务 | 有过运行 | 启用的任务 `action = run_task`、`taskId`；停用的没有按钮，`link` = `#/tasks?id=<任务 id>`（停用的任务手动运行也能跑，但导入后先让人看一眼再决定） |
 
 ## 15. 比物（2026-10-18）
 

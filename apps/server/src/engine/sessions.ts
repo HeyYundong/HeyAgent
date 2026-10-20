@@ -371,7 +371,8 @@ export async function startSessionInTx(
     .from(t.tasks)
     .where(eq(t.tasks.id, input.taskId))
   if (!task) throw new EngineError("NOT_FOUND", `找不到任务 ${input.taskId}`)
-  if (!task.enabled)
+  // 停用只挡自动触发（定时、待办、事件、派活）；人手动点「立即运行」照样能跑一次
+  if (!task.enabled && input.source !== "manual")
     throw new EngineError("BAD_REQUEST", "任务已停用，先启用再运行")
 
   const fileIds = [...new Set(input.attachmentFileIds ?? [])]
