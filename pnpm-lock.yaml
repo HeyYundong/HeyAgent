@@ -44,6 +44,9 @@ importers:
       '@ai-sdk/openai':
         specifier: 4.0.95
         version: 4.0.95(zod@4.6.7)
+      '@ai-sdk/openai-compatible':
+        specifier: 3.0.70
+        version: 3.0.70(zod@4.6.7)
       '@heyagent/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -286,6 +289,12 @@ packages:
 
   '@ai-sdk/mcp@2.0.77':
     resolution: {integrity: sha512-gv+dj2lHmWnUWy3i1h7OloTs2T9yM0nLoRpTAZl/dqMihtHokdVtGGDh3+Bvs5YdIKezT98qCj/hSi5m/WRQ/g==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/openai-compatible@3.0.70':
+    resolution: {integrity: sha512-0TefLzj+V7aMLrIIKdk3CKRji+hOu3oOSHeLKJVzr0+q/7rsH4Q56w6RK7GX7csmAd9Urtt097XBTkBwJbpDjA==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -4229,6 +4238,12 @@ snapshots:
       '@ai-sdk/provider-utils': 5.0.61(zod@4.6.7)
       cross-spawn: 7.0.6
       pkce-challenge: 5.0.1
+      zod: 4.6.7
+
+  '@ai-sdk/openai-compatible@3.0.70(zod@4.6.7)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.28
+      '@ai-sdk/provider-utils': 5.0.61(zod@4.6.7)
       zod: 4.6.7
 
   '@ai-sdk/openai@4.0.95(zod@4.6.7)':

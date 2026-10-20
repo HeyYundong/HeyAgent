@@ -4,6 +4,8 @@ import { and, desc, eq } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 
 import * as t from "../src/db/schema.js"
+import { resolveModel } from "../src/engine/model.js"
+import { runtime } from "../src/engine/runtime.js"
 import { decryptText } from "../src/lib/crypto.js"
 import { login, mutate, query, setupApp, PASSWORD, type TestApp } from "./helpers.js"
 
@@ -35,14 +37,34 @@ const FAKE_CLAUDE_MODELS = {
   first_id: "claude-sonnet-5-5",
   last_id: "claude-nova-9",
 }
-/** OpenRouter 公开目录（直连时查价格用） */
+/** OpenRouter 公开目录（直连时查价格用；自定义服务按模型名查上下文长度、能不能看图） */
 const FAKE_REFERENCE = {
-  data: [{ id: "anthropic/claude-sonnet-5.5", name: "Anthropic: Claude Sonnet 5.5", context_length: 1_000_000, pricing: { prompt: "0.000002", completion: "0.00001" }, architecture: { input_modalities: ["text", "image"] }, supported_parameters: ["tools"] }],
+  data: [
+    { id: "anthropic/claude-sonnet-5.5", name: "Anthropic: Claude Sonnet 5.5", context_length: 1_000_000, pricing: { prompt: "0.000002", completion: "0.00001" }, architecture: { input_modalities: ["text", "image"] }, supported_parameters: ["tools"] },
+    { id: "acme/omni-9", name: "Acme: Omni 9", description: "Acme 的多模态模型. 第二句", context_length: 256_000, pricing: { prompt: "0.000003", completion: "0.000009" }, architecture: { input_modalities: ["text", "image"] }, supported_parameters: ["tools"] },
+  ],
 }
+/** 自定义服务的假接口：gw.example 有 /models（要 key），nolist.example 没有 /models、只认 my-model 的聊天请求 */
+const FAKE_GW_KEY = "sk-gw-good-3333333333333"
+const gwModels = { ids: ["Acme/Omni-9", "plain-chat", "text-embedding-v4", "bge-reranker"] }
+const customChats: { url: string; auth: string | null; body: { model?: string } }[] = []
 const realFetch = globalThis.fetch
 function fakeFetch(input: string | URL | Request, init?: RequestInit) {
   const url = String(input instanceof Request ? input.url : input)
   if (url === "https://openrouter.ai/api/v1/models") return Promise.resolve(Response.json(FAKE_REFERENCE))
+  if (url === "https://gw.example/v1/models") {
+    const good = new Headers(init?.headers).get("authorization") === `Bearer ${FAKE_GW_KEY}`
+    return Promise.resolve(good ? Response.json({ object: "list", data: gwModels.ids.map((id) => ({ id, object: "model" })) }) : Response.json({ error: { message: "bad key" } }, { status: 401 }))
+  }
+  if (url.startsWith("https://nolist.example/v1/")) {
+    if (url.endsWith("/models")) return Promise.resolve(new Response("<html>not found</html>", { status: 404 }))
+    if (url.endsWith("/chat/completions")) {
+      const body = JSON.parse(String(init?.body)) as { model?: string }
+      customChats.push({ url, auth: new Headers(init?.headers).get("authorization"), body })
+      return Promise.resolve(body.model === "my-model" ? Response.json({ id: "c1", object: "chat.completion", choices: [{ index: 0, message: { role: "assistant", content: "pong" }, finish_reason: "stop" }] }) : Response.json({ error: { message: `model ${body.model} not found` } }, { status: 404 }))
+    }
+  }
+  if (url.startsWith("https://down.example/")) return Promise.reject(new TypeError("fetch failed"))
   if (url.startsWith("https://claude.example/v1/models?")) {
     const headers = new Headers(init?.headers)
     const good = headers.get("x-api-key") === FAKE_CLAUDE_KEY && headers.get("anthropic-version") === "2023-06-01"
@@ -501,6 +523,97 @@ describe("模型", () => {
     const same = await mutate(ctx.app, "models.setDefaults", lin, { run: "anthropic/claude-sonnet-5-5", plan: "anthropic/claude-sonnet-5-5", verify: "openrouter/anthropic/claude-haiku-5.5" })
     expect(same.error?.message).toContain("同一家（Anthropic）")
     expect((await mutate(ctx.app, "models.deleteProvider", lin, { id: "anthropic" })).error).toBeUndefined()
+  })
+
+  it("自定义服务（读得到 /models）：key 不对不存；名称默认用域名；去掉向量、重排模型；单价未知；手动加的模型刷新不删、同名以手动为准", async () => {
+    const bad = await mutate(ctx.app, "models.createProvider", lin, { kind: "custom", baseUrl: "https://gw.example/v1", apiKey: "sk-gw-wrong" })
+    expect(bad.error?.message).toContain("API Key 不对")
+    const created = await mutate(ctx.app, "models.createProvider", lin, { kind: "custom", baseUrl: "https://gw.example/v1/", apiKey: FAKE_GW_KEY })
+    expect(created.error).toBeUndefined()
+    expect(created.data).toMatchObject({ id: "custom", check: { ok: true, models: 2, note: expect.stringContaining("不给价格") } })
+    const providerOf = async () => (await query(ctx.app, "models.overview", lin)).data.providers.find((p: { id: string }) => p.id === "custom")
+    let provider = await providerOf()
+    expect(provider).toMatchObject({ kind: "custom", name: "gw.example", baseUrl: "https://gw.example/v1", status: "ok", apiKeyMasked: expect.stringContaining("••••") })
+    expect(JSON.stringify(provider)).not.toContain(FAKE_GW_KEY)
+    // 按模型名的最后一段宽松匹配公开目录：上下文、能不能看图拿到了，价格不用目录的
+    expect(provider.models).toEqual([
+      { id: "custom/Acme/Omni-9", name: "Acme/Omni-9", note: "Acme 的多模态模型.", contextK: 256, priceIn: 0, priceOut: 0, vision: true },
+      { id: "custom/plain-chat", name: "plain-chat", note: "", contextK: 0, priceIn: 0, priceOut: 0, vision: false },
+    ])
+
+    // 员工不能加模型；不是自定义服务的不能手动加
+    const manual = { providerId: "custom", modelName: "plain-chat", displayName: "普通聊天", contextK: 128, vision: true, priceIn: 1.2, priceOut: 6 }
+    expect((await mutate(ctx.app, "models.addModel", wang, manual)).error?.data?.code).toBe("FORBIDDEN")
+    expect((await mutate(ctx.app, "models.addModel", lin, { ...manual, providerId: "openrouter" })).error?.message).toContain("不是自定义服务")
+    // 和列表里的同名：改成手动的
+    expect((await mutate(ctx.app, "models.addModel", lin, manual)).data).toEqual({ id: "custom/plain-chat" })
+    expect((await mutate(ctx.app, "models.addModel", lin, manual)).error?.data?.code).toBe("CONFLICT")
+    expect((await mutate(ctx.app, "models.addModel", lin, { ...manual, modelName: "has space" })).error?.data?.code).toBe("BAD_REQUEST")
+    expect((await mutate(ctx.app, "models.addModel", lin, { providerId: "custom", modelName: "extra-1", contextK: 0, vision: false, priceIn: 0.5, priceOut: 1 })).data).toEqual({ id: "custom/extra-1" })
+    expect(await lastAudit("model.create")).toMatchObject({ actorId: "u-lin", targetId: "custom/extra-1" })
+
+    // 刷新：列表里少了 Acme/Omni-9 → 删掉；手动的 extra-1 留着；plain-chat 仍以手动填的为准
+    gwModels.ids = ["plain-chat", "new-chat"]
+    expect((await mutate(ctx.app, "models.refreshProvider", lin, { id: "custom" })).data).toMatchObject({ ok: true, models: 2 })
+    provider = await providerOf()
+    expect(provider.models.map((m: { id: string }) => m.id)).toEqual(["custom/extra-1", "custom/plain-chat", "custom/new-chat"])
+    expect(provider.models[1]).toEqual({ id: "custom/plain-chat", name: "普通聊天", note: "", contextK: 128, priceIn: 1.2, priceOut: 6, vision: true, manual: true })
+    expect(provider.models[2].manual).toBeUndefined()
+
+    // 改：模型名不变，其余都能改；列出来的模型不能改
+    expect((await mutate(ctx.app, "models.updateModel", lin, { id: "custom/extra-1", displayName: "额外", contextK: 32, vision: false, priceIn: 0.6, priceOut: 1.5 })).error).toBeUndefined()
+    expect((await providerOf()).models[0]).toMatchObject({ id: "custom/extra-1", name: "额外", contextK: 32, priceIn: 0.6, priceOut: 1.5, manual: true })
+    expect((await mutate(ctx.app, "models.updateModel", lin, { id: "custom/new-chat", contextK: 1, vision: false, priceIn: 0, priceOut: 0 })).error?.message).toContain("不能改")
+
+    // 引擎：用存着的 key（引擎用的是全局 keyring，换成这个测试 app 的）、单价按手动填的
+    runtime.keyring = ctx.keyring
+    expect(await resolveModel(ctx.db, "custom/extra-1")).toMatchObject({ kind: "custom", priceIn: 0.6, priceOut: 1.5 })
+
+    // 删：默认设置在用的删不了；列出来的不能删；删完再刷新也回不来（列表里没有）
+    const before = (await query(ctx.app, "models.overview", lin)).data.defaults
+    expect((await mutate(ctx.app, "models.setDefaults", lin, { ...before, assistant: "custom/extra-1" })).error).toBeUndefined()
+    expect((await mutate(ctx.app, "models.deleteModel", lin, { id: "custom/extra-1" })).error?.data?.code).toBe("CONFLICT")
+    expect((await mutate(ctx.app, "models.setDefaults", lin, { ...before, assistant: "" })).error).toBeUndefined()
+    expect((await mutate(ctx.app, "models.deleteModel", lin, { id: "custom/new-chat" })).error?.data?.code).toBe("BAD_REQUEST")
+    expect((await mutate(ctx.app, "models.deleteModel", lin, { id: "custom/extra-1" })).data).toEqual({ id: "custom/extra-1" })
+    expect(await lastAudit("model.delete")).toMatchObject({ targetId: "custom/extra-1" })
+    await mutate(ctx.app, "models.refreshProvider", lin, { id: "custom" })
+    expect((await providerOf()).models.map((m: { id: string }) => m.id)).toEqual(["custom/plain-chat", "custom/new-chat"])
+    expect((await mutate(ctx.app, "models.deleteProvider", lin, { id: "custom" })).error).toBeUndefined()
+  })
+
+  it("自定义服务（没有 /models）：不填 key 也能存，模型手动加；测试连接用排第一的模型试发一句话；刷新不动已有的模型；连不上的不存", async () => {
+    const down = await mutate(ctx.app, "models.createProvider", lin, { kind: "custom", name: "挂了", baseUrl: "https://down.example/v1" })
+    expect(down.error?.message).toContain("连不上")
+    const created = await mutate(ctx.app, "models.createProvider", lin, { kind: "custom", name: "自建", baseUrl: "https://nolist.example/v1" })
+    expect(created.error).toBeUndefined()
+    expect(created.data).toMatchObject({ id: "custom", check: { ok: true, models: 0, message: expect.stringContaining("HTTP 404"), note: expect.stringContaining("添加模型") } })
+    const providerOf = async () => (await query(ctx.app, "models.overview", lin)).data.providers.find((p: { id: string }) => p.id === "custom")
+    expect(await providerOf()).toMatchObject({ name: "自建", models: [] })
+    expect((await providerOf()).apiKeyMasked).toBeUndefined()
+
+    // 还没有模型：测试连接只说读不到列表
+    expect((await mutate(ctx.app, "models.testProvider", lin, { id: "custom" })).data).toMatchObject({ ok: true, message: expect.stringContaining("读不到模型列表") })
+    expect(customChats).toHaveLength(0)
+
+    await mutate(ctx.app, "models.addModel", lin, { providerId: "custom", modelName: "my-model", contextK: 8, vision: false, priceIn: 0, priceOut: 0 })
+    expect((await mutate(ctx.app, "models.testProvider", lin, { id: "custom" })).data).toMatchObject({ ok: true, message: expect.stringContaining("试发了一句话") })
+    expect(customChats.at(-1)).toMatchObject({ url: "https://nolist.example/v1/chat/completions", auth: null, body: { model: "my-model" } })
+
+    // 新加的排最前：拿它试，服务说没这个模型 → 连不上，原因带出来
+    await mutate(ctx.app, "models.addModel", lin, { providerId: "custom", modelName: "typo-model", contextK: 0, vision: false, priceIn: 0, priceOut: 0 })
+    const failed = (await mutate(ctx.app, "models.testProvider", lin, { id: "custom" })).data
+    expect(failed).toMatchObject({ ok: false, message: expect.stringContaining("HTTP 404") })
+    expect(failed.message).toContain("model typo-model not found")
+    expect((await providerOf()).status).toBe("error")
+
+    // 刷新：列表读不到，已有的模型不动
+    expect((await mutate(ctx.app, "models.refreshProvider", lin, { id: "custom" })).data).toMatchObject({ ok: true, models: 0 })
+    expect((await providerOf()).models.map((m: { id: string }) => m.id)).toEqual(["custom/typo-model", "custom/my-model"])
+
+    // 没 key 的自定义服务引擎照样能用
+    expect(await resolveModel(ctx.db, "custom/my-model")).toMatchObject({ kind: "custom", modelId: "custom/my-model" })
+    expect((await mutate(ctx.app, "models.deleteProvider", lin, { id: "custom" })).error).toBeUndefined()
   })
 
   it("有任务在用它的模型：服务删不了", async () => {

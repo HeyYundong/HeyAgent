@@ -33,7 +33,7 @@
 
 - **改数据的函数现成**：每种配置的增删改都在 `apps/server/src/data/config/*.ts`（任务、任务记忆、待办、记忆、技能、规则……），里面已经做了权限检查（`assertCan`）、事务和审计（`audit`）。助手的工具直接调这些函数，**以当前登录的人的身份**，所以员工通过助手也只能改自己本来就能改的东西。
 - **改完页面自己会刷新**：数据库触发器 + `LiveSync`，助手改了任务，开着的任务页马上更新，不用另外处理。
-- **调模型现成**：`engine/model.ts` 的 `resolveModel`，支持 OpenRouter、Claude、OpenAI、DeepSeek 直连。
+- **调模型现成**：`engine/model.ts` 的 `resolveModel`，支持 OpenRouter、Claude、OpenAI、DeepSeek 直连，以及自定义的 OpenAI 兼容服务。
 - **缺的**：
   - 现在没有任何工具能让模型直接改任务、待办、记忆、技能（agent 只能「建议」记忆和技能，人审核）。助手的工具是新写的，见第 3 节。
   - 现在调模型都不是流式的。助手要边想边显示，后端新加一个流式接口（AI SDK 的 `streamText`），见第 4 节。

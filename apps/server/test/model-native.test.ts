@@ -4,7 +4,7 @@ import { tool, type ModelMessage } from "ai"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { z } from "zod"
 
-import { nativeCatalog, type NativeModel } from "../src/data/config/models.js"
+import { customCatalog, nativeCatalog, type NativeModel } from "../src/data/config/models.js"
 import { callModel, callStructured, costOf, languageModel, type ResolvedModel } from "../src/engine/model.js"
 
 const tools = { web_open: tool({ description: "打开网页", inputSchema: z.object({ url: z.string() }) }) }
@@ -164,6 +164,42 @@ describe("直连 DeepSeek", () => {
   })
 })
 
+describe("自定义服务（OpenAI 兼容）", () => {
+  const reply = {
+    id: "c1",
+    object: "chat.completion",
+    created: 1,
+    model: "qwen3-max",
+    choices: [
+      {
+        index: 0,
+        message: { role: "assistant", content: "", tool_calls: [{ id: "call_1", type: "function", function: { name: "web_open", arguments: "{\"url\":\"https://b.example\"}" } }] },
+        finish_reason: "tool_calls",
+      },
+    ],
+    usage: { prompt_tokens: 1000, completion_tokens: 20, total_tokens: 1020, prompt_tokens_details: { cached_tokens: 900 } },
+  }
+  const custom = (apiKey: string | undefined): ResolvedModel => ({ model: languageModel("custom", "qwen3-max", apiKey, "https://gw.example/compatible-mode/v1"), modelId: "custom/qwen3-max", kind: "custom", priceIn: 1, priceOut: 2, vision: false })
+
+  it("走 {地址}/chat/completions，带工具定义，拿到工具调用；花费按手动填的单价、没有缓存折扣", async () => {
+    const sent = fakeApi(reply)
+    const result = await callModel(custom("sk-gw"), { system: "你是 agent", messages: [{ role: "user", content: "打开 b.example" }], tools })
+    expect(sent[0]!.url).toBe("https://gw.example/compatible-mode/v1/chat/completions")
+    expect(sent[0]!.headers.get("authorization")).toBe("Bearer sk-gw")
+    expect(sent[0]!.body).toMatchObject({ model: "qwen3-max", tools: [{ type: "function", function: { name: "web_open" } }] })
+    expect(result.toolCalls[0]).toMatchObject({ toolCallId: "call_1", toolName: "web_open", input: { url: "https://b.example" } })
+    expect(result.tokensIn).toBe(1000)
+    // 1000 × 1 + 20 × 2 = 1040（命中缓存的 900 也按原价）
+    expect(result.costUsd).toBeCloseTo(1040 / 1_000_000, 12)
+  })
+
+  it("没有 key：不带 Authorization", async () => {
+    const sent = fakeApi(reply)
+    await callModel(custom(undefined), { system: "s", messages: [{ role: "user", content: "x" }], tools })
+    expect(sent[0]!.headers.get("authorization")).toBeNull()
+  })
+})
+
 describe("costOf", () => {
   const usage = (input: number, read: number, write: number) =>
     ({ inputTokens: input, outputTokens: 0, totalTokens: input, inputTokenDetails: { noCacheTokens: input - read - write, cacheReadTokens: read, cacheWriteTokens: write }, outputTokenDetails: { textTokens: 0, reasoningTokens: 0 } }) as Parameters<typeof costOf>[1]
@@ -233,5 +269,19 @@ describe("nativeCatalog：厂商列出的模型 + OpenRouter 公开目录里的�
       { name: "deepseek-flash", contextK: 0, priceIn: 0, priceOut: 0 },
     ])
     expect(nativeCatalog("deepseek", listed, undefined).every((model) => model.priceIn === 0)).toBe(true)
+  })
+})
+
+describe("customCatalog：自定义服务列出的模型", () => {
+  const REFERENCE = [
+    { id: "qwen/qwen3-vl-plus", name: "Qwen: Qwen3 VL Plus", context_length: 262_144, pricing: { prompt: "0.0000002", completion: "0.0000016" }, architecture: { input_modalities: ["text", "image"] } },
+    { id: "qwen/qwen3-vl-plus:free", name: "Qwen: Qwen3 VL Plus (free)", context_length: 1000, pricing: { prompt: "0", completion: "0" } },
+  ]
+  it("去掉向量、重排、语音模型；按名字最后一段宽松匹配公开目录拿上下文和看图；价格一律 0", () => {
+    const models = customCatalog(["Qwen/Qwen3-VL-Plus", "text-embedding-v4", "bge-reranker-v2", "whisper-1", "my-chat", "my-chat"], REFERENCE)
+    expect(models.map((model) => model.name)).toEqual(["my-chat", "Qwen/Qwen3-VL-Plus"])
+    expect(models[1]).toMatchObject({ displayName: "Qwen/Qwen3-VL-Plus", contextK: 262, vision: true, priceIn: 0, priceOut: 0 })
+    expect(models[0]).toMatchObject({ contextK: 0, vision: false })
+    expect(customCatalog(["my-chat"], undefined)).toHaveLength(1)
   })
 })

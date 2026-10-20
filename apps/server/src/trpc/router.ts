@@ -19,6 +19,8 @@ import {
   httpToolUpdateSchema,
   humanItemSchema,
   humanTodoSchema,
+  manualModelInputSchema,
+  manualModelUpdateSchema,
   mcpServerInputSchema,
   mcpServerSchema,
   mcpServerUpdateSchema,
@@ -300,6 +302,10 @@ export const appRouter = router({
     testProvider: protectedProcedure.input(idInput).output(providerCheckSchema).mutation(({ ctx, input }) => models.testProvider(w(ctx), input)),
     /** 从服务的公开模型列表刷新（OpenRouter：GET /models，不用 key） */
     refreshProvider: protectedProcedure.input(idInput).output(providerCheckSchema).mutation(({ ctx, input }) => models.refreshProviderAsActor(w(ctx), input)),
+    /** 自定义服务手动加的模型：加、改（模型名不能改）、删 */
+    addModel: protectedProcedure.input(manualModelInputSchema).mutation(({ ctx, input }) => models.addManualModel(w(ctx), input)),
+    updateModel: protectedProcedure.input(manualModelUpdateSchema).mutation(({ ctx, input }) => models.updateManualModel(w(ctx), input)),
+    deleteModel: protectedProcedure.input(idInput).mutation(({ ctx, input }) => models.deleteManualModel(w(ctx), input)),
     /** 三个角色的默认模型：验收不许和执行同一家 */
     setDefaults: protectedProcedure.input(modelDefaultsInputSchema).mutation(({ ctx, input }) => models.setModelDefaults(w(ctx), input)),
   }),

@@ -344,16 +344,26 @@ curl -s -b 'better-auth.session_token=<COOKIE>' -H 'content-type: application/js
 
 ### 4.6 模型
 
-`kind` 只有 `ollama`、`openrouter`。连接服务**不花钱**：OpenRouter 用公开的 `GET /models` 读模型目录（只留 `supported_parameters` 含 `tools` 的模型，因为 agent 每一步都要调工具），有 key 时再 `GET /key` 核对；Ollama 用 `GET /api/tags`。超时 15 秒。
+`kind` 是 `ollama`、`openrouter`、`anthropic`、`openai`、`deepseek`、`custom`。连接服务**不花钱**：OpenRouter 用公开的 `GET /models` 读模型目录（只留 `supported_parameters` 含 `tools` 的模型，因为 agent 每一步都要调工具），有 key 时再 `GET /key` 核对；Ollama 用 `GET /api/tags`；直连厂商带 key `GET /models`。超时 15 秒。
+
+**`custom`（自定义服务，2026-10-20，迁移 0024）**：任何兼容 OpenAI 聊天接口的服务（地址填到 `/v1` 为止，调用走 `{地址}/chat/completions`，引擎用 `@ai-sdk/openai-compatible`）。`apiKey` 可不填（有就带 `Authorization: Bearer`）。没填 `name` 时用地址里的域名。连接时带 key `GET {地址}/models`：
+- 读到了：`data[].id` 全当聊天模型（按名字去掉 embedding、rerank、语音、画图模型），上下文长度、能不能看图按模型名（去掉前面的「厂商/」）到 OpenRouter 公开目录宽松匹配；**单价一律 0**（「未知」，各家价格和 OpenRouter 不一样），`note` 提醒；
+- 401 / 403 → key 不对，不存；连不上（超时、域名不对）→ 不存；
+- 其余（404、不是 JSON、列表为空）→ `ok: true`、`models: 0`、`note` 说明「没有模型列表，手动加」，服务照样存，**已有的模型不动**（不当成全下架）。`testProvider`、`updateProvider` 这时再用服务里排第一的模型试发一句话（`POST /chat/completions`，`max_tokens: 16`，花很少的钱），404 / 401 / 其他错误都返回原因。
+
+`models` 表多一列 `manual`（人手动加的）：刷新模型列表时不删；列表里有同名模型时以手动填的为准（不覆盖）。`ModelInfo.manual` 只在为真时给。花费按 `models.price_in / price_out` 估，自定义服务没有缓存折扣（按原价算）。
 
 | 接口 | 谁能调 | 输入 | 返回 | 主要错误 | 审计 / 推送 |
 |---|---|---|---|---|---|
 | `models.createProvider` | 主管 | `{ kind, name?(≤100), baseUrl(http(s)://), apiKey? }`。OpenRouter 必须带 `apiKey`（默认地址 `https://openrouter.ai/api/v1`） | `{ id, check: ProviderCheck }` | `BAD_REQUEST`：没填 key、**连不上**（`message` 是原因，不存）、key 不对 | `model_provider.create`；**先连一次，连上才存**，同时写入模型目录；key 加密存；推 `model_providers`、`models`、`secrets` |
 | `models.updateProvider` | 主管 | `{ id, name?, baseUrl, apiKey? }`（`apiKey` 不填沿用已存的） | `{ id, check }` | `NOT_FOUND`、`BAD_REQUEST`（同上） | `model_provider.update`；先用新配置连一次，连上才存并刷新模型列表 |
 | `models.testProvider` | 主管 | `{ id }` | `ProviderCheck`：`{ ok, latencyMs?, models?, message }` | `NOT_FOUND`。**连不上不抛错**，返回 `ok: false` 和原因 | `model_provider.test`；写回 `status`（`ok/error`）、`checkedAt`、`latencyMs` |
-| `models.refreshProvider` | 主管 | `{ id }` | `ProviderCheck` | 同上（不抛错） | `model_provider.refresh`；只用公开接口、不带 key；成功才更新模型目录。目录里没了的模型会删掉，**除非还是默认模型** |
+| `models.refreshProvider` | 主管 | `{ id }` | `ProviderCheck` | 同上（不抛错） | `model_provider.refresh`；OpenRouter 只用公开接口、不带 key，其余带存着的 key；成功才更新模型目录。目录里没了的模型会删掉，**除非还是默认模型或是手动加的** |
 | `models.deleteProvider` | 主管 | `{ id }` | `{ id, defaults }`（删完后三个角色的默认模型，会自动换成别家的） | `NOT_FOUND`；`CONFLICT`：有任务在用它的模型 | `model_provider.delete`；key 密文一起删 |
 | `models.setDefaults` | 主管 | `{ run, plan, verify }`（模型 id，都必填） | 原样返回输入 | `BAD_REQUEST`：执行和验收是**同一家**（验收就不算第三方）、模型不存在 | `model_defaults.update`（detail 有 before / after）；推 `model_defaults` |
+| `models.addModel` | 主管 | `manualModelInputSchema`：`{ providerId, modelName(调接口用的模型名，≤200，不能有空格), displayName?(≤100，不填用模型名), contextK(K，0 = 不知道), vision, priceIn, priceOut(美元 / 百万 token，0 = 不知道) }` | `{ id }`（`服务 id/模型名`） | `BAD_REQUEST`：不是自定义服务；`CONFLICT`：已经手动加过同名的；`NOT_FOUND` | `model.create`；列表里已有同名模型就把它改成手动的（`detail.replacedListed`）；新加的排在最前 |
+| `models.updateModel` | 主管 | `manualModelUpdateSchema`：`{ id, displayName?, contextK, vision, priceIn, priceOut }`（模型名不能改） | `{ id }` | `BAD_REQUEST`：不是手动加的；`NOT_FOUND` | `model.update`（detail 有 before / after） |
+| `models.deleteModel` | 主管 | `{ id }` | `{ id }` | `BAD_REQUEST`：不是手动加的；`CONFLICT`：有任务（`modelId` 或 `verifyModelId`）或默认设置在用；`NOT_FOUND` | `model.delete` |
 
 ### 4.7 全局设置
 
@@ -593,7 +603,7 @@ curl -s -X POST http://localhost:3100/api/events \
 | 规则 | `rule.create` `rule.update` `rule.delete` `rule.restore` `rule.compile` `rule.confirm`（M3） |
 | 工具 | `tool.create` `tool.update` `tool.delete` `tool.restore` `secret.create` `secret.update` `secret.delete` `mcp_server.create` `mcp_server.update` `mcp_server.delete` |
 | 浏览器 | `browser_profile.create` `browser_profile.update` `browser_profile.delete` `platform.create` `platform.delete` `browser_account.create` `browser_account.update` `browser_account.delete` |
-| 模型 | `model_provider.create` `model_provider.update` `model_provider.test` `model_provider.refresh` `model_provider.delete` `model_defaults.update` |
+| 模型 | `model_provider.create` `model_provider.update` `model_provider.test` `model_provider.refresh` `model_provider.delete` `model_defaults.update` `model.create` `model.update` `model.delete`（自定义服务手动加的模型） |
 | 图库（第 13 节） | `gallery.create` `gallery.update` `gallery.delete`（`detail.via` 是 web / api / mcp / agent；agent 传的 `actor_id` 为空，`detail.sessionId` 是哪次运行）`api_key.create` `api_key.delete` |
 | 比物（第 15 节） | `compare.create`（`detail.via`、`apiKeyId`、`sessionId`；agent 发起的 `actor_id` 为空）`compare.delete` `compare_standard.create`（启动时自动建的 `detail.by = "bootstrap"`，`actor_id` 为空）`compare_standard.update` `compare_standard.delete` `compare_standard.set_default` |
 | 设置 | `settings.update` `settings.event_token.regenerate` `settings.event_token.clear` `settings.channel.create` `settings.channel.update` `settings.channel.delete` `settings.browser.update`（M2） `settings.agent.update`（M3） |

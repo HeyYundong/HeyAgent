@@ -28,6 +28,11 @@ describe("modelFamily", () => {
     expect(modelFamily("deepseek/deepseek-flash")).toBe("DeepSeek")
     expect(sameFamily("anthropic/claude-opus-5-5", "openrouter/anthropic/claude-haiku-5.5")).toBe(true)
   })
+  it("自定义服务：服务 id 不当厂商，只看模型名", () => {
+    expect(modelFamily("custom/qwen3-max")).toBe("阿里通义")
+    expect(modelFamily("custom-2/deepseek-ai/DeepSeek-V3")).toBe("DeepSeek")
+    expect(modelFamily("custom/glm-4.6")).toBe("Glm")
+  })
   it("OpenRouter 不算直连：openrouter/openai/o3 里的「openai」照样认成 OpenAI，但服务 id 本身不当厂商", () => {
     expect(modelFamily("openrouter/openai/o3")).toBe("OpenAI")
     expect(modelFamily("openrouter/acme/o3")).toBe("Acme")

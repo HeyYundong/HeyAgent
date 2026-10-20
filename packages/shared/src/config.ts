@@ -398,8 +398,10 @@ export const ANTHROPIC_DEFAULT_URL = "https://api.anthropic.com/v1"
 export const OPENAI_DEFAULT_URL = "https://api.openai.com/v1"
 export const DEEPSEEK_DEFAULT_URL = "https://api.deepseek.com"
 
-/** 除了内网的 Ollama，都要 API Key */
-export const providerNeedsKey = (kind: ModelProviderKind) => kind !== "ollama"
+/** 内网的 Ollama 不要 API Key；自定义服务可填可不填（自建的 vLLM 等常常没有）；其余都要 */
+export const providerNeedsKey = (kind: ModelProviderKind) => kind !== "ollama" && kind !== "custom"
+/** 能不能填 API Key */
+export const providerTakesKey = (kind: ModelProviderKind) => kind !== "ollama"
 
 export const providerInputSchema = z.object({
   kind: modelProviderKindSchema,
@@ -415,6 +417,28 @@ export const providerUpdateSchema = providerInputSchema.omit({ kind: true }).ext
  * assistant 同样：不传 = 不改；传空字符串 = 不单独配，助手用 plan 默认模型
  */
 export const modelDefaultsInputSchema = z.object({ run: z.string().min(1), plan: z.string().min(1), verify: z.string().min(1), embed: z.string().optional(), assistant: z.string().optional() })
+
+/** 单价（美元 / 百万 token）：0 = 不知道 */
+const priceSchema = z.number({ error: "填数字" }).min(0, "不能是负数").max(10_000, "太大了")
+
+/**
+ * 手动加的模型（自定义服务读不到模型列表，或列表里没有想用的）。
+ * modelName 是调接口时传的模型名，加好以后不能改（任务、默认设置按它引用）；displayName 不填就用 modelName
+ */
+export const manualModelInputSchema = z.object({
+  providerId: z.string().min(1),
+  modelName: z.string().trim().min(1, "填模型名").max(200, "太长了，最多 200 个字").regex(/^\S+$/, "模型名里不能有空格"),
+  displayName: optionalText(100).optional(),
+  /** 上下文长度（K token），0 = 不知道 */
+  contextK: z.number({ error: "填数字" }).int("填整数").min(0, "不能是负数").max(100_000, "太大了"),
+  vision: z.boolean(),
+  priceIn: priceSchema,
+  priceOut: priceSchema,
+})
+export type ManualModelInput = z.input<typeof manualModelInputSchema>
+/** 编辑：id 是整个模型 id（服务 id/模型名），模型名不能改 */
+export const manualModelUpdateSchema = manualModelInputSchema.omit({ providerId: true, modelName: true }).extend({ id: z.string().min(1) })
+export type ManualModelUpdate = z.infer<typeof manualModelUpdateSchema>
 
 /** 测试连接、刷新模型列表的结果 */
 export const providerCheckSchema = z.object({
