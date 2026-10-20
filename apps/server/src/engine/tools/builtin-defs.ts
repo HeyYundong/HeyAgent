@@ -24,7 +24,8 @@ export interface BuiltinToolDef {
   risk: Risk
   /**
    * 不单独选、跟着别的自动带上（快照里由 sessions.ts 加）：不同步进 tools 表，任务的「用哪些」、导入的内置工具清单里都没有它。
-   * 「查派过的活」跟着「派活」，「报结果」跟着被派来的运行（派活第二期）
+   * 「查派过的活」跟着「派活」，「报结果」跟着被派来的运行（派活第二期）；
+   * 「列出文件」跟着读附件 / 存文件 / 运行代码，「改文件」「删文件」跟着存文件 / 运行代码（session 空间）
    */
   implied?: true
 }
@@ -107,10 +108,46 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
     id: "file.save",
     name: "存文件",
     summary:
-      "产出一个文件（文本：csv、md、json、txt 等；Excel：xlsx、xls），挂到这次运行上，界面里能看能下载",
+      "按路径把文件存进这次运行的空间（文本和代码：csv、md、json、txt、py、js、sh 等；Excel：xlsx、xls），同一路径再存就是覆盖；界面里能看能下载",
     description:
-      "要交付表格、文档、数据时调用。文本文件：content 是完整的文件文本。Excel：文件名用 .xlsx 或 .xls，给 sheets（每个工作表一项：name 和 rows，rows 每行一个数组，格子是文字、数字、true/false 或 null），不用给 content；第一行一般写表头，日期写成文字（例如 2026-01-02），列宽自动按内容定。xls 最多 65536 行、256 列，没有特别要求就用 xlsx。同名文件可以多次保存，每次都是新文件。返回文件 id。",
+      "要交付表格、文档、数据，或者保存中间状态、脚本时调用。path 是空间里的相对路径（例如 result.csv、state/progress.json、scripts/clean.py），同一路径再存就是覆盖（文件 id 不变，不留旧版本）；不能以 attachments/ downloads/ screenshots/ tool-outputs/ 开头（那几个目录是只读的）。文本和代码文件：content 是完整的文件文本（小改动用 file.edit，不用整份重发）。Excel：路径用 .xlsx 或 .xls，给 sheets（每个工作表一项：name 和 rows，rows 每行一个数组，格子是文字、数字、true/false 或 null），不用给 content；第一行一般写表头，日期写成文字（例如 2026-01-02），列宽自动按内容定。xls 最多 65536 行、256 列，没有特别要求就用 xlsx。返回文件 id，以及是新建还是覆盖。",
     risk: "write",
+  },
+  {
+    id: "file.list",
+    name: "列出文件",
+    summary: "列出这次运行空间里的全部文件：路径、id、来源、大小、更新时间，可以只看一个目录",
+    description:
+      "空间里有 agent 写的文件（file.save、file.edit、code.run 产生的，在它们自己的路径）和别的来源的文件（只读）：attachments/ 附件、downloads/ 浏览器下载、screenshots/ 截图、tool-outputs/ 太长的工具输出全文。prefix 只列一个目录下的（例如 state/）。列出的路径可以直接给 file.read、file.edit、file.delete 和 code.run 用。",
+    risk: "read",
+    implied: true,
+  },
+  {
+    id: "file.edit",
+    name: "改文件",
+    summary: "按原文替换 agent 写的文本或代码文件里的几段，改代码、改状态文件不用整份重发",
+    description:
+      "path 是要改的文件（只能改 agent 写的文本或代码文件）；edits 按顺序替换，每段 old 必须和原文一字不差（包括缩进和换行）、而且在文件里正好出现一次（不唯一就多带几行上下文），new 是换成什么（空字符串 = 删掉这段）。有一段找不到或不唯一，整次都不改。文件 id 不变。",
+    risk: "write",
+    implied: true,
+  },
+  {
+    id: "file.delete",
+    name: "删文件",
+    summary: "删掉空间里 agent 写的一个文件",
+    description:
+      "path 是要删的文件。只能删 agent 写的文件；附件、下载、截图、工具输出全文是只读的，删不了。删掉就没了，不留旧版本。",
+    risk: "write",
+    implied: true,
+  },
+  {
+    id: "code.run",
+    name: "运行代码",
+    summary:
+      "在独立沙箱里跑 Python 3.12、Node.js 24 或 bash，空间文件挂在 /workspace，跑完新增、改动、删掉的文件同步回空间",
+    description:
+      "给 language，加上 file（空间里的脚本路径，例如 scripts/clean.py）或 code（直接给代码，不存成文件）二选一；args 命令行参数，stdin 标准输入，timeout 最多跑几秒（默认 60，最多 600，到时间整组进程被杀掉）。工作目录是 /workspace：agent 写的文件在它们的路径（可读可写），附件、下载、截图、工具输出全文在 /workspace/attachments/ 这几个目录（只读）。跑完 /workspace 下新增、改动的文件写回空间（同一路径覆盖），删掉的 agent 文件空间里也删掉；node_modules、__pycache__ 不写回。常用包已装好（Python：pandas、numpy、openpyxl、xlrd、python-dateutil、requests、beautifulsoup4、lxml；另有 jq、curl）。只能经代理访问公网的 HTTP / HTTPS（不能直连 TCP / UDP，不能访问内网和本机地址）；pip install、npm install -g 装在这次运行的 home 里，这次运行里一直有效。沙箱里没有密钥和环境变量。返回退出码、用时、写回了哪些文件、访问了哪些主机、stdout / stderr（各给末尾 1 万字，更多的全文存在 tool-outputs/）。退出码不为 0 不算工具出错，自己看输出判断。",
+    risk: "external",
   },
   {
     id: "work.dispatch",
@@ -143,7 +180,7 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
     name: "读附件",
     summary: "读这次运行的附件或文件：文本直接返回内容，图片交给你看，表格（xlsx、xls、csv 等）按行列返回",
     description:
-      "附件清单见系统提示（id、名字、类型），浏览器里下载的文件、存过的文件也能读。文本文件返回内容（太长会截断，用 offset 接着读），图片会作为图片发给你。表格文件（xlsx、xls、xlsm、xlsb、ods、csv、tsv）：只给 fileId 返回概览（每个工作表的名字、范围、前 20 行）；要看更多就加 sheet（名字或序号）、startRow（行号）、rows（默认 200，最多 500），输出末尾会告诉你下一段从哪行接着读。表格只给存着的值、不给公式，日期写成 YYYY-MM-DD。",
+      "按 fileId 或空间里的 path（例如 state/progress.json、attachments/报价.xlsx）读，二选一。附件清单见系统提示（id、名字、类型），浏览器里下载的文件、存过的文件、代码跑出来的文件也能读（file.list 列出全部）。文本和代码文件返回内容（太长会截断，用 offset 接着读），图片会作为图片发给你。表格文件（xlsx、xls、xlsm、xlsb、ods、csv、tsv）：只给 fileId / path 返回概览（每个工作表的名字、范围、前 20 行）；要看更多就加 sheet（名字或序号）、startRow（行号）、rows（默认 200，最多 500），输出末尾会告诉你下一段从哪行接着读。表格只给存着的值、不给公式，日期写成 YYYY-MM-DD。",
     risk: "read",
   },
 ]

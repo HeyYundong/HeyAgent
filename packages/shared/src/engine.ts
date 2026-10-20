@@ -244,12 +244,12 @@ export const builtinToolInputs = {
       .describe("通知谁：员工 id 或邮箱；不填就通知任务负责人"),
   }),
   "file.save": z.object({
-    name: z
+    path: z
       .string()
       .min(1)
-      .max(200)
+      .max(300)
       .describe(
-        "文件名，带扩展名，例如 result.csv、报表.xlsx。文本支持 csv、tsv、md、json、txt、html、xml、yaml；Excel 用 .xlsx 或 .xls（要给 sheets）"
+        "在这次运行空间里的路径，带扩展名，例如 result.csv、state/progress.json、scripts/clean.py、报表.xlsx。同一路径再存就是覆盖（文件 id 不变）。不能以 attachments/ downloads/ screenshots/ tool-outputs/ 开头。文本和代码都能存（csv、md、json、txt、py、js、sh 等）；Excel 用 .xlsx 或 .xls（要给 sheets）"
       ),
     content: z
       .string()
@@ -280,9 +280,16 @@ export const builtinToolInputs = {
     fileId: z
       .string()
       .min(1)
+      .optional()
       .describe(
-        "附件或文件的 id（见系统提示里的附件清单，或工具输出里给的文件 id）"
+        "附件或文件的 id（见系统提示里的附件清单、file.list，或工具输出里给的文件 id）。和 path 二选一"
       ),
+    path: z
+      .string()
+      .min(1)
+      .max(300)
+      .optional()
+      .describe("空间里的路径（file.list 列出的，例如 state/progress.json、attachments/报价.xlsx）。和 fileId 二选一"),
     offset: z
       .number()
       .int()
@@ -306,6 +313,53 @@ export const builtinToolInputs = {
       .max(500)
       .optional()
       .describe("表格文件：读多少行（默认 200，最多 500）"),
+  }),
+  // Session 空间（docs/dev/session-space.md）：列出、按原文改、删 agent 写的文件
+  "file.list": z.object({
+    prefix: z
+      .string()
+      .max(300)
+      .optional()
+      .describe("只列这个目录下的，例如 state/、attachments/；不填列全部"),
+  }),
+  "file.edit": z.object({
+    path: z.string().min(1).max(300).describe("要改的文件路径（agent 写的文本或代码文件）"),
+    edits: z
+      .array(
+        z.object({
+          old: z.string().min(1).describe("要换掉的原文，必须在文件里正好出现一次（多带几行上下文让它唯一）"),
+          new: z.string().describe("换成什么；空字符串 = 删掉这段"),
+        })
+      )
+      .min(1)
+      .max(50)
+      .describe("按顺序替换；有一段找不到或不唯一，整次都不改"),
+  }),
+  "file.delete": z.object({
+    path: z.string().min(1).max(300).describe("要删的文件路径；只能删 agent 写的文件"),
+  }),
+  // 运行代码：在沙箱里跑，空间文件挂在 /workspace，跑完新增、改动、删掉的文件同步回空间
+  "code.run": z.object({
+    language: z.enum(["python", "node", "bash"]).describe("python（Python 3.12）、node（Node.js 24）或 bash"),
+    file: z
+      .string()
+      .max(300)
+      .optional()
+      .describe("空间里的脚本路径，例如 scripts/clean.py。和 code 二选一"),
+    code: z
+      .string()
+      .max(200_000)
+      .optional()
+      .describe("直接给代码（不存成文件）。和 file 二选一；要反复改的代码先用 file.save 存成文件"),
+    args: z.array(z.string().max(1000)).max(50).optional().describe("命令行参数"),
+    stdin: z.string().max(1_000_000).optional().describe("标准输入"),
+    timeout: z
+      .number()
+      .int()
+      .min(1)
+      .max(600)
+      .optional()
+      .describe("最多跑几秒，默认 60，最多 600；到时间整组进程被杀掉"),
   }),
   "work.dispatch": z.object({
     task: z.string().min(1).describe("派给哪个任务：任务 id，见系统提示里「可以派活给」"),
@@ -421,7 +475,7 @@ export const sessionFileSchema = z.object({
   name: z.string(),
   mime: z.string(),
   size: z.number(),
-  /** attachment = 附件；artifact = agent 产出的文件；tool_output = 太长的工具输出全文；screenshot = 截图；download = 在浏览器里下载的文件 */
+  /** attachment = 附件；artifact = agent 写的文件（file.save / file.edit / code.run 产生的）；tool_output = 太长的工具输出全文；screenshot = 截图；download = 在浏览器里下载的文件 */
   kind: z.enum([
     "attachment",
     "artifact",
@@ -432,7 +486,14 @@ export const sessionFileSchema = z.object({
   ]),
   /** 任务附件（跨运行一直有效）还是只属于这次运行 */
   scope: z.enum(["task", "session"]),
+  /**
+   * 在空间里的路径（docs/dev/session-space.md 2.3）：agent 写的是它给的路径（例如 state/progress.json）；
+   * 别的来源放在固定目录下：attachments/ downloads/ screenshots/ tool-outputs/（同名加 -2 -3）。
+   */
+  path: z.string(),
   createdAt: isoTime,
+  /** 最后一次覆盖的时间；没覆盖过 = createdAt */
+  updatedAt: isoTime,
   /** 下载地址（要求登录） */
   url: z.string(),
 })

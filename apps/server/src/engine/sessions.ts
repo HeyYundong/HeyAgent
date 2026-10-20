@@ -193,6 +193,14 @@ export async function buildSnapshot(
     if (!tools.some((each) => each.id === id))
       tools.push(builtinSnapshotTool(id))
   }
+  // Session 空间（docs/dev/session-space.md 第 3 节）：「运行代码」带上存文件、读附件（代码要先存、结果要能读）；
+  // 读 / 存 / 运行任意一个带上「列出文件」；能写的（存文件、运行代码）带上「改文件」「删文件」。放在上面之后算：读附件可能是刚自动带上的
+  const has = (id: string) => tools.some((each) => each.id === id)
+  const spaceImplied: BuiltinToolId[] = []
+  if (has("code.run")) spaceImplied.push("file.save", "file.read")
+  if (has("code.run") || has("file.save") || has("file.read")) spaceImplied.push("file.list")
+  if (has("code.run") || has("file.save")) spaceImplied.push("file.edit", "file.delete")
+  for (const id of spaceImplied) if (!has(id)) tools.push(builtinSnapshotTool(id))
 
   // 派活（选了「派活」工具的）：哪些任务允许它派活、各要什么参数，按库里现在的配置算好冻进快照
   let dispatchTargets: SessionSnapshot["dispatchTargets"]

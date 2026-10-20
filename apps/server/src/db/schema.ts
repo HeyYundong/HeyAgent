@@ -1011,9 +1011,20 @@ export const files = pgTable(
     storagePath: text("storage_path").notNull(),
     sha256: text("sha256").notNull(),
     createdById: text("created_by_id").references(() => users.id, { onDelete: "set null" }),
+    /**
+     * Session 空间里的路径（docs/dev/session-space.md 2.1）：只有 agent 写的文件（artifact）有，例如 state/progress.json；
+     * 同一个 session 里唯一，同一路径再写就是覆盖（id 不变）。别的来源为空，列表里放在固定目录下
+     */
+    path: text("path"),
     createdAt: createdAt(),
+    /** 最后一次覆盖内容的时间（不用 $onUpdate：挂到任务上这类改元数据的不算） */
+    updatedAt: ts("updated_at").notNull().defaultNow(),
   },
-  (t) => [index("files_session_id_idx").on(t.sessionId), index("files_task_id_idx").on(t.taskId)]
+  (t) => [
+    index("files_session_id_idx").on(t.sessionId),
+    index("files_task_id_idx").on(t.taskId),
+    uniqueIndex("files_session_path_idx").on(t.sessionId, t.path).where(sql`${t.kind} = 'artifact' and ${t.path} is not null`),
+  ]
 )
 
 // ---------- M1 公共表（监工在并行开发前先建好，两个开发包都要用） ----------

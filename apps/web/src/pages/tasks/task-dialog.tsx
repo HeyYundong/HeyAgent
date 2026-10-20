@@ -51,8 +51,8 @@ import { TaskAttachments } from "./run-actions"
 type PickKey = "memoryIds" | "skillIds" | "toolIds" | "ruleIds"
 const PICK_KEYS: PickKey[] = ["memoryIds", "skillIds", "toolIds", "ruleIds"]
 
-/** 引擎生成运行快照时自动加上的两个工具（apps/server/src/engine/sessions.ts） */
-const IMPLIED_TOOLS_NOTE = "选了技能会自动带上「读取技能」；有附件会自动带上「读附件」。"
+/** 引擎生成运行快照时自动加上的工具（apps/server/src/engine/sessions.ts） */
+const IMPLIED_TOOLS_NOTE = "选了技能会自动带上「读取技能」；有附件会自动带上「读附件」。选了「读附件」「存文件」「运行代码」会自动带上「列出文件」，选了「存文件」「运行代码」会自动带上「改文件」「删文件」，「运行代码」还会带上「存文件」「读附件」。"
 
 /** 「用哪些」的选项：生效的记忆、已发布的技能、不是自带的工具、全部规则；编辑时已经选上的（哪怕后来归档、停用了）也列出来。
  * 规则：没生效的也列出来但选不了（灰掉，写原因）；编辑时原来就选着的照样留着（后端也保留） */

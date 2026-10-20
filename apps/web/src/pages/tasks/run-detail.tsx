@@ -2,6 +2,7 @@
 // 右上角「空间文件」（run-space.tsx）弹窗按来源、名字筛这次运行的全部文件。
 // M3：过程里标出规则命中、agent 写下步骤（plan.set）、上下文压缩；验收逐条显示结论和理由；agent 的步骤可以「存为任务步骤」（tasks.saveStepsFromSession）。
 // 派活：meta 前面写怎么开始的（派活触发写清哪张单、谁派的）；被派来的加「派来的活」，派过活的加「派出去的活」（docs/dev/dispatch.md 9.4 节）。
+// 运行代码（code.run）的步骤单独显示：语言、代码、退出码、stdout / stderr（格式见 docs/dev/session-space.md 3.2）；解析不了就退回通用的输入 / 输出。
 // 不带页面级布局和返回链接，放进任何 768px 宽的抽屉都能用（任务页、Session 页的抽屉都直接放它）。
 // 传进来的 run 是 sessions.list 的摘要（不带过程）：标题、检查点、验收先显示；过程按 id 另取（sessions.get），取到前是骨架屏。
 import * as React from "react"
@@ -22,6 +23,7 @@ import { Trace, TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigg
 import { can, eventTimeText, fmtDateTime, incompleteReason, isRunEnded, WORK_DISPATCH_TOOL_ID } from "@heyagent/shared"
 import type { RunEvent, RunEventKind, SessionSummary, TaskDef, Verification } from "@heyagent/shared"
 
+import { CodeView } from "@/components/files"
 import { MarkdownView } from "@/components/markdown"
 import { useHumanItems, useModels, useSessionQuery, useStaffName, useToolName } from "@/lib/data"
 import { useAction } from "@/lib/mutations"
@@ -181,14 +183,19 @@ function EventRow({ event, run, running }: { event: RunEvent; run: SessionSummar
       </div>
     )
   }
+  const codeRun = event.toolId === CODE_RUN_TOOL_ID ? parseCodeRunInput(event.input) : undefined
   return (
     <TraceCollapsible>
       <TraceCollapsibleTrigger>{line}</TraceCollapsibleTrigger>
       <TraceCollapsibleContent className="flex flex-col gap-2 text-xs">
         <span>工具：{toolName(event.toolId ?? "")}（{event.toolId}）{meta && ` · ${meta}`}</span>
         {event.detail && <span>{event.detail}</span>}
-        {event.input && <IoBlock title="输入" text={event.input} />}
-        {event.output && <IoBlock title="输出" text={event.output} />}
+        {codeRun ? <CodeRunView call={codeRun} output={event.output} /> : (
+          <>
+            {event.input && <IoBlock title="输入" text={event.input} />}
+            {event.output && <IoBlock title="输出" text={event.output} />}
+          </>
+        )}
       </TraceCollapsibleContent>
     </TraceCollapsible>
   )
@@ -200,6 +207,129 @@ const IoBlock = ({ title, text }: { title: string; text: string }) => (
     <CodeBlockContent wrap>{text}</CodeBlockContent>
   </CodeBlock>
 )
+
+// ---------- 运行代码 ----------
+
+const CODE_RUN_TOOL_ID = "code.run"
+const CODE_LANGUAGE = { python: { label: "Python", highlight: "python" }, node: { label: "Node.js", highlight: "javascript" }, bash: { label: "bash", highlight: "bash" } } as const
+
+interface CodeRunCall {
+  language: keyof typeof CODE_LANGUAGE
+  code?: string
+  file?: string
+  args: string[]
+  stdin?: string
+  timeout?: number
+}
+
+/** code.run 的输入（JSON 字符串）；不是预期的形状就返回 undefined，调用方退回通用显示 */
+function parseCodeRunInput(raw: string | undefined): CodeRunCall | undefined {
+  if (!raw) return undefined
+  let value: unknown
+  try {
+    value = JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+  if (typeof value !== "object" || value === null) return undefined
+  const input = value as Record<string, unknown>
+  const language = input.language
+  if (typeof language !== "string" || !(language in CODE_LANGUAGE)) return undefined
+  const code = typeof input.code === "string" ? input.code : undefined
+  const file = typeof input.file === "string" ? input.file : undefined
+  if (code === undefined && file === undefined) return undefined
+  return {
+    language: language as CodeRunCall["language"],
+    code,
+    file,
+    args: Array.isArray(input.args) ? input.args.filter((arg): arg is string => typeof arg === "string") : [],
+    stdin: typeof input.stdin === "string" && input.stdin ? input.stdin : undefined,
+    timeout: typeof input.timeout === "number" ? input.timeout : undefined,
+  }
+}
+
+interface CodeRunResult {
+  /** 第一行拆开的几段：「退出码 0」「用时 1.2 秒」「超时（60 秒），整组进程已被杀掉」…… */
+  summary: string[]
+  /** 退出码；超时的也有（137）；起不了沙箱的没有 */
+  exitCode?: number
+  failed: boolean
+  /** 「写回空间：…」「访问了：…」这类说明行 */
+  notes: string[]
+  stdout?: string
+  stderr?: string
+}
+
+const STDOUT_MARK = "--- stdout ---"
+const STDERR_MARK = "--- stderr ---"
+
+/** 按 3.2 的格式拆 code.run 的返回文本；第一行不是已知的几种就返回 undefined */
+function parseCodeRunOutput(raw: string | undefined): CodeRunResult | undefined {
+  if (!raw) return undefined
+  const lines = raw.split("\n")
+  const first = lines[0] ?? ""
+  const sandboxFailed = first.startsWith("沙箱没起来")
+  const timedOut = first.startsWith("超时（")
+  const exit = /(?:^|· )退出码 (-?\d+)/.exec(first)
+  if (!sandboxFailed && !timedOut && !exit) return undefined
+  const exitCode = exit ? Number(exit[1]) : undefined
+  const outAt = lines.indexOf(STDOUT_MARK)
+  const errAt = lines.indexOf(STDERR_MARK, outAt + 1)
+  const headEnd = [outAt, errAt].filter((at) => at >= 0).sort((a, b) => a - b)[0] ?? lines.length
+  // stdout、stderr 两段：标记行的下一行起，到下一个标记（或结尾）前
+  const section = (from: number, to: number) => (from < 0 ? undefined : lines.slice(from + 1, to < 0 ? undefined : to).join("\n").replace(/\n+$/, ""))
+  const stdout = section(outAt, errAt)
+  const stderr = section(errAt, -1)
+  return {
+    summary: sandboxFailed ? [first] : first.split(" · "),
+    exitCode,
+    failed: sandboxFailed || timedOut || (exitCode !== undefined && exitCode !== 0),
+    notes: lines.slice(1, headEnd).filter((line) => line.trim()),
+    stdout: stdout || undefined,
+    stderr: stderr || undefined,
+  }
+}
+
+/** 一次运行代码：语言和代码（或脚本路径）、标准输入，再是退出码 / 写回 / 访问的网站 / stdout / stderr */
+function CodeRunView({ call, output }: { call: CodeRunCall; output: string | undefined }) {
+  const language = CODE_LANGUAGE[call.language]
+  const result = parseCodeRunOutput(output)
+  return (
+    <>
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant="secondary">{language.label}</Badge>
+        {call.file && <span>运行 <span className="font-mono">{call.file}</span></span>}
+        {call.args.length > 0 && <span className="text-muted-foreground">参数 <span className="font-mono">{call.args.join(" ")}</span></span>}
+        {call.timeout !== undefined && <span className="text-muted-foreground">最多跑 {call.timeout} 秒</span>}
+      </div>
+      {call.code !== undefined && <CodeView code={call.code} language={language.highlight} title="代码" className="max-h-96" />}
+      {call.stdin !== undefined && <IoBlock title="标准输入" text={call.stdin} />}
+      {result ? (
+        <>
+          <div className="flex flex-wrap items-center gap-2">
+            {result.summary.map((part, index) => <CodeRunSummaryPart key={index} part={part} result={result} />)}
+          </div>
+          {result.notes.map((note, index) => <span key={index} className="text-muted-foreground">{note}</span>)}
+          {result.stdout && <IoBlock title="stdout" text={result.stdout} />}
+          {result.stderr && <IoBlock title="stderr" text={result.stderr} />}
+        </>
+      ) : (
+        output && <IoBlock title="输出" text={output} />
+      )}
+    </>
+  )
+}
+
+/** 第一行里的一段：退出码是徽章（0 = 通过，别的 = 失败），超时、沙箱没起来是失败徽章，用时之类是灰字 */
+function CodeRunSummaryPart({ part, result }: { part: string; result: CodeRunResult }) {
+  if (/^退出码 /.test(part)) {
+    return result.failed
+      ? <Badge variant="destructive">{part}</Badge>
+      : <Badge variant="outline"><CircleCheckIcon data-icon="inline-start" />{part}</Badge>
+  }
+  if (part.startsWith("超时（") || part.startsWith("沙箱没起来")) return <Badge variant="destructive">{part}</Badge>
+  return <span className="text-muted-foreground">{part}</span>
+}
 
 /** agent 用「写下步骤」（plan.set）定的最后一版步骤；负责人或主管可以整体覆盖到任务的步骤里 */
 function AgentSteps({ task, run, steps, events, canSave }: { task: TaskDef; run: SessionSummary; steps: string[]; events?: RunEvent[]; canSave: boolean }) {

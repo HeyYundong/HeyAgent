@@ -1,12 +1,12 @@
 // 运行详情右上角的「空间文件」：这次运行的整个文件空间（任务附件、agent 存的文件、浏览器下载、截图、工具输出全文、刚上传的）。
-// 点开是一个大弹窗：按来源分标签页、按名字搜，表格列出名字 / 来源 / 大小 / 时间，点名字预览（复用 components/files 的 FileViewer），右边下载。
+// 点开是一个大弹窗：按来源分标签页、按路径搜，表格列出路径 / 来源 / 大小 / 时间（覆盖过的标「覆盖过」，时间是最后一次写入），点名字预览（复用 components/files 的 FileViewer），右边下载。
 // 和抽屉里的 SessionFiles 用同一个查询（engine.sessionFiles），实时推送刷新时两边一起变。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
 import { DownloadIcon, FolderOpenIcon, SearchIcon } from "lucide-react"
 import { fmtDateTime, type SessionFile, type SessionSummary } from "@heyagent/shared"
 
-import { FileViewer, fileSourceLabel, fileTypeIcon, isImageFile } from "@/components/files"
+import { FileViewer, fileSourceLabel, filePathOf, fileTypeIcon, isImageFile, isOverwritten } from "@/components/files"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -22,7 +22,7 @@ import { trpc } from "@/lib/trpc"
 /** 标签页上的来源，按这个顺序排；任务附件和这次运行的附件都算「附件」 */
 const SOURCES = [
   { id: "download", label: "浏览器下载" },
-  { id: "artifact", label: "产物" },
+  { id: "artifact", label: "agent 写的" },
   { id: "screenshot", label: "截图" },
   { id: "attachment", label: "附件" },
   { id: "tool_output", label: "工具输出全文" },
@@ -56,7 +56,7 @@ export function RunSpaceButton({ run }: { run: SessionSummary }) {
 
 function RunSpaceDialog({ run, onClose }: { run: SessionSummary; onClose: () => void }) {
   const list = useSpaceFiles(run.id)
-  const files = React.useMemo(() => [...(list.data ?? [])].sort((a, b) => b.createdAt.localeCompare(a.createdAt)), [list.data])
+  const files = React.useMemo(() => [...(list.data ?? [])].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), [list.data])
   const total = files.reduce((sum, file) => sum + file.size, 0)
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
@@ -103,7 +103,7 @@ function SpaceFiles({ files }: { files: SessionFile[] }) {
   const active: Filter = filter !== "all" && !counts.has(filter) ? "all" : filter
 
   const needle = query.trim().toLowerCase()
-  const shown = files.filter((file) => (active === "all" || sourceOf(file) === active) && (!needle || file.name.toLowerCase().includes(needle)))
+  const shown = files.filter((file) => (active === "all" || sourceOf(file) === active) && (!needle || filePathOf(file).toLowerCase().includes(needle)))
   const viewing = files.find((file) => file.id === viewingId)
   const images = shown.filter(isImageFile)
 
@@ -126,17 +126,17 @@ function SpaceFiles({ files }: { files: SessionFile[] }) {
         </Tabs>
         <InputGroup className="w-full sm:w-56">
           <InputGroupAddon><SearchIcon /></InputGroupAddon>
-          <InputGroupInput aria-label="搜文件名" placeholder="搜文件名" value={query} onChange={(event) => setQuery(event.target.value)} />
+          <InputGroupInput aria-label="搜路径" placeholder="搜路径" value={query} onChange={(event) => setQuery(event.target.value)} />
         </InputGroup>
       </div>
       {shown.length === 0 ? (
-        <p className="text-muted-foreground">{needle ? `没有名字里带「${query.trim()}」的文件。` : "这一类没有文件。"}</p>
+        <p className="text-muted-foreground">{needle ? `没有路径里带「${query.trim()}」的文件。` : "这一类没有文件。"}</p>
       ) : (
         <div className="border">
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>名字</TableHead>
+                <TableHead>路径</TableHead>
                 <TableHead className="hidden sm:table-cell">来源</TableHead>
                 <TableHead className="hidden sm:table-cell">大小</TableHead>
                 <TableHead className="hidden sm:table-cell">时间</TableHead>
@@ -149,16 +149,19 @@ function SpaceFiles({ files }: { files: SessionFile[] }) {
                 return (
                   <TableRow key={file.id}>
                     <TableCell className="max-w-48 sm:max-w-sm">
-                      <Button variant="ghost" size="sm" className="max-w-full" title={file.name} onClick={() => setViewingId(file.id)}>
+                      <Button variant="ghost" size="sm" className="max-w-full" title={filePathOf(file)} onClick={() => setViewingId(file.id)}>
                         <Icon data-icon="inline-start" />
-                        <span className="truncate">{file.name}</span>
+                        <span className="truncate">{filePathOf(file)}</span>
                       </Button>
                     </TableCell>
                     <TableCell className="hidden sm:table-cell"><Badge variant="outline">{fileSourceLabel(file)}</Badge></TableCell>
                     <TableCell className="hidden sm:table-cell"><span className="text-muted-foreground tabular-nums">{fmtSize(file.size)}</span></TableCell>
-                    <TableCell className="hidden sm:table-cell"><span className="text-muted-foreground tabular-nums">{fmtDateTime(file.createdAt)}</span></TableCell>
+                    <TableCell className="hidden sm:table-cell">
+                      <span className="text-muted-foreground tabular-nums">{fmtDateTime(file.updatedAt)}</span>
+                      {isOverwritten(file) && <span className="ml-1 text-xs text-muted-foreground" title={`第一次存于 ${fmtDateTime(file.createdAt)}`}>覆盖过</span>}
+                    </TableCell>
                     <TableCell>
-                      <Button variant="ghost" size="icon-sm" aria-label={`下载 ${file.name}`} nativeButton={false} render={<a href={file.url} download={file.name} />}>
+                      <Button variant="ghost" size="icon-sm" aria-label={`下载 ${filePathOf(file)}`} nativeButton={false} render={<a href={file.url} download={file.name} />}>
                         <DownloadIcon />
                       </Button>
                     </TableCell>

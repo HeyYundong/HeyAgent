@@ -150,9 +150,54 @@ export function buildSystemPrompt(
     )
   }
 
+  const has = (id: string) => snapshot.tools.some((tool) => tool.id === id)
+  const name = (id: string) => toolNames.get(id) ?? id
   if (snapshot.attachments.length) {
     sections.push(
-      `## 附件\n用 file.read 按 id 读取。\n${snapshot.attachments.map((file) => `- ${file.id}：${file.name}（${file.mime}，${file.size} 字节）`).join("\n")}`
+      `## 附件\n用 ${name("file.read")} 按 id 读取${has("file.list") ? `；它们在空间的 attachments/ 目录下（只读），${name("file.list")} 能看到路径` : ""}。\n${snapshot.attachments.map((file) => `- ${file.id}：${file.name}（${file.mime}，${file.size} 字节）`).join("\n")}`
+    )
+  }
+
+  // Session 空间（docs/dev/session-space.md）：只在能读写文件的运行里讲
+  if (has("file.list")) {
+    sections.push(
+      [
+        "## 空间文件",
+        "这次运行有一个自己的文件空间（只属于这次运行，负责人在界面里能看能下载），按路径找文件：",
+        "- agent 写的文件在你给的路径，例如 result.csv、state/progress.json、scripts/clean.py。同一路径再存就是覆盖（文件 id 不变，不留旧版本）。",
+        "- 别的来源只读，放在固定目录：attachments/ 附件、downloads/ 浏览器下载、screenshots/ 截图、tool-outputs/ 太长的工具输出全文。写文件的路径不能用这几个目录开头。",
+        [
+          `- ${name("file.list")} 列出全部（路径、id、来源、大小）`,
+          has("file.read") ? `${name("file.read")} 按路径或 id 读` : "",
+          has("file.edit") ? `只改几段用 ${name("file.edit")}，不用整份重发` : "",
+          has("file.delete") ? `不要的用 ${name("file.delete")} 删` : "",
+        ]
+          .filter(Boolean)
+          .join("；") + "。",
+        has("file.save")
+          ? `- 把空间当草稿本：步骤多、要分几次做或者中途要等的任务，把进度和中间结果写进文件（例如 state/progress.json：做到哪一步、处理过哪些、下一步做什么），每做完一段就用 ${name("file.save")} 或 ${name("file.edit")} 更新；挂起后继续、或者前面的对话被压缩以后，先读它再接着做。`
+          : "",
+        "- 要交付的文件，在最后的总结里写明路径。",
+      ]
+        .filter(Boolean)
+        .join("\n")
+    )
+  }
+
+  if (has("code.run")) {
+    const run = name("code.run")
+    sections.push(
+      [
+        "## 运行代码",
+        `- ${run} 在独立的沙箱里跑 Python 3.12、Node.js 24 或 bash。工作目录 /workspace 就是这个空间：agent 写的文件在 /workspace/<路径>（可读可写），附件、下载、截图、工具输出全文在 /workspace/attachments/ 这几个目录（只读）。`,
+        "- 跑完 /workspace 下新增、改动的文件自动写回空间（同一路径覆盖），删掉的 agent 文件空间里也删掉；node_modules、__pycache__ 不写回，/tmp 跑完就没了。",
+        `- 要反复跑、反复改的代码先用 ${name("file.save")} 存成文件（例如 scripts/clean.py），再用 file 参数跑，改的时候用 ${name("file.edit")}。`,
+        "- 整理表格、批量计算、转换格式这类机械的活，写代码做，比一行一行手抄可靠。",
+        "- 只能经代理访问公网的 HTTP / HTTPS（curl、requests、urllib、fetch、pip、npm 会自动走代理）；不能直连 TCP / UDP（例如直连数据库、发邮件），也不能访问内网和本机地址。",
+        "- 常用包已装好：Python 有 pandas、numpy、openpyxl、xlrd、python-dateutil、requests、beautifulsoup4、lxml，另有 jq、curl。别的用 pip install 或 npm install -g 装，装好的包这次运行里一直有效。",
+        "- 沙箱里没有密钥、没有环境变量，也碰不到平台的数据和接口；要访问需要登录的系统，用别的工具。",
+        "- 默认 60 秒超时（timeout 最多 600 秒），内存有上限；超时整组进程被杀掉。退出码不为 0 不算工具出错，自己看 stdout / stderr 判断。",
+      ].join("\n")
     )
   }
 
@@ -162,8 +207,10 @@ export function buildSystemPrompt(
       "- 开始干活前先用 plan.set 写下你打算怎么做（几步）；做法变了就再调一次。",
       "- 每一步先想清楚再调工具；能并行的工具调用可以一次提出多个。",
       "- 要等外部的事或等一段时间，用 session.wait；要人批准、回答或去登录，用 ask.human。不要假装已经等到或已经拿到批准。",
-      "- 要交付的表格、文档用 file.save 存成文件。",
-      "- 工具输出太长时只给你开头部分，全文存成了文件，需要时用 file.read 读。",
+      has("file.save")
+        ? `- 要交付的表格、文档用 ${name("file.save")} 存成文件，最后在总结里写明路径。`
+        : "- 要交付的表格、文档用 file.save 存成文件。",
+      `- 工具输出太长时只给你开头部分，全文存成了文件（空间的 tool-outputs/ 下），需要时用 ${name("file.read")} 读。`,
       // 没有检查点的任务（例如被派来办一件事的）不提检查点：提了 agent 会去找、会在总结里写「检查点清单为空」
       hasCheckpoints
         ? "- 全部做完后，直接回复一段总结（做了什么、结果在哪、哪些检查点没完成以及原因），不要再调工具。回复不调工具就表示你认为任务做完了；检查点有没勾的、或者全部跳过的，这次运行会记成「没完成」。"

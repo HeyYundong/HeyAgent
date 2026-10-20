@@ -2,11 +2,13 @@
 // 图片显示缩略图，点了弹窗看大图（左右箭头或键盘 ← → 切换同一组里的其他图片）；文本文件点了弹窗看内容（Markdown 按 Markdown 显示）；
 // 表格文件（xlsx、xls、csv 等）点了看每个工作表的前 200 行（服务器解析，GET /api/files/:id/sheet）；其他文件弹窗里只说「不能预览，请下载」。
 // 下载走 GET /api/files/:id（要求登录，cookie 自动带上）。
-// 另外导出 FileViewer（看图 / 看内容的弹窗）、fileSourceLabel（来源文字）、fileTypeIcon（按类型选图标）、isImageFile，给运行详情的「空间文件」列表等别的页面用。
+// 代码文件（.py .js .ts .sh .sql .toml .ini 等，docs/dev/session-space.md 3.1）按语言高亮显示（CodeView，复用 use-highlighted-code）。
+// 有 path（空间里的路径，例如 state/progress.json）的文件显示路径，覆盖过的（updatedAt ≠ createdAt）会标出来。
+// 另外导出 FileViewer（看图 / 看内容的弹窗）、CodeView（带高亮的代码块）、fileSourceLabel（来源文字）、fileTypeIcon（按类型选图标）、isImageFile、filePathOf、isOverwritten，给运行详情的「空间文件」列表等别的页面用。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
-import { ChevronLeftIcon, ChevronRightIcon, DownloadIcon, FileIcon, FileSpreadsheetIcon, FileTextIcon, ImageIcon, PaperclipIcon, XIcon, type LucideIcon } from "lucide-react"
-import type { SessionFile, SheetPreview, UploadedFile } from "@heyagent/shared"
+import { ChevronLeftIcon, ChevronRightIcon, DownloadIcon, FileCodeIcon, FileIcon, FileSpreadsheetIcon, FileTextIcon, ImageIcon, PaperclipIcon, XIcon, type LucideIcon } from "lucide-react"
+import { fmtDateTime, type SessionFile, type SheetPreview, type UploadedFile } from "@heyagent/shared"
 
 import { MarkdownView } from "@/components/markdown"
 import { Alert, AlertDescription } from "@/components/ui/alert"
@@ -14,7 +16,7 @@ import {
   Attachment, AttachmentAction, AttachmentActions, AttachmentContent, AttachmentDescription, AttachmentMedia, AttachmentTitle, AttachmentTrigger,
 } from "@/components/ui/attachment"
 import { Button } from "@/components/ui/button"
-import { CodeBlock, CodeBlockContent } from "@/components/ui/code-block"
+import { CodeBlock, CodeBlockActions, CodeBlockContent, CodeBlockCopyButton, CodeBlockHeader, CodeBlockLine, CodeBlockTitle } from "@/components/ui/code-block"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
 import { Input } from "@/components/ui/input"
@@ -22,23 +24,29 @@ import { Spinner } from "@/components/ui/spinner"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { toast } from "@/components/ui/toast"
+import { useHighlightedCode } from "@/hooks/use-highlighted-code"
 import { fmtSize, uploadFile } from "@/lib/files"
 
 const KIND_LABEL: Record<SessionFile["kind"], string> = {
   attachment: "附件",
-  artifact: "产物",
+  artifact: "agent 写的",
   tool_output: "工具输出全文",
   screenshot: "截图",
   upload: "刚上传",
   download: "浏览器下载",
 }
 
-export type ShownFile = Pick<SessionFile, "id" | "name" | "mime" | "size" | "url"> & { kind?: SessionFile["kind"]; scope?: SessionFile["scope"] }
+export type ShownFile = Pick<SessionFile, "id" | "name" | "mime" | "size" | "url"> & Partial<Pick<SessionFile, "kind" | "scope" | "path" | "createdAt" | "updatedAt">>
 
 /** 弹窗里最多显示这么多字，再多的请下载 */
 const MAX_PREVIEW_CHARS = 200_000
 const TEXT_MIME = /^(text\/|application\/(json|xml|yaml|x-yaml|javascript|x-ndjson|csv))/
-const TEXT_EXT = /\.(txt|md|markdown|json|jsonl|ya?ml|csv|tsv|log|xml|html?)$/i
+const TEXT_EXT = /\.(txt|md|markdown|json|jsonl|ya?ml|csv|tsv|log|xml|html?|py|m?js|cjs|ts|sh|bash|sql|toml|ini|cfg)$/i
+/** 代码文件按扩展名高亮（.ini .cfg .jsonl 的 MIME 只是 text/plain，只能看扩展名）；没有扩展名线索时看 MIME */
+const CODE_EXT: Record<string, string> = { py: "python", js: "javascript", mjs: "javascript", cjs: "javascript", ts: "typescript", sh: "bash", bash: "bash", sql: "sql", toml: "toml", ini: "ini", cfg: "ini", jsonl: "json" }
+const CODE_MIME: Record<string, string> = { "text/x-python": "python", "text/javascript": "javascript", "text/x-typescript": "typescript", "text/x-shellscript": "bash", "text/x-sql": "sql", "text/x-toml": "toml" }
+/** 超过这么多字就不做语法高亮（高亮在浏览器里同步算，太长会卡） */
+const MAX_HIGHLIGHT_CHARS = 50_000
 
 /** 表格：服务器能解析的（和 apps/server/src/files/sheets.ts 的 isSheetFile 一致） */
 const SHEET_MIME = /^(application\/vnd\.openxmlformats-officedocument\.spreadsheetml\.sheet|application\/vnd\.ms-excel(\.sheet\.(binary\.)?macroenabled\.12)?|application\/vnd\.oasis\.opendocument\.spreadsheet|text\/csv|text\/tab-separated-values)$/i
@@ -49,20 +57,29 @@ const SHEET_PREVIEW_ROWS = 200
 const isImage = (file: ShownFile) => file.mime.startsWith("image/")
 const isSheet = (file: ShownFile) => SHEET_MIME.test(file.mime) || SHEET_EXT.test(file.name)
 const isText = (file: ShownFile) => TEXT_MIME.test(file.mime) || TEXT_EXT.test(file.name)
+/** 代码文件的高亮语言；不是代码文件返回 undefined */
+const codeLanguage = (file: ShownFile) => CODE_EXT[/\.([a-z0-9]+)$/i.exec(file.name)?.[1]?.toLowerCase() ?? ""] ?? CODE_MIME[file.mime]
 const isMarkdown = (file: ShownFile) => file.mime === "text/markdown" || /\.(md|markdown)$/i.test(file.name)
 
 /** 是不是图片（看大图时能左右切换） */
 export const isImageFile = isImage
+
+/** 空间里显示用的路径；没有路径（上传的附件等）退回文件名 */
+export const filePathOf = (file: Pick<ShownFile, "name" | "path">) => file.path || file.name
+
+/** 覆盖过：最后一次写入的时间晚于第一次 */
+export const isOverwritten = (file: Pick<ShownFile, "createdAt" | "updatedAt">) => Boolean(file.createdAt && file.updatedAt && file.updatedAt !== file.createdAt)
 
 /** 文件的来源：任务附件（跨运行一直有效）单独写，其他按 kind */
 export function fileSourceLabel(file: { kind: SessionFile["kind"]; scope?: SessionFile["scope"] }) {
   return file.scope === "task" ? "任务附件" : KIND_LABEL[file.kind]
 }
 
-/** 按文件类型选的图标：图片、表格、文本，其他是普通文件 */
+/** 按文件类型选的图标：图片、表格、代码、文本，其他是普通文件 */
 export function fileTypeIcon(file: ShownFile): LucideIcon {
   if (isImage(file)) return ImageIcon
   if (isSheet(file)) return FileSpreadsheetIcon
+  if (codeLanguage(file)) return FileCodeIcon
   if (isText(file)) return FileTextIcon
   return FileIcon
 }
@@ -70,6 +87,7 @@ export function fileTypeIcon(file: ShownFile): LucideIcon {
 function describe(file: ShownFile) {
   const parts = [fmtSize(file.size)]
   if (file.kind) parts.push(fileSourceLabel({ kind: file.kind, scope: file.scope }))
+  if (isOverwritten(file) && file.updatedAt) parts.push(`覆盖于 ${fmtDateTime(file.updatedAt)}`)
   return parts.join(" · ")
 }
 
@@ -90,11 +108,11 @@ export function FileList({ files, onRemove, removingId, empty }: FileListProps) 
   const others = files.filter((file) => !isImage(file))
   const actions = (file: ShownFile) => (
     <AttachmentActions>
-      <AttachmentAction aria-label={`下载 ${file.name}`} nativeButton={false} render={<a href={file.url} download={file.name} />}>
+      <AttachmentAction aria-label={`下载 ${filePathOf(file)}`} nativeButton={false} render={<a href={file.url} download={file.name} />}>
         <DownloadIcon />
       </AttachmentAction>
       {onRemove && (
-        <AttachmentAction aria-label={`移除 ${file.name}`} disabled={removingId === file.id} onClick={() => onRemove(file)}>
+        <AttachmentAction aria-label={`移除 ${filePathOf(file)}`} disabled={removingId === file.id} onClick={() => onRemove(file)}>
           {removingId === file.id ? <Spinner /> : <XIcon />}
         </AttachmentAction>
       )}
@@ -110,10 +128,10 @@ export function FileList({ files, onRemove, removingId, empty }: FileListProps) 
                 <img src={file.url} alt={file.name} loading="lazy" />
               </AttachmentMedia>
               <AttachmentContent>
-                <AttachmentTitle title={file.name}>{file.name}</AttachmentTitle>
+                <AttachmentTitle title={filePathOf(file)}>{filePathOf(file)}</AttachmentTitle>
                 <AttachmentDescription>{describe(file)}</AttachmentDescription>
               </AttachmentContent>
-              <AttachmentTrigger aria-label={`看大图：${file.name}`} onClick={() => setViewingId(file.id)} />
+              <AttachmentTrigger aria-label={`看大图：${filePathOf(file)}`} onClick={() => setViewingId(file.id)} />
               {actions(file)}
             </Attachment>
           ))}
@@ -121,17 +139,20 @@ export function FileList({ files, onRemove, removingId, empty }: FileListProps) 
       )}
       {others.length > 0 && (
         <div className="flex flex-wrap gap-2">
-          {others.map((file) => (
-            <Attachment key={file.id} size="sm" className="max-w-full sm:max-w-72">
-              <AttachmentMedia>{isSheet(file) ? <FileSpreadsheetIcon /> : <FileTextIcon />}</AttachmentMedia>
-              <AttachmentContent>
-                <AttachmentTitle title={file.name}>{file.name}</AttachmentTitle>
-                <AttachmentDescription>{describe(file)}</AttachmentDescription>
-              </AttachmentContent>
-              <AttachmentTrigger aria-label={`看内容：${file.name}`} onClick={() => setViewingId(file.id)} />
-              {actions(file)}
-            </Attachment>
-          ))}
+          {others.map((file) => {
+            const Icon = fileTypeIcon(file)
+            return (
+              <Attachment key={file.id} size="sm" className="max-w-full sm:max-w-72">
+                <AttachmentMedia><Icon /></AttachmentMedia>
+                <AttachmentContent>
+                  <AttachmentTitle title={filePathOf(file)}>{filePathOf(file)}</AttachmentTitle>
+                  <AttachmentDescription>{describe(file)}</AttachmentDescription>
+                </AttachmentContent>
+                <AttachmentTrigger aria-label={`看内容：${filePathOf(file)}`} onClick={() => setViewingId(file.id)} />
+                {actions(file)}
+              </Attachment>
+            )
+          })}
         </div>
       )}
       {viewing && <FileViewer file={viewing} images={isImage(viewing) ? images : []} onShow={(file) => setViewingId(file.id)} onClose={() => setViewingId(null)} />}
@@ -165,11 +186,11 @@ export function FileViewer({ file, images, onShow, onClose }: { file: ShownFile;
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-h-svh overflow-y-auto sm:max-w-5xl">
         <DialogHeader>
-          <DialogTitle className="break-all">{file.name}</DialogTitle>
+          <DialogTitle className="break-all">{filePathOf(file)}</DialogTitle>
         </DialogHeader>
         {isImage(file) ? (
           <div className="relative">
-            <img key={file.id} src={file.url} alt={file.name} className="h-auto w-full border" />
+            <img key={file.id} src={file.url} alt={filePathOf(file)} className="h-auto w-full border" />
             {paging && (
               <>
                 <Button variant="secondary" size="icon" aria-label="上一张" disabled={!prev} onClick={() => prev && onShow(prev)} className="absolute top-1/2 left-2 -translate-y-1/2">
@@ -225,12 +246,32 @@ function TextPreview({ file }: { file: ShownFile }) {
       {isMarkdown(file) ? (
         <MarkdownView>{text}</MarkdownView>
       ) : (
-        <CodeBlock size="sm">
-          <CodeBlockContent wrap>{text}</CodeBlockContent>
-        </CodeBlock>
+        <CodeView code={text} language={codeLanguage(file)} />
       )}
       {cut && <p className="text-xs text-muted-foreground">只显示了前 {MAX_PREVIEW_CHARS.toLocaleString()} 个字，完整内容请下载。</p>}
     </div>
+  )
+}
+
+/**
+ * 带语法高亮的代码块（组合 registry 的 CodeBlock 和 use-highlighted-code，和 SKILL.md 源码同一写法）。
+ * language 不认识（或没给）就是纯文本；太长的不高亮。title 给了就多一个标题栏，右上角是复制按钮。
+ */
+export function CodeView({ code, language, title, lineNumbers, className }: { code: string; language?: string; title?: React.ReactNode; lineNumbers?: boolean; className?: string }) {
+  const lines = useHighlightedCode(code, language && code.length <= MAX_HIGHLIGHT_CHARS ? language : "text")
+  return (
+    <CodeBlock size="sm">
+      {title && (
+        <CodeBlockHeader>
+          <CodeBlockTitle>{title}</CodeBlockTitle>
+          <CodeBlockActions><CodeBlockCopyButton value={code} /></CodeBlockActions>
+        </CodeBlockHeader>
+      )}
+      {!title && <CodeBlockActions><CodeBlockCopyButton value={code} /></CodeBlockActions>}
+      <CodeBlockContent lineNumbers={lineNumbers} wrap className={className}>
+        {lines.map((line, index) => <CodeBlockLine key={index}>{line}</CodeBlockLine>)}
+      </CodeBlockContent>
+    </CodeBlock>
   )
 }
 

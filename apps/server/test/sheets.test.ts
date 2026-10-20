@@ -139,11 +139,11 @@ describe("引擎里的 file.save / file.read 和预览接口", () => {
       "test/sheets",
       new Script([
         step([
-          call("file.save", { name: "结果.xlsx", sheets }),
-          call("file.save", { name: "老格式", sheets, format: "xls" }),
-          call("file.save", { name: "错.xlsx", content: "a,b" }),
-          call("file.save", { name: "错2.xlsx", sheets: [{ name: "a:b", rows: [] }] }),
-          call("file.save", { name: "错3.csv", sheets }),
+          call("file.save", { path: "结果.xlsx", sheets }),
+          call("file.save", { path: "老格式", sheets, format: "xls" }),
+          call("file.save", { path: "错.xlsx", content: "a,b" }),
+          call("file.save", { path: "错2.xlsx", sheets: [{ name: "a:b", rows: [] }] }),
+          call("file.save", { path: "错3.csv", sheets }),
           call("file.read", { fileId: attached.id }),
           call("file.read", { fileId: attached.id, sheet: "订单", startRow: 200, rows: 3 }),
         ]),
@@ -162,11 +162,11 @@ describe("引擎里的 file.save / file.read 和预览接口", () => {
 
     const outputs = (await eventsOf(ctx.db, sessionId)).filter((event) => event.kind === "tool").map((event) => `${event.toolId} ${event.output}`)
     const find = (needle: string) => outputs.find((output) => output.includes(needle))
-    expect(find("已保存 Excel 文件 结果.xlsx")).toMatch(/2 个工作表、共 4 行/)
-    expect(find("已保存 Excel 文件 老格式.xls")).toBeTruthy()
+    expect(find("已新建 Excel 文件 结果.xlsx")).toMatch(/2 个工作表、共 4 行/)
+    expect(find("已新建 Excel 文件 老格式.xls")).toBeTruthy()
     expect(find("存 Excel 要给 sheets")).toBeTruthy()
     expect(find("工作表名「a:b」里不能有")).toBeTruthy()
-    expect(find("文件名要以 .xlsx 或 .xls 结尾")).toBeTruthy()
+    expect(find("路径要以 .xlsx 或 .xls 结尾")).toBeTruthy()
     expect(find("系统导出.xls：2 个工作表")).toContain("2\tA0001\t2026-01-02\t1.5")
     const page = find("「订单」（A1:D301")!
     expect(page).toContain("200\tA0199")

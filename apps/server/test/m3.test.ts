@@ -424,7 +424,7 @@ describe("检查点自动记录（sync_checkpoint）", () => {
       "test/m3-sync",
       new Script([
         step([call("checkpoint.mark", { checkpoint: 2, status: "doing" })]),
-        step([call("file.save", { name: "b.csv", content: "a,b\n1,2" })]),
+        step([call("file.save", { path: "b.csv", content: "a,b\n1,2" })]),
         step([call("http.send", { to: "联系人甲", text: "你好，请报价" }), call("http.send", { to: "联系人乙", text: "你好，请报价" })]),
         step([text("完成")]),
       ])
@@ -473,7 +473,7 @@ async function verifyTask(modelId: string, verifyModelId: string) {
 
 describe("三方验收", () => {
   it("通过：验收模型逐条给结论，存进 sessions.verification，运行完成", async () => {
-    useScript("test/claude-v-pass", new Script([step([call("file.save", { name: "sum.csv", content: "x,y\n1,2" })]), step([call("checkpoint.mark", { checkpoint: 1, status: "done", record: "存了 sum.csv" })]), step([text("做完了，表是 sum.csv")])]))
+    useScript("test/claude-v-pass", new Script([step([call("file.save", { path: "sum.csv", content: "x,y\n1,2" })]), step([call("checkpoint.mark", { checkpoint: 1, status: "done", record: "存了 sum.csv" })]), step([text("做完了，表是 sum.csv")])]))
     const verifier = useScript("test/gemini-v-pass", new Script([verifyJson({ items: [{ index: 1, verdict: "pass", reason: "有 sum.csv 文件" }], verdict: "pass", headline: "1 个检查点全部完成", question: "" })]))
     const taskId = await verifyTask("test/claude-v-pass", "test/gemini-v-pass")
     const sessionId = await runNow(taskId)
@@ -497,7 +497,7 @@ describe("三方验收", () => {
       "test/claude-v-ask",
       new Script([
         step([text("做完了")]),
-        step([call("file.save", { name: "sum.csv", content: "补上的表" }), call("checkpoint.mark", { checkpoint: 1, status: "done", record: "补存了 sum.csv" })]),
+        step([call("file.save", { path: "sum.csv", content: "补上的表" }), call("checkpoint.mark", { checkpoint: 1, status: "done", record: "补存了 sum.csv" })]),
         step([text("刚才漏了存表，已经补上 sum.csv")]),
       ])
     )

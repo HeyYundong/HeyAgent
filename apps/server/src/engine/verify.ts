@@ -122,7 +122,7 @@ async function loadEvidence(ctx: RunContext, vision: boolean) {
         inArray(t.files.kind, ["artifact", "screenshot"])
       )
     )
-    .orderBy(desc(t.files.createdAt))
+    .orderBy(desc(t.files.updatedAt))
   const artifacts: string[] = []
   for (const file of files
     .filter((row) => row.kind === "artifact")
@@ -132,12 +132,12 @@ async function loadEvidence(ctx: RunContext, vision: boolean) {
       const overview = await loadBook(file)
         .then((book) => overviewText(book, file.name, 3000))
         .catch(() => "（打不开）")
-      artifacts.push(`### 文件 ${file.id}「${file.name}」（表格，${file.size} 字节）\n${overview.slice(0, 3000)}`)
+      artifacts.push(`### 文件 ${file.id}「${file.path ?? file.name}」（表格，${file.size} 字节）\n${overview.slice(0, 3000)}`)
       continue
     }
     if (!isTextMime(file.mime)) {
       artifacts.push(
-        `### 文件 ${file.id}「${file.name}」（${file.mime}，${file.size} 字节，不是文本）`
+        `### 文件 ${file.id}「${file.path ?? file.name}」（${file.mime}，${file.size} 字节，不是文本）`
       )
       continue
     }
@@ -145,7 +145,7 @@ async function loadEvidence(ctx: RunContext, vision: boolean) {
       await readFileData(file).catch(() => Buffer.from(""))
     ).toString("utf8")
     artifacts.push(
-      `### 文件 ${file.id}「${file.name}」（共 ${text.length} 字${text.length > 3000 ? "，这里是开头 3000 字" : ""}）\n${text.slice(0, 3000)}`
+      `### 文件 ${file.id}「${file.path ?? file.name}」（共 ${text.length} 字${text.length > 3000 ? "，这里是开头 3000 字" : ""}）\n${text.slice(0, 3000)}`
     )
   }
   // 过程记录（系统记的，不是 agent 自己说的）：调了哪些工具、结果如何，规则命中和人的处理

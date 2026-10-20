@@ -8,6 +8,7 @@ import { recoverRunningComparisons, runComparison } from "../compare/run.js"
 import { ensureDefaultStandard } from "../compare/service.js"
 import { runImportRead } from "../imports/reader.js"
 import type { Db } from "../db/client.js"
+import { cleanupSessionSandbox, sweepSandboxDirs, sweepThrottled } from "../sandbox/code-run.js"
 import * as t from "../db/schema.js"
 import { onWorkNotify } from "./dispatch/notify.js"
 import { pumpTask } from "./dispatch/pump.js"
@@ -76,6 +77,8 @@ export async function startEngineWorker(
   await ensureQueues(boss)
   registerBoss(db, boss)
   await syncBuiltinTools(db)
+  // 运行代码的沙箱目录：已经结束（或者不存在）的 session 的删掉（worker 重启后在跑、在等的留着）
+  await sweepSandboxDirs(db).catch((error) => console.warn("[worker] 清理沙箱目录出错", error))
   await ensureDefaultStandard(db).catch((error) => console.warn("[worker] 没建好默认的比对标准", error))
 
   // 浏览器管理：登记 worker、开内部控制接口（远程画面、打开 Chrome）
@@ -125,6 +128,12 @@ export async function startEngineWorker(
         return { outcome }
       } finally {
         controllers.delete(controller)
+        // 运行结束了就删掉它的沙箱目录（运行代码用的；挂起、交接的留着）
+        await cleanupSessionSandbox(db, job.data.sessionId).catch((error) =>
+          console.warn("[worker] 删沙箱目录出错", error)
+        )
+        // 验收中、被别处取消的这类，过后由定期清理收掉（最多每小时一次）
+        void sweepThrottled(db)
       }
     }
   )

@@ -492,4 +492,5 @@ const QUIET_TOOLS = new Set([
   "ask.human",
   "skill.load",
   "file.read",
+  "file.list",
 ])

@@ -154,7 +154,7 @@ describe("场景 1：调内置工具再结束", () => {
       "test/s1b",
       new Script([
         step([
-          call("file.save", { name: "a.csv", content: "x" }),
+          call("file.save", { path: "a.csv", content: "x" }),
           call("checkpoint.mark", { checkpoint: "第一个", status: "done" }),
         ]),
         step([text("好的，结束")]),
@@ -1129,10 +1129,10 @@ describe("场景 12：file.save 和 file.read", () => {
           call("file.read", { fileId: txt.id }),
           call("file.read", { fileId: img.id }),
           call("file.save", {
-            name: "结果.csv",
+            path: "结果.csv",
             content: "名称,数量,价格\nA,1,2",
           }),
-          call("file.save", { name: "evil.exe", content: "x" }),
+          call("file.save", { path: "evil.exe", content: "x" }),
         ]),
         step([text("表存好了")]),
       ])
@@ -1177,7 +1177,7 @@ describe("场景 12：file.save 和 file.read", () => {
       (part) => part.type === "file" && part.mediaType?.startsWith("image/")
     )
     expect(imagePart).toBeTruthy()
-    expect(JSON.stringify(second)).toContain("只能存文本格式")
+    expect(JSON.stringify(second)).toContain("只能存文本和代码")
     // 系统提示里有附件清单（任务附件 + 这次带的）
     const system = JSON.stringify(script.prompts[0]!.prompt[0])
     expect(system).toContain(txt.id)
@@ -1477,6 +1477,7 @@ describe("其他接口", () => {
       "ask.human",
       "browser",
       "checkpoint.mark",
+      "code.run",
       "compare",
       "file.read",
       "file.save",

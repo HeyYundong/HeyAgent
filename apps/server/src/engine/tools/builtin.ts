@@ -16,13 +16,26 @@ import type { z } from "zod"
 import type { Db } from "../../db/client.js"
 import * as t from "../../db/schema.js"
 import {
+  deleteSpaceFile,
   getFileRow,
   isImageMime,
   isTextMime,
+  listSpace,
+  normalizeSpacePath,
   readFileData,
-  saveFile,
+  RESERVED_SPACE_DIRS,
+  SPACE_PATH_MAX,
+  SPACE_SOURCE_LABEL,
+  SpacePathError,
+  spaceUsage,
   TEXT_SAVE_EXTENSIONS,
+  writeSpaceFile,
+  type FileRow,
+  type SpaceEntry,
 } from "../../files/service.js"
+import { sizeText } from "../../browser/downloads.js"
+import { runCode, spaceReadPath } from "../../sandbox/code-run.js"
+import { runtime } from "../runtime.js"
 import {
   buildWorkbook,
   isPlainSheet,
@@ -75,9 +88,70 @@ export interface ToolOutcome {
   facts?: { url?: string; title?: string; fileId?: string; fileName?: string }
   /** M3：引擎内部信号。page_needs_human = 浏览器检测到验证码或登录页（规则 page_needs_human 在内置转人工之外再加动作） */
   signals?: "page_needs_human"[]
+  /** 工具自己已经按规矩截断过（code.run：stdout、stderr 各留末尾，全文另存）：网关不再按 toolOutputMaxChars 截 */
+  keepFull?: true
 }
 
 const fail = (output: string): ToolOutcome => ({ output, isError: true })
+
+/** 这次运行的空间（快照里的附件 + 只属于这次运行的文件） */
+const spaceOf = (ctx: ToolContext) =>
+  listSpace(ctx.db, ctx.session.id, ctx.snapshot.attachments.map((file) => file.id))
+
+const READONLY_DIRS_TEXT = RESERVED_SPACE_DIRS.map((dir) => `${dir}/`).join(" ")
+
+/** 按路径找空间里的文件（容忍开头的 /workspace/、/、./） */
+function entryAt(entries: SpaceEntry[], raw: string) {
+  const path = spaceReadPath(raw)
+  return { path, entry: entries.find((each) => each.path === path) }
+}
+
+/**
+ * agent 要往空间里写一个文件之前：路径不能和已有的文件、目录打架（a 是文件就不能再有 a/b），总量不能超；
+ * 返回要覆盖的老产物（加路径之前存的，列表里按名字放的那种）
+ */
+async function checkAgentWrite(
+  ctx: ToolContext,
+  entries: SpaceEntry[],
+  path: string,
+  size: number
+): Promise<{ error: string } | { legacyRow?: FileRow }> {
+  for (const each of entries) {
+    if (each.path.startsWith(`${path}/`)) return { error: `${path} 已经是一个目录（里面有 ${each.path}），不能再存成文件，换个路径` }
+    if (path.startsWith(`${each.path}/`)) return { error: `${each.path} 已经是一个文件，不能当目录用，换个路径` }
+  }
+  const existing = entries.find((each) => each.path === path)
+  if (existing && !existing.writable) return { error: `${path} 是只读的，不能覆盖` }
+  const limit = runtime.sandbox.spaceMaxBytes
+  const usage = await spaceUsage(ctx.db, ctx.session.id)
+  if (usage - (existing?.row.size ?? 0) + size > limit)
+    return { error: `这次运行的空间满了（已经用了 ${sizeText(usage)}，上限 ${sizeText(limit)}）。用 file.delete 删掉不要的文件再存` }
+  return { legacyRow: existing && !existing.row.path ? existing.row : undefined }
+}
+
+/** old 在 text 里出现几次（重叠的也算：那样也是不唯一） */
+function countOccurrences(text: string, old: string) {
+  let count = 0
+  for (let index = text.indexOf(old); index !== -1; index = text.indexOf(old, index + 1)) count++
+  return count
+}
+
+/**
+ * file.edit 的替换：按顺序每段 old 必须正好出现一次，全部成功才返回新文本；有一段不行就返回错误（文件不改）
+ */
+export function applyEdits(text: string, edits: { old: string; new: string }[]): { text: string } | { error: string } {
+  let current = text
+  for (const [index, edit] of edits.entries()) {
+    const count = countOccurrences(current, edit.old)
+    const label = edits.length > 1 ? `第 ${index + 1} 段 old` : "old"
+    if (count === 0)
+      return { error: `${label} 在文件里找不到（要和原文一字不差，包括空格、缩进和换行；前面的段替换完以后再找）。文件没改` }
+    if (count > 1) return { error: `${label} 在文件里出现了 ${count} 次，不唯一：多带几行上下文让它只出现一次。文件没改` }
+    const at = current.indexOf(edit.old)
+    current = current.slice(0, at) + edit.new + current.slice(at + edit.old.length)
+  }
+  return { text: current }
+}
 
 /** 员工：按 id 或邮箱找，停用的不算 */
 async function findStaff(db: Db, keys: string[]) {
@@ -454,51 +528,134 @@ const handlers: {
     }
   },
 
+  // 按路径存进这次运行的空间：同一路径再存就是覆盖（id 不变）
   async "file.save"(ctx, input) {
-    const ext = extname(input.name).toLowerCase()
+    let path: string
+    try {
+      path = normalizeSpacePath(input.path)
+    } catch (error) {
+      if (error instanceof SpacePathError) return fail(error.message)
+      throw error
+    }
+    const ext = extname(path).toLowerCase()
+    let data: Buffer
+    let mime: string | undefined
+    let what: string
     if (input.sheets) {
-      // Excel：文件名的扩展名和 format 要对得上；没写扩展名就按 format 补上
+      // Excel：扩展名和 format 要对得上；没写扩展名就按 format 补上
       const format = input.format ?? (ext === ".xls" ? "xls" : "xlsx")
       if (ext && ext !== ".xlsx" && ext !== ".xls")
-        return fail(`给了 sheets 就是存 Excel，文件名要以 .xlsx 或 .xls 结尾（现在是 ${input.name}）`)
+        return fail(`给了 sheets 就是存 Excel，路径要以 .xlsx 或 .xls 结尾（现在是 ${path}）`)
       if (ext && ext !== `.${format}`)
-        return fail(`文件名是 ${ext}，format 却是 ${format}，两个要一致`)
-      const name = ext ? input.name : `${input.name}.${format}`
-      let data: Buffer
+        return fail(`路径是 ${ext}，format 却是 ${format}，两个要一致`)
+      if (!ext) {
+        path = `${path}.${format}`
+        if (path.length > SPACE_PATH_MAX) return fail(`路径太长，最多 ${SPACE_PATH_MAX} 字`)
+      }
       try {
         data = buildWorkbook(input.sheets, format)
       } catch (error) {
         if (error instanceof SheetError) return fail(error.message)
         throw error
       }
-      const row = await saveFile(ctx.db, {
-        data,
-        name,
-        mime: format === "xls" ? XLS_MIME : XLSX_MIME,
-        kind: "artifact",
-        sessionId: ctx.session.id,
-      })
+      mime = format === "xls" ? XLS_MIME : XLSX_MIME
       const rows = input.sheets.reduce((sum, sheet) => sum + sheet.rows.length, 0)
-      return {
-        output: `已保存 Excel 文件 ${row.name}（id ${row.id}，${input.sheets.length} 个工作表、共 ${rows} 行，${row.size} 字节），界面里能看能下载。`,
-        facts: { fileId: row.id, fileName: row.name },
-      }
+      what = ` Excel 文件 ${path}（{id}，${input.sheets.length} 个工作表、共 ${rows} 行，${data.length} 字节）`
+    } else {
+      if (ext === ".xlsx" || ext === ".xls")
+        return fail("存 Excel 要给 sheets（每个工作表的 name 和 rows），不用 content")
+      if (!TEXT_SAVE_EXTENSIONS.includes(ext))
+        return fail(`只能存文本和代码：${TEXT_SAVE_EXTENSIONS.join(" ")}；Excel 用 .xlsx 或 .xls 加 sheets`)
+      if (input.content === undefined) return fail("要给 content（文件内容）")
+      data = Buffer.from(input.content, "utf8")
+      what = `文件 ${path}（{id}，${data.length} 字节）`
     }
-    if (ext === ".xlsx" || ext === ".xls")
-      return fail("存 Excel 要给 sheets（每个工作表的 name 和 rows），不用 content")
-    if (!TEXT_SAVE_EXTENSIONS.includes(ext))
-      return fail(`只能存文本格式：${TEXT_SAVE_EXTENSIONS.join(" ")}；Excel 用 .xlsx 或 .xls 加 sheets`)
-    if (input.content === undefined) return fail("要给 content（文件内容）")
-    const row = await saveFile(ctx.db, {
-      data: Buffer.from(input.content, "utf8"),
-      name: input.name,
-      kind: "artifact",
+    const checked = await checkAgentWrite(ctx, await spaceOf(ctx), path, data.length)
+    if ("error" in checked) return fail(checked.error)
+    const { row, created } = await writeSpaceFile(ctx.db, {
       sessionId: ctx.session.id,
+      path,
+      data,
+      mime,
+      legacyRow: checked.legacyRow,
     })
     return {
-      output: `已保存文件 ${row.name}（id ${row.id}，${row.size} 字节），界面里能看能下载。`,
-      facts: { fileId: row.id, fileName: row.name },
+      output: `已${created ? "新建" : "覆盖"}${what.replace("{id}", `id ${row.id}${created ? "" : "，id 不变"}`)}，界面里能看能下载。`,
+      facts: { fileId: row.id, fileName: path },
     }
+  },
+
+  async "file.list"(ctx, input) {
+    const entries = await spaceOf(ctx)
+    const prefix = input.prefix?.trim() ? spaceReadPath(input.prefix) : ""
+    const dir = prefix.replace(/\/+$/, "")
+    const shown = dir ? entries.filter((each) => each.path === dir || each.path.startsWith(`${dir}/`)) : entries
+    if (shown.length === 0)
+      return { output: dir ? `空间里 ${dir}/ 下没有文件（共 ${entries.length} 个文件，不带 prefix 看全部）` : "这次运行的空间里还没有文件" }
+    const sorted = [...shown].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+    const LIMIT = 500
+    const total = shown.reduce((sum, each) => sum + each.row.size, 0)
+    const lines = sorted
+      .slice(0, LIMIT)
+      .map(
+        (each) =>
+          `${each.path} · ${each.row.id} · ${SPACE_SOURCE_LABEL[each.source]} · ${sizeText(each.row.size)} · ${each.row.updatedAt.getTime() !== each.row.createdAt.getTime() ? "更新于" : "建于"} ${fmtDateTime(each.row.updatedAt)}`
+      )
+    return {
+      output: [
+        `${dir ? `${dir}/ 下` : "空间里"}有 ${shown.length} 个文件（共 ${sizeText(total)}）。路径、id、来源、大小、时间；${READONLY_DIRS_TEXT}是只读的：`,
+        ...lines,
+        shown.length > LIMIT ? `…还有 ${shown.length - LIMIT} 个，用 prefix 只看一个目录` : "",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    }
+  },
+
+  async "file.edit"(ctx, input) {
+    const entries = await spaceOf(ctx)
+    const { path, entry } = entryAt(entries, input.path)
+    if (!entry) return fail(`空间里没有 ${path}（用 file.list 看有哪些）`)
+    if (!entry.writable)
+      return fail(`${path} 是只读的（${READONLY_DIRS_TEXT}放附件、下载、截图和工具输出全文），不能改。要改就读出来，用 file.save 存到别的路径`)
+    if (!isTextMime(entry.row.mime))
+      return fail(`${path}（${entry.row.mime}）不是文本文件，不能按原文替换。Excel 用 file.save 重新存，或者用 code.run 处理`)
+    const before = (await readFileData(entry.row)).toString("utf8")
+    const result = applyEdits(before, input.edits)
+    if ("error" in result) return fail(`${path}：${result.error}`)
+    if (result.text === before) return { output: `${path} 没有变化（替换前后一样），没有保存` }
+    const data = Buffer.from(result.text, "utf8")
+    const checked = await checkAgentWrite(ctx, entries, path, data.length)
+    if ("error" in checked) return fail(checked.error)
+    const { row } = await writeSpaceFile(ctx.db, {
+      sessionId: ctx.session.id,
+      path,
+      data,
+      mime: entry.row.mime,
+      legacyRow: checked.legacyRow,
+    })
+    return {
+      output: `已改 ${path}：替换了 ${input.edits.length} 段（id ${row.id} 不变，现在 ${data.length} 字节）`,
+      facts: { fileId: row.id, fileName: path },
+    }
+  },
+
+  async "file.delete"(ctx, input) {
+    const { path, entry } = entryAt(await spaceOf(ctx), input.path)
+    if (!entry) return fail(`空间里没有 ${path}（用 file.list 看有哪些）`)
+    if (!entry.writable) return fail(`只能删 agent 写的文件；${path} 是${SPACE_SOURCE_LABEL[entry.source]}，只读`)
+    try {
+      await deleteSpaceFile(ctx.db, entry.row)
+    } catch (error) {
+      if (error instanceof SpacePathError) return fail(error.message)
+      throw error
+    }
+    return { output: `已删掉 ${path}（id ${entry.row.id}）` }
+  },
+
+  // 运行代码：在 bubblewrap 沙箱里跑，空间文件挂在 /workspace（sandbox/code-run.ts）
+  async "code.run"(ctx, input) {
+    return runCode(ctx, input)
   },
 
   // 派活：检查、去重、上限、返回文字都在 engine/dispatch/dispatch.ts
@@ -545,12 +702,21 @@ const handlers: {
   },
 
   async "file.read"(ctx, input) {
-    const row = await getFileRow(ctx.db, input.fileId)
-    const allowed =
-      row &&
-      (row.sessionId === ctx.session.id ||
-        ctx.snapshot.attachments.some((file) => file.id === row.id))
-    if (!row || !allowed) return fail(`这次运行里没有文件 ${input.fileId}`)
+    if ((input.fileId === undefined) === (input.path === undefined))
+      return fail("fileId 和 path 要给一个，而且只能给一个")
+    let row: FileRow | undefined
+    if (input.path !== undefined) {
+      const found = entryAt(await spaceOf(ctx), input.path)
+      if (!found.entry) return fail(`空间里没有 ${found.path}（用 file.list 看有哪些）`)
+      row = found.entry.row
+    } else {
+      row = await getFileRow(ctx.db, input.fileId!)
+      const allowed =
+        row &&
+        (row.sessionId === ctx.session.id ||
+          ctx.snapshot.attachments.some((file) => file.id === row!.id))
+      if (!row || !allowed) return fail(`这次运行里没有文件 ${input.fileId}`)
+    }
     if (isImageMime(row.mime)) {
       if (row.size > 5 * 1024 * 1024)
         return fail(

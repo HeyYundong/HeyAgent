@@ -434,14 +434,16 @@ curl -s -b 'better-auth.session_token=<COOKIE>' -H 'content-type: application/js
 | 字段 | 说明 |
 |---|---|
 | `id name mime size createdAt` | 基本信息，`createdAt` 是 ISO |
-| `kind` | `upload` 刚上传、还没用；`attachment` 附件（任务的或这次运行的）；`artifact` agent 用 `file.save` 存的产物；`tool_output` 太长的工具输出全文；`screenshot` 截图 |
+| `kind` | `upload` 刚上传、还没用；`attachment` 附件（任务的或这次运行的）；`artifact` agent 写的文件（`file.save` / `file.edit` / `code.run` 产生的）；`tool_output` 太长的工具输出全文；`screenshot` 截图；`download` 浏览器下载 |
 | `scope` | `task` = 任务附件，每次运行都带，跨运行一直有效；`session` = 只属于这一次运行 |
+| `path` | 在 session 空间里的路径（第 17 节）：agent 写的是它给的路径（例如 `state/progress.json`）；别的来源在 `attachments/` `downloads/` `screenshots/` `tool-outputs/` 下，同名加 `-2` `-3`（`sessionFiles` 里去重；`taskAttachments` / `attachToTask` 单个返回，不去重） |
+| `updatedAt` | 最后一次覆盖内容的时间（ISO）；没覆盖过 = `createdAt` |
 | `url` | 下载地址 `/api/files/<id>`（要求登录） |
 
 - `taskAttachments`：任务当前的附件（`kind = attachment`、属于任务、不属于某次运行），按创建时间。`NOT_FOUND`（任务）。
 - `attachToTask`：把一个**刚上传、没用过**的文件挂到任务上（`kind → attachment`，写上 `taskId`）。已经是这个任务的附件就原样返回（幂等）。错误：`NOT_FOUND`（任务 / 文件）、`FORBIDDEN`、`BAD_REQUEST`（文件已经用在别处，请重新上传）。审计 `task.attach`。
 - `detachFromTask`：去掉任务附件，文件变回 `upload`（可以重新挂或用在 `runNow` 上），**不删文件**。已经开始的运行快照里还有它，照样能读。错误：`NOT_FOUND`（「这个任务没有这个附件」）、`FORBIDDEN`。审计 `task.detach`。
-- `sessionFiles`：这次运行的附件和产物 = 快照里的附件（含任务附件，`scope: task`）+ 只属于这次运行的文件（`scope: session`），按创建时间。`NOT_FOUND`（session）。
+- `sessionFiles`：这次运行的附件和产物 = 快照里的附件（含任务附件，`scope: task`）+ 只属于这次运行的文件（`scope: session`），按创建时间，带空间里的路径（去重规则见第 17 节）。`NOT_FOUND`（session）。
 
 ### 5.7 `engine.listMcpServerTools`
 
@@ -717,7 +719,7 @@ session 开始时把规则（含 `compiledTrigger`）冻结进快照，引擎只
 |---|---|---|
 | 调模型前 | `cost_over` | 每条规则每次运行只触发一次（记在 `sessions.rule_state.costFired`）。`ask_human`：生成一件「审批」（`detail.pay` 有二次确认文案），session 等人处理；批准就继续，拒绝就结束运行（`failed`）。`deny`：直接结束运行 |
 | 调工具前 | `before_tool` `url_not_allowed` `agent_proposes` | `deny`：工具不执行，「被拦下：理由」作为工具结果交给 agent。`ask_human`：见下面「审批工具调用」。`screenshot` / `notify` 马上做 |
-| 调工具后 | `after_tool`（工具出错时不触发；「任意工具」不含勾检查点、写步骤、挂起、问人、读技能、读附件这几个内置工具） | `screenshot`、`notify`、`sync_checkpoint`（见 11.4） |
+| 调工具后 | `after_tool`（工具出错时不触发；「任意工具」不含勾检查点、写步骤、挂起、问人、读技能、读附件、列出文件这几个内置工具） | `screenshot`、`notify`、`sync_checkpoint`（见 11.4） |
 | 调工具后 | `page_needs_human` | M2 内置的「截图 + 登录类要人办的事 + 等人」照常做，规则只能**再加**截图、通知 |
 | 调工具后 | `agent_proposes` | `notify`（提议本身照常生成记忆审核 / 技能修改这件事） |
 | 说做完了 | `agent_done` | `notify`；`verify` 交给三方验收（11.5） |
@@ -1272,3 +1274,52 @@ claude mcp add --transport http heyagent-compare http://<host>:8080/api/compare/
 **导入**：读包 AI 的任务格式多 `acceptsDispatch` `dispatchParams[{ name, description, required, dedupe }]` `dispatchMaxRunning` `dispatchFromKeys`（全部必填）；方案 `PlanTask.dispatch?: { params, maxRunning, retries?, retryDelayMinutes?, fromKeys } | null`（`planProblems` 查 `fromKeys` 对得上、不是自己）。整理（organize）：派活方只留方案里有的、不是自己的；派活方没有「派活」工具就补一项（kind builtin、refId `work.dispatch`）加进它的 `toolKeys`；参数去空白去重、最多 20 个；名额 1～20、重试 0～5、间隔 1～1440；被派活又有定时的去掉定时；没有派活方的提醒。导入：建任务时带 `dispatch`，全部建完后 `setDispatchSources`（`data/config/tasks.ts`）只连勾上的派活方。导入后还要做的事：能被派活的任务的 `try_run` 是「派一张试试」（不带 `action`，`link = #/work?task=<id>&new=1`，名下有过一张单算办完；没有派活方时说明里提醒）。
 
 **看板**（shared `boardCards`）：同一个任务 `source = dispatch`、在「挂起等待」的运行有 2 个及以上时收成一张 `{ kind: "group", id: "group-<任务 id>", column: "waiting", task, runs }`，放在其中第一张原来的位置，`runs` 按开始时间；只收这一列。列头数字按运行数算（收起的卡片算 `runs.length`）。
+
+## 17. Session 空间和运行代码（2026-10-20）
+
+方案见 `docs/dev/session-space.md`。一个 session 一个空间：这次运行的全部文件，按路径找；agent 写的能覆盖、改、删，能在沙箱里跑代码。
+
+### 17.1 文件和路径（迁移 0023）
+
+- `files` 加 `path text null`（只有 agent 写的文件 `kind = artifact` 有）和 `updated_at timestamptz not null default now()`（已有的行 = `created_at`）；部分唯一索引 `files_session_path_idx (session_id, path) where kind = 'artifact' and path is not null`。
+- 路径规范化（`files/service.ts` 的 `normalizeSpacePath`）：去掉开头的 `/` `./`；不许 `..`、`.`、空段、控制字符、反斜杠、双引号；每段 ≤ 100 字且 ≤ 255 字节，整条 ≤ 300 字，最多 8 层；不能以（不分大小写）`attachments` `downloads` `screenshots` `tool-outputs` 开头。`name` = 最后一段。
+- 覆盖（`writeSpaceFile`）：同一 session、同一路径已有 agent 写的文件 → 新 blob（存放位置 `年/月/<id>-<随机>`）、更新那一行的 `storage_path size sha256 mime name updated_at`，id 不变，旧 blob 删掉；没有就新建。不留历史版本。
+- 空间里的路径（`listSpace` / `assignSpacePaths`，结果确定）：先让有路径的 agent 文件占住自己的路径；其余按 `created_at, id` 顺序放进固定目录——附件（任务的、这次运行带的，以及没归类的）`attachments/`、浏览器下载 `downloads/`、截图 `screenshots/`、工具输出全文 `tool-outputs/`、加路径之前存的老产物放根目录——文件名里不合法的字符换成 `_`、太长的截到 200 字节（保留扩展名），同名在扩展名前加 `-2` `-3`。
+- 总量：一个 session 自己的文件（不含任务附件）合计不超过 `HEYAGENT_SPACE_MAX_MB`（默认 1024）。
+- 能存的文本类型多了 `.py` `.js` `.mjs` `.cjs` `.ts` `.sh` `.bash` `.sql` `.toml` `.ini` `.cfg` `.jsonl`（MIME 见 `session-space.md` 3.1，全是 `text/*`）。
+
+### 17.2 内置工具
+
+| 工具（模型看到的名字） | 风险 | 怎么带上 | 输入 → 返回 |
+|---|---|---|---|
+| `file.save`「存文件」 | write | 任务选 | `{ path, content? , sheets?, format? }`（参数 `name` 改成了 `path`）→ `已新建文件 <路径>（id f-…，N 字节），…` / `已覆盖文件 <路径>（id f-…，id 不变，N 字节），…`；Excel 是「已新建 Excel 文件 …（id …，n 个工作表、共 m 行，N 字节）」。错误（`isError`）：路径不合规矩、保留目录、和已有文件 / 目录打架（`a` 是文件就不能再存 `a/b`）、类型不对、空间满了 |
+| `file.read`「读附件」 | read | 照旧 | 多一个 `path`（和 `fileId` 二选一，都不给或都给 → `isError`）；路径容忍开头的 `/workspace/` |
+| `file.list`「列出文件」（`implied`） | read | 选了 `file.read` / `file.save` / `code.run` 任意一个 | `{ prefix? }` → 第一行「空间里有 N 个文件（共 X）。…只读的：」，之后每行 `路径 · id · 来源 · 大小 · 建于/更新于 MM-DD HH:mm`，按路径排序，最多 500 行。来源：agent 写的 / 附件 / 浏览器下载 / 截图 / 工具输出全文。安静工具（不触发「任意工具之后」的规则） |
+| `file.edit`「改文件」（`implied`） | write | 选了 `file.save` 或 `code.run` | `{ path, edits: [{ old, new }] }`（1～50 段）→ 每段 `old` 必须在（前面替换完以后的）文本里正好出现一次（重叠的也算），全部成功才保存（id 不变）：`已改 <路径>：替换了 n 段（id … 不变，现在 N 字节）`。只读文件、非文本文件 → `isError` |
+| `file.delete`「删文件」（`implied`） | write | 同上 | `{ path }` → `已删掉 <路径>（id …）`；只能删这次运行 agent 写的文件；被图库、比物引用着的删不了 |
+| `code.run`「运行代码」 | external | 任务选；带上它时自动带 `file.save` `file.read`（和上面的 `file.list` `file.edit` `file.delete`） | 输入见 `session-space.md` 4.1；返回文本格式见 3.2。网关不再按 8000 字截断它的输出（`ToolOutcome.keepFull`），stdout / stderr 各留末尾 1 万字，被截掉的全文存成 `tool_output` 文件 `code-run-<时间>-<随机>-stdout.txt`（`-stderr.txt`）。`facts` 给第一个写回的文件（检查点自动记录用）|
+
+`code.run` 的返回：
+
+```
+退出码 0 · 用时 1.2 秒
+写回空间：新建 out/result.csv；覆盖 state/progress.json；删掉 tmp/a.txt
+没写回：out/link（是符号链接，不跟随）；big.bin（超过 50 MB）
+访问了：pypi.org、files.pythonhosted.org；拒绝：127.0.0.1
+--- stdout ---
+…（前面还有 N 字，全文见 tool-outputs/code-run-…-stdout.txt）
+……
+--- stderr ---
+……
+```
+
+- 第一行固定；超时是 `超时（60 秒），整组进程已被杀掉 · 退出码 137 · 用时 60.0 秒`。沙箱起不来 → 只有一行 `沙箱没起来：<原因>`，`isError`。退出码不为 0 不算工具出错。
+- 「写回空间」「没写回」「访问了 / 拒绝」三行没有内容就不写；每类最多列 20 个，多的写「等 N 个」。「没写回」是在说明之外加的一行（符号链接、特殊文件、路径不合规矩、读不了、超过上限）。非默认端口的主机带端口（`localhost:8080`）。
+- 只有 stdout 或 stderr 有内容才写那一段。
+
+### 17.3 沙箱和设置
+
+- 代码在 `apps/server/src/sandbox/`：`runner.ts`（bwrap 参数、执行、输出收集、能不能用的检查）、`workspace.ts`（每个 session 的目录、同步、对比）、`proxy.ts`（出网代理）、`code-run.ts`（工具本身、输出格式、清理）。
+- worker 的环境变量（都可选）：`HEYAGENT_SANDBOX_DIR`（默认 `<os.tmpdir()>/heyagent-sandbox`）、`HEYAGENT_SANDBOX_ROOTFS`（默认 `/opt/sandbox-root`）、`HEYAGENT_SANDBOX_TIMEOUT_SECONDS`（60）、`HEYAGENT_SANDBOX_MEMORY_MB`（1024，Python / bash 的 `ulimit -v`，也是 Node 的 `--max-old-space-size`）、`HEYAGENT_SANDBOX_NODE_VIRTUAL_MB`（4096）、`HEYAGENT_SANDBOX_MAX_PROCESSES`（1024）、`HEYAGENT_SANDBOX_TMP_MB`（512，沙箱 `/tmp` 的大小）、`HEYAGENT_SANDBOX_SYNC_MAX_FILES`（200）、`HEYAGENT_SANDBOX_SYNC_MAX_FILE_MB`（50）、`HEYAGENT_SANDBOX_SYNC_MAX_TOTAL_MB`（200）、`HEYAGENT_SPACE_MAX_MB`（1024）、`HEYAGENT_SANDBOX_OUTPUT_CAPTURE_MB`（8，stdout / stderr 各在内存里最多留多少，超出的只留开头和最后 256 KB）、`HEYAGENT_SANDBOX_PROXY_PORTS`（`80,443,8080,8443`；`*` = 不限）。
+- 每个 session 的目录在 worker 本地：运行结束（已完成 / 没完成 / 失败）时删掉；worker 启动时、之后每小时最多一次，删掉已经结束或库里没有的 session 的目录。
+- 代理日志（worker 的 stdout）：`[sandbox] 出网 <session> <主机[:端口]> 允许|拒绝 <字节数或原因>`。代理拦的地址：回环、私有、链路本地、CGNAT、组播 / 保留、文档网段，IPv6 的 ::、::1、IPv4 兼容 / 映射、NAT64、Teredo、6to4、唯一本地、链路本地、组播；**不拦** 198.18.0.0/15（fake-ip DNS 用这个网段，见 session-space.md 9.3）。沙箱里 `NO_PROXY=localhost,127.0.0.1,::1`：那是沙箱自己的回环，碰不到 pod 的。

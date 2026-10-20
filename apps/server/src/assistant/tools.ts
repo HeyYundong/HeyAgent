@@ -516,7 +516,7 @@ export const TOOLS: Record<string, ToolDef> = {
     },
   }),
   list_run_files: read({
-    description: "列一次运行的文件（截图、产物、浏览器下载、附件、工具输出全文）：编号、名字、类型、大小。image = true 的可以用 view_image 看",
+    description: "列一次运行的文件（截图、产物、浏览器下载、附件、工具输出全文）：编号、路径（空间里的位置，例如 state/progress.json、attachments/报价.xlsx）、类型、大小。image = true 的可以用 view_image 看",
     input: z.object({
       runId: z.string().min(1).describe("运行编号（R-…），用 list_sessions 查"),
       kind: z.enum(["screenshot", "artifact", "download", "attachment", "upload", "tool_output"]).optional().describe("可选：只看这一类（screenshot 截图）"),
@@ -534,7 +534,7 @@ export const TOOLS: Record<string, ToolDef> = {
         runId: session.id,
         taskId: session.taskId,
         total: rows.length,
-        files: shown.map((file) => ({ id: file.id, name: file.name, kind: file.kind, mime: file.mime, size: file.size, createdAt: file.createdAt, image: isImageMime(file.mime) })),
+        files: shown.map((file) => ({ id: file.id, path: file.path, kind: file.kind, mime: file.mime, size: file.size, updatedAt: file.updatedAt, image: isImageMime(file.mime) })),
         more: rows.length > shown.length ? `只列了最后 ${RUN_FILES_MAX} 个，带 kind 筛一下` : undefined,
       }
     },

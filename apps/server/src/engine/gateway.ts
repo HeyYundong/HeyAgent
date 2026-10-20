@@ -15,7 +15,7 @@ import { z } from "zod"
 
 import { BrowserTools } from "../browser/tools.js"
 import type { Db } from "../db/client.js"
-import { saveFile } from "../files/service.js"
+import { saveFile, spacePathOf } from "../files/service.js"
 import { compareToolEntries } from "../compare/tools.js"
 import { galleryToolEntries } from "../gallery/tools.js"
 import {
@@ -383,7 +383,7 @@ export class ToolGateway {
     const secrets = outcome.secrets ?? []
     let output = redactSecrets(outcome.output, secrets)
     const max = runtime.toolOutputMaxChars
-    if (output.length > max) {
+    if (output.length > max && !outcome.keepFull) {
       const file = await saveFile(this.ctx.db, {
         data: Buffer.from(output, "utf8"),
         name: `${toolId}-${call.toolCallId}.txt`.replace(
@@ -394,7 +394,7 @@ export class ToolGateway {
         kind: "tool_output",
         sessionId: this.ctx.session.id,
       })
-      output = `${output.slice(0, max)}\n…（输出共 ${output.length} 字，这里只给了开头 ${max} 字；全文已存为文件 ${file.id}，需要时用 file.read 读）`
+      output = `${output.slice(0, max)}\n…（输出共 ${output.length} 字，这里只给了开头 ${max} 字；全文已存为文件 ${file.id}（${spacePathOf(file)}），需要时用 file.read 读）`
     }
     await appendEvent(this.ctx.db, this.ctx.session.id, {
       kind: "tool",
