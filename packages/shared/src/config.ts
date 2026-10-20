@@ -8,7 +8,8 @@ import { domainSchema } from "./browser-runtime.js"
 import { canonicalLocale, canonicalTimeZone } from "./browsers.js"
 import { taskDispatchSchema } from "./dispatch.js"
 import { settingsAssistantInputSchema } from "./assistant.js"
-import { httpMethodSchema, httpSpecSchema, modelProviderKindSchema, riskSchema, skillStatusSchema, taskStepSchema, type ModelProviderKind } from "./schemas.js"
+import { scanTemplate } from "./http-template.js"
+import { httpMethodSchema, httpParamSchema, httpSpecSchema, modelProviderKindSchema, riskSchema, skillStatusSchema, taskStepSchema, type ModelProviderKind } from "./schemas.js"
 import { TIME_ZONE } from "./time.js"
 
 const text = (message: string, max = 2000) => z.string().trim().min(1, message).max(max, `太长了，最多 ${max} 个字`)
@@ -104,8 +105,9 @@ export function hasPlainSecret(value: string): boolean {
 
 /** 认出模板里的占位符：{参数} 由模型填，{{密钥}} 存在服务器上 */
 export function templatePlaceholders(value: string) {
-  const unique = (re: RegExp) => [...new Set([...value.matchAll(re)].map((m) => m[1]!))]
-  return { params: unique(/(?<!\{)\{([^{}]+)\}(?!\})/g), secrets: unique(/\{\{([^{}]+)\}\}/g) }
+  const found = scanTemplate(value, "body")
+  const unique = (kind: "param" | "secret") => [...new Set(found.filter((each) => each.kind === kind).map((each) => each.name))]
+  return { params: unique("param"), secrets: unique("secret") }
 }
 
 // ---------- 任务 ----------
@@ -268,6 +270,8 @@ export const httpToolInputSchema = z.object({
     url: z.string().trim().regex(/^https?:\/\/\S+$/, "URL 要以 http:// 或 https:// 开头"),
     headers: z.record(z.string().trim().min(1), z.string()).default({}),
     body: z.string().max(50_000).optional(),
+    /** 参数清单。传了就必须和模板里的 {名字} 一一对应（页面按模板自动同步）；不传就按模板推（JSON 字符串外面的是 json，都必填） */
+    params: z.array(httpParamSchema).max(100).optional(),
   }),
   risk: riskSchema,
   secrets: secretValues,

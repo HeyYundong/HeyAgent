@@ -192,12 +192,34 @@ export const mcpServerSchema = z.object({
 export type McpServer = z.infer<typeof mcpServerSchema>
 
 export const httpMethodSchema = z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"])
+/**
+ * HTTP 工具的一个参数（模板里的 {名字}）。保存工具时按模板重建（http-template.ts 的 syncHttpParams），
+ * 模板里每个 {名字} 都在清单里，清单里的每个也都在模板里。
+ */
+export const httpParamSchema = z.object({
+  name: z.string().min(1).max(64),
+  /**
+   * string：文本。JSON 请求体的字符串里做转义，字符串外面填成带引号的 JSON 字符串；URL 里做 URL 编码。
+   * json：原样 JSON（数组、对象、数字、true/false、null）。JSON 请求体的字符串外面原样放进去，不转义、不加引号；
+   * 字符串里面填成转义后的 JSON 文本。模板里出现在 JSON 字符串外面的参数默认是 json
+   */
+  type: z.enum(["string", "json"]),
+  /** 必填（默认）。可选的参数模型可以不传：string 填空字符串，json 填 null，除非 omitIfAbsent */
+  required: z.boolean().default(true),
+  /** 可选参数没传时整段去掉：JSON 请求体里去掉它所在的字段（数组里去掉那一项），URL 里去掉那个查询参数，请求头去掉那一行 */
+  omitIfAbsent: z.boolean().optional(),
+  /** 给模型看的说明 */
+  description: z.string().max(500).optional(),
+})
+export type HttpParam = z.infer<typeof httpParamSchema>
 export const httpSpecSchema = z.object({
   method: httpMethodSchema,
   /** 模板：{参数} 由模型填，{{名字}} 是密钥的占位符，密钥原文从不出现在这里 */
   url: z.string(),
   headers: z.record(z.string(), z.string()).optional(),
   body: z.string().optional(),
+  /** 参数清单（模板里的 {名字}）。旧数据没有这一项，按模板推出来（http-template.ts 的 httpParamsOf） */
+  params: z.array(httpParamSchema).optional(),
 })
 export type HttpSpec = z.infer<typeof httpSpecSchema>
 
