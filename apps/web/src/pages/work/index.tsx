@@ -2,10 +2,12 @@
 // 平台按被派任务的名额一张单开一次运行，办完把结果写回单上。同一件事只办一次，没办成的由人点「重办」。
 // 左边是派活单列表（搜索、按状态、按被派的任务筛，默认最近 7 天，再往前翻页），右边是一张单的详情：参数、结果、处理记录。右上角「派一张」。
 // 筛选放在网址里（?task=&status=&from=&id=），任务抽屉点「排队 5」能直接跳过来并筛好。
+// 2026-10-20 标签从「排队 / 在办 / 办完 / 没办成」+「结果」下拉改成三个：没结束（排队 + 在办）/ 办成 / 没办成（含出错、不办了），按单的结果分
+// （workItemOutcome，负责人改过结果的跟着结果走）；结束了的单只挂结果徽章。旧网址的 ?status=queued 等、?outcome= 照样认。
 // 第二期（docs/dev/dispatch-p2.md 3.4、4.4 节）：结果区块加「报结果」写的字段表、在办时「已报：…」；没办成按 failKind 分「运行出错」「agent 判断办不成」；
 // 排队等自动重试的单徽章写「排队 · 16:38 重试」，顶部提示和处理记录里写第几次重试；?new=1 直接打开「派一张」（导入后的「派一张试试」用）。
 // 运行结果（docs/dev/run-outcome.md 第 6.2、8 节）：单的结果跟着最后那次运行的结果（办成 / 没办成），列表和详情都有结果徽章；
-// 按结果筛（?outcome=）时不再按状态分（有结果的都是结束了的单）；没办成多一种：缺要交回的结果（missing_result）。
+// 没办成多一种：缺要交回的结果（missing_result）。
 // 2026-10-20 以前的旧单可能是 failKind = partial（部分办成），或者办完 + 结果没办成（原来「没核实」的，迁移 0026 改的），照样显示。
 import * as React from "react"
 import { keepPreviousData, useInfiniteQuery, useQuery } from "@tanstack/react-query"
@@ -37,18 +39,18 @@ import {
   WORK_LIST_DEFAULT_DAYS,
   WORK_RETRY_DELAY_DEFAULT,
   runOutcomeLabel,
+  workItemOutcome,
   type RunStatus,
   type SessionSummary,
   type TaskDef,
   type WorkItemDetail,
-  type WorkItemStatus,
+  type WorkListView,
   type WorkLogEntry,
   type WorkRun,
 } from "@heyagent/shared"
 
 import { FileList } from "@/components/files"
 import { MarkdownView } from "@/components/markdown"
-import { OUTCOME_FILTERS, OutcomeBadge } from "@/components/shell/outcome-badge"
 import { DetailPanel, DetailSection, EmptyState, HelpTip, MasterDetail, PageFrame, PickGroup, PickItem, SimpleHeader } from "@/components/shell/simple-page"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
@@ -69,21 +71,24 @@ import { delayText } from "@/pages/tasks/dispatch-fields"
 import { WaitingAlert, money } from "@/pages/tasks/parts"
 
 import { CancelDialog, DispatchDialog, EditParamsDialog, RedoDoneDialog, dispatchedToast, useRedo } from "./dialogs"
-import { ParamsTable, ReportTable, WorkStatusBadge, failReason, reportText, retryAt, shortName, showItemOutcome, timeText, useWorkTaskStats } from "./parts"
+import { ParamsTable, ReportTable, WorkItemBadge, failReason, reportText, retryAt, shortName, timeText, useWorkTaskStats } from "./parts"
 
-// 没有「全部」：网址里没写状态时看「在办」；「不办了」的单算在「没办成」里
-type Filter = Exclude<WorkItemStatus, "cancelled">
-
-const FILTERS: { id: Filter; name: string }[] = [
-  { id: "queued", name: "排队" },
-  { id: "running", name: "在办" },
-  { id: "done", name: "办完" },
-  { id: "failed", name: "没办成" },
+// 没有「全部」：网址里没写状态时看「没结束」；出错、「不办了」的单算在「没办成」里
+const FILTERS: { id: WorkListView; name: string; count: "open" | "achieved" | "notAchieved" }[] = [
+  { id: "open", name: "没结束", count: "open" },
+  { id: "achieved", name: "办成", count: "achieved" },
+  { id: "not_achieved", name: "没办成", count: "notAchieved" },
 ]
 
-const PAGE_SIZE = 50
+/** 网址里的 ?status=（旧的 queued / running / done / failed 也认）、?outcome= → 标签 */
+function viewOf(params: URLSearchParams): WorkListView {
+  const value = params.get("status") ?? params.get("outcome")
+  if (value === "achieved" || value === "done") return "achieved"
+  if (value === "not_achieved" || value === "failed" || value === "cancelled") return "not_achieved"
+  return "open"
+}
 
-const OUTCOME_ITEMS = [{ value: "all", label: "全部结果" }, ...OUTCOME_FILTERS]
+const PAGE_SIZE = 50
 
 export default function WorkPage() {
   const { user } = useMe()
@@ -98,13 +103,11 @@ export default function WorkPage() {
   const [redoing, setRedoing] = React.useState<WorkItemDetail | null>(null)
   const redo = useRedo()
 
-  const filter = (FILTERS.some((each) => each.id === params.get("status")) ? params.get("status") : "running") as Filter
-  // 按结果筛：选了结果就不再按状态分（排队、在办的单还没有结果）
-  const outcomeFilter = OUTCOME_FILTERS.find((each) => each.value === params.get("outcome"))?.value
+  const filter = viewOf(params)
   const taskFilter = params.get("task") ?? "all"
   const fromFilter = params.get("from")
   const selectedId = params.get("id")
-  const urlFilters = { status: outcomeFilter || filter === "running" ? null : filter, outcome: outcomeFilter ?? null, task: taskFilter === "all" ? null : taskFilter, from: fromFilter }
+  const urlFilters = { status: filter === "open" ? null : filter, outcome: null, task: taskFilter === "all" ? null : taskFilter, from: fromFilter }
 
   const q = useDebouncedText(query.trim())
   const tasksQuery = useTasksQuery()
@@ -114,8 +117,7 @@ export default function WorkPage() {
     trpc.work.list.infiniteQueryOptions(
       {
         q: q || undefined,
-        status: outcomeFilter ? undefined : filter === "failed" ? ["failed", "cancelled"] : filter,
-        outcome: outcomeFilter,
+        view: filter,
         taskId: taskFilter === "all" ? undefined : taskFilter,
         fromTaskId: fromFilter ?? undefined,
         days: allTime ? 0 : WORK_LIST_DEFAULT_DAYS,
@@ -137,7 +139,7 @@ export default function WorkPage() {
   const now = new Date()
   const today = items.filter((item) => sameShanghaiDay(item.createdAt, now))
   const earlier = items.filter((item) => !sameShanghaiDay(item.createdAt, now))
-  const filtered = Boolean(q) || taskFilter !== "all" || Boolean(fromFilter) || Boolean(outcomeFilter)
+  const filtered = Boolean(q) || taskFilter !== "all" || Boolean(fromFilter)
   const canMore = listQuery.hasNextPage || (!allTime && !q)
   // ?new=1：导入后「派一张试试」等直接打开「派一张」，任务按 ?task= 选好；关掉时把 new 从网址里去掉
   const creatingFromUrl = params.get("new") === "1" && manageable.length > 0
@@ -193,26 +195,14 @@ export default function WorkPage() {
                     </InputGroupAddon>
                   )}
                 </InputGroup>
-                <ToggleGroup variant="outline" size="sm" spacing={0} className="w-full" value={outcomeFilter ? [] : [filter]} onValueChange={(value) => value[0] && setParams({ status: value[0] === "running" ? null : value[0], outcome: null })} aria-label="按状态筛选">
+                <ToggleGroup variant="outline" size="sm" spacing={0} className="w-full" value={[filter]} onValueChange={(value) => value[0] && setParams({ status: value[0] === "open" ? null : value[0], outcome: null })} aria-label="按结果筛选">
                   {FILTERS.map((each) => (
                     <ToggleGroupItem key={each.id} value={each.id} className="flex-1">
                       {each.name}
-                      <span className="tabular-nums text-muted-foreground">{(counts?.[each.id] ?? 0) + (each.id === "failed" ? (counts?.cancelled ?? 0) : 0)}</span>
+                      <span className="tabular-nums text-muted-foreground">{counts?.[each.count] ?? 0}</span>
                     </ToggleGroupItem>
                   ))}
                 </ToggleGroup>
-                <Select items={OUTCOME_ITEMS} value={outcomeFilter ?? "all"} onValueChange={(value) => value && setParams({ outcome: value === "all" ? null : String(value), status: null })}>
-                  <SelectTrigger className="w-full" aria-label="按结果筛选">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {OUTCOME_ITEMS.map((item) => (
-                      <SelectItem key={item.value} value={item.value}>
-                        {item.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
                 <Select
                   items={[{ value: "all", label: "全部被派的任务" }, ...taskOptions.map((task) => ({ value: task.id, label: `${task.id} ${task.title}` }))]}
                   value={taskFilter}
@@ -254,12 +244,7 @@ export default function WorkPage() {
                               selected={item.id === selectedId}
                               title={item.title}
                               description={`${item.id} · ${timeText(item.createdAt)} · ${item.via === "agent" ? `${shortName(item.fromTaskTitle)}派的` : `${staffName(item.fromUserId ?? undefined)}派的`} → ${shortName(item.taskTitle)}`}
-                              badge={
-                                <span className="flex flex-col items-end gap-1">
-                                  <WorkStatusBadge item={item} />
-                                  {showItemOutcome(item) && <OutcomeBadge outcome={item.outcome} />}
-                                </span>
-                              }
+                              badge={<WorkItemBadge item={item} />}
                             />
                           ))}
                         </PickGroup>
@@ -289,7 +274,7 @@ export default function WorkPage() {
                         variant="outline"
                         onClick={() => {
                           setQuery("")
-                          setParams({ task: null, from: null, outcome: null })
+                          setParams({ task: null, from: null })
                         }}
                       >
                         清空筛选
@@ -388,8 +373,7 @@ function WorkDetail({ id, onEdit, onCancel, onRedo }: { id: string; onEdit: (ite
       title={`${item.id} · ${item.title}`}
       badges={
         <>
-          <WorkStatusBadge item={item} long />
-          {showItemOutcome(item) && <OutcomeBadge outcome={item.outcome} reason={item.outcomeReason} />}
+          <WorkItemBadge item={item} long reason />
           {attempt >= 2 && <Badge variant="outline">第 {attempt} 次</Badge>}
         </>
       }
@@ -475,7 +459,7 @@ function WorkDetail({ id, onEdit, onCancel, onRedo }: { id: string; onEdit: (ite
         </div>
       </DetailSection>
 
-      <DetailSection title={item.outcome ? `结果 · ${runOutcomeLabel[item.outcome]}` : "结果"} description="被派的运行结束后，agent 最后那段总结写回这里。结果跟着那次运行，只有办成、没办成：只看要的东西拿没拿到，只拿到一部分、证据不足也是没办成，原因里写缺了什么。派活方会看到，要自己判断要不要重派或者报给人。">
+      <DetailSection title={workItemOutcome(item) ? `结果 · ${runOutcomeLabel[workItemOutcome(item)!]}` : "结果"} description="被派的运行结束后，agent 最后那段总结写回这里。结果跟着那次运行，只有办成、没办成：只看要的东西拿没拿到，只拿到一部分、证据不足也是没办成，原因里写缺了什么。派活方会看到，要自己判断要不要重派或者报给人。">
         <ResultBody item={item} run={run} canManage={canManage} />
       </DetailSection>
 
@@ -605,7 +589,7 @@ function OutcomeAlert({ item }: { item: WorkItemDetail }) {
       <AlertDescription>
         {reason && <p>{reason}</p>}
         <p>
-          这张单记成了办完，结果是后来补的或者改的，单的状态没改。{item.via === "agent" ? `「${shortName(item.fromTaskTitle)}」` : "派活方"}看得到这个结果；确认其实办成了可以在运行详情里点「改结果」。
+          结果是后来补的或者改的（这张单原来记的是办完）。{item.via === "agent" ? `「${shortName(item.fromTaskTitle)}」` : "派活方"}看得到这个结果；确认其实办成了可以在运行详情里点「改结果」。
         </p>
       </AlertDescription>
     </Alert>

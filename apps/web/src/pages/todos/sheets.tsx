@@ -248,7 +248,7 @@ export function GroupSheet({ task, runs: list, open, onClose }: GroupProps) {
       open={open} onClose={onClose} title={task.title}
       badges={<><Badge variant="secondary">等待中</Badge><Badge variant="outline">派来的活 · {list.length} 个在等</Badge></>}
       meta={dots(task.id, `${staffName(task.ownerId)}负责`, "挂起等待的不占名额，到点或等到回复就继续各自的 session")}
-      footer={<Button nativeButton={false} render={<a href={href("work", { task: task.id, status: "running" })} />}>去派活页看全部<ArrowRightIcon data-icon="inline-end" /></Button>}
+      footer={<Button nativeButton={false} render={<a href={href("work", { task: task.id })} />}>去派活页看全部<ArrowRightIcon data-icon="inline-end" /></Button>}
     >
       <ItemGroup className="gap-2">
         {sorted.map((run) => (

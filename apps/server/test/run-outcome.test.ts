@@ -476,6 +476,10 @@ describe("被派的运行：单跟着结果走", () => {
     const list = (await query(ctx.app, "work.list", wang, { taskId: worker, outcome: "not_achieved" })).data
     expect(list.items.map((each: { id: string }) => each.id)).toEqual([id])
     expect((await query(ctx.app, "work.list", wang, { taskId: worker, outcome: ["achieved"] })).data.items).toEqual([])
+    // 派活页的「没办成」标签
+    const bad = (await query(ctx.app, "work.list", wang, { taskId: worker, view: "not_achieved" })).data
+    expect(bad.items.map((each: { id: string }) => each.id)).toEqual([id])
+    expect(bad.counts.notAchieved).toBe(1)
     // 旧的结果值不认了
     expect((await query(ctx.app, "work.list", wang, { taskId: worker, outcome: "unverified" })).error?.data?.code).toBe("BAD_REQUEST")
   })

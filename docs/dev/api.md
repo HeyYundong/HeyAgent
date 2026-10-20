@@ -1179,7 +1179,7 @@ claude mcp add --transport http heyagent-compare http://<host>:8080/api/compare/
 
 | procedure | 类型 | 谁能用 | 输入 → 输出 |
 |---|---|---|---|
-| `list` | query | 登录即可 | `WorkListInput`（`q` `status` `taskId` `fromTaskId` `fromSessionId` `days`（默认 7，搜索时不限）`cursor` `limit`）→ `WorkPage`（`items` 新派的在前、`nextCursor`、`counts` 各状态张数） |
+| `list` | query | 登录即可 | `WorkListInput`（`q` `status` `view` `taskId` `fromTaskId` `fromSessionId` `days`（默认 7，搜索时不限）`cursor` `limit`）→ `WorkPage`（`items` 新派的在前、`nextCursor`、`counts` 各状态张数，加派活页三个标签的 `open` `achieved` `notAchieved`）。`view`：`open` = 排队 + 在办；`achieved` / `not_achieved` = 结束了的单按结果分（`workItemOutcome`：按单上的结果，没记结果的旧单办完算办成、其余算没办成；负责人改过结果的跟着结果走）。`counts` 不受 `status` `view` `outcome` 影响 |
 | `get` | query | 登录即可 | `{ id }` → `WorkItemDetail`（加 `log` 处理记录、`runs` 每次运行、`taskDispatch` `taskEnabled` `taskOwnerId`）；没有：`NOT_FOUND` |
 | `taskStats` | query | 登录即可 | `{ taskId }` → `{ queued, running, occupied, maxRunning, doneToday, failed }` |
 | `lookup` | query | 登录即可 | `{ taskId, params }` → `WorkItem \| null`：按参数声明算去重键，有单就返回；参数不全、任务没有去重参数、任务没开被派活返回 null |

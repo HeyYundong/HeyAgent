@@ -31,7 +31,7 @@ import { useAction } from "@/lib/mutations"
 import { href } from "@/lib/router"
 import { useMe } from "@/lib/session"
 import { trpc } from "@/lib/trpc"
-import { ParamsTable, WorkStatusBadge, shortName, showItemOutcome, timeText } from "@/pages/work/parts"
+import { ParamsTable, WorkItemBadge, shortName, timeText } from "@/pages/work/parts"
 
 import { VerificationReport } from "./verification"
 import { CheckpointList, Elapsed, RunStatusBadge, StepList, WaitingAlert, checkpointSummary, focusedCheckpoint, money } from "./parts"
@@ -436,8 +436,7 @@ function DispatchedIn({ run, itemId }: { run: SessionSummary; itemId: string }) 
           <p className="flex flex-wrap items-center gap-2">
             <span className="font-mono">{item.id}</span>
             {item.title}
-            <WorkStatusBadge item={item} />
-            {showItemOutcome(item) && <OutcomeBadge outcome={item.outcome} reason={item.outcomeReason} />}
+            <WorkItemBadge item={item} reason />
             {item.runs.length >= 2 && nth > 0 && <Badge variant="outline">这是第 {nth} 次</Badge>}
           </p>
           <ParamsTable declared={item.taskDispatch?.params ?? []} values={item.params} />
@@ -469,8 +468,7 @@ function DispatchedOut({ run, events }: { run: SessionSummary; events?: RunEvent
                 <ItemDescription className="line-clamp-1">派给「{item.taskTitle}」 · {timeText(item.createdAt)}</ItemDescription>
               </ItemContent>
               <ItemActions>
-                <WorkStatusBadge item={item} />
-                {showItemOutcome(item) && <OutcomeBadge outcome={item.outcome} />}
+                <WorkItemBadge item={item} />
                 <ChevronRightIcon className="size-4 text-muted-foreground" />
               </ItemActions>
             </Item>

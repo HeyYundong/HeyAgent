@@ -2,6 +2,7 @@
 // 监工写好的读取部分；派活、领单、结束回写、清扫、重办、不办了、改参数由包 A 写（engine/dispatch/ 和这里）。
 import {
   TIME_ZONE,
+  type RunOutcome,
   type TaskDispatch,
   type WorkItem,
   type WorkItemDetail,
@@ -127,7 +128,10 @@ export async function toWorkItems(db: DbOrTx, rows: WorkItemRow[]): Promise<Work
   return rows.map((row) => toWorkItem(row, extra))
 }
 
-/** 派活页左边的列表：新派的在前；同样的筛选（不算状态）下各状态的张数 */
+/** 单的结果，和 @heyagent/shared 的 workItemOutcome 一样：没记结果的旧单，办完算办成、其余算没办成（排队、在办的不用它） */
+const itemOutcome = sql<RunOutcome>`coalesce(${t.workItems.outcome}::text, case when ${t.workItems.status} = 'done' then 'achieved' else 'not_achieved' end)`
+
+/** 派活页左边的列表：新派的在前；同样的筛选（不算状态）下各状态、各标签的张数 */
 export async function listWorkItems(db: DbOrTx, rawInput: WorkListInput): Promise<WorkPage> {
   const input = workListInputSchema.parse(rawInput)
   const base: SQL[] = []
@@ -145,6 +149,9 @@ export async function listWorkItems(db: DbOrTx, rawInput: WorkListInput): Promis
   if (input.status) where.push(Array.isArray(input.status) ? inArray(t.workItems.status, input.status) : eq(t.workItems.status, input.status))
   // 结果筛选（run-outcome）：和状态筛选一样不算进各状态的张数
   if (input.outcome) where.push(Array.isArray(input.outcome) ? inArray(t.workItems.outcome, input.outcome) : eq(t.workItems.outcome, input.outcome))
+  // 派活页的三个标签（没结束 / 办成 / 没办成），同样不算进张数
+  if (input.view === "open") where.push(inArray(t.workItems.status, ["queued", "running"]))
+  else if (input.view) where.push(and(inArray(t.workItems.status, ["done", "failed", "cancelled"]), eq(itemOutcome, input.view))!)
   if (input.cursor) {
     const [cursor] = await db.select({ createdAt: t.workItems.createdAt, id: t.workItems.id }).from(t.workItems).where(eq(t.workItems.id, input.cursor))
     if (cursor) where.push(or(lt(t.workItems.createdAt, cursor.createdAt), and(eq(t.workItems.createdAt, cursor.createdAt), lt(t.workItems.id, cursor.id)))!)
@@ -158,16 +165,19 @@ export async function listWorkItems(db: DbOrTx, rawInput: WorkListInput): Promis
       .orderBy(desc(t.workItems.createdAt), desc(t.workItems.id))
       .limit(input.limit + 1),
     db
-      .select({ status: t.workItems.status, n: count() })
+      .select({ status: t.workItems.status, outcome: itemOutcome, n: count() })
       .from(t.workItems)
       .where(base.length ? and(...base) : undefined)
-      .groupBy(t.workItems.status),
+      .groupBy(t.workItems.status, itemOutcome),
   ])
   const page = rows.slice(0, input.limit)
-  const counts = { all: 0, queued: 0, running: 0, done: 0, failed: 0, cancelled: 0 }
+  const counts = { all: 0, queued: 0, running: 0, done: 0, failed: 0, cancelled: 0, open: 0, achieved: 0, notAchieved: 0 }
   for (const row of grouped) {
-    counts[row.status] = row.n
+    counts[row.status] += row.n
     counts.all += row.n
+    if (row.status === "queued" || row.status === "running") counts.open += row.n
+    else if (row.outcome === "achieved") counts.achieved += row.n
+    else counts.notAchieved += row.n
   }
   return { items: await toWorkItems(db, page), nextCursor: rows.length > input.limit ? page[page.length - 1]!.id : null, counts }
 }

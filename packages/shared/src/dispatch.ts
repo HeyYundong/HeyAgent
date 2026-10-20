@@ -4,7 +4,7 @@
 // 设计稿：design/BRIEF-dispatch.md（本地）。平台通用：这里不出现任何业务。
 import { z } from "zod"
 
-import { isoTime, runOutcomeSchema, runStatusSchema } from "./schemas.js"
+import { isoTime, runOutcomeSchema, runStatusSchema, type RunOutcome } from "./schemas.js"
 
 /** 内置工具「派活」的 id（模型看到的名字是 work_dispatch） */
 export const WORK_DISPATCH_TOOL_ID = "work.dispatch"
@@ -83,6 +83,15 @@ export const workItemStatusLabel: Record<WorkItemStatus, string> = {
   done: "办完",
   failed: "没办成",
   cancelled: "不办了",
+}
+
+/**
+ * 单的结果（派活页按它分「办成」「没办成」）：结束了的单按单上记的结果（负责人改过结果的，状态不变、结果跟着改）；
+ * 旧单没记结果的，办完算办成、没办成和不办了算没办成；排队、在办的还没有结果。和 work/service.ts 里的 SQL 一致
+ */
+export function workItemOutcome(item: { status: WorkItemStatus; outcome?: RunOutcome | null }): RunOutcome | null {
+  if (item.status === "queued" || item.status === "running") return null
+  return item.outcome ?? (item.status === "done" ? "achieved" : "not_achieved")
 }
 
 /** 谁派的：agent（哪个任务的哪次运行）、人（派活页「派一张」）。第三期加 api */
@@ -216,12 +225,17 @@ export type WorkItemDetail = z.infer<typeof workItemDetailSchema>
 
 // ---------- 接口（tRPC work.*）的输入输出 ----------
 
+export const workListViewSchema = z.enum(["open", "achieved", "not_achieved"])
+export type WorkListView = z.infer<typeof workListViewSchema>
+
 export const workListInputSchema = z.object({
   q: z.string().trim().max(200).optional(),
   /** 不填 = 全部；可以给几种（派活页「没办成」= 没办成 + 不办了） */
   status: z.union([workItemStatusSchema, z.array(workItemStatusSchema).min(1)]).optional(),
   /** 结果筛选（run-outcome）：办成 / 没办成，可以给几种 */
   outcome: z.union([runOutcomeSchema, z.array(runOutcomeSchema).min(1)]).optional(),
+  /** 派活页的三个标签：没结束（排队 + 在办）、办成、没办成（含出错、不办了）。按单的结果分，见 workItemOutcome */
+  view: workListViewSchema.optional(),
   /** 被派的任务 */
   taskId: z.string().optional(),
   /** 派活的任务 / 运行（任务抽屉、运行详情的「派出去的活」） */
@@ -242,6 +256,10 @@ export const workCountsSchema = z.object({
   done: z.number().int(),
   failed: z.number().int(),
   cancelled: z.number().int(),
+  /** 派活页三个标签上的数字（workListViewSchema） */
+  open: z.number().int(),
+  achieved: z.number().int(),
+  notAchieved: z.number().int(),
 })
 
 export const workPageSchema = z.object({

@@ -1,8 +1,9 @@
 // 派活页、任务页、运行详情共用的小块：派活单的状态徽章、时间、短任务名、参数表、报的结果、被派任务的一行数字。
 import { useQuery } from "@tanstack/react-query"
 import { CircleCheckIcon, CircleSlashIcon, CircleXIcon, HandIcon, HourglassIcon, ListOrderedIcon, RotateCwIcon, ScanSearchIcon } from "lucide-react"
-import { fmtClock, relativeDayText, sameShanghaiDay, type TaskDispatchParam, type WorkItem, type WorkReportValue } from "@heyagent/shared"
+import { fmtClock, relativeDayText, sameShanghaiDay, workItemOutcome, type TaskDispatchParam, type WorkItem, type WorkReportValue } from "@heyagent/shared"
 
+import { OutcomeBadge } from "@/components/shell/outcome-badge"
 import { Badge } from "@/components/ui/badge"
 import { Spinner } from "@/components/ui/spinner"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -118,9 +119,12 @@ export function WorkStatusBadge({ item, long }: { item: Pick<WorkItem, "status" 
   )
 }
 
-/** 单的结果徽章要不要显示：没办成的单（状态已经写了「没办成」）结果也是没办成时不重复显示；办完的单照样显示 */
-export const showItemOutcome = (item: Pick<WorkItem, "status" | "outcome">) =>
-  Boolean(item.outcome) && !((item.status === "failed" || item.status === "cancelled") && item.outcome === "not_achieved")
+/** 单的徽章：没结束的写排队 / 在办；结束了的只写结果（办成 / 没办成），人点了「不办了」的写「不办了」。reason：悬停看结果的原因 */
+export function WorkItemBadge({ item, long, reason }: { item: Pick<WorkItem, "status" | "outcome" | "outcomeReason" | "sessionStatus" | "queuePosition" | "notBefore">; long?: boolean; reason?: boolean }) {
+  const outcome = workItemOutcome(item)
+  if (!outcome || (item.status === "cancelled" && outcome === "not_achieved")) return <WorkStatusBadge item={item} long={long} />
+  return <OutcomeBadge outcome={outcome} reason={reason ? item.outcomeReason : undefined} />
+}
 
 /** 没办成的原因去掉后端加的「agent 判断办不成：」前缀（提示标题里已经写了是哪种） */
 export const failReason = (text?: string | null) => text?.replace(/^agent 判断办不成[：:]\s*/, "")

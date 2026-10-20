@@ -220,7 +220,20 @@ describe("agent 派活 → 领单 → 办完回写", () => {
     // 页面接口能读出来
     const page = await query(ctx.app, "work.list", wang, { taskId: worker })
     expect(page.data.items).toHaveLength(2)
-    expect(page.data.counts).toMatchObject({ all: 2, done: 2 })
+    expect(page.data.counts).toMatchObject({ all: 2, done: 2, open: 0, achieved: 2, notAchieved: 0 })
+
+    // 派活页的三个标签按单的结果分：没记结果的旧单办完算办成；负责人改过结果的跟着结果走，不看状态
+    const ids = page.data.items.map((each: { id: string }) => each.id) as string[]
+    const view = async (name: string) => (await query(ctx.app, "work.list", wang, { taskId: worker, view: name })).data
+    expect((await view("achieved")).items).toHaveLength(2)
+    await ctx.db.update(t.workItems).set({ outcome: null }).where(eq(t.workItems.id, ids[0]!))
+    await ctx.db.update(t.workItems).set({ status: "failed", outcome: "achieved" }).where(eq(t.workItems.id, ids[1]!))
+    expect((await view("achieved")).counts).toMatchObject({ open: 0, achieved: 2, notAchieved: 0 })
+    await ctx.db.update(t.workItems).set({ status: "done", outcome: "not_achieved" }).where(eq(t.workItems.id, ids[1]!))
+    const bad = await view("not_achieved")
+    expect(bad.items.map((each: { id: string }) => each.id)).toEqual([ids[1]])
+    expect(bad.counts).toMatchObject({ open: 0, achieved: 1, notAchieved: 1 })
+    expect((await view("open")).items).toEqual([])
   }, 60_000)
 
   it("没有任务允许它派活时，系统提示写「现在没有任务允许你派活」", async () => {

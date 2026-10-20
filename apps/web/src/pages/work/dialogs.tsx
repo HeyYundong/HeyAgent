@@ -23,7 +23,7 @@ import { useAction } from "@/lib/mutations"
 import { href } from "@/lib/router"
 import { trpc } from "@/lib/trpc"
 
-import { WorkStatusBadge, timeText, useWorkTaskStats } from "./parts"
+import { WorkItemBadge, timeText, useWorkTaskStats } from "./parts"
 
 /** 按声明把表单里的数组换成参数对象：去掉首尾空白，空的不带 */
 function toParams(declared: TaskDispatchParam[], values: string[] = []) {
@@ -181,7 +181,7 @@ function DuplicateAlert({ item }: { item: WorkItem }) {
     <Alert>
       <InfoIcon />
       <AlertTitle className="flex flex-wrap items-center gap-2">
-        {item.id} 已经有了 <WorkStatusBadge item={item} long />
+        {item.id} 已经有了 <WorkItemBadge item={item} long />
         {when && <span className="font-normal text-muted-foreground">{when}</span>}
       </AlertTitle>
       <AlertDescription>同一件事只办一次。{ended ? "要再办一次，去那张单上点「重办」。" : "已经在排队或在办了，不用再派。"}</AlertDescription>

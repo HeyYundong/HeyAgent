@@ -253,10 +253,10 @@ function DispatchSection({ task }: { task: TaskDef }) {
   const dispatch = task.dispatch!
   const link = (status?: string) => href("work", { task: task.id, status })
   const numbers = [
-    { label: "排队", value: stats?.queued, status: "queued" },
-    { label: "在办", value: stats?.running, status: "running" },
-    { label: "今天办完", value: stats?.doneToday, status: "done" },
-    { label: "没办成", value: stats?.failed, status: "failed" },
+    { label: "排队", value: stats?.queued, status: undefined },
+    { label: "在办", value: stats?.running, status: undefined },
+    { label: "今天办成", value: stats?.doneToday, status: "achieved" },
+    { label: "没办成", value: stats?.failed, status: "not_achieved" },
   ]
   const title = (id: string) => tasks.find((each) => each.id === id)?.title ?? id
   return (
