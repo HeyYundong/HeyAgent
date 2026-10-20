@@ -166,8 +166,9 @@ curl -s -b 'better-auth.session_token=<COOKIE>' -H 'content-type: application/js
 | `tasks.list` | 登录即可 | 无 | `TaskDef[]`，新建的在前。字段：`id title goal steps[]{id text wait checkpoint?} ownerId createdAt enabled schedule?{cron text} nextRunAt? modelId memoryIds skillIds toolIds ruleIds`。`toolIds` 不含每个任务都自带的内置工具 | |
 | `tasks.get` | 登录即可 | `{ id }` | `TaskDef` | `NOT_FOUND` |
 | `sessions.list` | 登录即可 | `{ taskId? }`（可整个省略） | `SessionSummary[]`，开始时间新的在前：**不带过程**（`events`），见下面「SessionRun」 | 见下面「SessionRun」 |
+| `sessions.page` | 登录即可 | `sessionPageInputSchema`：`{ group: "running"\|"human"\|"waiting"\|"verifying"\|"ended"（默认 running）, mine?, source?, taskId?, outcome?, q?(≤200), page(≥1，默认 1), pageSize(1-200，默认 50) }` | `SessionPage`：`{ items: SessionSummary[]; total; page; pageSize; counts: { running human waiting verifying ended }; spentToday }` | 会话页用，见下面「sessions.page」 |
 | `sessions.get` | 登录即可 | `{ id }` | `SessionRun`（摘要 + 全部过程） | `NOT_FOUND` |
-| `todos.board` | 登录即可 | 无 | `{ humanItems: HumanItem[]; humanTodos: HumanTodo[] }`：还没处理的「要人办的事」（按急迫程度 `urgency` 小的在前，再按时间）和有效的「人加的待办」（新的在前） | 运行卡不在这里，用 `sessions.list` + shared 的 `boardCards` 拼 |
+| `todos.board` | 登录即可 | 无 | `{ humanItems: HumanItem[]; humanTodos: HumanTodo[] }`：还没处理的「要人办的事」（按急迫程度 `urgency` 小的在前，再按时间）和有效的「人加的待办」（新的在前） | 名字沿用以前的待办看板。要人办的事给会话页「等人处理」和运行详情顶上的处理面板用，人加的待办给任务详情「什么时候跑」用（2026-10-20 去掉「待办」页，见 `docs/dev/todos-into-sessions.md`） |
 | `memories.list` | 登录即可 | 无 | `MemoryRef[]`，按 id。含已拒绝、已归档的，页面自己筛。`note.lastUsed` 是服务端按当前时间生成的文字；待审核的带 `reviewItemId` | |
 | `skills.list` | 登录即可 | 无 | `Skill[]`：带 `version updatedAt body toolIds`，有待审核的修改建议时带 `suggestion{taskId summary reviewerId createdAt itemId?}` | |
 | `rules.list` | 登录即可 | 无 | `RuleRef[]`：`id name trigger action toolIds compiledTrigger? compile?`。`compiledTrigger` 是人确认过、正在执行的翻译结果（`CompiledRule`），`compile` 是生效状态和「系统理解为」，见第 11.1 节 | |
@@ -194,7 +195,17 @@ curl -s -b 'better-auth.session_token=<COOKIE>' -H 'content-type: application/js
 | 没完成（`incomplete`，迁移 0022） | 运行正常结束、但事情没做成：① agent 调了自带的内置工具 `run.not_done`「报没完成」（参数 `reason`，调用后运行马上结束，不再调模型、不验收）；② 被派的运行用 `work.report` 报了 `not_done`；③ agent 说做完了（验收照常先跑），但至少有一个检查点、而且有没勾的或者全部跳过了（验收通过的不按检查点判；部分跳过、其余都勾了的算完成；没有检查点的照旧算完成）。原因在最后一条 `kind = "done"` 的事件的 `detail` 里（也写进 `sessions.error`）；负责人收到「<任务>：没完成」通知（被派的也发）；被派的运行的派活单记没办成（`failKind = not_done`），不自动重试 |
 | 触发来源 | 不在 `SessionRun` 里；快照里有 `source`（`manual / cron / todo / event`），第一条 `plan` 事件的 detail 里也写了 |
 
-`sessions.list` 一次返回**全部** session 的摘要（没有分页），不带过程：过程（带工具的输入输出）多了会有几十 MB，页面实时刷新时一直重新拉会把浏览器的连接占满。要看过程用 `sessions.get` 按 id 取（任务详情、Session 详情、看板的运行抽屉都是打开时才取）。
+`sessions.list` 一次返回**全部** session 的摘要（没有分页），不带过程：过程（带工具的输入输出）多了会有几十 MB，页面实时刷新时一直重新拉会把浏览器的连接占满。要看过程用 `sessions.get` 按 id 取（任务详情、Session 详情都是打开时才取）。会话页的列表用分页的 `sessions.page`。
+
+**`sessions.page`**（2026-10-20 加，代码 `apps/server/src/data/session-page.ts`）：会话页的一页，筛选、搜索、数数、翻页都在库里做，只给这一页的 id 调 `listSessions({ ids })` 拼摘要，所以每一条和 `sessions.list` 的完全一样。
+
+- `group`：按 shared 的 `groupOf` 分组：`running` 执行中、`human` 等人处理（`needs_human`）、`waiting` 等待中、`verifying` 验收中、`ended` 已结束（`done` `incomplete` `failed`）。
+- `mine: true`（「只看等我处理」）：不看 `group`，只列 `needs_human`、而且有一件没处理的挡住它的事（`approval` `verify` `login`）是我的——主管算全部，员工只算分给自己的（和 `me.get` 的 `needsMeCount` 同一个规则）。记忆审核、技能修改这类不挡运行的事不在这里，页面从 `todos.board` 取。
+- `source`（`manual` `cron` `todo` `event` `dispatch`）、`taskId`、`outcome`（和 shared 的 `outcomeOf` 一样：没记结果、没完成或出错的算 `not_achieved`）、`q`（session 编号、任务编号、任务名、派活单号，不分大小写，`%` `_` `\` 当普通字符）。
+- 排序：开始时间新的在前，同一时间按 id 倒序。`page` 超出时给最后一页（返回的 `page` 是实际的页）。
+- `counts`：各标签的个数，用同样的 `source` `taskId` `outcome` `q`，**不算** `group` 和 `mine`（「只看等我处理」开着时标签上的数字照旧）。
+- `spentToday`：今天（上海时间 0 点起）开始的运行一共花了多少美元，**不看任何筛选**。
+- 实时推送：`sessions` `session_events` `checkpoints` `checkpoint_records` `session_waits` `human_items` `tasks` 变了都让它重新拉。
 
 ---
 
@@ -422,7 +433,7 @@ curl -s -b 'better-auth.session_token=<COOKIE>' -H 'content-type: application/js
 ### 5.3 `engine.cancel`、`engine.resumeNow`
 
 - `cancel`：把还没结束的 session 标成 `failed`，`error` 写「<姓名>取消了这次运行：<原因>」；挂起的等待作废，没处理的「要人办的事」一并取消；追加一条 `error` 事件「已取消」。正在跑的循环在下一步之前发现状态变了就停。错误：`NOT_FOUND`、`FORBIDDEN`、`CONFLICT`（已经 `done / failed`）。审计 `session.cancel`。
-- `resumeNow`：只对 `waiting`（挂起等时间 / 事件）的 session。错误：`NOT_FOUND`；`FORBIDDEN`；`BAD_REQUEST`：`needs_human`（「先去待办里处理那件事」）或没有在等；`CONFLICT`：刚刚已经被别的原因继续了（到点、事件、人处理，谁先到谁生效）。给 agent 追加一条「【继续】…让你立即继续」的消息，排进 `session.run`，**同一个 session id 接着跑**。审计 `session.resume.resume_now`。
+- `resumeNow`：只对 `waiting`（挂起等时间 / 事件）的 session。错误：`NOT_FOUND`；`FORBIDDEN`；`BAD_REQUEST`：`needs_human`（先处理那件事）或没有在等；`CONFLICT`：刚刚已经被别的原因继续了（到点、事件、人处理，谁先到谁生效）。给 agent 追加一条「【继续】…让你立即继续」的消息，排进 `session.run`，**同一个 session id 接着跑**。审计 `session.resume.resume_now`。
 
 ### 5.4 `engine.resolveHumanItem`
 
@@ -463,7 +474,7 @@ curl -s -b 'better-auth.session_token=<COOKIE>' -H 'content-type: application/js
 
 ### 5.8 通知
 
-站内通知（`notifications` 表）由引擎写：有事等你处理、运行出问题、兜底期限到了、待办没能触发、agent 用 `notify.staff` 等。`Notification`：`{ id(整数) title body link? taskId? sessionId? createdAt readAt? }`；`link` 是控制台的 hash 路由，如 `#/todos`、`#/tasks?id=T-1&run=R-1-1`。`list` 按新的在前，`unread` 是**全部**未读数（不受 `limit`、`unreadOnly` 影响）。没有审计。推 `notifications`（推送的 id 是接收人 id）。
+站内通知（`notifications` 表）由引擎写：有事等你处理、运行出问题、兜底期限到了、待办没能触发、agent 用 `notify.staff` 等。`Notification`：`{ id(整数) title body link? taskId? sessionId? createdAt readAt? }`；`link` 是控制台的 hash 路由，如 `#/tasks?id=T-1&run=R-1-1`；「等你处理」的是 `#/sessions?status=human&id=<运行 id>`（记忆审核、技能修改是 `&id=<这件事的 id>`，`notify.ts` 的 `humanItemLink`）。旧通知里的 `#/todos` 前端会跳到 `#/sessions?status=human`。`list` 按新的在前，`unread` 是**全部**未读数（不受 `limit`、`unreadOnly` 影响）。没有审计。推 `notifications`（推送的 id 是接收人 id）。
 
 ---
 
@@ -568,10 +579,10 @@ curl -s -X POST http://localhost:3100/api/events \
 | 表 | 重新拉 |
 |---|---|
 | `users` | `me.get` `staff.list` `users.list` |
-| `tasks` `task_memories` `task_skills` `task_tools` `task_rules` | `tasks.list` |
+| `tasks` `task_memories` `task_skills` `task_tools` `task_rules` | `tasks.list`（`tasks` 还有 `work.taskStats` `sessions.page`：会话页能按任务名搜） |
 | `task_memory_entries`（推任务 id） | `taskMemory.list` |
-| `sessions` `session_events` `checkpoints` `checkpoint_records` `session_waits` | `sessions.list` `sessions.get`（`checkpoint_records` 以外只失效推来的那个 session 的） |
-| `human_items` | `todos.board` `me.get` `memories.list` `skills.list` |
+| `sessions` `session_events` `checkpoints` `checkpoint_records` `session_waits` | `sessions.list` `sessions.page` `sessions.get`（`sessions.get` 在 `checkpoint_records` 以外只失效推来的那个 session 的） |
+| `human_items` | `todos.board` `me.get` `memories.list` `skills.list` `sessions.page` |
 | `human_todos` | `todos.board` |
 | `memories` | `memories.list` |
 | `skills` `skill_tools` `skill_suggestions` | `skills.list` |
@@ -613,7 +624,7 @@ curl -s -X POST http://localhost:3100/api/events \
 
 ### 9.2 已知限制（写代码时要知道）
 
-- `sessions.list` 没有分页，一次返回全部 session 的摘要（不带过程）；session 很多了以后需要按 `taskId` 筛或加分页。
+- `sessions.list` 没有分页，一次返回全部 session 的摘要（不带过程）；会话页已经改用分页的 `sessions.page`，任务、派活等其他页面还在用 `sessions.list`。
 - `SessionRun` 没有 `error` 字段，失败原因要去 `kind = "error"` 的事件里找。
 - `engine.listMcpServerTools` 对 stdio 类型会在 API 机器上起进程；`engine.sessionFiles`、`taskAttachments`、通知这几个查询只要求登录。
 - 上传后一直没用上的文件不会被清理，也没有删除文件的接口。
@@ -816,7 +827,7 @@ session 开始时把规则（含 `compiledTrigger`）冻结进快照，引擎只
 | 结束的先后顺序（M2 留下的） | 说做完了：先验收；最终结论确定后，先关资源（工具连接、Chrome），再在**同一个事务**里写完成事件和 `done` 状态。失败也是「失败事件 + `failed` 状态」同一事务。没完成也是「结束事件 + `incomplete` 状态」同一事务。读到「已完成 / 没完成 / 失败」时，对应的过程记录一定都在 |
 | 数据库（迁移 0007） | `rules.compiled_text / compile_draft / confirmed_by_id / confirmed_at`、`tasks.verify_model_id`、`sessions.rule_state`、`session_messages.summary`、`session_waits.pending`、`checkpoints.focused_at`。都是加列，没有新表 |
 | 审计 action | 新增 `rule.compile` `rule.confirm` `task.save_steps` `settings.agent.update` |
-| 记忆和技能的提议 | 和 M1 一样：生成 `kind = memory / skill` 的事，给任务负责人（技能给技能负责人），主管也能处理；用 `memories.approve/reject`、`skills.acceptSuggestion/rejectSuggestion` 处理。待办里点进去用 `memoryId` / `skillId` 跳到记忆页、技能页 |
+| 记忆和技能的提议 | 和 M1 一样：生成 `kind = memory / skill` 的事，给任务负责人（技能给技能负责人），主管也能处理；用 `memories.approve/reject`、`skills.acceptSuggestion/rejectSuggestion` 处理。处理面板里用 `memoryId` / `skillId` 跳到记忆页、技能页 |
 
 ---
 

@@ -1,10 +1,11 @@
-// 加一条 / 编辑待办：人往看板里插一件事。选任务、要 agent 做什么、什么时候（定时一次 / cron / 等事件 / 先到先继续）。
+// 加一条 / 编辑人加的待办（任务详情「什么时候跑」里）：选任务、要 agent 做什么、什么时候（定时一次 / cron / 等事件 / 先到先继续）。
 // 表单：React Hook Form + shared 的 todoFormSchema，提交时转成接口的 trigger。保存后后端调引擎的 syncTodo。
+// 能等的事件不写在代码里（平台通用）：选项来自数据里已经在等的事件，也可以直接输入新的。
 import * as React from "react"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { Controller, useForm, useWatch } from "react-hook-form"
 import { InfoIcon } from "lucide-react"
-import { addDaysIso, EVENT_FALLBACK_DAYS, fmtDate, fmtDateTime, todoFormSchema, type HumanTodo, type TaskDef, type TodoForm } from "@heyagent/shared"
+import { addDaysIso, EVENT_FALLBACK_DAYS, fmtDate, fmtDateTime, todoFormSchema, type HumanTodo, type TaskDef, type TodoForm, type Trigger } from "@heyagent/shared"
 
 import { CreatableCombobox } from "@/components/shell/creatable-combobox"
 import { Alert, AlertDescription } from "@/components/ui/alert"
@@ -18,22 +19,31 @@ import { Textarea } from "@/components/ui/textarea"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 
 import { useAction } from "@/lib/mutations"
-import { setParams } from "@/lib/router"
 import { trpc } from "@/lib/trpc"
 
 import { cronText, nextRuns, shortTime } from "./cron"
-import { MODES, cronPresets } from "./data"
 
-// eventOptions：「等哪个事件」的已有选项（来自数据里已经在等的事件），可以输入新的
-type Props = { open: boolean; onOpenChange: (open: boolean) => void; todo?: HumanTodo; taskOptions: TaskDef[]; eventOptions: string[] }
+/** cron 输入框下面的几个常用写法，点一下就填上 */
+const cronPresets = ["0 9 * * *", "0 10 * * 1-5", "0 */2 * * *", "30 17 * * 5"]
+
+/** 「什么时候」的四种写法 */
+const MODES: { value: Trigger["kind"]; label: string; hint: string }[] = [
+  { value: "time", label: "定时一次", hint: "到这个时间做一次。" },
+  { value: "cron", label: "周期（cron）", hint: "按 cron 表达式反复做：分 时 日 月 周，用空格隔开。" },
+  { value: "event", label: "等事件", hint: "事件发生就做；最多等几天（下面选），到期还没等到就提醒负责人。" },
+  { value: "time_or_event", label: "先到先继续", hint: "事件先发生就马上做，最晚到点也会做。适合「等回复，但明天必须跟进」。" },
+]
+
+// eventOptions：「等哪个事件」的已有选项（来自数据里已经在等的事件），可以输入新的；initialTaskId：新加时先选好的任务
+type Props = { open: boolean; onOpenChange: (open: boolean) => void; todo?: HumanTodo; taskOptions: TaskDef[]; initialTaskId?: string; eventOptions: string[] }
 
 /** 新加待办默认的时间：明天 10:00（上海时间），datetime-local 要的格式是 2026-10-17T10:00 */
 const defaultAt = () => `${fmtDate(addDaysIso(new Date().toISOString(), 1))}T10:00`
 
-function initialValues(todo: HumanTodo | undefined, taskOptions: TaskDef[], eventOptions: string[]): TodoForm {
+function initialValues(todo: HumanTodo | undefined, taskId: string, eventOptions: string[]): TodoForm {
   const trigger = todo?.trigger
   return {
-    taskId: todo?.taskId ?? taskOptions[0]?.id ?? "",
+    taskId,
     title: todo?.title ?? "",
     mode: trigger?.kind ?? "time",
     at: trigger && "at" in trigger ? fmtDateTime(trigger.at).replace(" ", "T") : defaultAt(),
@@ -43,8 +53,9 @@ function initialValues(todo: HumanTodo | undefined, taskOptions: TaskDef[], even
   }
 }
 
-export function TodoDialog({ open, onOpenChange, todo, taskOptions, eventOptions }: Props) {
-  const form = useForm<TodoForm>({ resolver: zodResolver(todoFormSchema), defaultValues: initialValues(todo, taskOptions, eventOptions) })
+export function TodoDialog({ open, onOpenChange, todo, taskOptions, initialTaskId, eventOptions }: Props) {
+  const taskId = todo?.taskId ?? initialTaskId ?? taskOptions[0]?.id ?? ""
+  const form = useForm<TodoForm>({ resolver: zodResolver(todoFormSchema), defaultValues: initialValues(todo, taskId, eventOptions) })
   const { errors } = form.formState
   const [mode, cron] = useWatch({ control: form.control, name: ["mode", "cron"] })
   const [createdEvents, setCreatedEvents] = React.useState<string[]>([])
@@ -72,17 +83,13 @@ export function TodoDialog({ open, onOpenChange, todo, taskOptions, eventOptions
       if (await update.submit({ ...input, id: todo.id })) onOpenChange(false)
       return
     }
-    const created = await create.submit(input)
-    if (created) {
-      onOpenChange(false)
-      setParams({ id: created.id })
-    }
+    if (await create.submit(input)) onOpenChange(false)
   })
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-11/12 overflow-y-auto sm:max-w-lg">
-        <DialogHeader><DialogTitle>{todo ? "编辑待办" : "加一条待办"}</DialogTitle><DialogDescription>往看板里插一件事：到点或等到事件，就让 agent 去做。</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>{todo ? "编辑待办" : "加一条待办"}</DialogTitle><DialogDescription>到点或等到事件，就让这个任务的 agent 去做一件事。</DialogDescription></DialogHeader>
         <form onSubmit={submit} className="flex flex-col gap-4">
           <FieldGroup>
             <Field data-invalid={!!errors.taskId}>

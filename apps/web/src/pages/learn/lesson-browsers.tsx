@@ -56,7 +56,7 @@ export function BrowsersLesson() {
             text={
               site?.status === "ok" || !site
                 ? `${site ? `${siteName}${accountStatusLabel[site.status]}，` : ""}直接用`
-                : `${siteName}${accountStatusLabel[site.status]}：员工自己去「浏览器」里打开这个 Chrome 处理，待办里会多一张登录卡`
+                : `${siteName}${accountStatusLabel[site.status]}：员工自己去「浏览器」里打开这个 Chrome 处理，「会话」的「等人处理」里会多一件登录`
             }
           />
           <Step

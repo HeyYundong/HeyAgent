@@ -16,7 +16,7 @@ import {
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
 import type { PendingToolCalls } from "../db/schema.js"
-import { notifyUsers, TODOS_LINK } from "./notify.js"
+import { humanItemLink, notifyUsers } from "./notify.js"
 import type { Tx } from "./queue.js"
 import { appendEvent, writeAudit } from "./records.js"
 import { settleWorkItemInTx } from "./dispatch/settle.js"
@@ -444,6 +444,7 @@ export async function notifyAssignee(
   db: Db,
   item: {
     id: string
+    kind?: string
     title: string
     summary: string
     assigneeId: string
@@ -455,7 +456,8 @@ export async function notifyAssignee(
     userIds: [item.assigneeId],
     title: `等你处理：${item.title}`,
     body: item.summary,
-    link: TODOS_LINK,
+    // 挡住运行的事打开那次运行（处理面板在详情顶上）；记忆审核、技能修改不挡运行，打开这件事本身
+    link: humanItemLink(item.kind === "memory" || item.kind === "skill" ? item.id : (item.sessionId ?? item.id)),
     taskId: item.taskId,
     sessionId: item.sessionId,
   })

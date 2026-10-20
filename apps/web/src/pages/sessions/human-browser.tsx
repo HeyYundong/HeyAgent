@@ -1,17 +1,18 @@
-// 「登录」类要人办的事（遇到验证码或登录页，M2）：截图 + 去浏览器里处理。
+// 「登录」类要人办的事（遇到验证码或登录页，M2）：截图 + 去浏览器里处理。是处理面板（human-item.tsx）里的一段。
 // - 运行的 Chrome 还保留着（browser.sessionBrowser 的 open）：打开它的远程画面处理，好了点「已处理好了」，同一个 Chrome 接着跑；
 // - 过了保留时间已经关了：用 browser.openForLogin(profileId, accountId) 新开一个，处理好、关掉（关就保存），再点「已处理好了」。
 import * as React from "react"
 import { MonitorIcon } from "lucide-react"
 import type { HumanItem } from "@heyagent/shared"
 
-import { DetailSection } from "@/components/shell/simple-page"
 import { Button } from "@/components/ui/button"
 import { Spinner } from "@/components/ui/spinner"
 import { useBrowsersQuery } from "@/lib/data"
 import { usePlatformName } from "@/pages/browsers/data"
 import { LoginBrowserDialog, OpenLoginButton, useOpenLogin } from "@/pages/browsers/login-browser"
 import { SessionBrowserDialog, useSessionBrowser } from "@/pages/tasks/run-browser"
+
+import { Part } from "./parts"
 
 type Info = NonNullable<HumanItem["detail"]["browser"]>
 
@@ -30,7 +31,7 @@ export function HumanBrowserSection({ item, info, canAct, onResolved }: { item: 
   const open = Boolean(browser?.open && browser.browserId)
 
   return (
-    <DetailSection title="远程画面" description={profile ? `Chrome 配置「${profile.name}」` : undefined}>
+    <Part title="远程画面" description={profile ? `Chrome 配置「${profile.name}」` : undefined}>
       <div className="flex flex-col gap-3">
         {info.screenshotFileId && (
           <a href={`/api/files/${info.screenshotFileId}`} target="_blank" rel="noreferrer" className="block border" aria-label="遇到时的截图（点开看大图）">
@@ -73,6 +74,6 @@ export function HumanBrowserSection({ item, info, canAct, onResolved }: { item: 
           onClose={login.clear}
         />
       )}
-    </DetailSection>
+    </Part>
   )
 }

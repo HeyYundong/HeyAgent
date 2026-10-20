@@ -44,7 +44,7 @@ export function SkillsLesson() {
               title={`agent 提议改这本：${skill.suggestion.summary}`}
               text={
                 <>
-                  手册不会被 agent 直接改，提议进待办等人审核。 <TextLink to={href("todos", { id: skill.id })}>看这张卡 →</TextLink>
+                  手册不会被 agent 直接改，提议进「会话」的「等人处理」等人审核。 <TextLink to={href("sessions", { status: "human", id: skill.id })}>看这件事 →</TextLink>
                 </>
               }
             />

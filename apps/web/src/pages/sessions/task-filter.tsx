@@ -1,7 +1,7 @@
-// 按任务筛 session：下拉里是出现过 session 的任务（最近跑过的在前），可以按任务名 / 编号搜。
+// 按任务筛 session：下拉里是全部任务（新建的在前），可以按任务名 / 编号搜。会话列表在服务端翻页，前端没有全部 session，所以不写每个任务跑了几次。
 // 第一项「全部任务」= 不筛。基于 @/components/ui/combobox（Base UI），和 model-combobox 同一写法。
 import * as React from "react"
-import { findById, type SessionSummary, type TaskDef } from "@heyagent/shared"
+import { findById, type TaskDef } from "@heyagent/shared"
 
 import { Combobox, ComboboxContent, ComboboxEmpty, ComboboxInput, ComboboxItem, ComboboxList } from "@/components/ui/combobox"
 
@@ -9,29 +9,23 @@ interface Option {
   /** 任务编号；"all" = 全部任务 */
   value: string
   label: string
-  count: number
 }
 
 interface TaskFilterProps {
   value: string
   onValueChange: (value: string) => void
-  /** 全部 session（已排好序），从里面数出有哪些任务、各跑了几次 */
-  runs: SessionSummary[]
   tasks: TaskDef[]
 }
 
 const sameOption = (a: Option, b: Option) => a.value === b.value
 
-export function TaskFilter({ value, onValueChange, runs, tasks }: TaskFilterProps) {
+export function TaskFilter({ value, onValueChange, tasks }: TaskFilterProps) {
   const options = React.useMemo(() => {
-    const counts = new Map<string, number>()
-    for (const run of runs) counts.set(run.taskId, (counts.get(run.taskId) ?? 0) + 1)
-    // 任务删了的 session 也能筛，名字就写编号
-    const each = [...counts].map(([id, count]) => ({ value: id, label: findById(tasks, id)?.title ?? id, count }))
-    return [{ value: "all", label: "全部任务", count: runs.length }, ...each]
-  }, [runs, tasks])
-  // 地址里带的任务没有 session 时也显示出来，让人知道筛的是哪个
-  const selected = options.find((option) => option.value === value) ?? { value, label: findById(tasks, value)?.title ?? value, count: 0 }
+    const each = tasks.toSorted((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)).map((task) => ({ value: task.id, label: task.title }))
+    return [{ value: "all", label: "全部任务" }, ...each]
+  }, [tasks])
+  // 地址里带的任务删了也显示出来（名字写编号），让人知道筛的是哪个
+  const selected = options.find((option) => option.value === value) ?? { value, label: findById(tasks, value)?.title ?? value }
 
   return (
     <Combobox<Option>
@@ -55,9 +49,7 @@ export function TaskFilter({ value, onValueChange, runs, tasks }: TaskFilterProp
             <ComboboxItem key={option.value} value={option}>
               <span className="flex min-w-0 flex-col">
                 <span className="truncate">{option.label}</span>
-                <span className="truncate tabular-nums text-muted-foreground">
-                  {option.value === "all" ? `${option.count} 个 session` : `${option.value} · ${option.count} 个 session`}
-                </span>
+                {option.value !== "all" && <span className="truncate text-muted-foreground">{option.value}</span>}
               </span>
             </ComboboxItem>
           )}

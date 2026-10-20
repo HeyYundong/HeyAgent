@@ -85,7 +85,7 @@ export function CheckpointLesson() {
       <DetailSection
         title="三方 AI 验收"
         description={`执行用 ${modelName(run.modelId)}，验收用 ${modelName(modelDefaults.verify)}：不许同一家，不会自己说自己好`}
-        action={verifyCard && <TextLink to={href("todos", { id: verifyCard.id })}>待办里的验收卡 →</TextLink>}
+        action={verifyCard && <TextLink to={href("sessions", { status: "human", id: verifyCard.id })}>「等人处理」里的验收争议 →</TextLink>}
       >
         {run.verification ? (
           <ItemGroup className="gap-1">

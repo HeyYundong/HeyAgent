@@ -30,7 +30,7 @@ export async function updateMemory(ctx: WriteCtx, input: MemoryInput & { id: str
   assertCan(ctx.actor, "config.manage", {}, "只有主管能修改记忆")
   return ctx.db.transaction(async (tx) => {
     const before = await loadMemory(tx, input.id)
-    if (before.status === "pending") throw conflict("这条记忆还在等审核，先在「待办」里批准或拒绝")
+    if (before.status === "pending") throw conflict("这条记忆还在等审核，先批准或拒绝（这里或「会话」的「等人处理」里）")
     await tx.update(t.memories).set({ content: input.content, appliesTo: input.appliesTo }).where(eq(t.memories.id, input.id))
     await audit(tx, ctx.actor.id, "memory.update", "memories", input.id, { changed: (["content", "appliesTo"] as const).filter((key) => before[key] !== input[key]) })
     return { id: input.id }
@@ -63,7 +63,7 @@ export async function archiveMemory(ctx: WriteCtx, input: { id: string }) {
   assertCan(ctx.actor, "config.manage", {}, "只有主管能归档记忆")
   return ctx.db.transaction(async (tx) => {
     const before = await loadMemory(tx, input.id)
-    if (before.status === "pending") throw conflict("这条记忆还在等审核，先在「待办」里批准或拒绝")
+    if (before.status === "pending") throw conflict("这条记忆还在等审核，先批准或拒绝（这里或「会话」的「等人处理」里）")
     await tx.update(t.memories).set({ status: "archived" }).where(eq(t.memories.id, input.id))
     await audit(tx, ctx.actor.id, "memory.archive", "memories", input.id)
     return { id: input.id }

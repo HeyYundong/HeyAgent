@@ -4,16 +4,20 @@ import { liveQueriesById, liveQueriesByTable, liveTargets } from "../src/index.j
 
 describe("实时推送要重新拉的查询", () => {
   it("运行的过程变了：列表（摘要）整个失效，运行详情只失效推来的那个 session", () => {
-    expect(liveTargets({ table: "session_events", id: "R-1" })).toEqual({ paths: ["sessions.list"], byId: [{ path: "sessions.get", id: "R-1" }] })
+    expect(liveTargets({ table: "session_events", id: "R-1" })).toEqual({ paths: ["sessions.list", "sessions.page"], byId: [{ path: "sessions.get", id: "R-1" }] })
     expect(liveTargets({ table: "sessions", id: "R-1" })).toEqual({
-      paths: ["sessions.list", "work.list", "work.get", "work.taskStats"],
+      paths: ["sessions.list", "sessions.page", "work.list", "work.get", "work.taskStats"],
       byId: [{ path: "sessions.get", id: "R-1" }],
     })
   })
 
   it("checkpoint_records 推的是检查点 id，对不上 session：运行详情全部失效；没有 id 的也是", () => {
-    expect(liveTargets({ table: "checkpoint_records", id: "42" })).toEqual({ paths: ["sessions.list", "sessions.get"], byId: [] })
-    expect(liveTargets({ table: "session_events", id: null })).toEqual({ paths: ["sessions.list", "sessions.get"], byId: [] })
+    expect(liveTargets({ table: "checkpoint_records", id: "42" })).toEqual({ paths: ["sessions.list", "sessions.page", "sessions.get"], byId: [] })
+    expect(liveTargets({ table: "session_events", id: null })).toEqual({ paths: ["sessions.list", "sessions.page", "sessions.get"], byId: [] })
+  })
+
+  it("没处理的事变了：会话页的一页也重新拉（只看等我处理按它筛）", () => {
+    expect(liveTargets({ table: "human_items", id: "ap-1" })?.paths).toContain("sessions.page")
   })
 
   it("不认识的表、\"*\"：全部重新拉", () => {

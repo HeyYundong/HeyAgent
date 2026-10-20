@@ -135,7 +135,7 @@ export async function resumeNowImpl(
     throw new EngineError(
       "BAD_REQUEST",
       session.status === "needs_human"
-        ? "这次运行在等人处理，先去待办里处理那件事"
+        ? "这次运行在等人处理，先处理那件事（在会话页打开这次运行，最上面就是）"
         : "这次运行没有在等待"
     )
   const resumed = await resume(db, {

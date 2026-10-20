@@ -86,8 +86,8 @@ interface PageFrameProps {
   isEmpty?: boolean
   /** 空状态时显示什么（用 EmptyState） */
   empty: React.ReactNode
-  /** 加载中的骨架样式：左边列表右边详情（默认）/ 卡片墙 / 看板 / 表格 */
-  skeleton?: "list" | "grid" | "board" | "table"
+  /** 加载中的骨架样式：左边列表右边详情（默认）/ 卡片墙 / 表格 */
+  skeleton?: "list" | "grid" | "table"
   children: React.ReactNode
 }
 
@@ -105,7 +105,6 @@ export function PageFrame({ header, queries, isEmpty = false, empty, skeleton = 
         <MasterDetail hasSelection={false} list={<ListSkeleton />} detail={<DetailSkeleton />} />
       )}
       {state === "loading" && skeleton === "grid" && <GridSkeleton />}
-      {state === "loading" && skeleton === "board" && <BoardSkeleton />}
       {state === "loading" && skeleton === "table" && <TableSkeleton />}
       {state === "error" && (
         <Alert variant="destructive">
@@ -347,20 +346,6 @@ function GridSkeleton() {
     <div className="grid gap-4 md:grid-cols-2">
       {Array.from({ length: 4 }, (_, index) => (
         <Skeleton key={index} className="h-48 w-full" />
-      ))}
-    </div>
-  )
-}
-
-function BoardSkeleton() {
-  return (
-    <div className="flex gap-4 overflow-x-auto">
-      {Array.from({ length: 5 }, (_, index) => (
-        <div key={index} className="flex w-72 shrink-0 flex-col gap-2">
-          <Skeleton className="h-6 w-24" />
-          <Skeleton className="h-28 w-full" />
-          <Skeleton className="h-28 w-full" />
-        </div>
       ))}
     </div>
   )

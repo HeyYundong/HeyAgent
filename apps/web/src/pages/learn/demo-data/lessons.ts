@@ -39,7 +39,7 @@ export const lessonGroups: { label: string; items: { id: LessonId; title: string
     items: [
       { id: "task", title: "任务和 session：挂起后接着跑", hint: "等的时候挂起，等到了继续同一个 session" },
       { id: "checkpoint", title: "步骤、检查点和三方验收", hint: "建任务时怎么写，最后谁来核对" },
-      { id: "todo", title: "待办看板：每次运行一张卡", hint: "卡片怎么在五列之间移动" },
+      { id: "todo", title: "会话：每次运行在哪个状态", hint: "五个状态，要人办的事在「等人处理」" },
     ],
   },
   {
@@ -93,7 +93,7 @@ export const loopParts: LoopPart[] = [
     stages: ["task_start", "post_tool"],
     notes: {
       task_start: "读入建任务时选的那几条记忆",
-      post_tool: "调「提议记忆」，进待办等人审核",
+      post_tool: "调「提议记忆」，进「等人处理」等人审核",
     },
   },
   {
@@ -151,28 +151,28 @@ export const sessionTaskIds = ["T-1024", "T-1035", "T-1040"]
 
 export const checkpointTaskIds = ["T-1035", "T-1031", "T-1019"]
 
-// ---------- todo：每一列讲什么 ----------
+// ---------- todo（会话的五个状态）：每个状态讲什么 ----------
 
 export const columnLessons: Record<BoardColumn, { comes: string; goes: string }> = {
   running: {
-    comes: "任务启动、定时到点，或者挂起的 session 等到了，卡片进这一列。",
-    goes: "要等就挂起，移到「等待中」；规则拦下要人办的事，就移到「等人处理」；agent 说做完了，移到「验收中」。",
+    comes: "任务启动、定时到点、人加的待办到点，或者挂起的 session 等到了，运行就在「执行中」。",
+    goes: "要等就挂起，换到「等待中」；规则拦下要人办的事，换到「等人处理」；agent 说做完了，换到「验收中」。",
   },
   needs_human: {
-    comes: "每件要人办的事单独一张卡：审批、验收没过、登录或验证码、记忆审核、技能修改。侧边栏「待办」上的数字，就是这一列里分给你的卡。",
-    goes: "你办完，卡片消失；被它挡住的 session 继续跑，还是同一个 session。",
+    comes: "运行遇到要人办的事（审批、验收争议、登录或验证码）就到这里；记忆审核、技能修改这类不挡运行的事也列在这里。侧边栏「会话」上的数字，就是分给你的事（主管算全部）。",
+    goes: "点开这一行，在详情顶上处理完，被挡住的 session 继续跑，还是同一个 session。",
   },
   waiting: {
-    comes: "session 已挂起。卡上写清楚在等什么、什么时候继续。人加的待办也放在这一列。",
-    goes: `等到回复或到点，卡片移回「执行中」，继续原来的 session，不会新开一个。只等事件的最多等 ${EVENT_FALLBACK_DAYS} 天，到期提醒负责人。`,
+    comes: "session 已挂起，写清楚在等什么、什么时候继续。",
+    goes: `等到回复或到点，回到「执行中」，继续原来的 session，不会新开一个。只等事件的最多等 ${EVENT_FALLBACK_DAYS} 天，到期提醒负责人。`,
   },
   verifying: {
     comes: "agent 说做完了。另一家的模型逐条核对检查点，没做完的反问执行 agent。",
-    goes: "核对通过移到「已结束」，结果记办成；说不清的，「等人处理」里多一张验收卡。",
+    goes: "核对通过换到「已结束」，结果记办成；说不清的，运行换到「等人处理」，等人判验收争议。",
   },
   done: {
-    comes: "验收通过的运行。定时任务每触发一次是新的一次运行，所以每天都会多一张卡。",
-    goes: "不再移动。完整过程在「会话」页能看到（任务详情头部点「会话」）。",
+    comes: "跑完的运行，写着结果（办成 / 没办成）。定时任务每触发一次是新的一次运行，所以每天都会多一行。",
+    goes: "不再变。点开看完整过程（任务详情头部点「会话」只看这个任务的）。",
   },
 }
 
@@ -211,7 +211,7 @@ export interface RuleScenario {
   /** 命中的规则 → 这次具体怎么做 */
   hits: Record<string, string>
   result: string
-  /** 待办里对应的那张卡 */
+  /** 「等人处理」里对应的那件事 */
   todoId?: string
   /** 本来能管这件事、但建任务时没选的规则 */
   missing?: string
@@ -224,7 +224,7 @@ export const ruleScenarios: RuleScenario[] = [
     taskId: "T-1024",
     call: "agent 要把比价摘要用 WhatsApp 发给 Nova Home",
     hits: { "rl-wa-confirm": "消息先不发，把原文交给 Emily 批准" },
-    result: "待办「等人处理」多一张卡给 Emily，session 挂起。Emily 批准后消息才发出，继续同一个 session。",
+    result: "「等人处理」里多一件事给 Emily，session 挂起。Emily 批准后消息才发出，继续同一个 session。",
     todoId: "ap-01",
   },
   {
@@ -233,7 +233,7 @@ export const ruleScenarios: RuleScenario[] = [
     taskId: "T-1019",
     call: "agent 要在 1688 向义乌恒达下 3 套打样单，¥168",
     hits: { "rl-order-approval": "拦下，交给运营主管林舟审批" },
-    result: "林舟在待办里批准之前，钱不会花出去。",
+    result: "林舟在「等人处理」里批准之前，钱不会花出去。",
     todoId: "ap-02",
   },
   {
@@ -328,7 +328,7 @@ export const modelRoles: { id: ModelRole; label: string; what: string }[] = [
 
 // ---------- 讲解文案：从共享数据拼出演示里的一句话 ----------
 
-/** 卡片上的一句状态说明，和待办页一致 */
+/** 一条的一句状态说明，和会话页一致 */
 export function cardLine(card: BoardCard): { title: string; text: string; badge: string } {
   if (card.kind === "human") {
     const { item } = card

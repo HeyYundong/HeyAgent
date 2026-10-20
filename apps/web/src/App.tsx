@@ -23,7 +23,6 @@ import { isUnauthorized, queryClient, trpc } from "@/lib/trpc"
 // 按页面懒加载：某个页面出错不会拖垮整个控制台
 const PAGES: Record<PageId, React.LazyExoticComponent<() => React.ReactNode>> = {
   tasks: lazy(() => import("@/pages/tasks")),
-  todos: lazy(() => import("@/pages/todos")),
   sessions: lazy(() => import("@/pages/sessions")),
   work: lazy(() => import("@/pages/work")),
   gallery: lazy(() => import("@/pages/gallery")),

@@ -485,11 +485,9 @@ function StatusAlert({ item, run, canManage }: { item: WorkItemDetail; run?: Ses
         <AlertTitle>等人处理：{human ? `${human.title}（${staffName(human.assigneeId)}）` : runNow(run).text}</AlertTitle>
         <AlertDescription>
           运行 {run.id} 挂起了，不占名额；处理完继续同一个 session，单还是「在办」。
-          {human && (
-            <a href={href("todos", { id: human.id })} className="ml-1 font-medium text-foreground underline underline-offset-4">
-              去待办处理 →
-            </a>
-          )}
+          <a href={href("sessions", { status: "human", id: run.id })} className="ml-1 font-medium text-foreground underline underline-offset-4">
+            去处理 →
+          </a>
         </AlertDescription>
       </Alert>
     )

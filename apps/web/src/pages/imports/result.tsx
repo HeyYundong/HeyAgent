@@ -156,7 +156,7 @@ export function ImportedView({ detail }: { detail: ImportDetail }) {
 }
 
 function FollowUpRow({ importId, todo }: { importId: string; todo: ImportFollowUp }) {
-  const runNow = useAction(trpc.engine.runNow.mutationOptions(), { success: ({ sessionId }) => `开始运行了（${sessionId}），在「待办」看板和任务详情里能看到`, errorTitle: "没能开始运行" })
+  const runNow = useAction(trpc.engine.runNow.mutationOptions(), { success: ({ sessionId }) => `开始运行了（${sessionId}），在「会话」页和任务详情里能看到`, errorTitle: "没能开始运行" })
   const attach = useAction(trpc.imports.attachMcpTools.mutationOptions(), { success: "工具选进任务了", errorTitle: "工具没选进任务" })
   // 派活第二期：能被派活的任务，「试跑」换成「派一张试试」，链接到派活页并打开「派一张」（#/work?task=<id>&new=1）
   const dispatchTry = todo.kind === "try_run" && !todo.action && Boolean(todo.link?.startsWith("#/work"))

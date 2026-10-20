@@ -20,7 +20,8 @@ export interface NotifyInput {
 
 export const sessionLink = (taskId: string, sessionId: string) =>
   `#/tasks?id=${encodeURIComponent(taskId)}&run=${encodeURIComponent(sessionId)}`
-export const TODOS_LINK = "#/todos"
+/** 「等你处理」的通知链接：会话页「等人处理」，带上运行编号（挡住运行的事）或这件事的编号（记忆审核、技能修改），打开就能处理 */
+export const humanItemLink = (id?: string | null) => `#/sessions?status=human${id ? `&id=${encodeURIComponent(id)}` : ""}`
 
 /** 站内通知；推送失败不影响站内通知（只记日志） */
 export async function notifyUsers(

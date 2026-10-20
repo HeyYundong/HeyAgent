@@ -1,4 +1,4 @@
-// 某次运行的 session 详情：标题卡 + 结果（结束后，run-outcome.tsx：原因、谁定的、复核报告、改结果）/ 检查点 / 验收 / 总结和记忆（结束后）/ agent 的步骤 / 空间文件 / 过程。
+// 某次运行的 session 详情：标题卡 + 没处理的「要人办的事」（每件一张处理面板，sessions/human-item.tsx，就在这里批 / 拒 / 登录）+ 结果（结束后，run-outcome.tsx：原因、谁定的、复核报告、改结果）/ 检查点 / 验收 / 总结和记忆（结束后）/ agent 的步骤 / 空间文件 / 过程。
 // 右上角「空间文件」（run-space.tsx）弹窗按来源、名字筛这次运行的全部文件。
 // M3：过程里标出规则命中、agent 写下步骤（plan.set）、上下文压缩；验收逐条显示结论和理由；agent 的步骤可以「存为任务步骤」（tasks.saveStepsFromSession）。
 // 派活：meta 前面写怎么开始的（派活触发写清哪张单、谁派的）；被派来的加「派来的活」，派过活的加「派出去的活」（docs/dev/dispatch.md 9.4 节）。
@@ -35,7 +35,9 @@ import { ParamsTable, WorkItemBadge, shortName, timeText } from "@/pages/work/pa
 
 import { VerificationReport } from "./verification"
 import { CheckpointList, Elapsed, RunStatusBadge, StepList, WaitingAlert, checkpointSummary, focusedCheckpoint, money } from "./parts"
-import { CancelRunDialog, isActive, ResumeButton, SessionFiles } from "./run-actions"
+import { HumanItemPanel } from "@/pages/sessions/human-item"
+
+import { CancelRunDialog, eventOf, FireEventButton, isActive, ResumeButton, SessionFiles } from "./run-actions"
 import { RunBrowserButton } from "./run-browser"
 import { RunSpaceButton } from "./run-space"
 import { RunDigestSection } from "./run-digest"
@@ -56,6 +58,7 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionSummary }
   const { modelName } = useModels()
   const [cancelling, setCancelling] = React.useState(false)
   const detail = useSessionQuery(run?.id)
+  const openItems = useHumanItems().filter((item) => run && item.runId === run.id)
   if (!run) return <EmptyState icon={<SearchXIcon />} title="找不到这次运行" description="可能是网址里的运行编号写错了。" />
   const events = detail.data?.events
   const toolCalls = events?.filter((event) => event.kind === "tool").length ?? 0
@@ -64,6 +67,7 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionSummary }
   const error = run.status === "failed" && run.lastError ? { ...run.lastError, detail: events?.findLast((event) => event.kind === "error")?.detail } : undefined
   const ended = isRunEnded(run.status)
   const canManage = can(user, "task.manage", { ownerId: task.ownerId })
+  const waitingEvent = run.status === "waiting" ? eventOf(run.waiting?.trigger) : undefined
   return (
     <DetailPanel
       title={`${run.id} · ${task.title}`}
@@ -73,12 +77,15 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionSummary }
         <RunSpaceButton run={run} />
         <RunBrowserButton run={run} />
         {run.status === "waiting" && can(user, "session.resume", { taskOwnerId: task.ownerId }) && <ResumeButton run={run} size="sm" />}
+        {/* 在等事件的，主管可以手动触发这个事件（和外部系统推来一样） */}
+        {waitingEvent && user.isAdmin && <FireEventButton event={waitingEvent} size="sm" />}
         {isActive(run) && canManage && (
           <Button variant="outline" size="sm" onClick={() => setCancelling(true)}><CircleStopIcon data-icon="inline-start" />取消运行</Button>
         )}
       </>}
     >
       <CancelRunDialog key={`${run.id}-${cancelling}`} run={run} open={cancelling} onOpenChange={setCancelling} />
+      {openItems.map((item) => <HumanItemPanel key={item.id} item={item} inRun />)}
       <WaitingAlert run={run} />
       {error && (
         <Alert variant="destructive">
@@ -375,13 +382,11 @@ const VERDICT = { passed: "通过", asking: "在反问", disputed: "有争议，
 
 function VerificationSection({ run, verification }: { run: SessionSummary; verification: Verification }) {
   const { modelName, defaults } = useModels()
-  const item = useHumanItems().find((human) => human.runId === run.id && human.kind === "verify")
   const model = modelName(verification.modelId ?? defaults.verify)
   return (
     <DetailSection
       title={`验收 · ${VERDICT[verification.status]}`}
       description={`三方 AI（${model}，不参与执行）逐条核对检查点${verification.round ? ` · 第 ${verification.round} 轮` : ""} · ${eventTimeText(verification.at, run)}`}
-      action={item && <Button variant="outline" size="sm" nativeButton={false} render={<a href={href("todos", { id: item.id })} />}>去待办处理 →</Button>}
     >
       <VerificationReport verification={verification} />
     </DetailSection>
@@ -390,7 +395,7 @@ function VerificationSection({ run, verification }: { run: SessionSummary; verif
 
 // ---------- 派活 ----------
 
-const SOURCE_TEXT: Record<string, string> = { manual: "手动触发", cron: "定时触发", todo: "待办触发", event: "外部事件触发", dispatch: "派活触发" }
+const SOURCE_TEXT: Record<string, string> = { manual: "手动触发", cron: "定时触发", todo: "人加的待办触发", event: "外部事件触发", dispatch: "派活触发" }
 
 /** meta 一行：怎么开始的（派活触发写清是哪张单、谁派的，两个都是链接）+ 原来的模型、token、花费、时间 */
 function RunMeta({ run, rest }: { run: SessionSummary; rest: string }) {

@@ -1,5 +1,5 @@
 // 三方验收报告（M3）：总结论、每条检查点的结论和理由、负责人怎么处理的、验收问答。
-// 运行详情的「验收」卡和待办里「验收争议」的详情都用它（数据都是 Verification）。
+// 运行详情的「验收」卡和「验收争议」的处理面板都用它（数据都是 Verification）。
 import { CircleCheckIcon, CircleHelpIcon, CircleXIcon, GavelIcon } from "lucide-react"
 import { fmtShort, type Verification, type VerifyVerdict } from "@heyagent/shared"
 

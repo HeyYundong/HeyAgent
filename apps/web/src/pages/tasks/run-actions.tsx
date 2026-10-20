@@ -1,9 +1,9 @@
 // 任务和运行的引擎操作（M1 P3 接 engine-router）：立即运行（可带附件）、立即继续、取消、任务附件、这次运行的文件。
-// 任务抽屉、运行详情、Session 页的抽屉、待办看板都用这里的组件，权限照 shared 的 can()（后端也按同样的规则拦）。
+// 任务抽屉、运行详情、会话页的抽屉、任务的「什么时候跑」都用这里的组件，权限照 shared 的 can()（后端也按同样的规则拦）。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
-import { CircleStopIcon, PlayIcon } from "lucide-react"
-import { isRunEnded, type SessionSummary, type TaskDef, type UploadedFile } from "@heyagent/shared"
+import { CircleStopIcon, PlayIcon, ZapIcon } from "lucide-react"
+import { isRunEnded, type SessionSummary, type TaskDef, type Trigger, type UploadedFile } from "@heyagent/shared"
 
 import { FileList, UploadButton } from "@/components/files"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
@@ -27,12 +27,32 @@ export function useStartRun(task: TaskDef) {
   )
 }
 
-/** 立即继续（只对「挂起等待」的运行；「等人处理」的要先去待办里处理那件事） */
+/** 立即继续（只对「挂起等待」的运行；「等人处理」的要先在运行详情顶上处理那件事） */
 export function ResumeButton({ run, size = "default" }: { run: SessionSummary; size?: "sm" | "default" }) {
   const resume = useAction(trpc.engine.resumeNow.mutationOptions(), { success: `${run.id} 已继续，接着刚才的地方做`, errorTitle: "没能继续" })
   return (
     <Button size={size} disabled={resume.isPending} onClick={() => resume.mutate({ sessionId: run.id })}>
       {resume.isPending ? <Spinner data-icon="inline-start" /> : <PlayIcon data-icon="inline-start" />}立即继续
+    </Button>
+  )
+}
+
+/** 在等的事件：只等事件、或时间和事件先到先继续 */
+export const eventOf = (trigger?: Trigger) => (trigger && "event" in trigger ? trigger.event : undefined)
+
+/** 主管手动触发一个事件（engine.fireEvent，和外部系统 POST /api/events 一样）：在等它的 session 继续、等它的待办触发 */
+export function useFireEvent(event: string) {
+  return useAction(trpc.engine.fireEvent.mutationOptions(), {
+    success: (result) => `已触发「${event}」：继续了 ${result.resumedSessionIds.length} 个 session，触发了 ${result.firedTodoIds.length} 条待办`,
+    errorTitle: "没能触发事件",
+  })
+}
+
+export function FireEventButton({ event, size = "default" }: { event: string; size?: "sm" | "default" }) {
+  const fire = useFireEvent(event)
+  return (
+    <Button variant="outline" size={size} disabled={fire.isPending} onClick={() => fire.mutate({ event })}>
+      {fire.isPending ? <Spinner data-icon="inline-start" /> : <ZapIcon data-icon="inline-start" />}手动触发事件
     </Button>
   )
 }
@@ -46,7 +66,7 @@ export function CancelRunDialog({ run, open, onOpenChange }: { run: SessionSumma
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>取消运行 {run.id}？</AlertDialogTitle>
-          <AlertDialogDescription>取消后这次运行标为出错、结果记没办成，不能恢复；在等的事、没处理的待办一起作废。已经做完的操作（发出去的消息、存下的文件）不会撤回。</AlertDialogDescription>
+          <AlertDialogDescription>取消后这次运行标为出错、结果记没办成，不能恢复；在等的事、没处理的要人办的事一起作废。已经做完的操作（发出去的消息、存下的文件）不会撤回。</AlertDialogDescription>
         </AlertDialogHeader>
         <Field>
           <FieldLabel htmlFor={`cancel-reason-${run.id}`}>原因（可以不填）</FieldLabel>
