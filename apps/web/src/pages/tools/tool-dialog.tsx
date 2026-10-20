@@ -8,10 +8,13 @@ import { ClipboardPasteIcon, KeyRoundIcon, PlugZapIcon } from "lucide-react"
 import {
   fmtShort,
   hasPlainSecret,
+  httpParamsOf,
   httpToolFormSchema,
   KEEP_SECRET_MASK,
   mcpServerFormSchema,
   riskLabel,
+  syncHttpParams,
+  type HttpParam,
   type HttpToolForm,
   type McpServer,
   type McpServerForm,
@@ -20,6 +23,7 @@ import {
   type Tool,
 } from "@heyagent/shared"
 
+import { HelpTip } from "@/components/shell/simple-page"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -49,6 +53,9 @@ export type Server = McpServer
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"].map((m) => ({ value: m, label: m }))
 const RISKS = (Object.keys(riskLabel) as Risk[]).map((r) => ({ value: r, label: riskLabel[r] }))
 const toLines = (pairs: [string, string][]) => pairs.map(([k, v]) => `${k}: ${v}`).join("\n")
+/** 多行「名字: 值」→ 请求头对象（没有冒号的行不算） */
+const toHeaders = (text: string) =>
+  Object.fromEntries(text.split("\n").filter((l) => l.includes(":")).map((l) => [l.slice(0, l.indexOf(":")).trim(), l.slice(l.indexOf(":") + 1).trim()]))
 
 /** tool 不传、server 也不传就是新建；编辑 MCP 工具或服务器时传 server（和它已加入的工具） */
 type ToolDialogProps = { tool?: Tool; server?: Server; serverTools: Tool[]; saved: Record<string, SavedSecret>; onClose: () => void }
@@ -286,7 +293,13 @@ function HttpForm({ tool, saved, onDone }: { tool?: Tool; saved: Record<string, 
   const [replacing, setReplacing] = React.useState<string[]>([]) // 点了「换一个」的已保存密钥
   const [url, headers, body, values] = useWatch({ control: form.control, name: ["url", "headers", "body", "secrets"] })
   const t: Template = { url: url ?? "", headers: headers ?? "", body: body ?? "" }
-  const { params, secrets } = placeholders(`${t.url} ${t.headers} ${t.body}`)
+  const { secrets } = placeholders(`${t.url} ${t.headers} ${t.body}`)
+  // 参数清单按模板现推：declared 只记存过的和人改过的设置（模板里暂时删掉的也留着，加回来设置还在）
+  const [declared, setDeclared] = React.useState<HttpParam[]>(() => (http ? httpParamsOf(http) : []))
+  const syncParams = (url: string, headerText: string, bodyText: string) => syncHttpParams({ url, headers: toHeaders(headerText), body: bodyText.trim() || undefined }, declared).params
+  const httpParams = syncParams(t.url, t.headers, t.body)
+  const changeParam = (name: string, patch: Partial<HttpParam>) =>
+    setDeclared((prev) => [...prev.filter((p) => p.name !== name), { ...(prev.find((p) => p.name === name) ?? httpParams.find((p) => p.name === name)!), ...patch }])
   const leaks = moveSecrets(t, secrets).moved
   const stored = (n: string) => saved[n] && !replacing.includes(n)
   const missing = secrets.filter((n) => !stored(n) && !values?.[n]?.trim())
@@ -338,10 +351,9 @@ function HttpForm({ tool, saved, onDone }: { tool?: Tool; saved: Record<string, 
       form.setError("secrets", { message: `还没填值：${missing.join("、")}` })
       return
     }
-    const pairs = v.headers.split("\n").filter((l) => l.includes(":")).map((l) => [l.slice(0, l.indexOf(":")).trim(), l.slice(l.indexOf(":") + 1).trim()] as const)
     // 只交这次新填了值、模板里还在用的密钥
     const newSecrets = Object.fromEntries(secrets.filter((n) => v.secrets[n]?.trim()).map((n) => [n, v.secrets[n]!.trim()]))
-    const input = { name: v.name, description: v.description, http: { method: v.method, url: v.url, headers: Object.fromEntries(pairs), body: v.body.trim() || undefined }, risk: v.risk, secrets: newSecrets }
+    const input = { name: v.name, description: v.description, http: { method: v.method, url: v.url, headers: toHeaders(v.headers), body: v.body.trim() || undefined, params: syncParams(v.url, v.headers, v.body) }, risk: v.risk, secrets: newSecrets }
     if (tool) {
       if (await update.submit({ ...input, id: tool.id })) onDone()
       return
@@ -400,9 +412,10 @@ function HttpForm({ tool, saved, onDone }: { tool?: Tool; saved: Record<string, 
         <Field data-invalid={!!leakIn("body")}>
           <FieldLabel htmlFor="tool-body">请求体模板</FieldLabel>
           <Textarea id="tool-body" rows={5} className="font-mono" placeholder={T.bodyPlaceholder} aria-invalid={!!leakIn("body")} {...form.register("body")} />
-          <FieldDescription>{`${T.bodyHint}认出的参数：${params.join("、") || "无"}。`}</FieldDescription>
+          <FieldDescription>{T.bodyHint}</FieldDescription>
           <FieldError>{leakIn("body")}</FieldError>
         </Field>
+        <HttpParams params={httpParams} descriptionOf={(name) => declared.find((p) => p.name === name)?.description ?? ""} onChange={changeParam} />
         <Field data-invalid={!!errors.secrets}>
           <FieldLabel>密钥</FieldLabel>
           {secrets.length === 0 && leaks.length === 0 && <p className="text-muted-foreground">模板里没有用到 {"{{名字}}"}，不需要密钥。</p>}
@@ -444,6 +457,46 @@ function HttpForm({ tool, saved, onDone }: { tool?: Tool; saved: Record<string, 
       </FieldGroup>
       <Footer submit={tool ? "保存" : "接入这个接口"} pending={pending} />
     </form>
+  )
+}
+
+/** 「参数」：模板里每个 {名字} 一行（类型、必填、没传就去掉、说明）。说明框显示人敲的原文，提交时 syncHttpParams 再去掉首尾空白 */
+function HttpParams({ params, descriptionOf, onChange }: { params: HttpParam[]; descriptionOf: (name: string) => string; onChange: (name: string, patch: Partial<HttpParam>) => void }) {
+  return (
+    <Field>
+      <FieldLabel className="flex items-center gap-1">
+        参数
+        <HelpTip>{T.paramsHint}</HelpTip>
+      </FieldLabel>
+      {params.length === 0 ? (
+        <p className="text-muted-foreground">模板里没有 {"{参数}"}。</p>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {params.map((param, index) => (
+            <div key={param.name} className="flex flex-col gap-2 border-l-2 pl-3">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                <span className="w-full truncate font-mono sm:w-auto sm:min-w-0 sm:flex-1" title={param.name}>{`{${param.name}}`}</span>
+                <ToggleGroup variant="outline" size="sm" spacing={0} aria-label={`${param.name} 的类型`} value={[param.type]} onValueChange={(v) => v[0] && onChange(param.name, { type: v[0] as HttpParam["type"] })}>
+                  <ToggleGroupItem value="string">文本</ToggleGroupItem>
+                  <ToggleGroupItem value="json">JSON</ToggleGroupItem>
+                </ToggleGroup>
+                <Field orientation="horizontal" className="w-auto">
+                  <Checkbox id={`http-param-${index}-required`} checked={param.required} onCheckedChange={(on) => onChange(param.name, { required: Boolean(on) })} />
+                  <FieldLabel htmlFor={`http-param-${index}-required`} className="font-normal">必填</FieldLabel>
+                </Field>
+                {!param.required && (
+                  <Field orientation="horizontal" className="w-auto">
+                    <Checkbox id={`http-param-${index}-omit`} checked={!!param.omitIfAbsent} onCheckedChange={(on) => onChange(param.name, { omitIfAbsent: Boolean(on) })} />
+                    <FieldLabel htmlFor={`http-param-${index}-omit`} className="font-normal">没传就去掉</FieldLabel>
+                  </Field>
+                )}
+              </div>
+              <Input aria-label={`${param.name} 的说明`} placeholder="给模型看：填什么" maxLength={500} value={descriptionOf(param.name)} onChange={(e) => onChange(param.name, { description: e.target.value })} />
+            </div>
+          ))}
+        </div>
+      )}
+    </Field>
   )
 }
 

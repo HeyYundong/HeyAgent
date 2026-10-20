@@ -2,10 +2,11 @@
 // 安全：模板（URL、请求头、请求体）、MCP 的命令和地址里出现明文密钥就拒绝保存，要求改成 {{名字}}；
 // 密钥值只加密存进 secrets，任何接口都不返回原文。内置工具由引擎在启动时同步，这里不能改、不能删。
 import { and, eq, inArray, sql } from "drizzle-orm"
-import { hasPlainSecret, moveSecrets, secretNameSchema, notifyChannelSchema, SETTING_KEYS, templatePlaceholders, type HttpSpec, type Risk, type Tool } from "@heyagent/shared"
+import { hasPlainSecret, moveSecrets, scanTemplate, secretNameSchema, notifyChannelSchema, SETTING_KEYS, syncHttpParams, templatePlaceholders, type HttpParam, type HttpSpec, type Risk, type Tool } from "@heyagent/shared"
 import { z } from "zod"
 
 import * as t from "../../db/schema.js"
+import { checkJsonBodyTemplate } from "../../engine/tools/http.js"
 import { assertCan, audit, badRequest, conflict, deleteSecret, findSecret, freeId, notFound, putSecret, slugOf, type DbOrTx, type Tx, type WriteCtx } from "./common.js"
 import { usedByText } from "./tasks.js"
 
@@ -40,7 +41,8 @@ export interface HttpToolFields {
   name: string
   description: string
   summary?: string
-  http: { method: HttpSpec["method"]; url: string; headers: Record<string, string>; body?: string }
+  /** params：参数清单，传了就要和模板里的 {名字} 一一对应；不传按模板推 */
+  http: { method: HttpSpec["method"]; url: string; headers: Record<string, string>; body?: string; params?: HttpParam[] }
   risk: Risk
   /** 这次新填的密钥值 */
   secrets: Record<string, string>
@@ -65,21 +67,46 @@ async function checkHttpTemplate(db: DbOrTx, input: HttpToolFields, allowMissing
   }
   const { secrets } = templatePlaceholders(`${template.url} ${template.headers} ${template.body}`)
   const invalid = secrets.filter((name) => !secretNameSchema.safeParse(name).success)
-  if (invalid.length) throw badRequest(`密钥名只能用大写字母、数字和下划线（NOTIFY_ 开头的留给通知渠道）：${invalid.join("、")}`)
+  if (invalid.length) throw badRequest(`密钥名只能用大写字母、数字和下划线（NOTIFY_ 开头的留给通知渠道）：${invalid.join("、")}（模型填的参数用一层花括号 {名字}，两层 {{名字}} 是密钥）`)
+  const params = httpParamsFor(input.http)
   const missing: string[] = []
   for (const name of secrets) {
     if (input.secrets[name]) continue
     if (!(await findSecret(db, { scope: "http_tool", refId: null, name }))) missing.push(name)
   }
   if (missing.length && !allowMissing) throw badRequest(`还没填值：${missing.join("、")}`)
-  return { used: secrets, missing }
+  return { used: secrets, missing, params }
 }
 
-function toolSpec(input: HttpToolFields): HttpSpec {
-  const headers = Object.keys(input.http.headers).length ? input.http.headers : undefined
-  const body = input.http.body?.trim() ? input.http.body : undefined
-  return { method: input.http.method, url: input.http.url, ...(headers ? { headers } : {}), ...(body ? { body } : {}) }
+/**
+ * 按模板重建参数清单并检查（保存 HTTP 工具时；右下角助手出确认卡前也先查一遍）：
+ * - 传了清单就要和模板里的 {名字} 一一对应（页面按模板自动同步），没传就按模板推；
+ * - 「没传就去掉」的参数不能在 URL 路径里（只有查询参数、请求头、JSON 字段能整段去掉）；
+ * - JSON 请求体填上样子值以后要能解析。已经存着的旧工具不查，执行时报错不发
+ */
+export function httpParamsFor(http: HttpToolFields["http"]): HttpParam[] {
+  const spec = specOf(http)
+  const { params, missing, extra } = syncHttpParams(spec, http.params ?? [])
+  if (http.params) {
+    const problems = [...missing.map((name) => `模板里的 {${name}} 不在参数清单里`), ...extra.map((name) => `参数清单里的 ${name} 模板里没有`)]
+    if (problems.length) throw badRequest(`${problems.join("；")}。参数清单要和模板里的 {名字} 一一对应`)
+  }
+  const omit = new Set(params.filter((param) => param.omitIfAbsent).map((param) => param.name))
+  const inPath = scanTemplate(http.url.split(/[?#]/)[0]!, "url").filter((each) => each.kind === "param" && omit.has(each.name))
+  if (inPath.length) throw badRequest(`${[...new Set(inPath.map((each) => `{${each.name}}`))].join("、")} 在 URL 路径里，不能设成「没传就去掉」（只有查询参数、请求头、JSON 请求体里的字段能去掉）`)
+  const bodyError = checkJsonBodyTemplate({ ...spec, params })
+  if (bodyError) throw badRequest(bodyError)
+  return params
 }
+
+function specOf(http: HttpToolFields["http"]): HttpSpec {
+  const headers = Object.keys(http.headers).length ? http.headers : undefined
+  const body = http.body?.trim() ? http.body : undefined
+  return { method: http.method, url: http.url, ...(headers ? { headers } : {}), ...(body ? { body } : {}) }
+}
+
+/** 存进库的 spec：参数清单总是存上（没传就是按模板推出来的） */
+const toolSpec = (input: HttpToolFields, params: HttpParam[]): HttpSpec => ({ ...specOf(input.http), params })
 
 const summaryOf = (input: HttpToolFields) => input.summary?.trim() || input.description.split(/[。.\n]/)[0]!.slice(0, 200) || input.name
 
@@ -103,7 +130,7 @@ async function saveHttpSecrets(tx: Tx, ctx: TxCtx, used: string[], values: Recor
  * allowMissingSecrets：导入时允许引用还没有值的密钥，返回里 missing 是缺的名字
  */
 export async function insertHttpTool(tx: Tx, ctx: TxCtx, input: HttpToolFields, options: { allowMissingSecrets?: boolean; audit?: Record<string, unknown> } = {}) {
-  const { used, missing } = await checkHttpTemplate(tx, input, options.allowMissingSecrets)
+  const { used, missing, params } = await checkHttpTemplate(tx, input, options.allowMissingSecrets)
   // 模型里的名字：没给就按 URL 路径最后一段生成，例如 …/v2/quotes → http.quotes
   const slug =
     input.http.url
@@ -114,7 +141,7 @@ export async function insertHttpTool(tx: Tx, ctx: TxCtx, input: HttpToolFields, 
       .pop()
       ?.toLowerCase() ?? "api"
   const id = await freeId(toolExists(tx), input.id ?? `http.${slug}`)
-  await tx.insert(t.tools).values({ id, name: input.name, summary: summaryOf(input), description: input.description, source: "http", http: toolSpec(input), risk: input.risk })
+  await tx.insert(t.tools).values({ id, name: input.name, summary: summaryOf(input), description: input.description, source: "http", http: toolSpec(input, params), risk: input.risk })
   const secrets = await saveHttpSecrets(tx, ctx, used, input.secrets)
   await audit(tx, ctx.actor.id, "tool.create", "tools", id, { source: "http", name: input.name, secretsSet: secrets, ...(missing.length ? { secretsMissing: missing } : {}), ...options.audit })
   return { id, missing }
@@ -132,8 +159,10 @@ export async function updateHttpTool(ctx: WriteCtx, input: HttpToolFields & { id
     const [before] = await tx.select().from(t.tools).where(eq(t.tools.id, input.id))
     if (!before) throw notFound("工具", input.id)
     if (before.source !== "http") throw badRequest(before.source === "builtin" ? "内置工具由系统提供，不能改" : "MCP 工具要编辑它所在的服务器")
-    const { used, missing } = await checkHttpTemplate(tx, input, options.allowMissingSecrets)
-    const http = toolSpec(input)
+    // 没传参数清单：原来存的清单当底子（同名参数的类型、必填、说明沿用），新参数按模板推
+    if (!input.http.params && before.http?.params) input = { ...input, http: { ...input.http, params: syncHttpParams(specOf(input.http), before.http.params).params } }
+    const { used, missing, params } = await checkHttpTemplate(tx, input, options.allowMissingSecrets)
+    const http = toolSpec(input, params)
     await tx.update(t.tools).set({ name: input.name, summary: summaryOf(input), description: input.description, http, risk: input.risk }).where(eq(t.tools.id, input.id))
     const secrets = await saveHttpSecrets(tx, ctx, used, input.secrets)
     const changed = [

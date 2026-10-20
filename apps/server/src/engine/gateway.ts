@@ -11,10 +11,12 @@ import {
   type SessionSnapshot,
   type SnapshotTool,
 } from "@heyagent/shared"
+import { inArray } from "drizzle-orm"
 import { z } from "zod"
 
 import { BrowserTools } from "../browser/tools.js"
 import type { Db } from "../db/client.js"
+import * as t from "../db/schema.js"
 import { saveFile, spacePathOf } from "../files/service.js"
 import { compareToolEntries } from "../compare/tools.js"
 import { galleryToolEntries } from "../gallery/tools.js"
@@ -93,6 +95,38 @@ function zodFromJsonSchema(schema: Record<string, unknown>): z.ZodType {
   }
 }
 
+/**
+ * HTTP 工具用库里现在的模板和参数清单，不用快照里冻住的：主管给模板加了 {speaker}，之前建的运行下次跑起来（开始 / 继续）就认。
+ * 工具删了或不再是 HTTP 工具就还用快照里的。规则查白名单也看这份（同一个 snapshot 对象）
+ */
+async function withCurrentHttpSpecs(
+  db: Db,
+  snapshot: SessionSnapshot
+): Promise<SessionSnapshot> {
+  const ids = snapshot.tools
+    .filter((tool) => tool.source === "http")
+    .map((tool) => tool.id)
+  if (ids.length === 0) return snapshot
+  const rows = await db
+    .select({ id: t.tools.id, source: t.tools.source, http: t.tools.http })
+    .from(t.tools)
+    .where(inArray(t.tools.id, ids))
+  const current = new Map(
+    rows.flatMap((row) =>
+      row.source === "http" && row.http ? [[row.id, row.http] as const] : []
+    )
+  )
+  if (current.size === 0) return snapshot
+  return {
+    ...snapshot,
+    tools: snapshot.tools.map((tool) =>
+      tool.source === "http" && current.has(tool.id)
+        ? { ...tool, http: current.get(tool.id)! }
+        : tool
+    ),
+  }
+}
+
 export class ToolGateway {
   private readonly entries: ToolEntry[] = []
   private readonly mcp: McpPool
@@ -118,7 +152,11 @@ export class ToolGateway {
     session: SessionRow,
     snapshot: SessionSnapshot
   ): Promise<ToolGateway> {
-    const gateway = new ToolGateway({ db, session, snapshot })
+    const gateway = new ToolGateway({
+      db,
+      session,
+      snapshot: await withCurrentHttpSpecs(db, snapshot),
+    })
     await gateway.build()
     return gateway
   }
@@ -168,7 +206,7 @@ export class ToolGateway {
           jsonSchema: schema,
           validator,
           execute: (input) =>
-            executeHttpTool(db, spec, input as Record<string, string>),
+            executeHttpTool(db, spec, input as Record<string, unknown>),
         })
       } else if (def.source === "mcp" && def.serverId) {
         const serverId = def.serverId
@@ -239,7 +277,10 @@ export class ToolGateway {
         def,
         jsonSchema: { type: "object", additionalProperties: true },
         validator: z.record(z.string(), z.unknown()),
-        execute: async () => ({ output: `浏览器现在不可用：${reason}`, isError: true }),
+        execute: async () => ({
+          output: `浏览器现在不可用：${reason}`,
+          isError: true,
+        }),
       })
     }
   }
@@ -346,7 +387,8 @@ export class ToolGateway {
           ruleName: decision.ruleName,
           assigneeId: decision.assigneeId,
           reason: decision.reason,
-          input: entry?.validator.safeParse(call.input ?? {}).data ?? call.input,
+          input:
+            entry?.validator.safeParse(call.input ?? {}).data ?? call.input,
           risk: hookCtx.risk,
         },
       }

@@ -301,11 +301,16 @@ curl -s -b 'better-auth.session_token=<COOKIE>' -H 'content-type: application/js
 | `name` | 1-100 字 |
 | `description` | 1-2000 字：告诉模型什么时候用 |
 | `summary?` | ≤200 字；不填取 `description` 的第一句 |
-| `http` | `{ method: GET/POST/PUT/PATCH/DELETE, url: 以 http(s):// 开头, headers: Record<string,string>（默认 {}）, body?: ≤50000 字 }`。模板里 `{参数}` 由模型填，`{{名字}}` 是密钥占位符 |
+| `http` | `{ method: GET/POST/PUT/PATCH/DELETE, url: 以 http(s):// 开头, headers: Record<string,string>（默认 {}）, body?: ≤50000 字, params?: 参数清单 }`。模板里 `{参数}` 由模型填（名字是字母、中文、数字和 `_ . -`，两边可以有空格，`{ speaker }` 也行），`{{名字}}` 是密钥占位符。占位符的认法在 `@heyagent/shared` 的 `http-template.ts`，页面和服务器共用 |
+| `http.params` | 参数清单（`httpParamSchema`，≤100 项），每项 `{ name, type: "string" \| "json", required（默认 true）, omitIfAbsent?, description?（≤500 字，给模型看） }`。**传了就必须和模板里的 `{名字}` 一一对应**，模板里有、清单里没有的报「模板里的 {x} 不在参数清单里」，反过来报「参数清单里的 x 模板里没有」；**不传就按模板推**：JSON 请求体引号外面的是 `json`，其余 `string`，都必填（修改时不传，原来存的清单当底子：同名参数的设置沿用，新参数按模板推）。存进库的 `HttpSpec.params` 总是这份重建好的清单；`omitIfAbsent` 只对 `required = false` 的有效 |
 | `risk` | `read / write / external / money` |
 | `secrets` | `Record<密钥名, 值>`（默认 {}）：这次新填的密钥值，只进不出；密钥名要符合 `^[A-Z][A-Z0-9_]{0,63}$` 且不能以 `NOTIFY_` 开头 |
 
-保存前的检查（任一不过都是 `BAD_REQUEST`）：URL、请求头、请求体里出现**明文密钥**（`moveSecrets` 认出的 `?key=…`、`Authorization: Bearer …`、`"api_key":"…"`、`sk-…` 之类）；`{{名字}}` 不合密钥名规则；模板引用的 `{{名字}}` 既没存过、这次也没填值。
+保存前的检查（任一不过都是 `BAD_REQUEST`）：URL、请求头、请求体里出现**明文密钥**（`moveSecrets` 认出的 `?key=…`、`Authorization: Bearer …`、`"api_key":"…"`、`sk-…` 之类）；`{{名字}}` 不合密钥名规则；模板引用的 `{{名字}}` 既没存过、这次也没填值；参数清单和模板对不上（见上）；`omitIfAbsent` 的参数在 URL 路径里（`?` 前面）；JSON 请求体（去掉开头空白后以 `{` 或 `[` 开头）填上样子值（文本 `"x"`、JSON `null`、密钥 `0`）以后不是合法 JSON（报「请求体模板填上参数以后不是合法 JSON：第 N 个字符附近…」，带那一段模板）。以前存的工具不重新检查，照样能跑。
+
+执行时怎么填（`engine/tools/http.ts`）：URL 里做 URL 编码；请求头原样；JSON 请求体里，**引号里面**的 `{参数}` 做 JSON 转义（`json` 类型填它的 JSON 文本再转义），**引号外面**的 `json` 参数原样填 JSON 值（`"candidates":{candidates}` 填成 `"candidates":[{"id":"a"}]`）、`string` 参数填成带引号的 JSON 字符串；`{{密钥}}` 在引号里面也做转义。模型传 `json` 参数时可以直接传值，也可以传 JSON 字符串（解析回来；像 `[`、`{` 开头却解析不了的参数校验就拒绝）。可选参数没传（或传 `null`）：`string` 填空字符串，`json` 在引号外面填 `null`；`omitIfAbsent` 的整段去掉（JSON 里那个字段 / 数组项、URL 里那个查询参数、那一行请求头）。JSON 请求体填好以后先解析一遍，不合法就**不发**，返回错误：哪个参数填进去的内容里（或附近）出错、解析报错、那一段（约 80 字，密钥换成 `[已隐藏]`）。模板只扫一遍，模型填的值里写 `{{名字}}` 不会换成密钥。
+
+运行时用库里**现在的**模板和参数清单（`ToolGateway` 每次建的时候按快照里的 HTTP 工具 id 读一次），不是快照里冻住的：改了模板，之前建的运行下次开始 / 继续时就按新的来；工具删了才用快照里的。
 
 | 接口 | 谁能调 | 输入 | 返回 | 主要错误 | 审计 / 推送 |
 |---|---|---|---|---|---|

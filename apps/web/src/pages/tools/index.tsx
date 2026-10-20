@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { CodeBlock, CodeBlockActions, CodeBlockContent, CodeBlockCopyButton } from "@/components/ui/code-block"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
-import { alwaysOnToolIds, can, findById, fmtShort, riskLabel, riskNotes, tasksUsing, toolSourceLabel, type SavedSecret, type Skill } from "@heyagent/shared"
+import { alwaysOnToolIds, can, findById, fmtShort, httpParamsOf, riskLabel, riskNotes, tasksUsing, toolSourceLabel, type SavedSecret, type Skill } from "@heyagent/shared"
 
 import { useRulesQuery, useSkillsQuery, useTasksQuery, useToolsQuery } from "@/lib/data"
 import { toastWithUndo, useAction } from "@/lib/mutations"
@@ -320,11 +320,25 @@ function HowToCall({ tool, server, saved }: { tool: Tool; server?: Server; saved
   const headerLines = Object.entries(headers).map(([key, value]) => `${key}: ${value}`)
   const request = [`${method} ${url}`, ...headerLines, ...(body ? ["", pretty(body)] : [])].join("\n")
   const curl = [`curl -X ${method} '${url}'`, ...headerLines.map((h) => `-H '${h}'`), ...(body ? [`-d '${body}'`] : [])].join(" \\\n  ")
-  const { params, secrets } = placeholders(`${url} ${headerLines.join(" ")} ${body}`)
+  const { secrets } = placeholders(`${url} ${headerLines.join(" ")} ${body}`)
+  const params = httpParamsOf(tool.http)
   return (
     <div className="flex flex-col gap-3">
       <Code text={request} copy={curl} />
-      <p className="text-muted-foreground">模型要填的参数：{params.join("、") || "无"}</p>
+      <p className="text-muted-foreground">模型要填的参数：{params.length === 0 && "无"}</p>
+      {params.length > 0 && (
+        <ul className="flex flex-col gap-1">
+          {params.map((param) => (
+            <li key={param.name} className="flex flex-wrap items-center gap-2">
+              <span className="font-mono">{`{${param.name}}`}</span>
+              <Badge variant="outline">{param.type === "json" ? "JSON" : "文本"}</Badge>
+              <span className="text-muted-foreground">
+                {[param.required ? "必填" : "可选", param.omitIfAbsent && "没传就去掉", param.description].filter(Boolean).join(" · ")}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
       {secrets.map((n) => (
         <p key={n} className="flex flex-wrap items-center gap-2"><span className="font-mono">{n}</span>
           {saved[n] ? <><Badge variant="outline">已保存在服务器</Badge><span className="text-muted-foreground">{saved[n].by} {fmtShort(saved[n].at).slice(0, 5)} · 模型和页面都看不到原文</span></> : <Badge variant="destructive">还没有值</Badge>}</p>

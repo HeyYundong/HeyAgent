@@ -4,6 +4,7 @@
 import { basename } from "node:path"
 import { readFile } from "node:fs/promises"
 
+import { TRPCError } from "@trpc/server"
 import { and, eq } from "drizzle-orm"
 import { checkCompiledRule, cronText, planMemoryIncluded, planProblems, taskInputSchema, type ImportPlan, type ImportResult } from "@heyagent/shared"
 
@@ -100,7 +101,10 @@ async function commitInTx(tx: Tx, ctx: WriteCtx, importId: string, written: stri
         { name: tool.name, description: http.description || tool.summary, summary: tool.summary, http: { method: http.method, url: http.url, headers: http.headers, body: http.body }, risk: http.risk, secrets: {} },
         // 允许引用还没有值的密钥：导入后在「还要你做的」里提醒去填
         { allowMissingSecrets: true, audit: detail }
-      )
+      ).catch((error: unknown) => {
+        // 模板不对（例如请求体填上参数以后不是合法 JSON）：说清是哪个工具，好回去改
+        throw error instanceof TRPCError && error.code === "BAD_REQUEST" ? badRequest(`工具「${tool.name}」：${error.message}`) : error
+      })
       toolIdsByKey.set(tool.key, [id])
       result.tools.push({ key: tool.key, id, how: "created" })
     } else if (tool.kind === "mcp") {

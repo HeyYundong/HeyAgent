@@ -181,7 +181,7 @@ export const READER_SYSTEM = `你是 HeyAgent 平台的「导入助手」。别�
 ${ruleCatalog()}
   要靠理解内容才能判断的（例如「内容可疑时」「价格太高时」「点的是某个按钮时」），或者要用上面没有的动作，标 unsupported 并写清原因。和已生效的规则一个意思的标 existing；包里没有、但建议加上的已生效规则也可以标 existing（suggested = true）。
 - 工具：
-  - HTTP 接口（kind = http）：方法、地址、请求头、请求体。agent 调用时要填的参数写 {参数名}，密钥一律写 {{名字}}（包里的密钥已经被系统换成 {{名字}} 了，照抄这个名字）。
+  - HTTP 接口（kind = http）：方法、地址、请求头、请求体。agent 调用时要填的参数写 {参数名}，密钥一律写 {{名字}}（包里的密钥已经被系统换成 {{名字}} 了，照抄这个名字）。请求体是 JSON 时，写在引号外面的参数（"items": {items}）按 JSON 原样填（数组、对象、数字），写在引号里面的（"note": "{note}"）按文字填；请求体填上参数以后要是合法 JSON。
   - MCP 服务器（kind = mcp）：stdio 写启动命令、http 写服务地址；环境变量（或请求头）的值里的密钥写 {{名字}}。
   - 内置工具（kind = builtin）：系统自带，清单见下面；原 agent 打开过网页、点过网页，就选「浏览器」（browser）。
   - 包里有「用视觉模型比两张图、打分」的 MCP 或工具（例如 Lens MCP 的 compare_images）时，选内置的「比物」（kind = builtin，refId = compare），不要导入本机地址的那个 MCP，在 unused 里写「用平台自带的「比物」代替」。

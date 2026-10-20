@@ -20,5 +20,7 @@ export const DIALOG_TEXT = {
   secretsHint: "模板里每个 {{名字}} 一个值。存在服务器上，模型和页面都看不到原文。",
   envHint: "每行一个「名字=值」，一般放密钥。值只存在服务器上，这里填的值同样不会给模型看。",
   bodyHint: "用 {参数} 标出要模型填的地方，{{名字}} 是密钥。",
+  paramsHint:
+    "模板里每个 {参数} 一行，由模型填。文本：按文字填，JSON 请求体里自动转义、加引号；JSON：原样放进去（数组、对象、数字），写在 JSON 的引号外面，例如 \"candidates\": {candidates}。不必填的没传时填空（文本填空字符串，JSON 填 null）；勾了「没传就去掉」，就整段去掉：JSON 里那个字段、URL 里那个查询参数、那一行请求头。",
   bodyPlaceholder: '{"weight_kg": "{weight}"}',
 }

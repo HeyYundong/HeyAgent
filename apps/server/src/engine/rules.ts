@@ -31,6 +31,7 @@ import type {
 import { askHumanInTx, notifyAssignee } from "./humans.js"
 import { notifyUsers, sessionLink } from "./notify.js"
 import { appendEvent, type DbLike } from "./records.js"
+import { httpUrlOf } from "./tools/http.js"
 import { runVerification } from "./verify.js"
 
 export interface ActiveRule {
@@ -83,18 +84,8 @@ export function urlsOf(
       urls.push(value.trim())
   }
   const http = snapshot.tools.find((tool) => tool.id === toolId)?.http
-  if (http) {
-    const filled = http.url.replace(
-      /(?<!\{)\{([^{}]+)\}(?!\})/g,
-      (_, name: string) => {
-        const value = record[name]
-        return typeof value === "string" || typeof value === "number"
-          ? encodeURIComponent(String(value))
-          : ""
-      }
-    )
-    urls.push(filled)
-  }
+  // 和真正发请求时同一套填法（tools/http.ts），参数按给模型的键取
+  if (http) urls.push(httpUrlOf(http, record))
   return urls
 }
 

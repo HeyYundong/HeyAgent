@@ -6,6 +6,7 @@
 import {
   can,
   hasPlainSecret,
+  httpParamsOf,
   httpToolInputSchema,
   idInput,
   mcpServerInputSchema,
@@ -16,6 +17,7 @@ import {
   secretNameSchema,
   skillInputSchema,
   skillSetStatusSchema,
+  syncHttpParams,
   taskInputSchema,
   taskMemoryAddSchema,
   taskMemoryDeleteSchema,
@@ -26,6 +28,7 @@ import {
   type Action,
   type ActionResources,
   type AssistantLink,
+  type HttpParam,
   type RuleCompileResult,
   type TaskDef,
 } from "@heyagent/shared"
@@ -1121,7 +1124,8 @@ export const TOOLS: Record<string, ToolDef> = {
 
   // ===== 工具配置 =====
   create_http_tool: write({
-    description: "新建 HTTP 接口工具（只有主管能建）。模板里的密钥只写 {{名字}}，不要写真正的值；{参数} 由 agent 调用时填",
+    description:
+      "新建 HTTP 接口工具（只有主管能建）。模板里的密钥只写 {{名字}}，不要写真正的值；{参数} 由 agent 调用时填。JSON 请求体里写在引号外面的 {参数}（\"items\": {items}）按 JSON 原样填（数组、对象），引号里面的按文字填。http.params 可不传（按模板推：引号外面的是 json，都必填）；传就要和模板里的 {名字} 一一对应，可以设 required = false、omitIfAbsent = true（没传就去掉这个字段 / 查询参数 / 请求头）",
     input: httpFields,
     label: (input) => `新建工具「${clip(str(input.name), 30)}」`,
     prepare: async (ctx, input) => {
@@ -1135,6 +1139,7 @@ export const TOOLS: Record<string, ToolDef> = {
           { label: "请求", after: `${http.method} ${http.url}` },
           ...(Object.keys(http.headers).length ? [{ label: "请求头", after: Object.keys(http.headers).join("、") }] : []),
           ...(http.body ? [{ label: "请求体", after: clip(http.body) }] : []),
+          ...(http.params.length ? [{ label: "参数", after: paramsText(http.params) }] : []),
           { label: "风险", after: riskText(input.risk) },
           ...(missing.length ? [{ label: "还要到工具页填的密钥", after: missing.join("、") }] : []),
         ],
@@ -1147,20 +1152,20 @@ export const TOOLS: Record<string, ToolDef> = {
     },
   }),
   update_http_tool: write({
-    description: "修改 HTTP 接口工具：只传要改的字段（name、description、summary、http 整个请求、risk）",
+    description:
+      "修改 HTTP 接口工具：只传要改的字段（name、description、summary、http 整个请求、risk）。改了模板没传 http.params 时，原来同名参数的设置沿用、新参数按模板推；传了就要和模板里的 {名字} 一一对应",
     input: httpUpdate,
     label: (input) => `修改工具 ${str(input.id)}`,
     prepare: async (ctx, input, given) => {
       need(ctx, "config.manage", {}, "修改工具只有主管能做")
       const tool = await loadHttpTool(ctx, input.id)
-      const before = { name: tool.name, description: tool.description, summary: tool.summary, http: { method: tool.http!.method, url: tool.http!.url, headers: tool.http!.headers ?? {}, body: tool.http!.body }, risk: tool.risk }
-      const after = check(httpFields, { ...before, ...pick(input, given) })
+      const { before, merged: after } = mergeHttpUpdate(tool, input, given)
       const { missing } = await checkHttp(ctx, after.http)
       const fields = await changedFields(before, after, given, { name: "名字", description: "说明", summary: "一句话", http: "请求", risk: "风险" }, (key, value) => {
         if (key === "risk") return riskText(value as typeof tool.risk)
         if (key === "http") {
           const http = value as typeof before.http
-          return [`${http.method} ${http.url}`, ...Object.entries(http.headers ?? {}).map(([name, header]) => `${name}: ${header}`), http.body ? `请求体：${http.body}` : ""].filter(Boolean).join("\n")
+          return [`${http.method} ${http.url}`, ...Object.entries(http.headers ?? {}).map(([name, header]) => `${name}: ${header}`), http.body ? `请求体：${http.body}` : "", http.params?.length ? `参数：${paramsText(http.params)}` : ""].filter(Boolean).join("\n")
         }
         return str(value)
       })
@@ -1170,8 +1175,7 @@ export const TOOLS: Record<string, ToolDef> = {
     },
     apply: async (ctx, input, given) => {
       const tool = await loadHttpTool(ctx, input.id)
-      const before = { name: tool.name, description: tool.description, summary: tool.summary, http: { method: tool.http!.method, url: tool.http!.url, headers: tool.http!.headers ?? {}, body: tool.http!.body }, risk: tool.risk }
-      const merged = check(httpFields, { ...before, ...pick(input, given) })
+      const { merged } = mergeHttpUpdate(tool, input, given)
       const { missing } = await toolsConfig.updateHttpTool(ctx, { ...merged, id: tool.id, secrets: {} }, { allowMissingSecrets: true })
       return { message: `已改好工具 ${tool.id}${secretsHint(missing)}`, link: { page: "tools", params: { id: tool.id } }, output: { id: tool.id, missingSecrets: missing } }
     },
@@ -1244,7 +1248,25 @@ async function reviewableMemory(ctx: ToolCtx, id: string) {
   return row
 }
 
-/** HTTP 模板：有明文密钥不进卡；引用了还没存值的密钥照建，提醒人去填 */
+type HttpTool = Awaited<ReturnType<typeof loadHttpTool>>
+
+/**
+ * 改 HTTP 工具：改前的值 + 合进这次给的字段。改了模板但没给参数清单，就拿原来的清单当底子按新模板重建
+ * （同名参数的类型、必填、说明沿用，新参数按模板推），交给保存的是一份和模板对得上的清单
+ */
+function mergeHttpUpdate(tool: HttpTool, input: z.output<typeof httpUpdate>, given: Set<string>) {
+  const spec = tool.http!
+  const before = { name: tool.name, description: tool.description, summary: tool.summary, http: { method: spec.method, url: spec.url, headers: spec.headers ?? {}, body: spec.body, params: httpParamsOf(spec) }, risk: tool.risk }
+  const merged = check(httpFields, { ...before, ...pick(input, given) })
+  if (given.has("http") && !input.http?.params) merged.http.params = syncHttpParams(merged.http, before.http.params).params
+  return { before, merged }
+}
+
+/** 参数清单给人看：名字（类型、选填、没传就去掉） */
+const paramsText = (params: HttpParam[]) =>
+  params.map((param) => `${param.name}（${[param.type === "json" ? "JSON" : "文本", param.required ? "" : param.omitIfAbsent ? "可不填，没传就去掉" : "可不填"].filter(Boolean).join("，")}）`).join("、")
+
+/** HTTP 模板：有明文密钥不进卡；参数清单对不上模板、JSON 请求体模板不对的也不进卡；引用了还没存值的密钥照建，提醒人去填 */
 async function checkHttp(ctx: ToolCtx, http: z.output<typeof httpFields>["http"]) {
   const headers = Object.entries(http.headers ?? {})
     .map(([key, value]) => `${key}: ${value}`)
@@ -1253,8 +1275,10 @@ async function checkHttp(ctx: ToolCtx, http: z.output<typeof httpFields>["http"]
     throw new ToolError("模板里有明文密钥，不能写进去。改成 {{名字}}，让人到「工具」页填值")
   const { secrets } = templatePlaceholders(`${http.url} ${headers} ${http.body ?? ""}`)
   const invalid = secrets.filter((name) => !secretNameSchema.safeParse(name).success)
-  if (invalid.length) throw new ToolError(`密钥名只能用大写字母、数字和下划线（NOTIFY_ 开头的留给通知渠道）：${invalid.join("、")}`)
-  return { http: { ...http, headers: http.headers ?? {} }, missing: await missingSecrets(ctx, secrets) }
+  if (invalid.length) throw new ToolError(`密钥名只能用大写字母、数字和下划线（NOTIFY_ 开头的留给通知渠道）：${invalid.join("、")}（模型填的参数用一层花括号 {名字}，两层 {{名字}} 是密钥）`)
+  const headersMap = http.headers ?? {}
+  const params = toolsConfig.httpParamsFor({ ...http, headers: headersMap })
+  return { http: { ...http, headers: headersMap, params }, missing: await missingSecrets(ctx, secrets) }
 }
 
 function checkMcp(input: { transport: "stdio" | "http"; command?: string; url?: string; name: string; note?: string; env: { name: string; secret?: string }[] }) {
