@@ -7,7 +7,8 @@ import pg from "pg"
 
 import { createApp } from "../src/app.js"
 import { createAuth } from "../src/auth.js"
-import { createDb } from "../src/db/client.js"
+import { createDb, type Db } from "../src/db/client.js"
+import * as t from "../src/db/schema.js"
 import { runMigrations } from "../src/db/migrate.js"
 import { env } from "../src/env.js"
 import { loadKeyring, newKekLine } from "../src/lib/crypto.js"
@@ -41,12 +42,27 @@ export function tempKeyring(lines = [newKekLine(1)]) {
 }
 
 /** 迁移 + 灌演示数据 + 起一个 app（不监听端口，用 app.request 调） */
+/**
+ * 测试用的复核模型（run-outcome：2026-10-20 起每个任务都要有复核模型）。演示数据的模型列表里没有默认复核模型，
+ * 测试库建一个、设成默认复核模型，种子任务都换成它。建任务的接口要传 reviewModelId 时就用它。
+ * 引擎测试里它是假模型：没给剧本时一律判办成（engine-helpers.ts）
+ */
+export const TEST_REVIEW_MODEL = "test/reviewer"
+
+async function setupTestReviewModel(db: Db) {
+  await db.insert(t.models).values({ id: TEST_REVIEW_MODEL, providerId: "openrouter", name: "测试复核模型", contextK: 100, priceIn: 0.04, priceOut: 0.08, vision: false, kind: "chat" }).onConflictDoNothing()
+  await db.insert(t.modelDefaults).values({ role: "review", modelId: TEST_REVIEW_MODEL }).onConflictDoUpdate({ target: t.modelDefaults.role, set: { modelId: TEST_REVIEW_MODEL } })
+  // 种子任务一律换成测试复核模型（种子里的复核模型是真模型 id，测试里不能调）
+  await db.update(t.tasks).set({ reviewModelId: TEST_REVIEW_MODEL })
+}
+
 export async function setupApp() {
   const url = testDatabaseUrl()
   await resetTestDatabase(url)
   const keyring = tempKeyring()
   const { db, pool } = createDb(url, 5)
   await seedDemo(db, keyring, { password: PASSWORD })
+  await setupTestReviewModel(db)
   const auth = createAuth(db, { secret: "test-secret-test-secret-test-secret-0", baseURL: "http://localhost:3100", trustedOrigins: ["http://localhost:5180"] })
   const hub = new ChangeHub(url)
   await hub.start()

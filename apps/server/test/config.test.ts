@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 
 import * as t from "../src/db/schema.js"
 import { decryptText } from "../src/lib/crypto.js"
-import { login, mutate, query, setupApp, PASSWORD, type TestApp } from "./helpers.js"
+import { login, mutate, query, setupApp, PASSWORD, TEST_REVIEW_MODEL, type TestApp } from "./helpers.js"
 
 // 引擎的两个对接函数：确认配置写完会调到（P1 实现真的逻辑）
 const engine = vi.hoisted(() => ({ syncTaskSchedule: vi.fn(async () => {}), syncTodo: vi.fn(async () => {}) }))
@@ -76,7 +76,7 @@ async function lastAudit(action: string) {
   return row
 }
 
-const NEW_TASK = { title: "整理每周报表", goal: "报表发到群里", steps: [{ text: "读数据", wait: false }, { text: "等确认", wait: true, checkpoint: "收到确认" }], schedule: null, memoryIds: [], skillIds: [], toolIds: [], ruleIds: [] }
+const NEW_TASK = { title: "整理每周报表", goal: "报表发到群里", steps: [{ text: "读数据", wait: false }, { text: "等确认", wait: true, checkpoint: "收到确认" }], schedule: null, memoryIds: [], skillIds: [], toolIds: [], ruleIds: [], reviewModelId: TEST_REVIEW_MODEL }
 
 describe("没登录、没权限", () => {
   it("没登录调写接口返回 401", async () => {
@@ -454,7 +454,8 @@ describe("模型", () => {
 
     const defaults = { run: `${id}/acme/alpha-1`, plan: `${id}/zeta/beta-2`, verify: `${id}/zeta/beta-mini` }
     expect((await mutate(ctx.app, "models.setDefaults", lin, defaults)).error).toBeUndefined()
-    expect((await query(ctx.app, "models.overview", lin)).data.defaults).toEqual(defaults)
+    // 默认复核模型没传 = 不改（测试库设的那个还在）
+    expect((await query(ctx.app, "models.overview", lin)).data.defaults).toEqual({ ...defaults, review: TEST_REVIEW_MODEL })
     expect(await lastAudit("model_defaults.update")).toMatchObject({ actorId: "u-lin" })
 
     // 助手的默认模型（可选）：要是库里的聊天模型；不传不改，空字符串清掉

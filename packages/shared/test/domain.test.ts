@@ -145,11 +145,13 @@ describe("runNow", () => {
     expect(runNow(run("R-1", "T-1", "running", at), [], staff).text).toBe("刚开始")
     expect(runNow(run("R-1", "T-1", "failed", at, { lastError: { at, title: "模型超时" } }), [], staff).text).toBe("出错 · 模型超时")
   })
-  it("结束了写结果：办成只写时间，其余带上原因；老数据没完成算没办成，已结束没结果的只写「已结束」", () => {
+  it("结束了写结果：办成只写时间，没办成带上原因；老数据没完成算没办成；复核还在跑的写「复核中」，已结束没结果的只写「已结束」", () => {
     const at = "2026-10-16T01:05:00.000Z"
     const ended = { endedAt: at }
     expect(runNow(run("R-1", "T-1", "done", at, { ...ended, outcome: "achieved", outcomeReason: "复核：价格、链接都有" }), [], staff).text).toMatch(/^办成 · \d/)
-    expect(runNow(run("R-1", "T-1", "done", at, { ...ended, outcome: "partial", outcomeReason: "只放了 13 张" }), [], staff).text).toMatch(/^部分办成 · 只放了 13 张 · /)
+    expect(runNow(run("R-1", "T-1", "done", at, { ...ended, outcome: "not_achieved", outcomeReason: "只放了 13 张" }), [], staff).text).toMatch(/^没办成 · 只放了 13 张 · /)
+    const pending = { at, modelId: "m", reason: "", screenshot: false, tokensIn: 0, tokensOut: 0, costUsd: 0, pending: true }
+    expect(runNow(run("R-1", "T-1", "done", at, { ...ended, review: pending }), [], staff).text).toMatch(/^复核中 · /)
     expect(runNow(run("R-1", "T-1", "incomplete", at, { ...ended, doneDetail: "没找到商品" }), [], staff).text).toMatch(/^没办成 · 没找到商品 · /)
     expect(runNow(run("R-1", "T-1", "done", at, ended), [], staff).text).toMatch(/^已结束 · /)
   })

@@ -481,7 +481,7 @@ export async function deleteProvider(ctx: WriteCtx, input: { id: string }) {
     if (embed) next.embed = embed
     // 助手的默认模型是可选的：在删掉的服务里就不配了，助手回到 plan 默认模型
     if (current.assistant && !ownIds.includes(current.assistant)) next.assistant = current.assistant
-    // 复核模型也是可选的：在删掉的服务里就不配了（不复核，结果记没核实）
+    // 默认复核模型在删掉的服务里就不配了（没选复核模型的旧任务要先选一个才能运行）
     if (current.review && !ownIds.includes(current.review)) next.review = current.review
     await tx.delete(t.modelDefaults)
     for (const role of ["run", "plan", "verify", "embed", "assistant", "review"] as const) {
@@ -510,7 +510,7 @@ async function readDefaults(db: DbOrTx): Promise<ModelDefaults> {
  * 默认模型。执行 / 规划 / 验收要是聊天模型，验收不许和执行同一家（不算第三方）。
  * embed（图库的 embedding 模型）：不传不改，空字符串表示不用；要是能处理图片的 embedding 模型。
  * assistant（右下角助手）：不传不改，空字符串表示不单独配（助手用 plan）；要是聊天模型。
- * review（运行结束后的轻量复核）：不传不改，空字符串表示不配（不复核）；要是聊天模型，不要求和执行模型不同家
+ * review（新任务默认用的复核模型，没选复核模型的旧任务也用它）：不传不改，空字符串表示不配；要是聊天模型，不要求和执行模型不同家
  */
 export async function writeDefaults(db: DbOrTx, actorId: string | null, input: ModelDefaults) {
   if (sameFamily(input.run, input.verify)) {

@@ -118,7 +118,7 @@ export function WorkStatusBadge({ item, long }: { item: Pick<WorkItem, "status" 
   )
 }
 
-/** 单的结果徽章要不要显示：没办成的单（状态已经写了「没办成」）结果也是没办成时不重复显示；办完的单、部分办成的照样显示 */
+/** 单的结果徽章要不要显示：没办成的单（状态已经写了「没办成」）结果也是没办成时不重复显示；办完的单照样显示 */
 export const showItemOutcome = (item: Pick<WorkItem, "status" | "outcome">) =>
   Boolean(item.outcome) && !((item.status === "failed" || item.status === "cancelled") && item.outcome === "not_achieved")
 

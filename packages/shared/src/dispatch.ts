@@ -115,7 +115,7 @@ export const WORK_REPORT_MAX_FIELDS = 20
 /**
  * 没办成的种类（第二期）：error = 运行出错（自动重试用完了，或者不重试的那几种）；
  * not_done = 运行正常结束但没办成（agent 报的、检查点没达成、复核判的）；cancelled_run = 人取消了运行、人选了不继续、人判验收失败；
- * run-outcome 加：partial = 部分办成；missing_result = 必交的结果没交。这几种都不重试
+ * run-outcome 加：missing_result = 必交的结果没交；partial = 部分办成（2026-10-20 起不再写入：部分办成算没办成，记 not_done，枚举值留着给旧数据）。这几种都不重试
  */
 export const workFailKindSchema = z.enum(["error", "not_done", "cancelled_run", "partial", "missing_result"])
 export type WorkFailKind = z.infer<typeof workFailKindSchema>
@@ -171,7 +171,7 @@ export const workItemSchema = z.object({
   error: z.string().nullable(),
   /** 没办成的种类（第二期）；不是没办成为 null */
   failKind: workFailKindSchema.nullable(),
-  /** 结果（run-outcome 6.2，跟着最后那次运行的结果）：单结束了才有。办完的单也可能是「没核实」 */
+  /** 结果（run-outcome 6.2，跟着最后那次运行的结果）：单结束了才有。办完 = 办成；没办成的单结果也是没办成 */
   outcome: runOutcomeSchema.nullable(),
   outcomeReason: z.string().nullable(),
   /** 排队等自动重试：到这个时间才会领（第二期）；不等为 null */
@@ -220,7 +220,7 @@ export const workListInputSchema = z.object({
   q: z.string().trim().max(200).optional(),
   /** 不填 = 全部；可以给几种（派活页「没办成」= 没办成 + 不办了） */
   status: z.union([workItemStatusSchema, z.array(workItemStatusSchema).min(1)]).optional(),
-  /** 结果筛选（run-outcome）：可以给几种，例如只看「没核实」 */
+  /** 结果筛选（run-outcome）：办成 / 没办成，可以给几种 */
   outcome: z.union([runOutcomeSchema, z.array(runOutcomeSchema).min(1)]).optional(),
   /** 被派的任务 */
   taskId: z.string().optional(),

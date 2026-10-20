@@ -50,6 +50,7 @@ export async function insertWorkFixtures(db: Db): Promise<{ patrolId: string; wo
       scheduleCron: "*/5 9-17 * * 1-5",
       scheduleText: "每个工作日 09:00–18:00 每 5 分钟",
       modelId,
+      reviewModelId: modelId,
     },
     {
       id: workerId,
@@ -59,6 +60,7 @@ export async function insertWorkFixtures(db: Db): Promise<{ patrolId: string; wo
       ownerId: admin.id,
       enabled: true,
       modelId,
+      reviewModelId: modelId,
       dispatch,
     },
     {
@@ -69,6 +71,7 @@ export async function insertWorkFixtures(db: Db): Promise<{ patrolId: string; wo
       ownerId: admin.id,
       enabled: true,
       modelId,
+      reviewModelId: modelId,
       dispatch: checkDispatch,
     },
   ])

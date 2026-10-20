@@ -38,7 +38,6 @@ import {
   riskSchema,
   runEventKindSchema,
   runOutcomeBySchema,
-  runOutcomeSchema,
   runStatusSchema,
   skillStatusSchema,
   toolSourceSchema,
@@ -56,6 +55,7 @@ import {
   type SessionSnapshot,
   type TaskDispatch,
   type TaskStep,
+  type RunOutcome,
   type RunReview,
   type Verification,
   type WorkLogEntry,
@@ -117,7 +117,11 @@ export interface PendingToolCalls {
 // ---------- 枚举 ----------
 
 export const runStatusEnum = pgEnum("run_status", values(runStatusSchema.options))
-export const runOutcomeEnum = pgEnum("run_outcome", values(runOutcomeSchema.options))
+/**
+ * 库里的 run_outcome 枚举还有 partial（部分办成）、unverified（没核实）：2026-10-20 简化成办成 / 没办成以后不再写入，
+ * 迁移 0026 把旧数据都改成了 not_achieved。Postgres 的枚举值删不掉（同 run_status 的 incomplete），留着不用；列的类型按 RunOutcome 收窄
+ */
+export const runOutcomeEnum = pgEnum("run_outcome", ["achieved", "partial", "not_achieved", "unverified"])
 export const runOutcomeByEnum = pgEnum("run_outcome_by", values(runOutcomeBySchema.options))
 export const runEventKindEnum = pgEnum("run_event_kind", values(runEventKindSchema.options))
 export const checkpointKindEnum = pgEnum("checkpoint_kind", values(checkpointKindSchema.options))
@@ -504,9 +508,10 @@ export const tasks = pgTable(
     allowBrowserVision: boolean("allow_browser_vision").notNull().default(false),
     /** M3：这个任务自己选的三方验收模型；为空用默认验收模型 */
     verifyModelId: text("verify_model_id"),
-    /** 运行结束后让 AI 轻量复核结果（run-outcome），默认开 */
-    reviewEnabled: boolean("review_enabled").notNull().default(true),
-    /** 这个任务自己选的复核模型；为空用默认复核模型 */
+    /**
+     * 复核模型（run-outcome）：运行结束后一定复核（三方验收通过的除外）。新建、保存任务时必填；
+     * 2026-10-20 以前建的任务可能为空（迁移 0026 补了默认复核模型，没有默认的留空），运行时用默认复核模型
+     */
     reviewModelId: text("review_model_id"),
     /** 派活：能被派活时的参数声明和名额；为空 = 不能被派活。results（要交回的结果）是 run-outcome 加的，旧数据没有 = 不要求 */
     dispatch: jsonb("dispatch").$type<StoredTaskDispatch>(),
@@ -590,8 +595,8 @@ export const sessions = pgTable(
     /** 父 session：v1.1 规划 agent 拆给子 agent 时用 */
     parentSessionId: text("parent_session_id").references((): AnyPgColumn => sessions.id, { onDelete: "set null" }),
     status: runStatusEnum("status").notNull(),
-    /** 结果（run-outcome）：办成 / 部分办成 / 没办成 / 没核实；运行结束时写，没结束为空 */
-    outcome: runOutcomeEnum("outcome"),
+    /** 结果（run-outcome）：办成 / 没办成；运行结束时写，没结束、复核还在跑时为空 */
+    outcome: runOutcomeEnum("outcome").$type<RunOutcome>(),
     /** 结果的原因（没办成缺了什么、复核理由、人改结果的理由） */
     outcomeReason: text("outcome_reason"),
     /** 结果是谁定的：agent / rule / review / verify / human */
@@ -1324,7 +1329,7 @@ export const workItems = pgTable(
     /** 没办成的种类（第二期）：error 运行出错 / not_done agent 报办不成 / cancelled_run 人取消、人选不继续、人判验收失败 */
     failKind: text("fail_kind").$type<WorkFailKind>(),
     /** 结果（run-outcome 6.2）：跟着最后那次运行的结果；单结束了才有 */
-    outcome: runOutcomeEnum("outcome"),
+    outcome: runOutcomeEnum("outcome").$type<RunOutcome>(),
     outcomeReason: text("outcome_reason"),
     /** 排队等自动重试：到这个时间才领（第二期） */
     notBefore: ts("not_before"),

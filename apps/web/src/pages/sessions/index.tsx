@@ -33,7 +33,7 @@ export default function SessionsPage() {
   const [source, setSource] = React.useState(() => params.get("source") ?? "all")
   // 任务：只看某个任务的 session（别的页面可以带 ?task=T-… 过来）
   const [taskId, setTaskId] = React.useState(() => params.get("task") ?? "all")
-  // 结果：办成 / 部分办成 / 没办成 / 没核实（别的页面可以带 ?outcome= 过来）
+  // 结果：办成 / 没办成（别的页面可以带 ?outcome= 过来）
   const [outcome, setOutcome] = React.useState(() => params.get("outcome") ?? "all")
 
   const sessionsQuery = useSessionsQuery()
@@ -42,7 +42,7 @@ export default function SessionsPage() {
   const queries = [sessionsQuery, tasksQuery, useStaffQuery(), useModelsQuery(), useBoardQuery(), useToolsQuery()]
   const tasks = tasksQuery.data ?? []
 
-  // 已定：员工也能看全部 session（只读）。这一页本来就没有操作，主管和员工看到的一样
+  // 已定：员工也能看全部 session（只读）。操作只有每行菜单里的「改结果」，只给负责人和主管
   const allRuns = sortRuns(sessionsQuery.data ?? [])
   const count = (id: Group) => (id === "all" ? allRuns.length : allRuns.filter((run) => groupOf(run) === id).length)
   const q = query.trim().toLowerCase()

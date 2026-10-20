@@ -392,10 +392,10 @@ describe("派活方等结果：单结束时叫醒", () => {
     await waitFired(waitId)
     const message = await lastMessage(session.id)
     expect(message).toContain(`等到了事件「work.done:${ids[0]}」（派活单结束）`)
-    // 没配复核模型：单办完，结果没核实（一句话里标出来）
-    expect(message).toContain(`${ids[0]}「单 D-1」办完（没核实：`)
+    // 复核判办成：单办完，结果办成（一句话里标出来）
+    expect(message).toContain(`${ids[0]}「单 D-1」办完（办成）`)
     expect(message).toContain("：办完了：已处理 · 结果：件数=3，已回填=是")
-    expect(message).toContain('\\"outcome\\":\\"unverified\\"')
+    expect(message).toContain('\\"outcome\\":\\"achieved\\"')
     expect(message).toContain('\\"report\\":{\\"件数\\":3,\\"已回填\\":true}')
   })
 
@@ -499,7 +499,7 @@ describe("派活方等结果：单结束时叫醒", () => {
     await waitStatus(ctx.db, sessionId, "done")
     expect(await itemRow(itemId)).toMatchObject({ status: "done", result: { summary: "办完了：E2E 已处理", data: { 件数: 2 } } })
     const resumed = JSON.stringify((await messagesOf(ctx.db, sessionId)).map((message) => message.content))
-    expect(resumed).toContain(`${itemId}「单 E2E-1」办完（没核实：`)
+    expect(resumed).toContain(`${itemId}「单 E2E-1」办完（办成）`)
     expect(resumed).toContain("：办完了：E2E 已处理 · 结果：件数=2")
   }, 60_000)
 })
@@ -725,9 +725,13 @@ describe("没有检查点就不提检查点", () => {
     const b = await createTask(ctx.db, { modelId: "test/p2-cp", steps: [{ id: "s1", text: "存一张表", wait: false, checkpoint: "表已经存好" }] })
     for (const taskId of [a, b]) {
       const res = await mutate(ctx.app, "engine.runNow", wang, { taskId })
-      // 有检查点的那个没勾就说做完了：已结束，结果没办成
-      const row = await waitStatus(ctx.db, res.data.sessionId, "done")
-      expect(row.outcome).toBe(taskId === a ? "unverified" : "not_achieved")
+      // 没检查点的交给复核（测试复核模型判办成）；有检查点的那个没勾就说做完了：已结束，结果没办成
+      await waitStatus(ctx.db, res.data.sessionId, "done")
+      const row = await waitFor(async () => {
+        const each = await sessionRow(ctx.db, res.data.sessionId)
+        return each?.outcome ? each : undefined
+      })
+      expect(row.outcome).toBe(taskId === a ? "achieved" : "not_achieved")
     }
     const toolNames = (script: Script) => (script.prompts[0]!.tools ?? []).map((each) => each.name)
     expect(toolNames(plain)).not.toContain("checkpoint_mark")
@@ -736,7 +740,7 @@ describe("没有检查点就不提检查点", () => {
     expect(promptOf(plain.prompts[0]!)).toContain("验收员会按目标核对结果和证据")
     expect(toolNames(withCp)).toContain("checkpoint_mark")
     expect(promptOf(withCp.prompts[0]!)).toContain("## 检查点清单")
-    expect(promptOf(withCp.prompts[0]!)).toContain("检查点有没勾的、全部跳过的记没办成")
+    expect(promptOf(withCp.prompts[0]!)).toContain("检查点有没勾的、有跳过的都记没办成")
     // 快照的 tools 不改（任务页、规则页照样显示它是自带的）
     const [session] = await ctx.db.select().from(t.sessions).where(and(eq(t.sessions.taskId, a), like(t.sessions.id, "R-%"))).orderBy(asc(t.sessions.startedAt))
     expect(session!.snapshot!.tools.map((tool) => tool.id)).toContain("checkpoint.mark")

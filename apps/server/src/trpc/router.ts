@@ -202,7 +202,7 @@ export const appRouter = router({
         z
           .object({
             taskId: z.string().optional(),
-            /** 结果筛选（run-outcome）：可以给几种，例如只看「没核实」 */
+            /** 结果筛选（run-outcome）：办成 / 没办成，可以给几种 */
             outcome: z.union([runOutcomeSchema, z.array(runOutcomeSchema).min(1)]).optional(),
           })
           .optional()

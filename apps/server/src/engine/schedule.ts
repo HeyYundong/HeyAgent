@@ -82,10 +82,15 @@ export async function onTaskCron(db: Db, data: { taskId: string }) {
       return null
     }
   }
-  const { sessionId } = await startSessionImpl(db, {
-    taskId: task.id,
-    source: "cron",
-  })
+  let sessionId: string | null = null
+  try {
+    sessionId = (await startSessionImpl(db, { taskId: task.id, source: "cron" })).sessionId
+  } catch (error) {
+    // 开不了（例如任务没设复核模型）：重试也没用，不让 pg-boss 反复重跑；通知负责人，下次到点照样再试（和待办触发不了一样）
+    if (!(error instanceof EngineError)) throw error
+    console.warn(`[engine] ${task.id} 定时到点，没能开始运行：${error.message}`)
+    await notifyUsers(db, { userIds: [task.ownerId], title: `${task.title}：定时运行没能开始`, body: error.message, taskId: task.id })
+  }
   await db
     .update(t.tasks)
     .set({ nextRunAt: await nextOccurrence(db, task.scheduleCron) })

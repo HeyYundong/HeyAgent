@@ -56,10 +56,15 @@ describe("技能修改建议的合并", () => {
 })
 
 describe("输入校验", () => {
-  it("任务的目标必填，步骤可以不写", () => {
-    expect(taskInputSchema.safeParse({ title: "x", goal: "", steps: [], schedule: null }).success).toBe(false)
-    expect(taskInputSchema.safeParse({ title: "x", goal: "y", steps: [], schedule: null }).success).toBe(true)
-    expect(taskInputSchema.safeParse({ title: "x", goal: "y", steps: [], schedule: { cron: "bad", text: "" } }).success).toBe(false)
+  it("任务的目标必填，步骤可以不写；复核模型必填", () => {
+    const base = { title: "x", goal: "y", steps: [], schedule: null, reviewModelId: "m/review" }
+    expect(taskInputSchema.safeParse({ ...base, goal: "" }).success).toBe(false)
+    expect(taskInputSchema.safeParse(base).success).toBe(true)
+    expect(taskInputSchema.safeParse({ ...base, schedule: { cron: "bad", text: "" } }).success).toBe(false)
+    const missing = taskInputSchema.safeParse({ ...base, reviewModelId: undefined })
+    expect(missing.success).toBe(false)
+    expect(missing.error?.issues[0]?.message).toBe("选一个复核模型")
+    expect(taskInputSchema.safeParse({ ...base, reviewModelId: "  " }).error?.issues[0]?.message).toBe("选一个复核模型")
   })
 })
 

@@ -238,8 +238,7 @@ export async function buildSnapshot(
     },
     modelId: task.modelId,
     ...(task.verifyModelId ? { verifyModelId: task.verifyModelId } : {}),
-    // 结束后的轻量复核（run-outcome 第 5 节）：开关和模型冻进快照，复核模型为空时复核那一刻取默认复核模型
-    reviewEnabled: task.reviewEnabled,
+    // 结束后的复核（run-outcome 第 5 节）：模型冻进快照；旧任务没选复核模型的，复核那一刻取默认复核模型（开始时已经确认有）
     ...(task.reviewModelId ? { reviewModelId: task.reviewModelId } : {}),
     memories: memories
       .filter((memory) => memory.status === "active")
@@ -297,7 +296,7 @@ export function firstUserMessage(snapshot: SessionSnapshot): string {
         ? [`这次运行带了 ${snapshot.attachments.length} 个附件，清单见系统提示，用 file.read 读取。`]
         : []),
       snapshot.tools.some((tool) => tool.id === RUN_FINISH_TOOL_ID)
-        ? "只办这一件。结束时调用 run_finish 报结果（办成 / 部分办成 / 没办成），summary 写结果是什么、做了哪些改动，会写回派活单。"
+        ? "只办这一件。结束时调用 run_finish 报结果（办成 / 没办成），summary 写结果是什么、做了哪些改动，会写回派活单。"
         : "只办这一件。办完直接回复总结（结果是什么、做了哪些改动），这段总结会写回派活单。",
     ].join("\n")
   }
@@ -382,6 +381,7 @@ export async function startSessionInTx(
       id: t.tasks.id,
       enabled: t.tasks.enabled,
       ownerId: t.tasks.ownerId,
+      reviewModelId: t.tasks.reviewModelId,
     })
     .from(t.tasks)
     .where(eq(t.tasks.id, input.taskId))
@@ -411,6 +411,10 @@ export async function startSessionInTx(
   const runAttachments = files.filter(
     (file) => !(file.taskId === task.id && !file.sessionId)
   )
+
+  // 复核模型（run-outcome 第 5 节）：运行结束一定要复核，任务没选、也没有默认复核模型的不开始
+  if (!task.reviewModelId && (await tx.select({ modelId: t.modelDefaults.modelId }).from(t.modelDefaults).where(eq(t.modelDefaults.role, "review"))).length === 0)
+    throw new EngineError("BAD_REQUEST", "任务没设复核模型，先在任务里选一个")
 
   const now = new Date()
   const snapshot = await buildSnapshot(tx, input.taskId, {

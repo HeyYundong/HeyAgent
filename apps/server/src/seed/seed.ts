@@ -176,8 +176,9 @@ export async function seedDemo(db: Db, keyring: Keyring, options: SeedOptions): 
       }
     }
     await tx.insert(t.modelDefaults).values(Object.entries(proto.modelDefaults).map(([role, modelId]) => ({ role: role as "run" | "plan" | "verify", modelId, updatedById: "u-lin" })))
-    // 复核模型（run-outcome 5.2，用户 2026-10-20 指定）：模型列表里有它才设；没有就不复核，到「模型」页设
-    const [review] = await tx.select({ id: t.models.id }).from(t.models).where(eq(t.models.id, SEED_REVIEW_MODEL))
+    // 复核模型（run-outcome 5.2，用户 2026-10-20 指定）：模型列表里有它就用它；没有就用验收模型，演示库的任务都要有复核模型才能运行
+    const [found] = await tx.select({ id: t.models.id }).from(t.models).where(eq(t.models.id, SEED_REVIEW_MODEL))
+    const review = found ?? (proto.modelDefaults.verify ? { id: proto.modelDefaults.verify } : undefined)
     if (review) await tx.insert(t.modelDefaults).values({ role: "review", modelId: review.id, updatedById: "u-lin" })
 
     // ---------- 浏览器 ----------
@@ -302,6 +303,8 @@ export async function seedDemo(db: Db, keyring: Keyring, options: SeedOptions): 
         scheduleText: task.schedule?.text ?? null,
         nextRunAt: task.nextRunAt ? clock.at(task.nextRunAt) : null,
         modelId: task.modelId,
+        // 复核模型必填（2026-10-20）：用默认复核模型
+        reviewModelId: review?.id ?? null,
         createdAt: clock.at(task.createdAt),
         updatedAt: clock.at(task.createdAt),
       })

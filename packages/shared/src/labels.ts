@@ -11,6 +11,7 @@ import type {
   Risk,
   RunOutcome,
   RunOutcomeBy,
+  ReviewVerdict,
   RunStatus,
   SkillStatus,
   ToolSource,
@@ -86,9 +87,15 @@ export const runStatusLabel: Record<RunStatus, string> = {
 /** 运行 / 派活单的结果（run-outcome） */
 export const runOutcomeLabel: Record<RunOutcome, string> = {
   achieved: "办成",
-  partial: "部分办成",
   not_achieved: "没办成",
-  unverified: "没核实",
+}
+
+/** 复核报告里的结论；部分办成、说不准只出现在 2026-10-20 以前的旧报告里 */
+export const reviewVerdictLabel: Record<ReviewVerdict, string> = {
+  achieved: "办成",
+  not_achieved: "没办成",
+  partial: "部分办成",
+  unsure: "说不准",
 }
 
 /** 结果是谁定的 */
@@ -136,7 +143,7 @@ export const providerKindLabel: Record<ModelProviderKind, string> = { ollama: "O
 export const providerStatusLabel: Record<ProviderStatus, string> = { ok: "正常", error: "连不上", unconfigured: "未配置" }
 
 /** 各角色的默认模型（原型 models/data.ts 的 ROLES） */
-/** 必须配的三个聊天模型角色；图库的 embedding 模型（embed）、助手（assistant，可选）、复核（review，可选）单独选，见模型页「默认设置」 */
+/** 必须配的三个聊天模型角色；图库的 embedding 模型（embed）、助手（assistant，可选）、复核（review，新任务默认用的复核模型）单独选，见模型页「默认设置」 */
 export const modelRoles: { id: Exclude<ModelRole, "embed" | "assistant" | "review">; label: string; hint: string }[] = [
   { id: "run", label: "执行任务", hint: "每一步干活、调工具都用它，任务没写步骤时也由它自己探索步骤，花费主要在这里。" },
   { id: "plan", label: "规划", hint: "保存规则时把那句话翻译成程序能执行的结构；长对话压缩上下文时写摘要。" },

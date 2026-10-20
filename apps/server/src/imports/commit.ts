@@ -12,7 +12,7 @@ import { insertMemory } from "../data/config/memories.js"
 import { confirmRuleInTx, insertRule } from "../data/config/rules.js"
 import { changeSkillStatus, insertSkill, saveSkillVersion } from "../data/config/skills.js"
 import { insertTaskMemory } from "../data/config/task-memory.js"
-import { insertTask, setDispatchSources } from "../data/config/tasks.js"
+import { defaultReviewModelId, insertTask, setDispatchSources } from "../data/config/tasks.js"
 import { insertHttpTool, insertMcpServer } from "../data/config/tools.js"
 import * as t from "../db/schema.js"
 import { syncTaskSchedule } from "../engine/api.js"
@@ -182,14 +182,17 @@ async function commitInTx(tx: Tx, ctx: WriteCtx, importId: string, written: stri
     result.rules.push({ key: rule.key, id, how: "created", confirmed: ready })
   }
 
-  // ⑥ 任务：全部校验照手动新建（模型、验收模型不能同一家、技能要发布……）
+  // ⑥ 任务：全部校验照手动新建（模型、验收模型不能同一家、技能要发布……）。复核模型必填：都用默认复核模型
   const taskIdByKey = new Map<string, string>()
+  const reviewModelId = tasks.length ? await defaultReviewModelId(tx) : undefined
+  if (tasks.length && !reviewModelId) throw badRequest("还没有默认复核模型：导入的任务都要有复核模型，先到「模型」页设一个默认复核模型再导入")
   for (const task of tasks) {
     const parsed = taskInputSchema.safeParse({
       title: task.title,
       goal: task.goal,
       steps: task.steps.map((step) => ({ text: step.text, wait: step.wait, ...(step.checkpoint ? { checkpoint: step.checkpoint } : {}) })),
       modelId: task.modelId ?? undefined,
+      reviewModelId,
       ownerId: task.ownerId,
       // 已经读好的方案里可能还是 AI 写的说法：导入时统一换成系统按 cron 生成的
       schedule: task.schedule ? { cron: task.schedule.cron, text: cronText(task.schedule.cron) ?? task.schedule.cron } : null,

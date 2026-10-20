@@ -7,6 +7,7 @@ import {
   fmtDateTime,
   memoryId,
   workDoneEvent,
+  runOutcomeLabel,
   type BuiltinToolId,
   type HumanDetail,
   type SessionSnapshot,
@@ -674,11 +675,11 @@ const handlers: {
   async "run.finish"(_ctx, input) {
     const reason = input.reason?.trim()
     if (input.outcome !== "achieved" && !reason)
-      return fail(`outcome = ${input.outcome} 时要写 reason：缺了什么、为什么。补上 reason 再调一次`)
+      return fail(`outcome = ${input.outcome} 时要写 reason：拿到了什么、缺了什么、为什么。补上 reason 再调一次`)
     const summary = input.summary.trim()
     const evidence = input.evidence.trim()
     if (!summary || !evidence) return fail("summary 和 evidence 都要写：做了什么、结果在哪；对照目标逐条写依据")
-    const label = { achieved: "办成", partial: "部分办成", not_achieved: "没办成" }[input.outcome]
+    const label = runOutcomeLabel[input.outcome]
     return {
       output: `已记下：这次运行的结果是「${label}」${reason ? `（${reason}）` : ""}。运行到此结束，系统还会按检查点、要交回的结果${input.outcome === "achieved" ? "和复核" : ""}再核一遍。`,
       finish: { outcome: input.outcome, summary, evidence, ...(reason ? { reason } : {}), via: "finish" },

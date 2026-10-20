@@ -44,8 +44,10 @@ export const sessionSnapshotSchema = z.object({
   modelId: z.string(),
   /** M3：任务自己选的验收模型（没有就在验收时取默认验收模型） */
   verifyModelId: z.string().optional(),
-  /** run-outcome：结束后要不要轻量复核、用哪个模型（没有就在复核时取默认复核模型）。加这两个字段之前开始的运行没有 = 不复核 */
-  reviewEnabled: z.boolean().optional(),
+  /**
+   * run-outcome：复核模型（没有就在复核时取默认复核模型）。运行结束后一定复核（三方验收通过的除外）。
+   * 2026-10-20 以前的快照里还可能有 reviewEnabled（复核开关，已经去掉），读的时候忽略
+   */
   reviewModelId: z.string().optional(),
   memories: z.array(
     z.object({ id: z.string(), content: z.string(), appliesTo: z.string() })
@@ -415,13 +417,14 @@ export const builtinToolInputs = {
     reason: z.string().max(1000).optional().describe("outcome = not_done 时必填：为什么办不成"),
   }),
   // 报结果（每个任务都自带，run-outcome 第 3 节）：结束时调用，运行到此结束；结果按 docs/dev/run-outcome.md 第 4、5 节再核
+  // outcome 只有两种（2026-10-20 简化）；运行中途的模型可能还按旧说明传 partial（部分办成），照收，当没办成
   "run.finish": z.object({
     outcome: z
-      .enum(["achieved", "partial", "not_achieved"])
-      .describe("只看任务目标要的东西拿没拿到：achieved = 办成；partial = 只拿到一部分；not_achieved = 没拿到（包括确认「没有」）"),
+      .preprocess((value) => (value === "partial" ? "not_achieved" : value), z.enum(["achieved", "not_achieved"]))
+      .describe("只看任务目标要的东西拿没拿到：achieved = 办成（都拿到了）；not_achieved = 没办成（没拿到、只拿到一部分、确认「没有」都算）"),
     summary: z.string().min(1).max(4000).describe("做了什么、结果在哪（给人看的总结）"),
     evidence: z.string().min(1).max(4000).describe("对照目标逐条写依据：拿到了什么、在哪能看到；没拿到的写清楚"),
-    reason: z.string().max(2000).optional().describe("partial / not_achieved 必填：缺了什么、为什么"),
+    reason: z.string().max(2000).optional().describe("not_achieved 必填：拿到了什么、缺了什么、为什么"),
   }),
   // 报没完成（2026-10-19 起每个任务都自带，2026-10-20 起被 run.finish 取代）：只为旧运行快照保留，等价于 run.finish outcome = not_achieved
   "run.not_done": z.object({

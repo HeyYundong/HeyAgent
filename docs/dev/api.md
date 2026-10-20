@@ -1331,52 +1331,56 @@ claude mcp add --transport http heyagent-compare http://<host>:8080/api/compare/
 
 方案见 `docs/dev/run-outcome.md`。**状态只管流程，结果单独一列**：正常结束的运行状态都是 `done`（显示「已结束」），办没办成看 `outcome`。`incomplete` 不再写入（迁移 0024 改成 `done` + `outcome = not_achieved`，枚举值留着，`ENDED_RUN_STATUSES` 照旧认它）。
 
+**同一天简化（迁移 0026）：结果只有 `achieved` 办成 / `not_achieved` 没办成**。原来的 `partial`（部分办成）、`unverified`（没核实）都算没办成：迁移把旧数据改成 `not_achieved`，原因前面加「原来记「部分办成」：」「原来记「没核实」：」；库里的枚举值删不掉，留着不用。复核一定做（任务的复核开关 `reviewEnabled` 去掉，`tasks.review_enabled` 列删了），每个任务都要有复核模型。
+
 ### 18.1 新字段
 
 | 在哪 | 字段 |
 |---|---|
-| `SessionSummary` / `SessionRun`（`sessions.list` `sessions.get`） | `outcome?`（`achieved` 办成 / `partial` 部分办成 / `not_achieved` 没办成 / `unverified` 没核实；运行没结束时没有）、`outcomeReason?`、`outcomeBy?`（`agent` / `rule` / `review` / `verify` / `human`）、`review?`（复核报告 `RunReview`：`at modelId verdict? reason screenshot tokensIn tokensOut costUsd error? pending?`；`pending: true` = 复核还在跑） |
-| `WorkItem`（`work.list` `work.get` 等） | `outcome`、`outcomeReason`：单结束了才有（排队、在办的为 null）；办完的单也可能是 `unverified`。`failKind` 多了 `partial`（部分办成）、`missing_result`（必交的结果没交） |
+| `SessionSummary` / `SessionRun`（`sessions.list` `sessions.get`） | `outcome?`（`achieved` 办成 / `not_achieved` 没办成；运行没结束、或者结束了还在复核时没有）、`outcomeReason?`、`outcomeBy?`（`agent` / `rule` / `review` / `verify` / `human`）、`review?`（复核报告 `RunReview`：`at modelId verdict? reason screenshot tokensIn tokensOut costUsd error? pending?`；`pending: true` = 复核还在跑，页面上显示「复核中」；`verdict` 现在只写 `achieved` / `not_achieved`，2026-10-20 以前的旧报告可能是 `partial`（部分办成）/ `unsure`（说不准），照原样显示） |
+| `WorkItem`（`work.list` `work.get` 等） | `outcome`、`outcomeReason`：单结束了才有（排队、在办的为 null）。办完的单结果是办成；办完 + 没办成的只有旧单（迁移 0024 补的，或者原来「没核实」的）和人改过结果的。`failKind` 多了 `missing_result`（必交的结果没交）；`partial`（部分办成）只有旧单有，新的部分办成记 `not_done` |
 | `WorkRun`（`work.get` 的 `runs[]`） | `outcome` |
-| `TaskDef` / `TaskInput` | `reviewEnabled`（默认 true）、`reviewModelId?`（空 = 用默认复核模型；要是聊天模型，不要求和执行模型不同家）；`dispatch.results`（要交回的结果 `[{ name, description, required }]`，最多 20 个、名字不重复；旧数据没有 = 不要求，`TaskDef` 里可能没有这一项） |
-| `ModelDefaults` / `models.setDefaults` | `review?`：默认复核模型。不传不改，空字符串 = 不配（不复核） |
-| 快照 `SessionSnapshot` | `reviewEnabled?` `reviewModelId?`（没有 `reviewEnabled` 的旧快照不复核）；`dispatch.results?`（领单时冻进来） |
+| `TaskDef` | `reviewModelId?`（2026-10-20 以前建、没选复核模型、迁移时也没有默认复核模型的旧任务没有）；`dispatch.results`（要交回的结果 `[{ name, description, required }]`，最多 20 个、名字不重复；旧数据没有 = 不要求，`TaskDef` 里可能没有这一项） |
+| `TaskInput`（`tasks.create` `tasks.update`） | `reviewModelId` **必填**（非空，`选一个复核模型`；要是聊天模型，不要求和执行模型不同家）。没有 `reviewEnabled` 了（传了也不认） |
+| `ModelDefaults` / `models.setDefaults` | `review?`：默认复核模型 = 新任务预填的复核模型，也是没选复核模型的旧任务运行时用的。不传不改，空字符串 = 不配 |
+| 快照 `SessionSnapshot` | `reviewModelId?`（没有就在复核时取默认复核模型）；旧快照里的 `reviewEnabled` 读的时候忽略；`dispatch.results?`（领单时冻进来） |
 
 ### 18.2 接口
 
 | 接口 | 权限 | 输入 → 输出 |
 |---|---|---|
-| `sessions.list` | 登录即可 | 多一个可选的 `outcome`（一种或几种），只筛列表的行 |
+| `sessions.list` | 登录即可 | 多一个可选的 `outcome`（`achieved` / `not_achieved`，一种或几种），只筛列表的行 |
 | `work.list` | 同前 | 多一个可选的 `outcome`（一种或几种）；`counts` 照旧只按状态算，不受结果筛选影响 |
-| 新 `sessions.setOutcome` | 任务负责人、主管 | `setOutcomeInputSchema { id, outcome, reason }`（理由必填，≤500 字）→ `{ sessionId, outcome }`。只能改已经结束的运行（没结束 → `BAD_REQUEST`）；只改结果列（`outcome_by = human`），不重开运行；追加过程记录（`human`「某某把结果改成「办成」」，详情写理由和原来的结果）；审计 `session.set_outcome`。被派的单（还是这次运行的、已经结束的）跟着改 `outcome / outcomeReason`，不改状态 |
+| 新 `sessions.setOutcome` | 任务负责人、主管 | `setOutcomeInputSchema { id, outcome: achieved \| not_achieved, reason }`（理由必填，≤500 字）→ `{ sessionId, outcome }`。已经结束的运行都能改（已结束、出错、取消的都行；没结束 → `BAD_REQUEST`）；只改结果列（`outcome_by = human`），不重开运行；复核还在跑时改了的，复核回来不覆盖；追加过程记录（`human`「某某把结果改成「办成」」，详情写理由和原来的结果）；审计 `session.set_outcome`。被派的单（还是这次运行的、已经结束的）跟着改 `outcome / outcomeReason`，不改状态 |
+| `engine.runNow` 等开始运行的路径 | 同前 | 任务没选复核模型、也没有默认复核模型 → `BAD_REQUEST`「任务没设复核模型，先在任务里选一个」，不开始。定时到点开不了的通知负责人「<任务>：定时运行没能开始」；派活领单开不了的单记没办成（`failKind = error`，`outcome = not_achieved`，原因「没能开始运行：…」）；待办触发照旧通知 |
 
 ### 18.3 收尾怎么定结果
 
-- 内置工具 `run.finish`「收尾报结果」（`run_finish`，read，每个任务都自带、同步进 `tools` 表、`alwaysOn`）：`{ outcome: achieved | partial | not_achieved, summary, evidence, reason? }`；`partial` / `not_achieved` 没写 `reason` → `isError`，运行不结束。调了它运行就到此结束：`partial` / `not_achieved` 直接收尾；`achieved` 也算「说做完了」，先过三方验收的规则。旧快照里的 `run.not_done` 照旧能用（= `not_achieved`，`outcome_by = agent`），它不再同步进 `tools` 表。
-- 只回文字、没调 `run.finish`（快照里有 `run.finish` 时）：第一次追加一条 user 消息「要结束请调用 run_finish 报结果（办成 / 部分办成 / 没办成），并对照目标写依据。」接着跑（过程记录 `plan`「agent 只回了文字、没报结果，提醒它调用 run_finish」，标记存在 `sessions.rule_state.finishNudged`，挂起再继续也只提醒一次）；再回文字就按「说做完了、没报结果」收尾。
-- 硬规则（`engine/outcome.ts`，在收尾的事务里），取最低（没办成 < 部分办成 < 没核实 < 办成）：agent 的报告（`run.finish` / `run.not_done` / 这次运行 `work.report not_done`）；检查点（有没达成的、全部跳过 → 没办成；部分跳过 → 部分办成；三方验收通过的不按检查点判）；被派的运行必填的结果没用 `work.report` 交（值为空也算没交；字段名末尾多了单位括号、大小写不同照样认）→ 没办成，原因「缺结果：价格、链接」。同样低的几条原因用「；」连起来。
-- 没有降低、三方验收通过 → 办成（`verify`；负责人在验收争议里判通过的记 `human`）；agent 报办成且检查点全部达成 → 办成（`rule`）；其余「办成」没有依据 → 复核，或者（不复核时）没核实（`rule`，原因写为什么没复核：任务关了复核 / 没配复核模型 / 这次运行开始时还没有复核）。
-- 出错、取消、人选不继续 → 状态 `failed`，结果没办成（`rule`，原因 = 错误信息）；验收争议判失败 → 没办成（`human`）。
-- 结束事件（`done`）的标题：「agent 报没办成」「agent 报办成，结果记没办成」「agent 报办成，等 AI 复核」「agent 说做完了（没报结果）」「验收通过，运行结束」……详情是 agent 的报告（结果、总结、依据、原因）和「结果：…（原因）」。
+- 内置工具 `run.finish`「收尾报结果」（`run_finish`，read，每个任务都自带、同步进 `tools` 表、`alwaysOn`）：`{ outcome: achieved | not_achieved, summary, evidence, reason? }`；`not_achieved` 没写 `reason` → `isError`，运行不结束。运行中途的模型按旧说明传 `partial` 照收，当 `not_achieved`（给模型看的 JSON Schema 里只有两种）。调了它运行就到此结束：`not_achieved` 直接收尾；`achieved` 也算「说做完了」，先过三方验收的规则。旧快照里的 `run.not_done` 照旧能用（= `not_achieved`，`outcome_by = agent`），它不再同步进 `tools` 表。
+- 只回文字、没调 `run.finish`（快照里有 `run.finish` 时）：第一次追加一条 user 消息「要结束请调用 run_finish 报结果（办成 / 没办成），并对照目标写依据。」接着跑（过程记录 `plan`「agent 只回了文字、没报结果，提醒它调用 run_finish」，标记存在 `sessions.rule_state.finishNudged`，挂起再继续也只提醒一次）；再回文字就按「说做完了、没报结果」收尾，交给复核。
+- 硬规则（`engine/outcome.ts`，在收尾的事务里），有一条不过就是没办成（原因用「；」连起来，谁定的按 agent 报的 > 缺结果 > 检查点）：agent 的报告（`run.finish` / `run.not_done` / 这次运行 `work.report not_done`）；检查点有没达成的、全部跳过的、部分跳过的（三方验收通过的不按检查点判）；被派的运行必填的结果没用 `work.report` 交（值为空也算没交；字段名末尾多了单位括号、大小写不同照样认）→ 原因「缺结果：价格、链接」，`failKind = missing_result`。
+- 硬规则都过了：三方验收通过 → 办成（`verify`；负责人在验收争议里判通过的记 `human`），不复核；其余（agent 说办成了，检查点全部达成也一样）→ 一定复核。复核模型 = `snapshot.reviewModelId` ?? 默认复核模型，都没有 → 没办成（`rule`，「没配复核模型，没能确认办成」）。
+- 出错、取消、人选不继续 → 状态 `failed`，结果没办成（原因 = 错误信息；出错的 `rule`，人取消、人选不继续的 `human`）；验收争议判失败 → 没办成（`human`）。
+- 结束事件（`done`）的标题：「agent 报没办成」「agent 报办成，结果记没办成」「agent 报办成，等 AI 复核」「agent 说做完了（没报结果），等 AI 复核」「验收通过，运行结束」……详情是 agent 的报告（结果、总结、依据、原因）和「结果：…（原因）」（等复核的没有这一句）。
 
-### 18.4 轻量复核（`engine/review.ts`）
+### 18.4 复核（`engine/review.ts`）
 
-- 什么时候跑：收尾事务之后、在 worker 上（`finishRun` 里），硬规则的结论是办成 / 部分办成、快照 `reviewEnabled = true`、没有三方验收通过、有复核模型（`snapshot.reviewModelId` ?? 默认复核模型）。收尾的事务先写结果（办成没依据的先写「没核实」，原因「等 AI 复核」）和 `review = { pending: true, at, modelId, … }`。
-- 输入：任务、目标、检查点（状态、记录、跳过理由）、派活参数 / 要交回的结果 / 交回的结果、agent 的报告、产物摘录（最多 4 个）、最近 30 条过程记录（工具调用输入输出各截 300 字）、最后一张截图（复核模型 `vision` 才带；不能看图时报告里写一句）；总长超过 4 万字从中间截。`callStructured` 输出 `{ verdict: achieved | partial | not_achieved | unsure, reason }`，超时 120 秒。
-- 结论：`min(硬规则的结论, 复核结论)`，`unsure` 记没核实；复核改低了或者确认了的 `outcome_by = review`，否则保留硬规则那边的。复核出错：结果没核实（或者保留更低的），`review.error` 写原因，不重试，不影响运行状态。复核期间负责人手动改过结果的，不覆盖。
-- 写 `sessions.review`、过程记录 `verify`「AI 复核：办成」「AI 复核：说不准，结果记没核实」「AI 复核出错，结果记没核实」（标题都以「AI 复核」开头），复核的 token 和花费加进运行。
-- 被派的运行：复核完才结算派活单、叫醒派活方。清扫（`work.sweep`）不结算复核中的运行；复核标记超过 10 分钟（`REVIEW_PENDING_TIMEOUT_MS`，worker 中途没了）的，清扫清掉标记、`review.error` 写「复核 10 分钟没有结果…」、过程记录「AI 复核超时没有结果，结果按硬规则的结论」，再按现在的结果结算单。没被派的运行同样清掉过时的标记。
+- 什么时候跑：收尾事务之后、在 worker 上（`finishRun` 里），硬规则说办成、没有三方验收通过时一定跑。收尾的事务把结果写成空（`outcome / outcome_reason / outcome_by = null`）和 `review = { pending: true, at, modelId, … }`，页面显示「复核中」。
+- 输入：任务、目标、检查点（状态、记录、跳过理由）、派活参数 / 要交回的结果 / 交回的结果、agent 的报告、产物摘录（最多 4 个）、最近 30 条过程记录（工具调用输入输出各截 300 字）、最后一张截图（复核模型 `vision` 才带；不能看图时报告里写一句）；总长超过 4 万字从中间截。`callStructured` 输出 `{ verdict: achieved | not_achieved, reason }`，超时 120 秒。提示词：证据不足、拿不准都判 `not_achieved`，`reason` 写缺什么。
+- 结论：复核判办成 → 办成，否则没办成，都记 `outcome_by = review`、原因是复核的理由。复核出错（模型报错、超时）**重试一次**，两次的用量都算；还出错 → 没办成，原因「复核出错，没能确认办成：<错误>」，`review.error` 写两次的错误，不影响运行状态。复核期间负责人手动改过结果的，不覆盖。
+- 写 `sessions.review`、过程记录 `verify`「AI 复核：办成」「AI 复核：没办成」「AI 复核出错，结果记没办成」（标题都以「AI 复核」开头），复核的 token 和花费加进运行。
+- 被派的运行：复核完才结算派活单、叫醒派活方。清扫（`work.sweep`）不结算复核中的运行；复核标记超过 10 分钟（`REVIEW_PENDING_TIMEOUT_MS`，worker 中途没了）的，清扫清掉标记、`review.error` 写「复核 10 分钟没有结果（worker 可能中途重启了）」；结果还空着的记没办成（`review`，原因「复核没有结果（worker 可能中途重启了），没能确认办成」），过程记录「AI 复核超时没有结果，结果记没办成」，通知负责人「<任务>：没办成」；再结算单（没办成，`not_done`，不重试）。没被派的运行同样清掉过时的标记、记没办成。
 
 ### 18.5 通知和派活单
 
-- 没办成、部分办成：和失败一样通知负责人（标题「<任务>：没办成」「<任务>：部分办成」，正文是原因；被派的也发）。没核实：「<任务>：运行结束，没核实」，不推送；办成：「<任务>：办成」，不推送。被派的运行办成、没核实不发通知。
-- 单跟着运行的结果走（`settleWorkItemInTx` 的 `outcome`）：办成 → `done / achieved`；没核实 → `done / unverified`；部分办成 → `failed / partial`；没办成 → `failed / not_done`（缺结果的 `missing_result`）；这几种都不重试，单上照样写总结、产物、报的结果。运行出错 → 照旧重试，最终没办成的 `outcome = not_achieved`、原因 = 错误；排队等重试的清空结果。不办了 → `outcome = not_achieved`、原因 = 「某某点了不办了」；重办清空结果。
-- 叫醒派活方的一句话：「W-57「标题」办完（没核实：原因）：总结… · 结果：…」「W-57「标题」没办成（部分办成）：原因」；事件数据多 `outcome`、`outcomeReason`。`work.list`（agent 用的）每行同样带上：办完的写「，结果没核实（原因）」，部分办成写「部分办成（原因）」；`partial` / `missing_result` / `not_done` 不写「等人处理」。
-- 系统提示：被派来的运行「派来的活」一节写「办不成…就调用 run_finish 报没办成并写清原因」，有要交回的结果时逐条列出（必填 / 可选、说明）并写「必填的没交，这张单记「没办成」」；第一条消息改成「结束时调用 run_finish 报结果…」。派活方「可以派活给」一节加「拿到没办成或没核实的单，要自己判断要不要重派或者报给人」。`work.report not_done` 照旧认（返回文字改成让它接着调 run_finish 报没办成）。
+- 没办成：和失败一样通知负责人（标题「<任务>：没办成」，正文是原因；被派的也发）。办成：「<任务>：办成」，不推送；被派的运行办成不发通知。
+- 单跟着运行的结果走（`settleWorkItemInTx` 的 `outcome`）：办成 → `done / achieved`；没办成 → `failed / not_done`（缺结果的 `missing_result`），不重试，单上照样写总结、产物、报的结果。运行出错 → 照旧重试，最终没办成的 `outcome = not_achieved`、原因 = 错误；排队等重试的清空结果。不办了 → `outcome = not_achieved`、原因 = 「某某点了不办了」；重办清空结果。清扫补写时，运行是人取消的、人选了不继续的、人判验收失败的（`outcome_by = human`）不重试（`cancelled_run`）。
+- 叫醒派活方的一句话：「W-57「标题」办完（办成）：总结… · 结果：…」「W-57「标题」没办成：原因」；办完 + 没办成的旧单写「办完（没办成：原因）」。事件数据多 `outcome`、`outcomeReason`。`work.list`（agent 用的）每行同样带上：办完 + 没办成的写「，结果没办成（原因）」；`partial` / `missing_result` / `not_done` 不写「等人处理」。
+- 系统提示：被派来的运行「派来的活」一节写「办不成…就调用 run_finish 报没办成并写清原因」，有要交回的结果时逐条列出（必填 / 可选、说明）并写「必填的没交，这张单记「没办成」」；第一条消息「结束时调用 run_finish 报结果（办成 / 没办成）…」。派活方「可以派活给」一节写「每张单有结果（办成 / 没办成）和原因：拿到没办成的单，看原因（缺了什么）自己判断要不要重派或者报给人」。`work.report not_done` 照旧认。
 
-### 18.6 补跑复核：`pnpm --filter @heyagent/server outcome:review`
+### 18.6 补跑复核（已去掉）
 
-容器里 `node dist/scripts/outcome-review.js`。列出已结束、结果没核实、不在复核中的运行（最近结束的在前，`--limit` 默认 200），按复核模型的价格估花费（每条按输入 1 万、输出 300 token 估）；加 `--yes` 才真跑。只写结果列、复核报告、一条过程记录（「AI 复核：…（命令补跑）」）；被派的单只跟着改结果。不改状态、不发通知、不叫醒派活方；复核的花费只记在复核报告里，不加进运行的花费。
+原来的命令 `outcome:review`（对「没核实」的旧运行补跑复核）2026-10-20 删了：迁移 0026 已经把没核实都改成没办成，没有要补跑的了。
 
 ### 18.7 审计
 

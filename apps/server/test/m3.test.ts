@@ -12,7 +12,7 @@ import { recordsFor } from "../src/engine/checkpoint-sync.js"
 import { ruleHook, urlsOf } from "../src/engine/rules.js"
 import { normalizeRuleOutput } from "../src/engine/rule-compile.js"
 import { maskSecretFields } from "../src/engine/secrets.js"
-import { login, query } from "./helpers.js"
+import { login, query, TEST_REVIEW_MODEL } from "./helpers.js"
 import {
   call,
   createTask,
@@ -165,7 +165,7 @@ describe("规则翻译：保存时翻译，人确认后才生效", () => {
     expect(rule.compile).toMatchObject({ status: "pending", effective: false, understood: compiled.data.understood })
 
     // 没确认：建任务时选不了
-    const task = { title: "测试", goal: "测试", steps: [], schedule: null, ruleIds: [id], modelId: "openrouter/anthropic/claude-haiku-5.5" }
+    const task = { title: "测试", goal: "测试", steps: [], schedule: null, ruleIds: [id], modelId: "openrouter/anthropic/claude-haiku-5.5", reviewModelId: TEST_REVIEW_MODEL }
     expect((await mutate(ctx.app, "tasks.create", lin, task)).error?.message).toContain("还没生效")
     const confirmed = await mutate(ctx.app, "rules.confirm", lin, { id })
     expect(confirmed.data).toEqual({ id, understood: compiled.data.understood })
@@ -219,7 +219,7 @@ describe("规则翻译：保存时翻译，人确认后才生效", () => {
     expect(rule.compile).toMatchObject({ status: "unsupported", effective: false, reason: "「内容可疑」要理解内容才能判断" })
     expect((await mutate(ctx.app, "rules.confirm", lin, { id })).error?.message).toContain("不支持")
     expect(
-      (await mutate(ctx.app, "tasks.create", lin, { title: "测试", goal: "测试", steps: [], schedule: null, ruleIds: [id], modelId: "openrouter/anthropic/claude-haiku-5.5" })).error?.message
+      (await mutate(ctx.app, "tasks.create", lin, { title: "测试", goal: "测试", steps: [], schedule: null, ruleIds: [id], modelId: "openrouter/anthropic/claude-haiku-5.5", reviewModelId: TEST_REVIEW_MODEL })).error?.message
     ).toContain("v1 还不支持")
 
     // 只给文字：预览，不存
@@ -258,6 +258,8 @@ describe("规则执行：调工具前拦下、审批（批准后执行、拒绝�
     const before = await ctx.db.select().from(t.notifications)
     const sessionId = await runNow(taskId)
     await waitStatus(ctx.db, sessionId, "done")
+    // 等复核完：结果和「办成」通知在复核以后才写
+    await waitFor(async () => (await sessionRow(ctx.db, sessionId))?.outcome)
     expect(script.promptText(1)).toContain("这个任务不许发通知")
     expect(script.promptText(1)).toContain("这个任务不收记忆")
     const events = await eventsOf(ctx.db, sessionId)
@@ -266,7 +268,7 @@ describe("规则执行：调工具前拦下、审批（批准后执行、拒绝�
     expect(ruleEvents.find((event) => event.title === "拦下：通知员工")!.detail).toContain("规则「不许发通知」")
     // 没有发出通知（只有完成通知）、没有生成记忆
     const after = await ctx.db.select().from(t.notifications)
-    expect(after.filter((row) => !before.some((old) => old.id === row.id)).map((row) => row.title)).toEqual([expect.stringContaining("没核实")])
+    expect(after.filter((row) => !before.some((old) => old.id === row.id)).map((row) => row.title)).toEqual([expect.stringContaining("办成")])
     expect(await ctx.db.select().from(t.memories).where(eq(t.memories.sourceSessionId, sessionId))).toEqual([])
     // 系统提示里写的是「系统理解为」
     expect(JSON.stringify(script.prompts[0]!.prompt)).toContain("拦下，告诉 agent「这个任务不许发通知」")

@@ -91,11 +91,17 @@ describe("场景 1：调内置工具再结束", () => {
       steps: CHECKPOINT_STEP,
     })
     const sessionId = await runNow(taskId)
-    const done = await waitStatus(ctx.db, sessionId, "done")
+    await waitStatus(ctx.db, sessionId, "done")
+    // 等复核完（run-outcome：结束后一定复核，默认的测试复核模型判办成，花费 0.0004 记进这次运行）
+    const done = await waitFor(async () => {
+      const row = await sessionRow(ctx.db, sessionId)
+      return row?.outcome ? row : undefined
+    })
+    expect(done).toMatchObject({ outcome: "achieved", outcomeBy: "review" })
     expect(done.endedAt).toBeTruthy()
     expect(done.stepCount).toBe(2)
-    expect(done.costUsd).toBeCloseTo(0.002, 6)
-    expect(done.tokensIn).toBe(200)
+    expect(done.costUsd).toBeCloseTo(0.0024, 6)
+    expect(done.tokensIn).toBe(300) // 两步各 100，复核 100
 
     // 工具定义不带 execute，名字里的点换成了下划线；每个任务都自带 3 个内置工具
     const toolNames = (script.prompts[0]!.tools ?? []).map((tool) => tool.name)
@@ -128,13 +134,13 @@ describe("场景 1：调内置工具再结束", () => {
       "think",
       "tool",
       "done",
+      "verify", // 结束后的 AI 复核
     ])
     const roles = (await messagesOf(ctx.db, sessionId)).map(
       (message) => message.role
     )
     expect(roles).toEqual(["user", "assistant", "tool", "assistant", "tool"])
-    // 检查点全部达成 + 报办成（没配复核模型）：结果办成
-    expect(done).toMatchObject({ outcome: "achieved", outcomeBy: "rule" })
+    // 检查点全部达成 + 报办成：还要复核，测试复核模型判办成
 
     // 界面读的 sessions.get 能读出来（形状照 M0 的契约）
     const run = await query(ctx.app, "sessions.get", wang, { id: sessionId })

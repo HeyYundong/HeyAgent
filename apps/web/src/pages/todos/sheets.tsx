@@ -23,7 +23,7 @@ import { trpc } from "@/lib/trpc"
 import { focusedCheckpoint, money } from "@/pages/tasks/parts"
 import { VerificationReport } from "@/pages/tasks/verification"
 import { ResumeButton } from "@/pages/tasks/run-actions"
-import { addDaysIso, boardColumns, eventTimeText, findById, fmtDateTime, fmtShort, outcomeOf, outcomeReasonOf, suspendedRun, triggerText } from "@heyagent/shared"
+import { addDaysIso, boardColumns, eventTimeText, findById, fmtDateTime, fmtShort, isReviewing, outcomeOf, outcomeReasonOf, suspendedRun, triggerText } from "@heyagent/shared"
 import type { BoardColumn, HumanTodo, RunEventKind, SessionSummary, TaskDef, Trigger } from "@heyagent/shared"
 
 import { useModels, useSessionQuery, useStaffName } from "@/lib/data"
@@ -104,7 +104,7 @@ export function RunSheet({ run, task, column, note, canAct, isAdmin, open, onClo
       open={open} onClose={onClose} title={task.title}
       badges={<>
         <Badge variant={column === "done" ? "outline" : "secondary"}>{findById(boardColumns, column)?.name}</Badge>
-        {column === "done" && <OutcomeBadge outcome={outcomeOf(run)} reason={outcomeReasonOf(run)} />}
+        {column === "done" && <OutcomeBadge outcome={outcomeOf(run)} reason={outcomeReasonOf(run)} reviewing={isReviewing(run)} />}
       </>}
       meta={dots(run.id, modelName(run.modelId), `开始 ${fmtShort(run.startedAt)}`, `${k(run.tokensIn)} / ${k(run.tokensOut)} token`, money(run.costUsd))}
       footer={<>

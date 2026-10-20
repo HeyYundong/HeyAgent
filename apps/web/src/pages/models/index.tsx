@@ -194,9 +194,9 @@ function DefaultsSection({ providers, defaults, readOnly, nameOf, saving, onSave
         <Field>
           <div className="flex items-center gap-1">
             <FieldLabel htmlFor="default-review">复核模型</FieldLabel>
-            <HelpTip>运行结束后用它轻量复核一次：看目标、检查点、agent 的报告、最后几步和最后一张截图，判办成、部分办成、没办成还是说不准。只会往低判。用便宜、能看图的模型就够，每次不到 0.001 美元。任务里可以单独换。</HelpTip>
+            <HelpTip>新任务默认用的复核模型（每个任务都必须有复核模型，任务里可以换）；以前没选复核模型的旧任务运行时也用它。运行结束后它看目标、检查点、agent 的报告、最后几步和最后一张截图，判办成还是没办成，证据不足判没办成。用便宜、能看图的模型就够，每次不到 0.001 美元。</HelpTip>
           </div>
-          <ModelCombobox id="default-review" className="w-full sm:w-96" models={models} value={draft.review ?? ""} disabled={readOnly} clearable placeholder="不选（不复核，agent 说办成的记「没核实」）"
+          <ModelCombobox id="default-review" className="w-full sm:w-96" models={models} value={draft.review ?? ""} disabled={readOnly} clearable placeholder="不选（新任务要自己选，没选复核模型的旧任务不能运行）"
             onValueChange={(next) => setDraft({ ...draft, review: next || undefined })} />
         </Field>
         <Field>

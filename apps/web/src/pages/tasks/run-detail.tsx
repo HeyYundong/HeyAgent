@@ -21,7 +21,7 @@ import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Spinner } from "@/components/ui/spinner"
 import { Trace, TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigger, TraceDescription, TraceIcon, TraceLine, TraceTitle } from "@/components/ui/trace"
-import { can, eventTimeText, fmtDateTime, isRunEnded, outcomeOf, outcomeReasonOf, WORK_DISPATCH_TOOL_ID } from "@heyagent/shared"
+import { can, eventTimeText, fmtDateTime, isReviewing, isRunEnded, outcomeOf, outcomeReasonOf, WORK_DISPATCH_TOOL_ID } from "@heyagent/shared"
 import type { RunEvent, RunEventKind, SessionSummary, TaskDef, Verification } from "@heyagent/shared"
 
 import { CodeView } from "@/components/files"
@@ -67,7 +67,7 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionSummary }
   return (
     <DetailPanel
       title={`${run.id} · ${task.title}`}
-      badges={<><RunStatusBadge status={run.status} />{ended && <OutcomeBadge outcome={outcomeOf(run)} reason={outcomeReasonOf(run)} />}{run.status === "running" && <span className="text-xs text-muted-foreground"><Elapsed since={run.startedAt} /></span>}</>}
+      badges={<><RunStatusBadge status={run.status} />{ended && <OutcomeBadge outcome={outcomeOf(run)} reason={outcomeReasonOf(run)} reviewing={isReviewing(run)} />}{run.status === "running" && <span className="text-xs text-muted-foreground"><Elapsed since={run.startedAt} /></span>}</>}
       meta={<RunMeta run={run} rest={`模型 ${modelName(run.modelId)} · 输入 ${num(run.tokensIn)} / 输出 ${num(run.tokensOut)} token · 花费 ${money(run.costUsd)} · 开始 ${fmtDateTime(run.startedAt)} · ${run.endedAt ? `结束 ${fmtDateTime(run.endedAt)}` : "还没结束"}`} />}
       actions={<>
         <RunSpaceButton run={run} />
@@ -144,7 +144,7 @@ function eventTag(event: RunEvent): { label: string; variant: "outline" | "secon
 
 function EventRow({ event, run, running }: { event: RunEvent; run: SessionSummary; running: boolean }) {
   const toolName = useToolName()
-  // 没办成、部分办成、没核实的运行：结束事件（kind = done）用感叹号，不用打勾
+  // 没办成的运行：结束事件（kind = done）用感叹号，不用打勾
   const outcome = outcomeOf(run)
   const Icon = event.kind === "done" && outcome && outcome !== "achieved" ? CircleAlertIcon : EVENT_ICON[event.kind]
   const at = eventTimeText(event.at, run)

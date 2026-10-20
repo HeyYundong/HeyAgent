@@ -74,7 +74,7 @@ export function boardCards(data: { runs: readonly SessionSummary[]; tasks: reado
     if (!task) continue
     // 等人处理的运行，由下面「要人办的事」的卡片代表，不重复放；出错、没完成（旧状态）的不上看板（在「会话」页看）
     if (run.status === "needs_human" || run.status === "failed" || run.status === "incomplete") continue
-    // 已结束的只放每个任务最近一次（卡上写结果：办成 / 部分办成 / 没办成 / 没核实），更早的历史在「会话」页
+    // 已结束的只放每个任务最近一次（卡上写结果：办成 / 没办成，复核还在跑的写复核中），更早的历史在「会话」页
     if (run.status === "done" && runs.some((other) => other.taskId === run.taskId && other.status === "done" && other.startedAt > run.startedAt)) continue
     cards.push({ kind: "run", id: run.id, column: run.status, run, task })
   }
@@ -130,16 +130,21 @@ export function runNow(run: SessionSummary, humanItems: readonly HumanItem[], st
   const outcome = outcomeOf(run)
   const reason = outcome && outcome !== "achieved" ? outcomeReasonOf(run) : undefined
   const when = run.endedAt ? fmtDateTime(run.endedAt) : ""
-  return { label: "结果", text: [outcome ? runOutcomeLabel[outcome] : "已结束", reason, when].filter(Boolean).join(" · ") }
+  return { label: "结果", text: [outcome ? runOutcomeLabel[outcome] : isReviewing(run) ? "复核中" : "已结束", reason, when].filter(Boolean).join(" · ") }
 }
 
 /**
- * 运行的结果（run-outcome）：结束了才有。接口没给 outcome 的老数据：没完成（旧状态）、出错的算没办成（和迁移 0024 补的一样），
- * 其余的不猜，返回 undefined（页面上写「—」）
+ * 运行的结果（run-outcome）：结束了、复核完了才有。接口没给 outcome 的老数据：没完成（旧状态）、出错的算没办成（和迁移 0024 补的一样），
+ * 其余的不猜，返回 undefined（页面上写「—」，复核还在跑的写「复核中」）
  */
 export function outcomeOf(run: Pick<SessionSummary, "status" | "outcome">): RunOutcome | undefined {
   if (run.outcome) return run.outcome
   return run.status === "incomplete" || run.status === "failed" ? "not_achieved" : undefined
+}
+
+/** 运行已经结束、复核还在跑（结果先空着）：页面上显示「复核中」 */
+export function isReviewing(run: Pick<SessionSummary, "status" | "outcome" | "review">): boolean {
+  return run.status === "done" && !run.outcome && Boolean(run.review?.pending)
 }
 
 /** 结果的原因：outcomeReason（没办成缺了什么、复核的理由、人改的理由）；老数据退回没完成时的说明、出错的标题 */

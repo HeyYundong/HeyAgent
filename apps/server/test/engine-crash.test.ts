@@ -179,6 +179,8 @@ beforeAll(async () => {
     priceIn: 1,
     priceOut: 1,
   })
+  // 运行结束一定复核（run-outcome）：默认复核模型也用这个假模型。复核的请求不带工具，假服务没准备那一步，复核出错（记没办成），不影响这里看的流程
+  await db.insert(t.modelDefaults).values({ role: "review", modelId: "fakeor/fake/model" }).onConflictDoUpdate({ target: t.modelDefaults.role, set: { modelId: "fakeor/fake/model" } })
 }, 120_000)
 
 afterAll(async () => {
@@ -269,9 +271,11 @@ describe("场景 9：worker 中途被杀掉", () => {
     expect(done.id).toBe(sessionId)
     expect(done.stepCount).toBe(2)
     expect(done.costUsd).toBeCloseTo(0.0005, 6) // 只算真正有结果的两次（按 usage.cost）
+    // 等复核完（复核的请求不带工具，不算在运行的请求里），免得复核的请求落到下一个测试
+    await waitFor(async () => (await db.select({ outcome: t.sessions.outcome }).from(t.sessions).where(eq(t.sessions.id, sessionId)))[0]?.outcome, { timeout: 60_000, what: "复核完" })
 
     // 第三次请求（worker B 发的）带着完整的历史：第一步的工具调用和结果都在
-    expect(requests).toHaveLength(3)
+    expect(requests.filter((request) => request.tools)).toHaveLength(3)
     const history = JSON.stringify(requests[2]!.messages)
     expect(history).toContain("call_1")
     expect(history).toContain("已勾上第 1 个检查点")
@@ -316,7 +320,8 @@ describe("场景 9：worker 中途被杀掉", () => {
         `${(error as Error).message}\n${workerA!.logs.join("")}\n${workerB!.logs.join("")}`
       )
     })
-    await waitFor(async () => requests.length === 2, {
+    // 只数运行的请求（带工具）：结束后的复核请求不带工具
+    await waitFor(async () => requests.filter((request) => request.tools).length === 2, {
       what: "第二个 worker 重新调模型",
     })
     workerB.kill("SIGTERM")

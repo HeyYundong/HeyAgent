@@ -212,12 +212,11 @@ function BrowserConfig({ task }: { task: TaskDef }) {
   )
 }
 
-/** 「结束后 AI 复核 · DeepSeek V4.1 Flash（默认）」；关着、已有三方验收、没配复核模型的写清楚 */
+/** 「结束后 AI 复核 · DeepSeek V4.1 Flash」；有三方验收、旧任务没选复核模型（用默认的 / 没有默认的不能运行）的写清楚 */
 function reviewText(task: TaskDef, verifies: boolean, modelName: (id: string) => string, defaultReview?: string) {
-  if (verifies) return "已有三方验收，不复核"
-  if (task.reviewEnabled === false) return "关了：结束后不复核"
-  const model = task.reviewModelId ? modelName(task.reviewModelId) : defaultReview ? `${modelName(defaultReview)}（默认）` : undefined
-  return model ? `结束后 AI 复核 · ${model}` : "开着，但还没配复核模型：不会复核"
+  const model = task.reviewModelId ? modelName(task.reviewModelId) : defaultReview ? `${modelName(defaultReview)}（没选，用默认的）` : undefined
+  if (!model) return "还没选复核模型：运行不了，先改任务选一个"
+  return verifies ? `三方验收通过的直接办成，其余结束后 AI 复核 · ${model}` : `结束后 AI 复核 · ${model}`
 }
 
 const ConfigLine = ({ label, children }: { label: string; children: React.ReactNode }) => (

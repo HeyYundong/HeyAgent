@@ -11,10 +11,13 @@ import { assertCan, audit, badRequest, conflict, nextNo, notFound, type DbOrTx, 
 
 export type TaskInput = z.output<typeof taskInputSchema>
 
-async function defaultModel(db: DbOrTx, role: "run" | "verify") {
+async function defaultModel(db: DbOrTx, role: "run" | "verify" | "review") {
   const [row] = await db.select({ modelId: t.modelDefaults.modelId }).from(t.modelDefaults).where(eq(t.modelDefaults.role, role))
   return row?.modelId
 }
+
+/** 默认复核模型：助手、导入建任务时没给复核模型就用它（没有默认的要人选） */
+export const defaultReviewModelId = (db: DbOrTx) => defaultModel(db, "review")
 
 /**
  * 检查模型和关联的配置都存在；执行模型不许和验收模型同一家。
@@ -39,13 +42,12 @@ async function checkTask(db: DbOrTx, input: TaskInput, previousRuleIds: string[]
       throw badRequest(`执行模型和三方验收模型是同一家（${modelFamily(modelId)}），验收就不算第三方了。换一个执行模型，或去「模型」页换验收模型。`)
     }
   }
-  // 复核模型（run-outcome）：要是聊天模型；不要求和执行模型不同家（这不是三方验收）
-  const reviewModelId = input.reviewModelId || null
-  if (reviewModelId) {
-    const [found] = await db.select({ id: t.models.id, kind: t.models.kind }).from(t.models).where(eq(t.models.id, reviewModelId))
-    if (!found) throw badRequest(`复核模型 ${reviewModelId} 不存在，请换一个`)
-    if (found.kind !== "chat") throw badRequest(`${reviewModelId} 是 embedding 模型，不能用来复核，请换一个`)
-  }
+  // 复核模型（run-outcome）：必填（运行结束一定复核），要是聊天模型；不要求和执行模型不同家（这不是三方验收）
+  const reviewModelId = input.reviewModelId.trim()
+  if (!reviewModelId) throw badRequest("选一个复核模型")
+  const [review] = await db.select({ id: t.models.id, kind: t.models.kind }).from(t.models).where(eq(t.models.id, reviewModelId))
+  if (!review) throw badRequest(`复核模型 ${reviewModelId} 不存在，请换一个`)
+  if (review.kind !== "chat") throw badRequest(`${reviewModelId} 是 embedding 模型，不能用来复核，请换一个`)
   const dispatchFrom = await checkDispatchSources(db, input.dispatchFrom, selfId)
   const exist = async (table: typeof t.memories | typeof t.skills | typeof t.rules | typeof t.tools, list: string[], what: string) => {
     if (list.length === 0) return
@@ -102,7 +104,7 @@ export async function setDispatchSources(tx: Tx, taskId: string, sourceIds: stri
   if (dispatchFrom.length) await tx.insert(t.taskDispatchSources).values(dispatchFrom.map((sourceTaskId) => ({ taskId, sourceTaskId })))
 }
 
-function columns(input: TaskInput, modelId: string, verifyModelId: string | null, reviewModelId: string | null) {
+function columns(input: TaskInput, modelId: string, verifyModelId: string | null, reviewModelId: string) {
   const steps = input.steps.map((step, index) => ({
     id: step.id || `s${index + 1}`,
     text: step.text,
@@ -130,7 +132,6 @@ function columns(input: TaskInput, modelId: string, verifyModelId: string | null
     allowBrowserEvaluate: input.allowBrowserEvaluate,
     allowBrowserVision: input.allowBrowserVision,
     verifyModelId,
-    reviewEnabled: input.reviewEnabled,
     reviewModelId,
     // 派活：参数声明和名额（已经按 shared 的 taskDispatchSchema 校验过：参数名不重复）；null = 不能被派活
     dispatch: input.dispatch ?? null,

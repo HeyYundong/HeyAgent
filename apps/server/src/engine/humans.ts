@@ -243,7 +243,7 @@ export async function resolveHumanItemImpl(
         : `${item.title}：${input.actorName}决定不继续`
       await tx
         .update(t.sessions)
-        .set({ status: "failed", endedAt: new Date(), error, ...failedOutcome(error) })
+        .set({ status: "failed", endedAt: new Date(), error, ...failedOutcome(error, "human") })
         .where(eq(t.sessions.id, item.sessionId))
       // 被派的运行：派活单跟着记「没办成」，人选了不继续的不自动重试
       await settleWorkItemInTx(db, tx, item.sessionId, { status: "failed", error, retryable: false, failKind: "cancelled_run" })

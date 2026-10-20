@@ -8,7 +8,7 @@ import { Item, ItemContent, ItemDescription, ItemFooter, ItemHeader, ItemTitle }
 import { Spinner } from "@/components/ui/spinner"
 import { href } from "@/lib/router"
 import { cn } from "@/lib/utils"
-import { boardColumns, fmtShort, humanItemKindLabel, outcomeOf, outcomeReasonOf, type BoardCard } from "@heyagent/shared"
+import { boardColumns, fmtShort, humanItemKindLabel, isReviewing, outcomeOf, outcomeReasonOf, type BoardCard } from "@heyagent/shared"
 
 import { OutcomeBadge } from "@/components/shell/outcome-badge"
 
@@ -112,12 +112,12 @@ function CardLink({ card, userId }: { card: Card; userId: string }) {
         <Line icon={<PauseIcon className="size-3" />}><span className="text-muted-foreground">{fmtShort(run.waiting.since)} 挂起，到了继续同一个 session</span></Line>
       </>}
       {column === "verifying" && <Line icon={<ShieldQuestionIcon className="size-3" />}>{run.verification?.headline}</Line>}
-      {/* 已结束：写结束时间和结果（办成 / 部分办成 / 没办成 / 没核实），不再写「完成」 */}
+      {/* 已结束：写结束时间和结果（办成 / 没办成，复核还在跑的写复核中），不再写「完成」 */}
       {column === "done" && (
         <Line>
           <span className="inline-flex flex-wrap items-center gap-1.5">
             {note ? "验收通过（同意跳过）" : `${run.endedAt ? fmtShort(run.endedAt) : ""} 结束`}
-            <OutcomeBadge outcome={outcomeOf(run)} reason={outcomeReasonOf(run)} />
+            <OutcomeBadge outcome={outcomeOf(run)} reason={outcomeReasonOf(run)} reviewing={isReviewing(run)} />
           </span>
         </Line>
       )}

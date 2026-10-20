@@ -96,7 +96,8 @@ export async function pumpTask(db: Db, taskId: string): Promise<{ started: { ite
         console.warn(`[work] ${item.id} ${reason}`)
         await tx
           .update(t.workItems)
-          .set({ status: "failed", error: reason, failKind: "error", notBefore: null, finishedAt: now, updatedAt: now, log: appendLog({ at: now.toISOString(), kind: "run_ended", note: "failed" }) })
+          // 结果记没办成，原因就是开不了的原因（例如「任务没设复核模型，先在任务里选一个」）
+          .set({ status: "failed", error: reason, failKind: "error", outcome: "not_achieved", outcomeReason: reason, notBefore: null, finishedAt: now, updatedAt: now, log: appendLog({ at: now.toISOString(), kind: "run_ended", note: "failed" }) })
           .where(eq(t.workItems.id, item.id))
         // 最终结束（配置坏了，重试也没用）：叫醒等它的派活方
         await sendWorkDoneInTx(db, tx, item.id)

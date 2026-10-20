@@ -1,5 +1,6 @@
 // 运行详情的「结果」区块（docs/dev/run-outcome.md 第 8 节）：结果徽章、原因、是谁定的，复核报告收在可以展开的 Collapsible 里。
-// 负责人和主管能点「改结果」：Dialog 里 RadioGroup 选四种结果、Textarea 写理由（必填），调 sessions.setOutcome。
+// 负责人和主管能点「改结果」：Dialog 里 RadioGroup 选办成 / 没办成、Textarea 写理由（必填），调 sessions.setOutcome。
+// 已经结束的运行（已结束、出错、取消的）都能改；会话列表每一行的「更多」菜单里也有（SetOutcomeDialog 共用）。
 // 改结果只改结果列，不重开运行；被派来的运行，派活单的结果跟着改，单的状态不变（后端负责）。
 import * as React from "react"
 import { zodResolver } from "@hookform/resolvers/zod"
@@ -7,12 +8,13 @@ import { Controller, useForm } from "react-hook-form"
 import { ChevronDownIcon, ChevronRightIcon, PencilIcon } from "lucide-react"
 import {
   fmtDateTime,
+  isReviewing,
   outcomeOf,
   outcomeReasonOf,
+  reviewVerdictLabel,
   runOutcomeByLabel,
   runOutcomeLabel,
   setOutcomeInputSchema,
-  type ReviewVerdict,
   type RunOutcome,
   type RunReview,
   type SessionSummary,
@@ -34,14 +36,10 @@ import { trpc } from "@/lib/trpc"
 
 import { money } from "./parts"
 
-const VERDICT: Record<ReviewVerdict, string> = { achieved: "办成", partial: "部分办成", not_achieved: "没办成", unsure: "说不准" }
-
 /** 改结果时每种结果下面的一句话：只看任务目标要的东西拿没拿到 */
 const OUTCOME_HINT: Record<RunOutcome, string> = {
   achieved: "任务目标要的东西都拿到了。",
-  partial: "只拿到一部分。",
-  not_achieved: "没拿到，确认「没有」也算没办成。",
-  unverified: "说不准办没办成，先标出来。",
+  not_achieved: "没拿到、只拿到一部分、确认「没有」，都算没办成；理由里写清拿到了什么、缺什么。",
 }
 const OUTCOMES = Object.keys(OUTCOME_HINT) as RunOutcome[]
 
@@ -49,10 +47,11 @@ export function RunOutcomeSection({ run, canEdit }: { run: SessionSummary; canEd
   const [editing, setEditing] = React.useState(false)
   const outcome = outcomeOf(run)
   const reason = outcomeReasonOf(run)
+  const reviewing = isReviewing(run)
   return (
     <DetailSection
-      title={outcome ? `结果 · ${runOutcomeLabel[outcome]}` : "结果"}
-      description="只看任务目标要的东西拿没拿到，不看 agent 多努力：要找的东西没找到（包括确认「没有」）就是没办成。agent 说办成了但没有依据（没设检查点、没有复核或者复核说不准）的记「没核实」。"
+      title={outcome ? `结果 · ${runOutcomeLabel[outcome]}` : reviewing ? "结果 · 复核中" : "结果"}
+      description="只有办成、没办成两种，只看任务目标要的东西拿没拿到，不看 agent 多努力：没找到（包括确认「没有」）、只拿到一部分都是没办成。agent 说办成了的，要三方验收通过或者 AI 复核判办成才算办成，证据不足也记没办成。"
       action={canEdit && (
         <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
           <PencilIcon data-icon="inline-start" />改结果
@@ -61,25 +60,29 @@ export function RunOutcomeSection({ run, canEdit }: { run: SessionSummary; canEd
     >
       <div className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center gap-2">
-          <OutcomeBadge outcome={outcome} />
+          <OutcomeBadge outcome={outcome} reviewing={reviewing} />
           {run.outcomeBy && <span className="text-muted-foreground">{runOutcomeByLabel[run.outcomeBy]}</span>}
         </div>
-        {reason ? <p className="whitespace-pre-line wrap-break-word">{reason}</p> : <p className="text-muted-foreground">{outcome ? "没写原因。" : "这次运行还没有结果。"}</p>}
-        {run.review && <ReviewReport review={run.review} sameReason={run.review.reason === reason} />}
+        {reason ? (
+          <p className="whitespace-pre-line wrap-break-word">{reason}</p>
+        ) : (
+          <p className="text-muted-foreground">{outcome ? "没写原因。" : reviewing ? "运行已经结束，AI 正在复核，结果一会儿就出来。" : "这次运行还没有结果。"}</p>
+        )}
+        {run.review && !run.review.pending && <ReviewReport review={run.review} sameReason={run.review.reason === reason} />}
       </div>
       {canEdit && <SetOutcomeDialog key={`${run.id}-${editing}`} run={run} open={editing} onOpenChange={setEditing} />}
     </DetailSection>
   )
 }
 
-/** 复核报告：默认收起，一行写结论；展开看理由、模型、带没带截图、花费，复核出错时写原因 */
+/** 复核报告：默认收起，一行写结论；展开看理由、模型、带没带截图、花费，复核出错、超时时写原因。旧报告的「部分办成」「说不准」照原样显示 */
 /** sameReason：结果的原因就是复核的理由（结果是复核定的）时，报告里不再重复一遍；没有理由（复核出错）也不写这一行 */
 function ReviewReport({ review, sameReason }: { review: RunReview; sameReason: boolean }) {
   const { modelName } = useModels()
   const [open, setOpen] = React.useState(false)
-  const headline = review.verdict ? `复核结论：${VERDICT[review.verdict]}` : "复核没跑成"
+  const headline = review.verdict ? `复核结论：${reviewVerdictLabel[review.verdict]}` : "复核没跑成"
   const rows: [string, React.ReactNode][] = [
-    ["结论", review.verdict ? VERDICT[review.verdict] : "没有（复核出错）"],
+    ["结论", review.verdict ? reviewVerdictLabel[review.verdict] : "没有（复核出错）"],
     // 复核定的结果，理由已经写在上面；复核出错时没有理由
     ...(sameReason || !review.reason ? [] : [["理由", review.reason] as [string, React.ReactNode]]),
     ["模型", modelName(review.modelId)],
@@ -108,7 +111,8 @@ function ReviewReport({ review, sameReason }: { review: RunReview; sameReason: b
   )
 }
 
-function SetOutcomeDialog({ run, open, onOpenChange }: { run: SessionSummary; open: boolean; onOpenChange: (open: boolean) => void }) {
+/** 改结果的弹窗（运行详情的「结果」区块、会话列表每一行的菜单共用） */
+export function SetOutcomeDialog({ run, open, onOpenChange }: { run: SessionSummary; open: boolean; onOpenChange: (open: boolean) => void }) {
   const current = outcomeOf(run)
   const form = useForm<SetOutcomeInput>({
     resolver: zodResolver(setOutcomeInputSchema),
@@ -128,7 +132,7 @@ function SetOutcomeDialog({ run, open, onOpenChange }: { run: SessionSummary; op
         <DialogHeader>
           <DialogTitle>改 {run.id} 的结果</DialogTitle>
           <DialogDescription>
-            只改结果，不重开运行；改动和理由记进过程记录。{run.workItemId ? `派活单 ${run.workItemId} 的结果跟着改，单的状态不变。` : ""}
+            只改结果，不重开运行；改动和理由记进过程记录。{isReviewing(run) ? "复核还在跑，改了以后复核结果不再覆盖。" : ""}{run.workItemId ? `派活单 ${run.workItemId} 的结果跟着改，单的状态不变。` : ""}
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="flex flex-col gap-4">

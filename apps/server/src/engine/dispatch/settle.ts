@@ -2,7 +2,7 @@
 // 运行结束的 5 处（loop.ts 收尾（有复核的等复核完）、failSession，control.ts 取消，humans.ts 上限「不继续」、验收争议判通过 / 失败）
 // 都在自己的事务里调 settleWorkItemInTx；漏掉的由 work.sweep 补写（sweep.ts）。
 // 第二期：运行出错（retryable）且这一轮的自动重试还没用完 → 单回到排队、到点再领（not_before）；最终结束时发 work.notify 叫醒等结果的派活方。
-// run-outcome 6.2：单跟着运行的结果走——办成、没核实 → 办完；部分办成 → 没办成（partial）；没办成 → 没办成（not_done / missing_result），都不重试。
+// run-outcome 6.2：单跟着运行的结果走——办成 → 办完；没办成 → 没办成（not_done / missing_result），不重试。
 // 单上写 outcome / outcome_reason；运行出错、取消的记没办成。
 import { WORK_RETRY_DELAY_DEFAULT, type RunOutcome, type WorkFailKind, type WorkLogEntry, type WorkResult } from "@heyagent/shared"
 import { and, asc, desc, eq, sql } from "drizzle-orm"
@@ -16,7 +16,7 @@ import { sendPumpInTx } from "./signal.js"
 export interface SettleOutcome {
   /** done = 运行正常结束（单怎么记看 outcome）；failed = 运行出错、取消、人判失败 */
   status: "done" | "failed"
-  /** 运行正常结束时的结果（run-outcome）：不写当没核实 */
+  /** 运行正常结束时的结果（run-outcome）：不写当没办成（没有能确认办成的依据） */
   outcome?: RunOutcome
   outcomeReason?: string
   /** agent 最后那段总结；不给（或空）就从消息历史里取最后一条 assistant 的文字 */
@@ -123,18 +123,17 @@ export async function writeSettled(
 
   if (outcome.status === "done" && session) {
     const result = await buildResult(tx, item, session, outcome.summary)
-    const runOutcome = outcome.outcome ?? "unverified"
     const outcomeReason = outcome.outcomeReason?.slice(0, 2000) || null
-    // 办成、没核实：单办完（没核实的派活页标出来）
-    if (runOutcome === "achieved" || runOutcome === "unverified") {
-      await finish({ status: "done", result, error: null, failKind: null, outcome: runOutcome, outcomeReason, notBefore: null, finishedAt: now }, [{ ...ended, note: "done" }])
+    // 办成：单办完
+    if (outcome.outcome === "achieved") {
+      await finish({ status: "done", result, error: null, failKind: null, outcome: "achieved", outcomeReason, notBefore: null, finishedAt: now }, [{ ...ended, note: "done" }])
       await sendWorkDoneInTx(db, tx, item.id)
       return { kind: "done" }
     }
-    // 部分办成、没办成：单没办成，不重试；agent 的总结、报的结果照样写回单上
-    const failKind: WorkFailKind = runOutcome === "partial" ? "partial" : outcome.failKind === "missing_result" ? "missing_result" : "not_done"
-    const error = (outcomeReason ?? (runOutcome === "partial" ? "部分办成" : "没办成")).slice(0, 2000)
-    await finish({ status: "failed", result, error, failKind, outcome: runOutcome, outcomeReason: error, notBefore: null, finishedAt: now }, [{ ...ended, note: failKind }])
+    // 没办成（含只办成一部分）：单没办成，不重试；agent 的总结、报的结果照样写回单上
+    const failKind: WorkFailKind = outcome.failKind === "missing_result" ? "missing_result" : "not_done"
+    const error = (outcomeReason ?? "没办成：没有能确认办成的依据").slice(0, 2000)
+    await finish({ status: "failed", result, error, failKind, outcome: "not_achieved", outcomeReason: error, notBefore: null, finishedAt: now }, [{ ...ended, note: failKind }])
     await sendWorkDoneInTx(db, tx, item.id)
     return { kind: "failed", failKind, error, autoRetries: item.autoRetries }
   }

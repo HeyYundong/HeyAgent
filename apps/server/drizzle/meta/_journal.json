@@ -183,6 +183,13 @@
       "when": 1792488492326,
       "tag": "0025_browser_vision",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1792499844121,
+      "tag": "0026_outcome_two_values",
+      "breakpoints": true
     }
   ]
 }

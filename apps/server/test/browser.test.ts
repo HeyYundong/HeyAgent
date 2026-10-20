@@ -23,7 +23,7 @@ import * as t from "../src/db/schema.js"
 import { buildSnapshot } from "../src/engine/sessions.js"
 import { suspendInTx } from "../src/engine/waits.js"
 import { call, createTask, Script, sessionRow, setupEngine, step, text, useScript, waitStatus, eventsOf, type EngineTestContext } from "./engine-helpers.js"
-import { login, mutate, query } from "./helpers.js"
+import { login, mutate, query, TEST_REVIEW_MODEL } from "./helpers.js"
 
 const cookie = (name: string, value: string, extra: Partial<StoredCookie> = {}): StoredCookie => ({
   name,
@@ -176,6 +176,7 @@ describe("配置：新字段的读写和快照", () => {
     const task = await mutate(ctx.app, "tasks.create", lin, {
       title: "看网页",
       goal: "读出标题",
+      reviewModelId: TEST_REVIEW_MODEL,
       steps: [],
       schedule: null,
       modelId,
@@ -188,7 +189,7 @@ describe("配置：新字段的读写和快照", () => {
     expect(task.error).toBeUndefined()
     const got = await query(ctx.app, "tasks.get", wang, { id: task.data.id })
     expect(got.data).toMatchObject({ toolIds: ["browser"], browserProfileIds: ["br-us"], allowedDomains: ["example.com"], allowBrowserEvaluate: true, allowBrowserVision: true })
-    expect((await mutate(ctx.app, "tasks.create", lin, { title: "x", goal: "y", steps: [], schedule: null, modelId, browserProfileIds: ["br-nope"] })).error?.message).toContain("br-nope")
+    expect((await mutate(ctx.app, "tasks.create", lin, { title: "x", goal: "y", steps: [], schedule: null, modelId, reviewModelId: TEST_REVIEW_MODEL, browserProfileIds: ["br-nope"] })).error?.message).toContain("br-nope")
 
     const snapshot = await buildSnapshot(ctx.db, task.data.id, { source: "manual", runAttachments: [] })
     expect(snapshot.tools.map((tool) => tool.id)).toContain("browser")

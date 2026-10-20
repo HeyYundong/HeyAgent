@@ -66,6 +66,8 @@ const task = await lin.m("tasks.create", {
   schedule: null,
   ownerId: "u-wang",
   modelId: HAIKU,
+  // 复核模型必填（run-outcome 2026-10-20）：用执行模型复核就够（这里不是三方验收）
+  reviewModelId: HAIKU,
   toolIds: ["notify.staff", "file.save"],
   ruleIds,
 })

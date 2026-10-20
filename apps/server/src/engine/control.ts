@@ -29,8 +29,8 @@ export async function cancelSessionInTx(db: Db, tx: Tx, input: CancelSessionInpu
   const reason = `${input.actorName}取消了这次运行${input.reason ? `：${input.reason}` : ""}`
   const updated = await tx
     .update(t.sessions)
-    // 取消的运行：状态照旧记失败，结果记没办成（run-outcome 2.2）
-    .set({ status: "failed", endedAt: new Date(), error: reason, ...failedOutcome(reason) })
+    // 取消的运行：状态照旧记失败，结果记没办成（run-outcome 2.2）；人取消的记 human（清扫补写派活单时据此不重试）
+    .set({ status: "failed", endedAt: new Date(), error: reason, ...failedOutcome(reason, "human") })
     .where(
       and(
         eq(t.sessions.id, input.sessionId),
@@ -81,7 +81,8 @@ export async function cancelSessionInTx(db: Db, tx: Tx, input: CancelSessionInpu
 }
 
 /**
- * 人改结果（run-outcome 第 8 节）：只改结果列，不重开运行；只能改已经结束的运行。记过程记录（human）和审计。
+ * 人改结果（run-outcome 第 8 节）：只改结果列，不重开运行；已经结束的运行（已结束、出错、取消的都行）都能改成办成或没办成。记过程记录（human）和审计。
+ * 复核还在跑时改了的，复核回来不再覆盖（loop.ts 的 reviewAfterFinish）。
  * 被派的单：还是这次运行的单、已经结束的，跟着改结果，不改单的状态。权限（负责人、主管）由接口查
  */
 export async function setOutcomeImpl(db: Db, input: SetOutcomeInput & { actorId: string; actorName: string }) {

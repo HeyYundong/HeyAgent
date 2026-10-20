@@ -95,6 +95,8 @@ await db.insert(t.tasks).values({
   ],
   ownerId: "u-lin",
   modelId,
+  // 复核模型必填（run-outcome 2026-10-20）：用执行模型复核
+  reviewModelId: modelId,
 })
 console.log(`任务 ${taskId}，模型 ${modelId}`)
 

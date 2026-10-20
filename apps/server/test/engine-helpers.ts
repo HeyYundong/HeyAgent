@@ -17,7 +17,7 @@ import {
   type EngineWorker,
 } from "../src/engine/worker-runtime.js"
 import { encrypt, mask, type Keyring } from "../src/lib/crypto.js"
-import { setupApp, testDatabaseUrl, type TestApp } from "./helpers.js"
+import { setupApp, TEST_REVIEW_MODEL, testDatabaseUrl, type TestApp } from "./helpers.js"
 
 type DoGenerate = NonNullable<
   ConstructorParameters<typeof MockLanguageModelV4>[0]
@@ -66,7 +66,7 @@ export const call = (
 export const text = (value: string): Content => ({ type: "text", text: value })
 
 /** 收尾：说一段话，同时调 run.finish 报结果（run-outcome：只回文字会先被提醒一次） */
-export const finishWith = (summary: string, outcome: "achieved" | "partial" | "not_achieved" = "achieved", reason?: string): Content[] => [
+export const finishWith = (summary: string, outcome: "achieved" | "not_achieved" = "achieved", reason?: string): Content[] => [
   text(summary),
   call("run.finish", { outcome, summary, evidence: summary, ...(reason ? { reason } : {}) }),
 ]
@@ -114,6 +114,20 @@ export class Script {
 
 /** 按任务的模型 id 找剧本：每个测试用自己的模型 id，互不干扰 */
 const scripts = new Map<string, Script>()
+
+/**
+ * 测试用的默认复核模型（run-outcome：运行结束一定复核，任务没选复核模型时用默认的）。setupApp 建好这个模型、设成默认复核模型；
+ * 没给它准备剧本时一律判办成（不影响只关心流程的测试），要测复核的用 useScript(TEST_REVIEWER, …) 换掉
+ */
+export const TEST_REVIEWER = TEST_REVIEW_MODEL
+export const reviewVerdict = (verdict: string, reason: string, costUsd = 0.0004) => step([text(JSON.stringify({ verdict, reason }))], costUsd)
+const defaultReviewer = new MockLanguageModelV4({ provider: "test", modelId: "reviewer", doGenerate: async () => reviewVerdict("achieved", "测试默认复核：办成") })
+
+/** 把测试用的复核模型设回默认复核模型、去掉它的剧本（改过默认复核模型的测试结束时调） */
+export async function resetTestReviewer(db: Db) {
+  scripts.delete(TEST_REVIEWER)
+  await db.insert(t.modelDefaults).values({ role: "review", modelId: TEST_REVIEWER }).onConflictDoUpdate({ target: t.modelDefaults.role, set: { modelId: TEST_REVIEWER } })
+}
 export function useScript(modelId: string, script: Script) {
   scripts.set(modelId, script)
   return script
@@ -147,6 +161,7 @@ export async function setupEngine(
     modelRetryBaseMs: 10,
     modelFactory: ({ modelId }) => {
       const script = scripts.get(modelId)
+      if (!script && modelId === TEST_REVIEWER) return defaultReviewer
       if (!script) throw new Error(`测试没有给模型 ${modelId} 准备剧本`)
       return script.model
     },
@@ -242,6 +257,8 @@ export async function createTask(
     memoryIds?: string[]
     scheduleCron?: string
     enabled?: boolean
+    /** 不给 = 不选，运行时用默认复核模型（测试里是 TEST_REVIEWER） */
+    reviewModelId?: string
   }
 ) {
   const id = `T-${++taskCounter}`
@@ -255,6 +272,7 @@ export async function createTask(
     enabled: input.enabled ?? true,
     scheduleCron: input.scheduleCron ?? null,
     scheduleText: input.scheduleCron ? `cron ${input.scheduleCron}` : null,
+    reviewModelId: input.reviewModelId ?? null,
   })
   for (const [position, toolId] of (input.toolIds ?? []).entries())
     await db.insert(t.taskTools).values({ taskId: id, refId: toolId, position })

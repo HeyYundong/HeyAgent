@@ -41,7 +41,7 @@ export function workDoneData(item: WorkItem) {
     item: item.id,
     status: item.status as "done" | "failed" | "cancelled",
     title: item.title,
-    // 结果（run-outcome 6.2）：办完的也可能没核实，派活方自己判断要不要重派或者报给人
+    // 结果（run-outcome 6.2）：办成 / 没办成和原因，派活方自己判断要不要重派或者报给人
     ...(item.outcome ? { outcome: item.outcome } : {}),
     ...(item.outcomeReason ? { outcomeReason: item.outcomeReason.slice(0, 1000) } : {}),
     ...(item.result?.summary ? { summary: item.result.summary.slice(0, 2000) } : {}),
@@ -54,9 +54,10 @@ export function workDoneData(item: WorkItem) {
 export function workDoneText(item: WorkItem): string {
   const data = workReportLine(item.result?.data)
   const tail = data ? ` · 结果：${data}` : ""
-  const outcome = item.outcome ? `（${runOutcomeLabel[item.outcome]}${item.outcome === "unverified" && item.outcomeReason ? `：${clip(item.outcomeReason, 200)}` : ""}）` : ""
+  // 办完的单结果一般是办成；2026-10-20 以前「没核实」的旧单（迁移后结果是没办成）带上原因
+  const outcome = item.outcome ? `（${runOutcomeLabel[item.outcome]}${item.outcome === "not_achieved" && item.outcomeReason ? `：${clip(item.outcomeReason, 200)}` : ""}）` : ""
   if (item.status === "done") return `${item.id}「${item.title}」办完${outcome}${item.result?.summary ? `：${clip(item.result.summary, 500)}` : ""}${tail}`
-  if (item.status === "failed") return `${item.id}「${item.title}」没办成${item.outcome === "partial" ? "（部分办成）" : ""}${item.error ? `：${clip(item.error, 500)}` : ""}${tail}`
+  if (item.status === "failed") return `${item.id}「${item.title}」没办成${item.error ? `：${clip(item.error, 500)}` : ""}${tail}`
   if (item.status === "cancelled") return `${item.id}「${item.title}」不办了${item.error ? `：${clip(item.error, 500)}` : ""}`
   return `${item.id}「${item.title}」还没结束`
 }

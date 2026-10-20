@@ -39,7 +39,7 @@ import * as memories from "../data/config/memories.js"
 import { confirmRuleInTx, insertRule, updateRule, deleteRule } from "../data/config/rules.js"
 import * as skills from "../data/config/skills.js"
 import * as taskMemory from "../data/config/task-memory.js"
-import { createTask, deleteTask, setTaskEnabled, tasksUsingRef, updateTask, usedByText, type TaskInput } from "../data/config/tasks.js"
+import { createTask, defaultReviewModelId, deleteTask, setTaskEnabled, tasksUsingRef, updateTask, usedByText, type TaskInput } from "../data/config/tasks.js"
 import * as todos from "../data/config/todos.js"
 import * as toolsConfig from "../data/config/tools.js"
 import { attachableFiles, attachFilesToTask, ATTACH_FORBIDDEN } from "../data/config/task-files.js"
@@ -161,8 +161,8 @@ const taskInputOf = (task: TaskDef): TaskInput => ({
   allowBrowserEvaluate: task.allowBrowserEvaluate,
   allowBrowserVision: task.allowBrowserVision,
   verifyModelId: task.verifyModelId,
-  reviewEnabled: task.reviewEnabled,
-  reviewModelId: task.reviewModelId,
+  // 2026-10-20 以前建的任务可能没选复核模型：先空着，withReviewModel 补默认的
+  reviewModelId: task.reviewModelId ?? "",
   dispatch: task.dispatch ? { ...task.dispatch, results: task.dispatch.results ?? [] } : null,
   dispatchFrom: task.dispatchFrom ?? [],
   cronSkipIfRunning: task.cronSkipIfRunning ?? true,
@@ -260,7 +260,15 @@ export const issuesText = (error: z.ZodError) =>
 // ---------- 写工具的输入 ----------
 
 /** 派活的设置（参数声明、名额）比较复杂，先不让助手改；修改时保留原样 */
-const taskFields = taskInputSchema.omit({ dispatch: true, dispatchFrom: true })
+// 复核模型（必填）助手可以不给：不给就用默认复核模型（withReviewModel）
+const taskFields = taskInputSchema.omit({ dispatch: true, dispatchFrom: true }).extend({ reviewModelId: z.string().trim().optional() })
+
+/** 复核模型：没给（或者旧任务没选）就用默认复核模型；没有默认的要人选（2026-10-20 起任务必须有复核模型） */
+async function withReviewModel<T extends { reviewModelId?: string | undefined }>(ctx: ToolCtx, input: T): Promise<T & { reviewModelId: string }> {
+  const reviewModelId = input.reviewModelId?.trim() || (await defaultReviewModelId(ctx.db))
+  if (!reviewModelId) throw new ToolError("任务要有复核模型，现在也没有默认复核模型：给 reviewModelId 填一个聊天模型（用 list_models 查编号），或者请主管先在「模型」页设默认复核模型")
+  return { ...input, reviewModelId }
+}
 const withId = { id: z.string().min(1) }
 type TodoTrigger = z.output<typeof todoInputSchema>["trigger"]
 
@@ -289,7 +297,6 @@ const TASK_LABELS: Partial<Record<keyof TaskInput, string>> = {
   schedule: "定时",
   modelId: "执行模型",
   verifyModelId: "验收模型",
-  reviewEnabled: "结束后让 AI 复核",
   reviewModelId: "复核模型",
   ownerId: "负责人",
   enabled: "启用",
@@ -332,7 +339,6 @@ function taskFormatter(names: Names) {
       case "allowedDomains":
         return (value as string[])?.length ? (value as string[]).join("、") : "不限"
       case "enabled":
-      case "reviewEnabled":
       case "allowBrowserEvaluate":
       case "allowBrowserVision":
       case "cronSkipIfRunning":
@@ -593,7 +599,7 @@ export const TOOLS: Record<string, ToolDef> = {
       need(ctx, "task.create", {}, "新建任务只有主管能做")
       const names = new Names(ctx.db)
       const format = taskFormatter(names)
-      const full: TaskInput = { ...input, dispatch: null, dispatchFrom: [] }
+      const full: TaskInput = { ...(await withReviewModel(ctx, input)), dispatch: null, dispatchFrom: [] }
       const fields: FieldChange[] = []
       for (const [key, label] of Object.entries(TASK_LABELS) as [keyof TaskInput, string][]) {
         const value = full[key]
@@ -610,7 +616,7 @@ export const TOOLS: Record<string, ToolDef> = {
       return { title: `新建任务「${clip(input.title, 40)}」`, fields }
     },
     apply: async (ctx, input) => {
-      const { id } = await createTask(ctx, { ...input, dispatch: null, dispatchFrom: [] })
+      const { id } = await createTask(ctx, { ...(await withReviewModel(ctx, input)), dispatch: null, dispatchFrom: [] })
       return { message: `已建好任务 ${id}`, link: taskLink(id), output: { id } }
     },
   }),
@@ -623,7 +629,7 @@ export const TOOLS: Record<string, ToolDef> = {
       need(ctx, "task.manage", { ownerId: task.ownerId }, "只有负责人和主管能改这个任务")
       if (given.has("ownerId") && input.ownerId && input.ownerId !== task.ownerId && !ctx.actor.isAdmin) throw new ToolError("你没有权限：员工不能把任务转给别人")
       const before = taskInputOf(task)
-      const after = check(taskInputSchema, { ...before, ...pick(input, given) })
+      const after = check(taskInputSchema, await withReviewModel(ctx, { ...before, ...pick(input, given) }))
       const fields = await changedFields(before, after, given, TASK_LABELS, taskFormatter(new Names(ctx.db)), (key, value) =>
         key === "steps" ? ((value as TaskInput["steps"]) ?? []).map(stepText) : undefined
       )
@@ -633,7 +639,7 @@ export const TOOLS: Record<string, ToolDef> = {
     apply: async (ctx, input, given) => {
       // 应用时重新读一遍：出卡以后别人可能改过别的字段，只覆盖这次给的
       const task = await loadTask(ctx, input.id)
-      const merged = check(taskInputSchema, { ...taskInputOf(task), ...pick(input, given) })
+      const merged = check(taskInputSchema, await withReviewModel(ctx, { ...taskInputOf(task), ...pick(input, given) }))
       await updateTask(ctx, { ...merged, id: task.id })
       return { message: `已改好任务 ${task.id}`, link: taskLink(task.id), output: { id: task.id } }
     },

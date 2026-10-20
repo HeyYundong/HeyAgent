@@ -15,7 +15,7 @@ import { saveFile } from "../src/files/service.js"
 import { embedPendingOnce } from "../src/gallery/background.js"
 import type { EmbedInput } from "../src/gallery/embed.js"
 import { galleryToolEntries } from "../src/gallery/tools.js"
-import { login, mutate, query, setupApp, type TestApp } from "./helpers.js"
+import { login, mutate, query, setupApp, TEST_REVIEW_MODEL, type TestApp } from "./helpers.js"
 
 let ctx: TestApp
 let lin: string // 主管
@@ -140,14 +140,14 @@ describe("模型：embedding 模型和图库的默认模型", () => {
     expect((await mutate(ctx.app, "models.setDefaults", lin, { ...base, run: EMBED })).error?.message).toContain("是 embedding 模型")
     expect((await mutate(ctx.app, "models.setDefaults", wang, { ...base, embed: EMBED })).error?.data?.code).toBe("FORBIDDEN")
     const saved = await mutate(ctx.app, "models.setDefaults", lin, { ...base, embed: EMBED })
-    expect(saved.data).toEqual({ ...base, embed: EMBED })
+    expect(saved.data).toEqual({ ...base, embed: EMBED, review: TEST_REVIEW_MODEL })
     expect((await query(ctx.app, "models.overview", lin)).data.defaults.embed).toBe(EMBED)
     // 不传 embed = 不改
     expect((await mutate(ctx.app, "models.setDefaults", lin, base)).data.embed).toBe(EMBED)
   })
 
   it("建任务不能选 embedding 模型", async () => {
-    const res = await mutate(ctx.app, "tasks.create", lin, { title: "x", goal: "y", steps: [], schedule: null, memoryIds: [], skillIds: [], toolIds: [], ruleIds: [], modelId: EMBED })
+    const res = await mutate(ctx.app, "tasks.create", lin, { title: "x", goal: "y", steps: [], schedule: null, memoryIds: [], skillIds: [], toolIds: [], ruleIds: [], modelId: EMBED, reviewModelId: TEST_REVIEW_MODEL })
     expect(res.error?.message).toContain("是 embedding 模型")
   })
 })

@@ -4,8 +4,9 @@
 // 筛选放在网址里（?task=&status=&from=&id=），任务抽屉点「排队 5」能直接跳过来并筛好。
 // 第二期（docs/dev/dispatch-p2.md 3.4、4.4 节）：结果区块加「报结果」写的字段表、在办时「已报：…」；没办成按 failKind 分「运行出错」「agent 判断办不成」；
 // 排队等自动重试的单徽章写「排队 · 16:38 重试」，顶部提示和处理记录里写第几次重试；?new=1 直接打开「派一张」（导入后的「派一张试试」用）。
-// 运行结果（docs/dev/run-outcome.md 第 6.2、8 节）：单的结果跟着最后那次运行的结果（办成 / 部分办成 / 没办成 / 没核实），列表和详情都有结果徽章；
-// 按结果筛（?outcome=，例如只看「没核实」）时不再按状态分（有结果的都是结束了的单）；没办成多两种：部分办成（partial）、缺要交回的结果（missing_result）。
+// 运行结果（docs/dev/run-outcome.md 第 6.2、8 节）：单的结果跟着最后那次运行的结果（办成 / 没办成），列表和详情都有结果徽章；
+// 按结果筛（?outcome=）时不再按状态分（有结果的都是结束了的单）；没办成多一种：缺要交回的结果（missing_result）。
+// 2026-10-20 以前的旧单可能是 failKind = partial（部分办成），或者办完 + 结果没办成（原来「没核实」的，迁移 0026 改的），照样显示。
 import * as React from "react"
 import { keepPreviousData, useInfiniteQuery, useQuery } from "@tanstack/react-query"
 import {
@@ -14,7 +15,6 @@ import {
   CircleCheckIcon,
   CircleSlashIcon,
   CircleAlertIcon,
-  CircleHelpIcon,
   CircleXIcon,
   EllipsisIcon,
   HandIcon,
@@ -475,7 +475,7 @@ function WorkDetail({ id, onEdit, onCancel, onRedo }: { id: string; onEdit: (ite
         </div>
       </DetailSection>
 
-      <DetailSection title={item.outcome ? `结果 · ${runOutcomeLabel[item.outcome]}` : "结果"} description="被派的运行结束后，agent 最后那段总结写回这里。结果跟着那次运行：只看要的东西拿没拿到；agent 说办成了但没有依据的记「没核实」，派活方会看到，要自己判断要不要重派或者报给人。">
+      <DetailSection title={item.outcome ? `结果 · ${runOutcomeLabel[item.outcome]}` : "结果"} description="被派的运行结束后，agent 最后那段总结写回这里。结果跟着那次运行，只有办成、没办成：只看要的东西拿没拿到，只拿到一部分、证据不足也是没办成，原因里写缺了什么。派活方会看到，要自己判断要不要重派或者报给人。">
         <ResultBody item={item} run={run} canManage={canManage} />
       </DetailSection>
 
@@ -571,16 +571,17 @@ function QueuedAlert({ item, canManage }: { item: WorkItemDetail; canManage: boo
   )
 }
 
-/** 运行正常结束、但事情没办成的几种（agent 报的、规则判的、复核判的）：都不自动重试 */
+/** 运行正常结束、但事情没办成的几种（agent 报的、规则判的、复核判的）：都不自动重试。partial 只有旧单有 */
 const JUDGED_FAILS = ["not_done", "partial", "missing_result"] as const
 const isJudgedFail = (item: Pick<WorkItemDetail, "failKind">) => (JUDGED_FAILS as readonly string[]).includes(item.failKind ?? "")
 
 /** 没办成的几种（failKind）：提示的标题和下面那句解释 */
 function failText(item: WorkItemDetail) {
   if (item.failKind === "not_done")
-    return { title: "没办成 · 要的东西没拿到", why: "运行是正常结束的，但任务要的东西没拿到（agent 自己报的、检查点没达成，或者 AI 复核判的），所以不自动重试。" }
+    return { title: "没办成 · 要的东西没拿到", why: "运行是正常结束的，但任务要的东西没拿到或者只拿到一部分（agent 自己报的、检查点没达成或有跳过的，或者 AI 复核判的、复核没能确认办成），所以不自动重试。" }
+  // 2026-10-20 以前的旧单
   if (item.failKind === "partial")
-    return { title: "没办成 · 只办成了一部分", why: "运行是正常结束的，但只拿到一部分（agent 自己报的、检查点有跳过的，或者 AI 复核判的）。部分办成不自动重试，剩下的要不要再派由派活方或人决定。" }
+    return { title: "没办成 · 只办成了一部分", why: "运行是正常结束的，但只拿到一部分，所以不自动重试。剩下的要不要再派由派活方或人决定。" }
   if (item.failKind === "missing_result")
     return { title: "没办成 · 缺要交回的结果", why: "被派的任务声明了要交回的结果，必填的有没交的（agent 没用「报结果」交），所以不自动重试。" }
   if (item.failKind === "cancelled_run")
@@ -591,33 +592,21 @@ function failText(item: WorkItemDetail) {
 }
 
 /**
- * 办完的单，结果不是办成时放在总结上面：没核实（agent 说办成了，但没有依据）醒目标出来；
- * 没办成 / 部分办成的办完单只有补旧数据时会有（单的状态不改，结果按那次运行补）
+ * 办完的单，结果却是没办成时放在总结上面。只有旧单会这样：补旧数据（迁移 0024），或者原来「没核实」的（迁移 0026 改成没办成），
+ * 单的状态都没改；人在运行详情里改了结果的也一样
  */
 function OutcomeAlert({ item }: { item: WorkItemDetail }) {
   if (!item.outcome || item.outcome === "achieved") return null
   const reason = item.outcomeReason
-  if (item.outcome === "unverified") {
-    return (
-      <Alert>
-        <CircleHelpIcon />
-        <AlertTitle>没核实</AlertTitle>
-        <AlertDescription>
-          <p>{reason ?? "agent 说办成了，但没有依据。"}</p>
-          <p>
-            单记成办完，{item.via === "agent" ? `「${shortName(item.fromTaskTitle)}」` : "派活方"}看得到它没核实。看一下产物和过程，确认办成了可以在运行详情里点「改结果」。
-          </p>
-        </AlertDescription>
-      </Alert>
-    )
-  }
   return (
     <Alert variant="destructive">
       <CircleXIcon />
       <AlertTitle>结果：{runOutcomeLabel[item.outcome]}</AlertTitle>
       <AlertDescription>
         {reason && <p>{reason}</p>}
-        <p>这张单以前记成了办完，结果是后来按那次运行补的，单的状态没改。</p>
+        <p>
+          这张单记成了办完，结果是后来补的或者改的，单的状态没改。{item.via === "agent" ? `「${shortName(item.fromTaskTitle)}」` : "派活方"}看得到这个结果；确认其实办成了可以在运行详情里点「改结果」。
+        </p>
       </AlertDescription>
     </Alert>
   )

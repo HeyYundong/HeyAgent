@@ -34,7 +34,7 @@ describe("域名", () => {
   it("schema 校验并规整", () => {
     expect(domainSchema.parse("HTTPS://Example.COM/x")).toBe("example.com")
     expect(domainSchema.safeParse("??").success).toBe(false)
-    const task = taskInputSchema.parse({ title: "t", goal: "g", steps: [], schedule: null, allowedDomains: ["https://A.example.com"] })
+    const task = taskInputSchema.parse({ title: "t", goal: "g", steps: [], schedule: null, reviewModelId: "m/review", allowedDomains: ["https://A.example.com"] })
     expect(task.allowedDomains).toEqual(["a.example.com"])
     expect(task.browserProfileIds).toEqual([])
     expect(task.allowBrowserEvaluate).toBe(false)

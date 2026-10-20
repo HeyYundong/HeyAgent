@@ -16,7 +16,7 @@ import { buildSystemPrompt } from "../src/engine/prompt.js"
 import { onTaskCron } from "../src/engine/schedule.js"
 import { buildSnapshot } from "../src/engine/sessions.js"
 import { occupiedSlots } from "../src/work/service.js"
-import { login, query } from "./helpers.js"
+import { login, query, TEST_REVIEW_MODEL } from "./helpers.js"
 import {
   call,
   finishWith,
@@ -206,15 +206,15 @@ describe("agent 派活 → 领单 → 办完回写", () => {
     expect(items.find((item) => item.key === "A-2")!.params).toEqual({ 单号: "A-2", 备注: "加急" })
     expect(promptOf(workerScript.prompts[0]!)).toContain("这次运行是被派来办一件事的，参数在第一条消息里。")
     // 派活的那次运行照常有完成通知
-    const [patrolNotified] = await ctx.db.select({ n: count() }).from(t.notifications).where(eq(t.notifications.sessionId, p1))
-    expect(patrolNotified!.n).toBe(1)
+    // （复核完才发，等一下）
+    await waitFor(async () => (await ctx.db.select({ n: count() }).from(t.notifications).where(eq(t.notifications.sessionId, p1)))[0]!.n === 1, { what: "派活方的完成通知" })
 
     // 同一件事再派：只返回现状，不重开
     const run2 = await mutate(ctx.app, "engine.runNow", wang, { taskId: patrol })
     await waitStatus(ctx.db, run2.data.sessionId, "done")
     const second = JSON.stringify((await messagesOf(ctx.db, run2.data.sessionId)).filter((m) => m.role === "tool").map((m) => m.content))
     expect(second).toContain("新建 0 张，已有 2 张，被拒 0 张")
-    expect(second).toMatch(/已经有了：办完（[^）]+），结果没核实（[^）]+）：办完了：A-1 已处理/)
+    expect(second).toMatch(/已经有了：办完（[^）]+）：办完了：A-1 已处理/)
     expect(await itemsOf(worker)).toHaveLength(2)
 
     // 页面接口能读出来
@@ -416,6 +416,8 @@ describe("清扫", () => {
     const ended = await fakeItem(worker, { key: "G-1", status: "running" })
     const session = await fakeRun(worker, { status: "done", workItemId: ended, triggeredBy: "dispatch", endedAt: new Date() })
     await ctx.db.update(t.workItems).set({ sessionId: session.id }).where(eq(t.workItems.id, ended))
+    // 运行已经办成（复核过），只是单没写上
+    await ctx.db.update(t.sessions).set({ outcome: "achieved", outcomeBy: "review" }).where(eq(t.sessions.id, session.id))
     await ctx.db.insert(t.sessionMessages).values({ sessionId: session.id, seq: 1, role: "assistant", content: { role: "assistant", content: "漏写的总结" } })
     const failedRun = await fakeItem(worker, { key: "G-2", status: "running" })
     const failedSession = await fakeRun(worker, { status: "failed", workItemId: failedRun, triggeredBy: "dispatch", error: "worker 崩了" })
@@ -666,6 +668,7 @@ describe("任务配置和设置", () => {
       dispatch: { params: [{ name: "单号", description: "单号", required: true, dedupe: true }], maxRunning: 2 },
       dispatchFrom: [source],
       cronSkipIfRunning: false,
+      reviewModelId: TEST_REVIEW_MODEL,
     }
     const created = await mutate(ctx.app, "tasks.create", lin, input)
     expect(created.error).toBeUndefined()
@@ -696,7 +699,7 @@ describe("任务配置和设置", () => {
     const del = await mutate(ctx.app, "tasks.delete", lin, { id })
     expect(del.error?.message).toBe("这个任务有派活单，只能停用")
     // 旧接口（导入）不带这三个字段：默认不能被派活、定时跳过
-    const old = await mutate(ctx.app, "tasks.create", lin, { title: "老任务", goal: "x", steps: [], schedule: null, memoryIds: [], skillIds: [], toolIds: [], ruleIds: [] })
+    const old = await mutate(ctx.app, "tasks.create", lin, { title: "老任务", goal: "x", steps: [], schedule: null, memoryIds: [], skillIds: [], toolIds: [], ruleIds: [], reviewModelId: TEST_REVIEW_MODEL })
     const oldTask = (await query(ctx.app, "tasks.list", lin)).data.find((task: { id: string }) => task.id === old.data.id)
     expect(oldTask).toMatchObject({ dispatchFrom: [], cronSkipIfRunning: true })
     expect(oldTask.dispatch).toBeUndefined()
@@ -718,6 +721,7 @@ describe("任务配置和设置", () => {
       steps: [],
       schedule: null,
       modelId: undefined,
+      reviewModelId: TEST_REVIEW_MODEL,
       memoryIds: [],
       skillIds: [],
       toolIds: [],

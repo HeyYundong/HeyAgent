@@ -24,8 +24,7 @@
     "dev:work-fixture": "tsx --conditions=@heyagent/source src/seed/work-fixture-cli.ts",
     "dev:import-fixture": "tsx --conditions=@heyagent/source src/seed/import-fixture-cli.ts",
     "dev:notify": "tsx --conditions=@heyagent/source src/scripts/dev-notify.ts",
-    "kek:rotate": "tsx --conditions=@heyagent/source src/scripts/kek-rotate.ts",
-    "outcome:review": "tsx --conditions=@heyagent/source src/scripts/outcome-review.ts"
+    "kek:rotate": "tsx --conditions=@heyagent/source src/scripts/kek-rotate.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "4.0.81",

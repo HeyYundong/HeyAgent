@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import * as t from "../src/db/schema.js"
 import { decryptText } from "../src/lib/crypto.js"
 import { SEED_COOKIE_PREFIX, SEED_SECRET_VALUES, seedDemo } from "../src/seed/seed.js"
-import { PASSWORD, login, query, setupApp, type TestApp } from "./helpers.js"
+import { PASSWORD, login, query, setupApp, TEST_REVIEW_MODEL, type TestApp } from "./helpers.js"
 
 const QUERIES = [
   "me.get", "staff.list", "platforms.list", "tasks.list", "sessions.list", "todos.board",
@@ -98,7 +98,8 @@ describe("数据和原型 mock 一致", () => {
     expect(ollama).toMatchObject({ status: "unconfigured", baseUrl: "", models: [] })
     expect(ollama.checkedAt).toBeUndefined()
     const openrouter = providers.find((p: { id: string }) => p.id === "openrouter")
-    expect(openrouter.models.map((m: { id: string }) => m.id)).toEqual([
+    // 测试库另外加的复核模型（helpers.ts 的 TEST_REVIEW_MODEL）不是原型里的
+    expect(openrouter.models.map((m: { id: string }) => m.id).filter((id: string) => id !== TEST_REVIEW_MODEL)).toEqual([
       "openrouter/anthropic/claude-opus-5.5",
       "openrouter/anthropic/claude-sonnet-5.5",
       "openrouter/anthropic/claude-haiku-5.5",
@@ -109,6 +110,7 @@ describe("数据和原型 mock 一致", () => {
       run: "openrouter/anthropic/claude-sonnet-5.5",
       plan: "openrouter/anthropic/claude-opus-5.5",
       verify: "openrouter/google/gemini-3.8-flash",
+      review: TEST_REVIEW_MODEL,
     })
   })
 

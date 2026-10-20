@@ -43,14 +43,13 @@ import {
   claimText,
   combineReview,
   failedOutcome,
-  finalWithoutReview,
+  finalByRules,
   finishTitle,
-  interimOutcome,
   judgeByRules,
+  noReviewModel,
   outcomeFactsInTx,
   type AgentClaim,
   type Judged,
-  type NoReviewWhy,
 } from "./outcome.js"
 import { pendingReview, performReview, reviewEventTitle, reviewModelFor } from "./review.js"
 import { suspendInTx } from "./waits.js"
@@ -198,12 +197,12 @@ async function failSession(
 }
 
 /** 只回文字、没调 run.finish 时提醒一次的话（3.2） */
-export const finishNudge = (name: string) => `要结束请调用 ${name} 报结果（办成 / 部分办成 / 没办成），并对照目标写依据。`
+export const finishNudge = (name: string) => `要结束请调用 ${name} 报结果（办成 / 没办成），并对照目标写依据。`
 
 /**
  * 正常收尾（agent 报了结果，或者只回文字、说做完了）。调用前先关资源（工具连接、Chrome）。
- * 收尾的事务：过程记录、状态「已结束」、硬规则的结果一起写（outcome.ts）；要复核的先写复核标记，被派的单等复核完再结算。
- * 事务之后跑复核（review.ts），再按最终结果通知负责人
+ * 收尾的事务：过程记录、状态「已结束」一起写。硬规则已经是定论的（没办成、三方验收通过）一并写结果、结算被派的单；
+ * 要复核的结果先空着、写复核标记（页面显示「复核中」），被派的单等复核完再结算。事务之后跑复核（review.ts），再按最终结果通知负责人
  */
 async function finishRun(
   db: Db,
@@ -218,28 +217,22 @@ async function finishRun(
     for (const message of input.messages ?? []) await appendMessage(tx, session.id, message)
     const facts = await outcomeFactsInTx(tx, session.id, snapshot, input.claim)
     const verdict = judgeByRules(facts)
-    // 要不要复核（5.1）：硬规则以后还不是没办成、任务开着复核、没有三方验收、配了复核模型。旧快照没有 reviewEnabled = 不复核
-    let why: NoReviewWhy | undefined
+    // 要不要复核（5.1）：硬规则还没定论（agent 说办成了、没有三方验收）就一定复核；没有复核模型的直接记没办成
     let reviewModelId: string | undefined
-    if (verdict.outcome !== "not_achieved") {
-      if (facts.verified) why = "verified"
-      else if (snapshot.reviewEnabled === undefined) why = "legacy"
-      else if (!snapshot.reviewEnabled) why = "disabled"
-      else {
-        reviewModelId = await reviewModelFor(tx, snapshot)
-        if (!reviewModelId) why = "no_model"
-      }
+    let result: Judged | undefined
+    if (verdict.final) result = finalByRules(verdict)
+    else {
+      reviewModelId = await reviewModelFor(tx, snapshot)
+      if (!reviewModelId) result = noReviewModel()
     }
-    const result: Judged = reviewModelId ? interimOutcome(verdict) : finalWithoutReview(verdict, why ?? "verified")
     const updated = await tx
       .update(t.sessions)
       .set({
         status: "done",
         endedAt: new Date(),
-        outcome: result.outcome,
-        outcomeReason: result.reason.slice(0, 2000) || null,
-        outcomeBy: result.by,
-        ...(reviewModelId ? { review: pendingReview(reviewModelId) } : {}),
+        ...(result
+          ? { outcome: result.outcome, outcomeReason: result.reason.slice(0, 2000) || null, outcomeBy: result.by }
+          : { outcome: null, outcomeReason: null, outcomeBy: null, review: pendingReview(reviewModelId!) }),
       })
       .where(
         and(
@@ -249,40 +242,49 @@ async function finishRun(
       )
       .returning({ id: t.sessions.id })
     if (updated.length === 0) throw new RollbackSignal()
-    const label = runOutcomeLabel[result.outcome]
     await appendEvent(tx, session.id, {
       kind: "done",
-      title: finishTitle(facts, result, Boolean(reviewModelId)),
-      detail: [report.trim(), reviewModelId && result.reason === "等 AI 复核" ? "" : `结果：${label}${result.reason ? `（${result.reason}）` : ""}`].filter(Boolean).join("\n\n") || null,
+      title: finishTitle(facts, result),
+      detail: [report.trim(), result ? `结果：${runOutcomeLabel[result.outcome]}${result.reason ? `（${result.reason}）` : ""}` : ""].filter(Boolean).join("\n\n") || null,
     })
-    // 被派的运行：不复核的现在就结算派活单（办成 / 没核实 → 办完；部分办成、没办成 → 没办成，不重试）；要复核的等复核完
-    const settled = reviewModelId
-      ? undefined
-      : await settleWorkItemInTx(db, tx, session.id, { status: "done", outcome: result.outcome, outcomeReason: result.reason, summary, ...(result.failKind ? { failKind: result.failKind } : {}) })
-    return { verdict, result, reviewModelId, settled }
+    // 被派的运行：有结果的现在就结算派活单（办成 → 办完；没办成 → 没办成，不重试）；要复核的等复核完
+    const settled = result
+      ? await settleWorkItemInTx(db, tx, session.id, { status: "done", outcome: result.outcome, outcomeReason: result.reason, summary, ...(result.failKind ? { failKind: result.failKind } : {}) })
+      : undefined
+    return { result, reviewModelId, settled }
   }).catch((error) => {
     if (error instanceof RollbackSignal) return undefined
     throw error
   })
   if (!finished) return "stopped"
-  let final = finished.result
-  if (finished.reviewModelId) final = await reviewAfterFinish(db, session, snapshot, { verdict: finished.verdict, interim: finished.result, modelId: finished.reviewModelId, report, summary })
+  const final = finished.result ?? (await reviewAfterFinish(db, session, snapshot, { modelId: finished.reviewModelId!, report, summary }))
   await notifyFinished(db, session, snapshot, final, summary)
   return "done"
 }
 
 /**
- * 收尾以后的轻量复核：结论只能往低判（outcome.ts 的 combineReview）；出错记没核实（或者保留更低的）。
- * 写结果、复核报告、过程记录，复核的用量记进这次运行；被派的单这时才结算（叫醒派活方在结算的事务里发）
+ * 收尾以后的复核：复核判办成才算办成（outcome.ts 的 combineReview）；出错重试一次，还出错记没办成。
+ * 写结果、复核报告、过程记录，复核的用量（两次都算）记进这次运行；被派的单这时才结算（叫醒派活方在结算的事务里发）
  */
 async function reviewAfterFinish(
   db: Db,
   session: SessionRow,
   snapshot: SessionSnapshot,
-  input: { verdict: ReturnType<typeof judgeByRules>; interim: Judged; modelId: string; report: string; summary: string }
+  input: { modelId: string; report: string; summary: string }
 ): Promise<Judged> {
-  const review: RunReview = await performReview(db, { session, snapshot, modelId: input.modelId, report: input.report })
-  let final = combineReview(input.verdict, review)
+  const first: RunReview = await performReview(db, { session, snapshot, modelId: input.modelId, report: input.report })
+  let review = first
+  if (first.error) {
+    const retry = await performReview(db, { session, snapshot, modelId: input.modelId, report: input.report })
+    review = {
+      ...retry,
+      tokensIn: first.tokensIn + retry.tokensIn,
+      tokensOut: first.tokensOut + retry.tokensOut,
+      costUsd: first.costUsd + retry.costUsd,
+      ...(retry.error ? { error: `${retry.error}（重试了一次，第一次：${first.error}）`.slice(0, 1000) } : {}),
+    }
+  }
+  let final = combineReview(review)
   await db.transaction(async (tx) => {
     // 复核的用量记进这次运行；复核期间负责人已经手动改过结果的，不再覆盖
     const [row] = await tx
@@ -313,22 +315,17 @@ async function reviewAfterFinish(
   return final
 }
 
-/** 按最终结果通知负责人：没办成、部分办成和失败一样通知（被派的也发：单没办成、不会重试）；没核实、办成不推送；被派的办成、没核实不发 */
+/** 按最终结果通知负责人：没办成和失败一样通知（被派的也发：单没办成、不会重试）；办成不推送，被派的办成不发 */
 async function notifyFinished(db: Db, session: SessionRow, snapshot: SessionSnapshot, final: Judged, summary: string) {
   const link = sessionLink(session.taskId, session.id)
   const base = { userIds: [snapshot.task.ownerId], link, taskId: session.taskId, sessionId: session.id }
-  if (final.outcome === "not_achieved" || final.outcome === "partial") {
+  if (final.outcome === "not_achieved") {
     await notifyUsers(db, { ...base, title: `${snapshot.task.title}：${runOutcomeLabel[final.outcome]}`, body: (final.reason || summary).slice(0, 500) })
     return
   }
-  // 被派的运行一天可能几十上百次：办成、没核实时不发站内通知（派活页能看全部结果）
+  // 被派的运行一天可能几十上百次：办成时不发站内通知（派活页能看全部结果）
   if (session.workItemId) return
-  await notifyUsers(db, {
-    ...base,
-    title: final.outcome === "achieved" ? `${snapshot.task.title}：办成` : `${snapshot.task.title}：运行结束，没核实`,
-    body: (final.outcome === "achieved" ? summary : `${final.reason}${summary ? `\n${summary}` : ""}`).slice(0, 500),
-    push: false,
-  })
+  await notifyUsers(db, { ...base, title: `${snapshot.task.title}：办成`, body: summary.slice(0, 500), push: false })
 }
 
 /** 调模型，出错按退避重试；重试完还不行就抛出 */
@@ -626,7 +623,7 @@ export async function runSession(
             .map((other) =>
               toolResult(other.toolCallId, other.toolName, "没有执行：前面已经报了结果，运行结束了。", true)
             )
-          // 部分办成、没办成：直接收尾（结果和这几条消息在收尾的事务里一起落库）
+          // 没办成（含旧说明里的部分办成）：直接收尾（结果和这几条消息在收尾的事务里一起落库）
           if (claim.outcome !== "achieved") {
             await closeGateway()
             return finishRun(db, live, snapshot, { text: claim.summary, claim, messages: [message, ...rest] })

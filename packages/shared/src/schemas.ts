@@ -85,7 +85,7 @@ export const modelProviderSchema = z.object({
 })
 export type ModelProvider = z.infer<typeof modelProviderSchema>
 
-/** embed = 图库的 embedding 模型（以图搜图、比对、按描述找图）；assistant = 右下角助手（可选，不配时用 plan）；review = 运行结束后的轻量复核（可选，不配时不复核） */
+/** embed = 图库的 embedding 模型（以图搜图、比对、按描述找图）；assistant = 右下角助手（可选，不配时用 plan）；review = 新任务默认用的复核模型（任务还没选复核模型时也用它） */
 export const modelRoleSchema = z.enum(["run", "plan", "verify", "embed", "assistant", "review"])
 export type ModelRole = z.infer<typeof modelRoleSchema>
 
@@ -349,9 +349,10 @@ export const taskSchema = z.object({
   allowBrowserVision: z.boolean(),
   /** M3：这个任务自己选的三方验收模型；没有就用默认验收模型。必须和执行模型不是同一家 */
   verifyModelId: z.string().optional(),
-  /** 运行结束后让 AI 轻量复核结果（docs/dev/run-outcome.md 第 5 节）；默认开。配了三方验收的不复核 */
-  reviewEnabled: z.boolean(),
-  /** 这个任务自己选的复核模型；没有就用默认复核模型 */
+  /**
+   * 复核模型（docs/dev/run-outcome.md 第 5 节）：运行结束后一定复核（三方验收通过的除外）。新任务必填；
+   * 2026-10-20 以前建的任务可能没有，运行时用默认复核模型，下次保存时要选上
+   */
   reviewModelId: z.string().optional(),
   /** 派活：能被派活时的参数声明和名额；没有 = 不能被派活 */
   dispatch: z
@@ -382,22 +383,22 @@ export const runStatusSchema = z.enum(["running", "needs_human", "waiting", "ver
 export type RunStatus = z.infer<typeof runStatusSchema>
 
 /**
- * 运行的结果（事情办没办成，和状态分开）：achieved 办成（有依据）/ partial 部分办成 / not_achieved 没办成 / unverified 没核实（agent 说办成了但没依据）。
- * 结果导向：只看任务目标要的东西拿没拿到；确认「没有」也是没办成。运行没结束时没有结果
+ * 运行的结果（事情办没办成，和状态分开）：achieved 办成 / not_achieved 没办成（2026-10-20 简化成这两个）。
+ * 结果导向：只看任务目标要的东西拿没拿到；只拿到一部分、确认「没有」、没有依据证明办成，都是没办成，细节写在原因里。
+ * 运行没结束、或者结束了还在复核时没有结果
  */
-export const runOutcomeSchema = z.enum(["achieved", "partial", "not_achieved", "unverified"])
+export const runOutcomeSchema = z.enum(["achieved", "not_achieved"])
 export type RunOutcome = z.infer<typeof runOutcomeSchema>
-
-/** 从低到高：取最低时用（没办成 < 部分办成 < 没核实 < 办成） */
-export const RUN_OUTCOME_RANK: Record<RunOutcome, number> = { not_achieved: 0, partial: 1, unverified: 2, achieved: 3 }
-export const lowerOutcome = (a: RunOutcome, b: RunOutcome): RunOutcome => (RUN_OUTCOME_RANK[a] <= RUN_OUTCOME_RANK[b] ? a : b)
 
 /** 结果是谁定的：agent 自己报的 / 规则（检查点、必交结果、出错、取消）/ 轻量复核 / 三方验收 / 人改的 */
 export const runOutcomeBySchema = z.enum(["agent", "rule", "review", "verify", "human"])
 export type RunOutcomeBy = z.infer<typeof runOutcomeBySchema>
 
-/** 复核模型的结论：unsure = 证据不足，结果记没核实 */
-export const reviewVerdictSchema = z.enum(["achieved", "partial", "not_achieved", "unsure"])
+/**
+ * 复核报告里存的结论：现在的复核只给 achieved / not_achieved；partial（部分办成）、unsure（说不准）是 2026-10-20 以前的复核写的，
+ * 只为显示旧报告留着
+ */
+export const reviewVerdictSchema = z.enum(["achieved", "not_achieved", "partial", "unsure"])
 export type ReviewVerdict = z.infer<typeof reviewVerdictSchema>
 
 /** 轻量复核的报告（sessions.review）：出错时没有 verdict，写 error */
@@ -412,7 +413,7 @@ export const runReviewSchema = z.object({
   tokensOut: z.number().int(),
   costUsd: z.number(),
   error: z.string().optional(),
-  /** 复核还在跑（运行已经结束、结果先按硬规则写了）：被派的单等它跑完再结算；worker 中途没了，清扫过了时限按现在的结果结算 */
+  /** 复核还在跑（运行已经结束、结果先空着，页面上显示「复核中」）：被派的单等它跑完再结算；worker 中途没了，清扫过了时限记没办成 */
   pending: z.boolean().optional(),
 })
 export type RunReview = z.infer<typeof runReviewSchema>
