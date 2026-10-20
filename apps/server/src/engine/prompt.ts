@@ -49,7 +49,7 @@ export function buildSystemPrompt(
           ? `有要交回去的结果（数字、是 / 否、编号），用 ${reportName} 写；办不成（例如找不到、对方拒绝）就调用 ${finishName} 报没办成并写清原因。`
           : `有要交回去的结果（数字、是 / 否、编号），用 ${reportName} 写；办不成（例如找不到、对方拒绝）就用它报 not_done 并写原因。`,
         results.length
-          ? `要交回的结果（用 ${reportName} 的 data 交，字段名照写）：\n${results.map((result) => `- ${result.name}（${result.required ? "必填" : "可选"}${result.description ? `：${result.description}` : ""}）`).join("\n")}\n必填的没交，这张单记「没办成」。`
+          ? `要交回的结果（用 ${reportName} 的 data 交，字段名用下面的名字、一字不差，不要另加单位或括号）：\n${results.map((result) => `- ${result.name}（${result.required ? "必填" : "可选"}${result.description ? `：${result.description}` : ""}）`).join("\n")}\n必填的没交，这张单记「没办成」。`
           : "",
       ]
         .filter(Boolean)

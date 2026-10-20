@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest"
 
 import { workDoneData, workDoneText } from "../src/engine/dispatch/notify.js"
 import { describeItem } from "../src/engine/dispatch/dispatch.js"
-import { combineReview, finalWithoutReview, interimOutcome, judgeByRules, type AgentClaim, type OutcomeFacts, type ReviewLevel } from "../src/engine/outcome.js"
+import { combineReview, finalWithoutReview, interimOutcome, judgeByRules, missingResults, type AgentClaim, type OutcomeFacts, type ReviewLevel } from "../src/engine/outcome.js"
 
 const claims: (AgentClaim | undefined)[] = [
   undefined,
@@ -89,6 +89,20 @@ describe("硬规则取最低（全部组合）", () => {
     expect(finalWithoutReview(judgeByRules({ checkpoints: [], missingResults: [] }), "legacy").reason).toContain("agent 只回了一段文字、没报结果")
     // 检查点全部达成算依据：不复核也记办成
     expect(finalWithoutReview(judgeByRules({ claim: claims[1], checkpoints: checkpointSets[1]!.list, missingResults: [] }), "disabled")).toMatchObject({ outcome: "achieved", by: "rule" })
+  })
+})
+
+describe("必交的结果", () => {
+  const snapshot = { dispatch: { itemId: "W-1", key: "k", title: "k", params: {}, depth: 1, results: [{ name: "价格", description: "元", required: true }, { name: "Link", description: "", required: true }, { name: "备注", description: "", required: false }] } }
+  const item = (data: Record<string, string | number | boolean>) => ({ log: [{ at: "2026-10-20T00:00:00.000Z", kind: "reported" as const, sessionId: "R-1" }], result: { summary: "", fileIds: [], data } })
+  it("没报过、报的是上一次运行的：全部算缺", () => {
+    expect(missingResults(snapshot, undefined, "R-1")).toEqual(["价格", "Link"])
+    expect(missingResults(snapshot, item({ 价格: 3, Link: "x" }), "R-2")).toEqual(["价格", "Link"])
+  })
+  it("空字符串算没交；名字末尾多了单位括号、大小写不同照样认；可选的不管", () => {
+    expect(missingResults(snapshot, item({ "价格（元）": 39, link: " " }), "R-1")).toEqual(["Link"])
+    expect(missingResults(snapshot, item({ "价格 (元)": 0, LINK: "https://a" }), "R-1")).toEqual([])
+    expect(missingResults({ dispatch: undefined }, item({}), "R-1")).toEqual([])
   })
 })
 

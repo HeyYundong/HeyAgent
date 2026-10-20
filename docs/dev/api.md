@@ -1354,7 +1354,7 @@ claude mcp add --transport http heyagent-compare http://<host>:8080/api/compare/
 
 - 内置工具 `run.finish`「收尾报结果」（`run_finish`，read，每个任务都自带、同步进 `tools` 表、`alwaysOn`）：`{ outcome: achieved | partial | not_achieved, summary, evidence, reason? }`；`partial` / `not_achieved` 没写 `reason` → `isError`，运行不结束。调了它运行就到此结束：`partial` / `not_achieved` 直接收尾；`achieved` 也算「说做完了」，先过三方验收的规则。旧快照里的 `run.not_done` 照旧能用（= `not_achieved`，`outcome_by = agent`），它不再同步进 `tools` 表。
 - 只回文字、没调 `run.finish`（快照里有 `run.finish` 时）：第一次追加一条 user 消息「要结束请调用 run_finish 报结果（办成 / 部分办成 / 没办成），并对照目标写依据。」接着跑（过程记录 `plan`「agent 只回了文字、没报结果，提醒它调用 run_finish」，标记存在 `sessions.rule_state.finishNudged`，挂起再继续也只提醒一次）；再回文字就按「说做完了、没报结果」收尾。
-- 硬规则（`engine/outcome.ts`，在收尾的事务里），取最低（没办成 < 部分办成 < 没核实 < 办成）：agent 的报告（`run.finish` / `run.not_done` / 这次运行 `work.report not_done`）；检查点（有没达成的、全部跳过 → 没办成；部分跳过 → 部分办成；三方验收通过的不按检查点判）；被派的运行必填的结果没用 `work.report` 交（值为空也算没交）→ 没办成，原因「缺结果：价格、链接」。同样低的几条原因用「；」连起来。
+- 硬规则（`engine/outcome.ts`，在收尾的事务里），取最低（没办成 < 部分办成 < 没核实 < 办成）：agent 的报告（`run.finish` / `run.not_done` / 这次运行 `work.report not_done`）；检查点（有没达成的、全部跳过 → 没办成；部分跳过 → 部分办成；三方验收通过的不按检查点判）；被派的运行必填的结果没用 `work.report` 交（值为空也算没交；字段名末尾多了单位括号、大小写不同照样认）→ 没办成，原因「缺结果：价格、链接」。同样低的几条原因用「；」连起来。
 - 没有降低、三方验收通过 → 办成（`verify`；负责人在验收争议里判通过的记 `human`）；agent 报办成且检查点全部达成 → 办成（`rule`）；其余「办成」没有依据 → 复核，或者（不复核时）没核实（`rule`，原因写为什么没复核：任务关了复核 / 没配复核模型 / 这次运行开始时还没有复核）。
 - 出错、取消、人选不继续 → 状态 `failed`，结果没办成（`rule`，原因 = 错误信息）；验收争议判失败 → 没办成（`human`）。
 - 结束事件（`done`）的标题：「agent 报没办成」「agent 报办成，结果记没办成」「agent 报办成，等 AI 复核」「agent 说做完了（没报结果）」「验收通过，运行结束」……详情是 agent 的报告（结果、总结、依据、原因）和「结果：…（原因）」。

@@ -140,16 +140,26 @@ export function combineReview(verdict: RuleVerdict, review: { verdict?: ReviewLe
 export const failedOutcome = (reason: string, by: RunOutcomeBy = "rule") => ({ outcome: "not_achieved" as const, outcomeReason: reason.slice(0, 2000), outcomeBy: by })
 
 /** 被派的运行：必交的结果里，这次运行没用 work.report 交的（快照里冻着声明；旧快照没有 = 不要求） */
-function missingResults(snapshot: SessionSnapshot, item: { log: (typeof t.workItems.$inferSelect)["log"]; result: (typeof t.workItems.$inferSelect)["result"] } | undefined, sessionId: string) {
+export function missingResults(snapshot: Pick<SessionSnapshot, "dispatch">, item: { log: (typeof t.workItems.$inferSelect)["log"]; result: (typeof t.workItems.$inferSelect)["result"] } | undefined, sessionId: string) {
   const required = (snapshot.dispatch?.results ?? []).filter((result) => result.required)
   if (required.length === 0) return []
   const data = item && reportedIn(item.log, sessionId) ? (item.result?.data ?? {}) : {}
-  const has = (name: string) => {
-    const value = data[name]
-    return value !== undefined && value !== null && !(typeof value === "string" && value.trim() === "")
-  }
-  return required.filter((result) => !has(result.name)).map((result) => result.name)
+  // 字段名宽松一点：agent 常在名字后面加单位（「价格（元）」），去掉末尾的括号、空白、大小写再比
+  const filled = new Set(
+    Object.entries(data)
+      .filter(([, value]) => value !== undefined && value !== null && !(typeof value === "string" && value.trim() === ""))
+      .map(([name]) => resultKey(name))
+  )
+  return required.filter((result) => !filled.has(resultKey(result.name))).map((result) => result.name)
 }
+
+/** 比对结果名用：去掉末尾的（…）/ (…)、空白，转小写 */
+const resultKey = (name: string) =>
+  name
+    .trim()
+    .replace(/\s*[（(][^（）()]*[）)]\s*$/, "")
+    .replace(/\s+/g, "")
+    .toLowerCase()
 
 /** 收尾时的事实（在收尾的事务里读）：被派运行报的「办不成」、检查点、必交的结果、三方验收 */
 export async function outcomeFactsInTx(tx: Tx, sessionId: string, snapshot: SessionSnapshot, claim: AgentClaim | undefined): Promise<OutcomeFacts> {
