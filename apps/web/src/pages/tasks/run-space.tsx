@@ -1,6 +1,7 @@
 // 运行详情右上角的「空间文件」：这次运行的整个文件空间（任务附件、agent 存的文件、浏览器下载、截图、工具输出全文、刚上传的）。
 // 点开是一个大弹窗：按来源分标签页、按路径搜，表格列出路径 / 来源 / 大小 / 时间（覆盖过的标「覆盖过」，时间是最后一次写入），点名字预览（复用 components/files 的 FileViewer），右边下载。
-// 和抽屉里的 SessionFiles 用同一个查询（engine.sessionFiles），实时推送刷新时两边一起变。
+// 筛出来的全是图片时（「截图」标签页一定是）不用表格，改成缩略图格子（和图库页的格子同一写法），点了看大图、← → 切换。
+// 列表由实时推送（files 表）刷新，新文件自动出现。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
 import { DownloadIcon, FolderOpenIcon, SearchIcon } from "lucide-react"
@@ -8,6 +9,7 @@ import { fmtDateTime, type SessionFile, type SessionSummary } from "@heyagent/sh
 
 import { FileViewer, fileSourceLabel, filePathOf, fileTypeIcon, isImageFile, isOverwritten } from "@/components/files"
 import { Alert, AlertDescription } from "@/components/ui/alert"
+import { AspectRatio } from "@/components/ui/aspect-ratio"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -131,6 +133,25 @@ function SpaceFiles({ files }: { files: SessionFile[] }) {
       </div>
       {shown.length === 0 ? (
         <p className="text-muted-foreground">{needle ? `没有路径里带「${query.trim()}」的文件。` : "这一类没有文件。"}</p>
+      ) : images.length === shown.length ? (
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
+          {images.map((file) => (
+            <button
+              key={file.id}
+              type="button"
+              title={`${filePathOf(file)} · ${fmtDateTime(file.updatedAt)}`}
+              onClick={() => setViewingId(file.id)}
+              className="flex flex-col gap-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <span className="block w-full overflow-hidden border bg-muted">
+                <AspectRatio ratio={4 / 3}>
+                  <img src={file.url} alt={filePathOf(file)} loading="lazy" className="size-full object-cover object-top" />
+                </AspectRatio>
+              </span>
+              <span className="truncate text-xs text-muted-foreground tabular-nums">{fmtDateTime(file.updatedAt)}</span>
+            </button>
+          ))}
+        </div>
       ) : (
         <div className="border">
           <Table>

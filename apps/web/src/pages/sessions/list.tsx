@@ -86,6 +86,7 @@ export function SessionTable({ list, tasks, selectedId }: ListProps) {
             <TableHead>负责人</TableHead>
             <TableHead>模型</TableHead>
             <TableHead>开始</TableHead>
+            <TableHead>结束</TableHead>
             <TableHead>时长 / 在等什么</TableHead>
             <TableHead className="text-right">token</TableHead>
             <TableHead className="text-right">花费</TableHead>
@@ -113,6 +114,7 @@ export function SessionTable({ list, tasks, selectedId }: ListProps) {
                 <TableCell>{staffName(task?.ownerId)}</TableCell>
                 <TableCell className="text-muted-foreground">{shortModel(run.modelId)}</TableCell>
                 <TableCell className="tabular-nums text-muted-foreground">{startText(run.startedAt)}</TableCell>
+                <TableCell className="tabular-nums text-muted-foreground">{run.endedAt ? startText(run.endedAt) : "—"}</TableCell>
                 <TableCell className="max-w-72 truncate"><NowText run={run} /></TableCell>
                 <TableCell className="text-right tabular-nums">{tokens(run.tokensIn + run.tokensOut)}</TableCell>
                 <TableCell className="text-right tabular-nums">{money(run.costUsd)}</TableCell>

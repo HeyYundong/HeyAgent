@@ -1,6 +1,8 @@
 import * as React from "react"
 import {
   ArrowLeftIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
   CircleHelpIcon,
   MousePointerClickIcon,
   RotateCwIcon,
@@ -296,6 +298,7 @@ export function DetailSection({
   title,
   description,
   action,
+  collapsible = false,
   children,
 }: {
   title: string
@@ -303,18 +306,26 @@ export function DetailSection({
   description?: React.ReactNode
   /** 卡片右上角的小操作（可选） */
   action?: React.ReactNode
+  /** 默认收起（可选）：标题左边一个箭头，点了才展开内容 */
+  collapsible?: boolean
   children: React.ReactNode
 }) {
+  const [open, setOpen] = React.useState(!collapsible)
   return (
     <Card size="sm">
       <CardHeader>
         <CardTitle className="flex items-center gap-1">
+          {collapsible && (
+            <Button type="button" variant="ghost" size="icon-xs" aria-expanded={open} aria-label={open ? `收起${title}` : `展开${title}`} onClick={() => setOpen(!open)}>
+              {open ? <ChevronDownIcon /> : <ChevronRightIcon />}
+            </Button>
+          )}
           {title}
           {description && <HelpTip>{description}</HelpTip>}
         </CardTitle>
         {action && <CardAction>{action}</CardAction>}
       </CardHeader>
-      <CardContent className="text-sm">{children}</CardContent>
+      {open && <CardContent className="text-sm">{children}</CardContent>}
     </Card>
   )
 }

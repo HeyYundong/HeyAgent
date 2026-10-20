@@ -1,4 +1,4 @@
-// 任务和运行的引擎操作（M1 P3 接 engine-router）：立即运行（可带附件）、立即继续、取消、任务附件、这次运行的文件。
+// 任务和运行的引擎操作（M1 P3 接 engine-router）：立即运行（可带附件）、立即继续、取消、任务附件。
 // 任务抽屉、运行详情、Session 页的抽屉、待办看板都用这里的组件，权限照 shared 的 can()（后端也按同样的规则拦）。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
@@ -115,29 +115,6 @@ export function TaskAttachments({ task, canEdit }: { task: TaskDef; canEdit: boo
         empty={<p className="text-muted-foreground">没有附件。{canEdit ? "加上的文件每次运行都会带，agent 用「读附件」工具读。" : ""}</p>}
       />
       {canEdit && <div><UploadButton onUploaded={(file) => attach.submit({ taskId: task.id, fileId: file.id }).then(() => undefined)} /></div>}
-    </div>
-  )
-}
-
-/** 这次运行的文件和附件（engine.sessionFiles）；新文件由实时推送（files 表）自动出现 */
-export function SessionFiles({ run }: { run: SessionSummary }) {
-  const list = useQuery(trpc.engine.sessionFiles.queryOptions({ sessionId: run.id }))
-  if (list.isPending) return <Spinner />
-  if (list.isError) return <p className="text-destructive">文件列表没取到，稍后再试。</p>
-  const artifacts = list.data.filter((file) => file.kind !== "attachment")
-  const attachments = list.data.filter((file) => file.kind === "attachment")
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="flex flex-col gap-1.5">
-        <span className="text-muted-foreground">这次运行的文件（{artifacts.length}）</span>
-        <FileList files={artifacts} empty={<p className="text-muted-foreground">还没有文件。agent 存的文件、浏览器下载、截图会出现在这里。</p>} />
-      </div>
-      {attachments.length > 0 && (
-        <div className="flex flex-col gap-1.5">
-          <span className="text-muted-foreground">附件（{attachments.length}）</span>
-          <FileList files={attachments} />
-        </div>
-      )}
     </div>
   )
 }
