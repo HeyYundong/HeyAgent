@@ -353,7 +353,7 @@ export function organizePlan(input: ImportPlan, ctx: OrganizeContext): ImportPla
  * ② 派活方的 toolKeys 里没有「派活」：方案里没有 refId = work.dispatch 的工具就补一项，再把它加进派活方；
  * ③ 参数名去空白、去重，空的去掉，最多 20 个；④ 名额卡在 1～20；
  * ⑤ 被派活又有定时的：去掉定时（按定时跑出来的运行没有参数，不知道该办哪件），写一条提醒；
- * ⑥ 被派活、但没有任务派活给它：照样导入（人可以在派活页手动派），写一条提醒
+ * ⑥ 被派活、但没有任务派活给它：照样导入（人可以在任务详情里手动派），写一条提醒
  */
 function organizeDispatch(plan: ImportPlan, catalog: ImportCatalog, toolKeys: Set<string>, warn: (title: string, text: string) => void) {
   const taskKeys = new Set(plan.tasks.map((task) => task.key))
@@ -401,7 +401,7 @@ function organizeDispatch(plan: ImportPlan, catalog: ImportCatalog, toolKeys: Se
       warn(`「${name}」会被派活，不用定时`, `原来的定时「${task.schedule.text || task.schedule.cron}」已去掉：按定时跑出来的运行没有参数，不知道该办哪件。要的话在向导里加回来。`)
       task.schedule = null
     }
-    if (!kept.length) warn(`还没有任务派活给「${name}」`, "它能被派活，但方案里没有任务派活给它。照样导入，可以在派活页手动派，或者导入后在任务设置的「谁能派活给它」里加。")
+    if (!kept.length) warn(`还没有任务派活给「${name}」`, "它能被派活，但方案里没有任务派活给它。照样导入，可以在任务详情里点「派一张」手动派，或者导入后在任务设置的「谁能派活给它」里加。")
     for (const key of kept) senders.set(key, [...(senders.get(key) ?? []), task.title])
   }
   if (!senders.size) return

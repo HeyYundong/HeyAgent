@@ -1,4 +1,4 @@
-// 会话页的一页（sessions.page）：标签、各标签个数、搜索、只看等我处理（主管 / 员工）、翻页和总数、排序。
+// 会话页的一页（sessions.page）：标签、各标签个数、搜索、只看等我处理（主管 / 员工）、翻页和总数、排序（开始 / 结束、正序 / 倒序、空的在最后）、已结束的办成 / 没办成。
 // 期望值从 sessions.list（全部摘要）和 todos.board（没处理的事）按同样的规则算，不写死演示数据的个数。
 import { groupOf, outcomeOf, sessionGroups, type HumanItem, type SessionSummary } from "@heyagent/shared"
 import { eq } from "drizzle-orm"
@@ -105,6 +105,73 @@ describe("sessions.page", () => {
     expect(ids(staff.items)).toEqual(ids(blocking("u-wang")))
     // 各标签个数不算「只看等我处理」
     expect(staff.counts.human).toBe(all.filter((run) => run.status === "needs_human").length)
+  })
+
+  it("排序：按开始 / 结束时间、正序 / 倒序，没结束的（结束时间空）总在最后，同一时间按编号同方向排", async () => {
+    const cmp = (key: "startedAt" | "endedAt", dir: 1 | -1) => (a: SessionSummary, b: SessionSummary) => {
+      const x = a[key] ?? null
+      const y = b[key] ?? null
+      if (x === null || y === null) return x === y ? dir * a.id.localeCompare(b.id) : x === null ? 1 : -1
+      return dir * (x.localeCompare(y) || a.id.localeCompare(b.id))
+    }
+    // 「只看等我处理」之外，各标签里都排一遍（执行中的结束时间都是空的）
+    for (const { id: group } of sessionGroups) {
+      const list = all.filter((run) => groupOf(run) === group)
+      for (const [sort, key] of [["started", "startedAt"], ["ended", "endedAt"]] as const) {
+        for (const [dir, sign] of [["asc", 1], ["desc", -1]] as const) {
+          const page = (await query(ctx.app, "sessions.page", lin, { group, sort, dir, pageSize: 200 })).data
+          expect(ids(page.items), `${group} ${sort} ${dir}`).toEqual(ids([...list].sort(cmp(key, sign))))
+        }
+      }
+    }
+    // 已结束、却没记结束时间的（老数据）：正序、倒序都排在最后
+    const ended = all.filter((run) => groupOf(run) === "ended")
+    const victim = ended[0]!
+    await ctx.db.update(t.sessions).set({ endedAt: null }).where(eq(t.sessions.id, victim.id))
+    try {
+      for (const dir of ["asc", "desc"] as const) {
+        const page = (await query(ctx.app, "sessions.page", lin, { group: "ended", sort: "ended", dir, pageSize: 200 })).data
+        const items = page.items as SessionSummary[]
+        const firstNull = items.findIndex((run) => !run.endedAt)
+        expect(items.slice(firstNull).every((run) => !run.endedAt), dir).toBe(true)
+        expect(ids(items.slice(firstNull)), dir).toContain(victim.id)
+        expect(items).toHaveLength(ended.length)
+      }
+    } finally {
+      await ctx.db.update(t.sessions).set({ endedAt: victim.endedAt ? new Date(victim.endedAt) : null }).where(eq(t.sessions.id, victim.id))
+    }
+    expect((await query(ctx.app, "sessions.page", lin, { group: "ended", sort: "nope" })).status).toBe(400)
+  })
+
+  it("已结束的办成、没办成：和 outcomeOf 一样（没记结果的出错算没办成，复核中两边都不算），跟着来源、任务、结果、搜索变", async () => {
+    const count = (list: SessionSummary[]) => ({
+      achieved: list.filter((run) => groupOf(run) === "ended" && outcomeOf(run) === "achieved").length,
+      notAchieved: list.filter((run) => groupOf(run) === "ended" && outcomeOf(run) === "not_achieved").length,
+    })
+    const page = (await query(ctx.app, "sessions.page", lin, { group: "running" })).data
+    expect(page.endedOutcome).toEqual(count(all))
+    expect(page.endedOutcome.achieved + page.endedOutcome.notAchieved).toBeGreaterThan(0)
+    const run = all.find((each) => groupOf(each) === "ended")!
+    const byTask = (await query(ctx.app, "sessions.page", lin, { group: "ended", taskId: run.taskId })).data
+    expect(byTask.endedOutcome).toEqual(count(all.filter((each) => each.taskId === run.taskId)))
+    const manual = (await query(ctx.app, "sessions.page", lin, { group: "ended", source: "manual" })).data
+    expect(manual.endedOutcome).toEqual(count(all.filter((each) => each.source === "manual")))
+    const onlyBad = (await query(ctx.app, "sessions.page", lin, { group: "ended", outcome: "not_achieved" })).data
+    expect(onlyBad.endedOutcome).toEqual({ achieved: 0, notAchieved: count(all).notAchieved })
+    // 「只看等我处理」不影响
+    expect((await query(ctx.app, "sessions.page", lin, { group: "ended", mine: true })).data.endedOutcome).toEqual(count(all))
+
+    // 复核中（已结束、还没结果）两边都不算：拿一次已结束的运行，先记办成，再把结果清空
+    const victim = all.find((each) => each.status === "done")!
+    const ended = async () => (await query(ctx.app, "sessions.page", lin, { group: "ended" })).data.endedOutcome
+    try {
+      await ctx.db.update(t.sessions).set({ outcome: "achieved" }).where(eq(t.sessions.id, victim.id))
+      const before = await ended()
+      await ctx.db.update(t.sessions).set({ outcome: null }).where(eq(t.sessions.id, victim.id))
+      expect(await ended()).toEqual({ achieved: before.achieved - 1, notAchieved: before.notAchieved })
+    } finally {
+      await ctx.db.update(t.sessions).set({ outcome: victim.outcome ?? null }).where(eq(t.sessions.id, victim.id))
+    }
   })
 
   it("今天的花费：今天开始的运行加起来", async () => {

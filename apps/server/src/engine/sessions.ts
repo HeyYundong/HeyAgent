@@ -275,7 +275,7 @@ export async function buildSnapshot(
 /** 被派来的运行：谁派的（一句话，第一条消息和「运行开始」事件用） */
 function dispatchOrigin(dispatch: NonNullable<SessionSnapshot["dispatch"]>): string {
   if (dispatch.from) return `「${dispatch.from.taskTitle}」的运行 ${dispatch.from.sessionId} 派来的活`
-  if (dispatch.fromUser) return `${dispatch.fromUser.name}在派活页派的活`
+  if (dispatch.fromUser) return `${dispatch.fromUser.name}手动派的活`
   return "派来的活"
 }
 
@@ -494,7 +494,7 @@ export async function startSessionInTx(
     kind: "plan",
     title: "运行开始",
     detail: dispatch
-      ? `${sourceLabel.dispatch}：${dispatch.itemId}，${dispatch.from ? `来自 ${dispatch.from.sessionId}` : dispatch.fromUser ? `${dispatch.fromUser.name}在派活页派的` : "来源不明"}`
+      ? `${sourceLabel.dispatch}：${dispatch.itemId}，${dispatch.from ? `来自 ${dispatch.from.sessionId}` : dispatch.fromUser ? `${dispatch.fromUser.name}手动派的` : "来源不明"}`
       : [
           sourceLabel[input.source],
           snapshot.note ? `附加说明：${snapshot.note}` : null,

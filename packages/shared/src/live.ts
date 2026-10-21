@@ -6,7 +6,7 @@ export const LIVE_CHANNEL = "heyagent_changes"
 export const liveQueriesByTable: Record<string, string[]> = {
   users: ["me.get", "staff.list", "users.list"],
   // 会话页的一页（sessions.page）能按任务名搜
-  tasks: ["tasks.list", "work.taskStats", "sessions.page"],
+  tasks: ["tasks.list", "work.taskStats", "work.queueStats", "sessions.page"],
   task_memories: ["tasks.list"],
   task_skills: ["tasks.list"],
   task_tools: ["tasks.list"],
@@ -14,7 +14,7 @@ export const liveQueriesByTable: Record<string, string[]> = {
   task_memory_entries: ["taskMemory.list"],
   // 被派的运行状态变了，派活单的徽章（sessionStatus）和名额数跟着变。
   // sessions.list / sessions.page 只是摘要（不带过程），跑起来常变也不重；sessions.get（带全部过程）只让推来的那个 session 的失效，见 liveQueriesById
-  sessions: ["sessions.list", "sessions.page", "sessions.get", "work.list", "work.get", "work.taskStats"],
+  sessions: ["sessions.list", "sessions.page", "sessions.get", "work.list", "work.get", "work.taskStats", "work.queueStats"],
   session_events: ["sessions.list", "sessions.page", "sessions.get"],
   checkpoints: ["sessions.list", "sessions.page", "sessions.get"],
   checkpoint_records: ["sessions.list", "sessions.page", "sessions.get"],
@@ -55,7 +55,7 @@ export const liveQueriesByTable: Record<string, string[]> = {
   // 导入：读包进度、方案、导入后的状态
   imports: ["imports.list", "imports.get"],
   // 派活：派活单的增删改（排队 → 在办 → 办完）
-  work_items: ["work.list", "work.get", "work.taskStats", "work.lookup"],
+  work_items: ["work.list", "work.get", "work.taskStats", "work.queueStats", "work.lookup"],
 }
 
 /**

@@ -1,9 +1,11 @@
-// 任务页（v3.1）：卡片墙一直是主画面；点卡片从右边打开抽屉看任务详情（?id=），抽屉里再看某次运行的 session（?id=&run=）。
+// 任务页（v3.1）：卡片墙一直是主画面；点卡片从右边打开抽屉看任务详情（?id=），抽屉里再看某次运行的 session（?id=&run=）、派给它的一张单（?id=&work=W-…）。
+// 能被派活的任务，卡片上多一行「排队 3 · 在办 2」（work.queueStats 一次取全部）；只有 ?work=W-…、没有 ?id= 时（旧的 #/work?id=W-… 跳过来的）先查这张单派给了谁再打开。
 // 卡片和抽屉只说明任务（目标、步骤、定时、负责人），不显示运行状态；运行记录在「会话」页看（抽屉头部「会话」按钮带上这个任务筛好）。
 // 卡片按创建时间排，新建的在最前。
 // 主管能新建任务、开关任务；员工能看全部任务，只能开关、运行自己负责的。
 // 新建、编辑、开关、删除接通后端（M1 P2）；立即运行（可带附件）、立即继续、取消、任务附件接引擎（M1 P3）。
 import * as React from "react"
+import { useQuery } from "@tanstack/react-query"
 import { ArrowLeftIcon, HistoryIcon, ListChecksIcon, PlusIcon } from "lucide-react"
 
 import { EmptyState, PageFrame, SimpleHeader } from "@/components/shell/simple-page"
@@ -12,7 +14,8 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Switch } from "@/components/ui/switch"
-import { can, fmtDateTime, fmtShort, runsOfTask, type TaskDef } from "@heyagent/shared"
+import { toast } from "@/components/ui/toast"
+import { can, fmtDateTime, fmtShort, runsOfTask, type TaskDef, type WorkQueueStats } from "@heyagent/shared"
 
 import {
   useBoardQuery, useMemoriesQuery, useModelsQuery, useRulesQuery, useSessionsQuery, useSkillsQuery, useStaffName, useStaffQuery, useTasksQuery, useToolsQuery,
@@ -26,6 +29,8 @@ import { TaskDialog } from "./task-dialog"
 import type { TasksState } from "./parts"
 import { RunDetail } from "./run-detail"
 import { TaskActions, TaskDetail } from "./task-detail"
+import { WorkItemView } from "./work-detail"
+import { useWorkQueueStats } from "./work-parts"
 
 export default function TasksPage() {
   const { isAdmin, user } = useMe()
@@ -46,10 +51,14 @@ export default function TasksPage() {
   // 关抽屉时 ?id= 先清掉了，留着上一次的 id / run，让关闭动画有内容
   const taskId = params.get("id")
   const runId = params.get("run")
-  const [shown, setShown] = React.useState({ id: taskId, run: runId })
-  if (taskId && (taskId !== shown.id || runId !== shown.run)) setShown({ id: taskId, run: runId })
+  const workId = params.get("work")
+  const [shown, setShown] = React.useState({ id: taskId, run: runId, work: workId })
+  if (taskId && (taskId !== shown.id || runId !== shown.run || workId !== shown.work)) setShown({ id: taskId, run: runId, work: workId })
   const task = taskList.find((each) => each.id === (taskId ?? shown.id))
   const shownRun = taskId ? runId : shown.run
+  const shownWork = taskId ? workId : shown.work
+  // 卡片上的「排队 · 在办」
+  const queueStats = useWorkQueueStats().data ?? []
   // 卡片墙按创建时间，新建的排最前
   const visible = taskList.toSorted((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
   // 员工能看全部任务，只能操作自己负责的；主管能操作全部
@@ -82,11 +91,14 @@ export default function TasksPage() {
         }
       >
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
-          {visible.map((each) => <TaskCard key={each.id} task={each} canToggle={canManage(each)} onToggle={(enabled) => setEnabled.mutate({ id: each.id, enabled })} />)}
+          {visible.map((each) => (
+            <TaskCard key={each.id} task={each} queue={queueStats.find((stats) => stats.taskId === each.id)} canToggle={canManage(each)} onToggle={(enabled) => setEnabled.mutate({ id: each.id, enabled })} />
+          ))}
         </div>
-        <Sheet open={Boolean(taskId)} onOpenChange={(next) => !next && setParams({ id: null, run: null })}>
+        {workId && !taskId && <WorkRedirect id={workId} />}
+        <Sheet open={Boolean(taskId)} onOpenChange={(next) => !next && setParams({ id: null, run: null, work: null })}>
           <SheetContent className="gap-0 data-[side=right]:w-full data-[side=right]:sm:max-w-3xl">
-            {task ? <TaskSheetBody task={task} runId={shownRun} state={state} canEdit={canManage(task)} />
+            {task ? <TaskSheetBody task={task} runId={shownRun} workId={shownWork} state={state} canEdit={canManage(task)} />
               : <SheetHeader><SheetTitle>找不到这个任务</SheetTitle><SheetDescription>{taskId ?? shown.id} 可能已经被删除。</SheetDescription></SheetHeader>}
           </SheetContent>
         </Sheet>
@@ -96,8 +108,22 @@ export default function TasksPage() {
   )
 }
 
-/** 抽屉：头部是任务（编号、标题、负责人，定时在详情的「什么时候跑」里；右边「会话」按钮去会话页只看这个任务的 session），中间是任务详情或某次 session，底部是主管操作 */
-function TaskSheetBody({ task, runId, state, canEdit }: { task: TaskDef; runId: string | null; state: TasksState; canEdit: boolean }) {
+/** 只知道单号（旧的 #/work?id=W-… 跳过来的）：查这张单派给了哪个任务，换成那个任务的抽屉里看这张单；查不到就提示一下 */
+function WorkRedirect({ id }: { id: string }) {
+  const item = useQuery(trpc.work.get.queryOptions({ id }, { retry: false }))
+  React.useEffect(() => {
+    // location.replace：不留这一步的历史记录
+    if (item.data) window.location.replace(href("tasks", { id: item.data.taskId, work: id }))
+    if (item.isError) {
+      toast.add({ title: `找不到派活单 ${id}`, description: "可能是链接里的单号写错了。", type: "error" })
+      window.location.replace(href("tasks"))
+    }
+  }, [item.data, item.isError, id])
+  return null
+}
+
+/** 抽屉：头部是任务（编号、标题、负责人，定时在详情的「什么时候跑」里；右边「会话」按钮去会话页只看这个任务的 session），中间是任务详情、某次 session 或派给它的一张单，底部是主管操作 */
+function TaskSheetBody({ task, runId, workId, state, canEdit }: { task: TaskDef; runId: string | null; workId: string | null; state: TasksState; canEdit: boolean }) {
   const staffName = useStaffName()
   const runs = state.runsOf(task.id)
   return (
@@ -115,11 +141,16 @@ function TaskSheetBody({ task, runId, state, canEdit }: { task: TaskDef; runId: 
         </SheetDescription>
       </SheetHeader>
       <Separator />
-      <div key={runId ?? task.id} className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4 *:shrink-0">
+      <div key={runId ?? workId ?? task.id} className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4 *:shrink-0">
         {runId ? (
           <>
-            <Button variant="ghost" size="sm" className="self-start" onClick={() => setParams({ run: null })}><ArrowLeftIcon data-icon="inline-start" />{task.id} 任务详情</Button>
+            <Button variant="ghost" size="sm" className="self-start" onClick={() => setParams({ run: null })}><ArrowLeftIcon data-icon="inline-start" />{workId ? `派活单 ${workId}` : `${task.id} 任务详情`}</Button>
             <RunDetail task={task} run={runs.find((run) => run.id === runId)} />
+          </>
+        ) : workId ? (
+          <>
+            <Button variant="ghost" size="sm" className="self-start" onClick={() => setParams({ work: null })}><ArrowLeftIcon data-icon="inline-start" />返回任务 {task.id}</Button>
+            <WorkItemView id={workId} />
           </>
         ) : <TaskDetail task={task} state={state} canEdit={canEdit} />}
       </div>
@@ -141,8 +172,15 @@ function metaLine(task: TaskDef) {
   return [task.schedule?.text ?? "只跑一次", next, steps].filter(Boolean).join(" · ")
 }
 
-/** 任务卡片：只说明任务（标题、目标、定时和步骤、负责人、开关），不显示运行状态 */
-function TaskCard({ task, canToggle, onToggle }: { task: TaskDef; canToggle: boolean; onToggle: (enabled: boolean) => void }) {
+/** 被派任务的「排队 3 · 在办 2」：只写不是 0 的，都是 0 不写 */
+function queueLine(stats?: WorkQueueStats) {
+  if (!stats) return ""
+  return [stats.queued > 0 && `排队 ${stats.queued}`, stats.running > 0 && `在办 ${stats.running}`].filter(Boolean).join(" · ")
+}
+
+/** 任务卡片：只说明任务（标题、目标、定时和步骤、负责人、开关），不显示运行状态；被派任务多一行排队、在办的单数 */
+function TaskCard({ task, queue, canToggle, onToggle }: { task: TaskDef; queue?: WorkQueueStats; canToggle: boolean; onToggle: (enabled: boolean) => void }) {
+  const queued = queueLine(queue)
   const staffName = useStaffName()
   return (
     <Card size="sm" className="relative">
@@ -154,6 +192,7 @@ function TaskCard({ task, canToggle, onToggle }: { task: TaskDef; canToggle: boo
         </div>
         <p className="line-clamp-2 text-muted-foreground">目标：{task.goal}</p>
         <p className="mt-auto truncate pt-1 text-muted-foreground">{metaLine(task)}</p>
+        {queued && <p className="truncate text-muted-foreground tabular-nums">{queued}</p>}
         <div className="flex items-center justify-between gap-2">
           <span className="text-muted-foreground">负责人 {staffName(task.ownerId)}</span>
           {canToggle ? (

@@ -358,6 +358,8 @@ session 结束的地方现在有 5 处（读代码确认），每处在**同一�
 
 ### 9.2 派活页（新页面 `pages/work/`，侧边栏第一组「任务、待办、Session」后面加「派活」，图标 lucide `SendIcon`）
 
+> **2026-10-21 派活页去掉了**（`docs/dev/work-into-tasks.md`）：排队的单在会话页「排队中」（`#/sessions?status=queue`），每张单在被派任务详情的「派来的活」里，单详情在任务抽屉里打开（`#/tasks?id=<任务>&work=<单号>`，代码搬到 `pages/tasks/work-detail.tsx`），「派一张」在任务详情里（`?dispatch=1` 直接打开）。下面是当时的设计，留作记录。
+
 用现成的 `MasterDetail` + `PickGroup` / `PickItem` + `DetailPanel`。
 
 - **左边列表**：
@@ -375,6 +377,8 @@ session 结束的地方现在有 5 处（读代码确认），每处在**同一�
 人手动派一张：页面右上角「派一张」`Button` → `Dialog`：选任务（`Select`，只列能被派活、自己有权限的）→ 按参数声明生成 `Field` + `Input`（必填的有 `FieldError`）→ 标题、补充说明 `Textarea`。表单用 React Hook Form（已登记）。
 
 ### 9.3 任务详情（`pages/tasks/task-detail.tsx`）
+
+> 2026-10-21 起：「派活」区块换成「派来的活」（名额一行、三个标签、搜索、单的列表、「派一张」），任务卡片上是一行「排队 3 · 在办 2」，见 `docs/dev/work-into-tasks.md`。
 
 - 能被派活的任务：加一个区块「派活」，一行数字：排队 5 · 在办 2 · 今天办成 18 · 没办成 1，点了跳到派活页并筛好这个任务（排队、在办都跳「没结束」）。
 - 能被派活的任务，「立即运行」换成「派一张」（同 9.2 节的弹窗）。不然人点立即运行，开出来的运行没有参数，agent 不知道办哪件。

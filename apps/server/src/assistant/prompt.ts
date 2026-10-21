@@ -61,7 +61,6 @@ const RULES = `## 怎么做
 const PAGE_NAMES: Record<string, string> = {
   tasks: "任务",
   sessions: "会话",
-  work: "派活",
   gallery: "图库",
   compare: "比物",
   memory: "记忆",
@@ -89,6 +88,7 @@ export async function contextText(db: Db, context: AssistantPageContext | undefi
         const row = await one(db.select({ title: t.tasks.title }).from(t.tasks).where(eq(t.tasks.id, id)))
         selected = row ? `任务 ${id}「${clip(row.title, 60)}」` : `任务 ${id}（库里没有）`
         if (context.params.run) selected += `，正在看它的运行 ${context.params.run}`
+        else if (context.params.work) selected += `，正在看派给它的派活单 ${context.params.work}`
         break
       }
       case "memory": {

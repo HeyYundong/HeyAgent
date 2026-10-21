@@ -13,7 +13,6 @@ import {
   LogOutIcon,
   PackageOpenIcon,
   ScanEyeIcon,
-  SendIcon,
   SettingsIcon,
   ShieldCheckIcon,
   UsersIcon,
@@ -59,8 +58,6 @@ interface NavItem {
 export const NAV_WORK: NavItem[] = [
   { id: "tasks", title: "任务", icon: LayoutGridIcon },
   { id: "sessions", title: "会话", icon: HistoryIcon },
-  /** 派活（docs/dev/dispatch.md 第 9.2 节） */
-  { id: "work", title: "派活", icon: SendIcon },
 ]
 
 /** agent 干活时用的东西：图片、浏览器 */

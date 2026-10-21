@@ -158,8 +158,8 @@ export function ImportedView({ detail }: { detail: ImportDetail }) {
 function FollowUpRow({ importId, todo }: { importId: string; todo: ImportFollowUp }) {
   const runNow = useAction(trpc.engine.runNow.mutationOptions(), { success: ({ sessionId }) => `开始运行了（${sessionId}），在「会话」页和任务详情里能看到`, errorTitle: "没能开始运行" })
   const attach = useAction(trpc.imports.attachMcpTools.mutationOptions(), { success: "工具选进任务了", errorTitle: "工具没选进任务" })
-  // 派活第二期：能被派活的任务，「试跑」换成「派一张试试」，链接到派活页并打开「派一张」（#/work?task=<id>&new=1）
-  const dispatchTry = todo.kind === "try_run" && !todo.action && Boolean(todo.link?.startsWith("#/work"))
+  // 派活第二期：能被派活的任务，「试跑」换成「派一张试试」，链接到任务详情并打开「派一张」（#/tasks?id=<id>&dispatch=1；旧的 #/work?task=<id>&new=1 也认）
+  const dispatchTry = todo.kind === "try_run" && !todo.action && Boolean(todo.link?.includes("dispatch=1") || todo.link?.startsWith("#/work"))
   const meta = dispatchTry ? { icon: <SendIcon />, label: "派一张试试" } : FOLLOW_UP[todo.kind]
   const pending = runNow.isPending || attach.isPending
   const run = todo.action === "run_task"

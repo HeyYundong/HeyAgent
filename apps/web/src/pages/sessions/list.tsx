@@ -4,8 +4,10 @@
 // 宽屏每一行的结果徽章旁边有「更多」菜单：已经结束的运行（已结束、出错、取消的），负责人和主管能直接「改结果」（和运行详情同一个弹窗）。
 // 窄屏一条就是一个链接，里面不放按钮：点开抽屉，在「结果」区块里改。
 // 翻页在服务端（sessions.page），这里只画列表下面的页码；页码在网址 ?page=，第 1 页不写。
+// 宽屏「开始」「结束」两列的表头能点：按这一列排（再点换正序 / 倒序），排序也在服务端（?sort=ended&dir=asc，默认的开始、倒序不写）。
+// 派活触发的运行，「来源」里的单号（派活 W-3）是链接：在被派任务的抽屉里打开那张单。
 import * as React from "react"
-import { EllipsisIcon, HandIcon, PencilIcon } from "lucide-react"
+import { ArrowDownIcon, ArrowUpDownIcon, ArrowUpIcon, EllipsisIcon, HandIcon, PencilIcon } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -21,6 +23,7 @@ import { useModels, useRunNow, useStaffName } from "@/lib/data"
 import { useMe } from "@/lib/session"
 import { Elapsed, RunStatusBadge, money, tokens } from "@/pages/tasks/parts"
 import { SetOutcomeDialog } from "@/pages/tasks/run-outcome"
+import { workLink } from "@/pages/tasks/work-parts"
 
 import { HUMAN_KIND_LABEL } from "./human-item"
 
@@ -79,6 +82,39 @@ export const SOURCE_LABEL: Record<string, string> = { manual: "手动", cron: "�
 /** 「定时」「派活 W-57」 */
 export const sourceText = (run: SessionSummary) => `${(run.source && SOURCE_LABEL[run.source]) || "—"}${run.workItemId ? ` ${run.workItemId}` : ""}`
 
+/** 表格里的来源：派活触发的，单号是链接（浮在整行链接上面） */
+function SourceCell({ run }: { run: SessionSummary }) {
+  if (!run.workItemId) return <>{sourceText(run)}</>
+  return (
+    <>
+      {(run.source && SOURCE_LABEL[run.source]) || "派活"}{" "}
+      <a href={workLink({ id: run.workItemId, taskId: run.taskId })} className="relative z-10 font-mono underline underline-offset-4">{run.workItemId}</a>
+    </>
+  )
+}
+
+/** 排序：按哪一列、哪个方向；点表头换 */
+export interface SessionSort {
+  by: "started" | "ended"
+  dir: "asc" | "desc"
+  onSort: (by: "started" | "ended") => void
+}
+
+/** 能点的表头：没按这一列排时是上下箭头，按它排时是现在的方向 */
+function SortHead({ label, column, sort }: { label: string; column: SessionSort["by"]; sort?: SessionSort }) {
+  if (!sort) return <TableHead>{label}</TableHead>
+  const active = sort.by === column
+  const Icon = !active ? ArrowUpDownIcon : sort.dir === "asc" ? ArrowUpIcon : ArrowDownIcon
+  return (
+    <TableHead aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}>
+      <Button variant="ghost" size="xs" className="-ml-2" onClick={() => sort.onSort(column)} title={active && sort.dir === "desc" ? `按${label}从早到晚排` : `按${label}从晚到早排`}>
+        {label}
+        <Icon data-icon="inline-end" />
+      </Button>
+    </TableHead>
+  )
+}
+
 /** 分给谁：分给自己的加个「我」 */
 function Assignee({ item }: { item: HumanItem }) {
   const { user } = useMe()
@@ -99,7 +135,7 @@ interface ListProps {
   linkTo: (id: string) => string
 }
 
-export function SessionTable({ rows, tasks, selectedId, linkTo }: ListProps) {
+export function SessionTable({ rows, tasks, selectedId, linkTo, sort }: ListProps & { sort?: SessionSort }) {
   const staffName = useStaffName()
   const { modelName } = useModels()
   const shortModel = (id: string) => modelName(id).replace(/^Claude /, "")
@@ -115,8 +151,8 @@ export function SessionTable({ rows, tasks, selectedId, linkTo }: ListProps) {
             <TableHead>来源</TableHead>
             <TableHead>负责人</TableHead>
             <TableHead>模型</TableHead>
-            <TableHead>开始</TableHead>
-            <TableHead>结束</TableHead>
+            <SortHead label="开始" column="started" sort={sort} />
+            <SortHead label="结束" column="ended" sort={sort} />
             <TableHead>时长 / 在等什么</TableHead>
             <TableHead className="text-right">token</TableHead>
             <TableHead className="text-right">花费</TableHead>
@@ -164,7 +200,7 @@ export function SessionTable({ rows, tasks, selectedId, linkTo }: ListProps) {
                   <a href={linkTo(run.id)} className="after:absolute after:inset-0 hover:underline">{run.id}</a>
                 </TableCell>
                 <TableCell className="max-w-64 truncate" title={task?.title}>{task?.title ?? run.taskId}</TableCell>
-                <TableCell className="text-muted-foreground">{sourceText(run)}</TableCell>
+                <TableCell className="text-muted-foreground"><SourceCell run={run} /></TableCell>
                 <TableCell>{staffName(task?.ownerId)}</TableCell>
                 <TableCell className="text-muted-foreground">{shortModel(run.modelId)}</TableCell>
                 <TableCell className="tabular-nums text-muted-foreground">{startText(run.startedAt)}</TableCell>

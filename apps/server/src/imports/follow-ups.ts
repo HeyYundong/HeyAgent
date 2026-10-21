@@ -127,7 +127,7 @@ export async function computeFollowUps(db: DbOrTx, input: { status: string; plan
   for (const { key } of result.tasks) {
     const task = taskOf(key)
     if (!task) continue
-    // 能被派活的任务：按定时 / 立即运行跑出来的没有参数，不知道办哪件，改成到派活页「派一张试试」，名下有过一张单就算办完
+    // 能被派活的任务：按定时 / 立即运行跑出来的没有参数，不知道办哪件，改成在任务详情「派一张试试」（链接带 dispatch=1 直接打开「派一张」），名下有过一张单就算办完
     if (task.dispatch) {
       const [[items], [sources]] = await Promise.all([
         db.select({ n: count() }).from(t.workItems).where(eq(t.workItems.taskId, task.id)),
@@ -138,12 +138,12 @@ export async function computeFollowUps(db: DbOrTx, input: { status: string; plan
         kind: "try_run",
         title: `派一张试试「${task.title}」`,
         description: [
-          "这个任务导入成了「可以被派活」。到派活页派一张，看看办得对不对。",
+          "这个任务导入成了「可以被派活」。在任务详情里手动派一张，看看办得对不对。",
           (sources?.n ?? 0) === 0 ? "现在还没有任务派活给它（派活的任务没勾上，或者包里就没有），要的话在任务设置的「谁能派活给它」里加。" : "",
           task.enabled ? "" : "它导入时是停用的：单会先排着，启用后才开始办。",
         ].join(""),
         done: (items?.n ?? 0) > 0,
-        link: `#/work?task=${encodeURIComponent(task.id)}&new=1`,
+        link: `#/tasks?id=${encodeURIComponent(task.id)}&dispatch=1`,
         taskId: task.id,
       })
       continue

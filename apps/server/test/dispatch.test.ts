@@ -106,7 +106,7 @@ async function waitItem(id: string, status: string | string[], timeout = 20_000)
   )
 }
 
-/** 人在派活页派一张（tRPC），返回单 */
+/** 人手动派一张（tRPC），返回单 */
 async function humanDispatch(taskId: string, params: Record<string, string>, cookie = wang, extra: Record<string, unknown> = {}) {
   const res = await mutate(ctx.app, "work.dispatch", cookie, { taskId, params, ...extra })
   if (!res.data) throw new Error(`派一张失败：${JSON.stringify(res.error)}`)
@@ -279,6 +279,10 @@ describe("不重复、不抢单", () => {
     expect(running.map((item) => item.key)).toEqual(["P-1", "P-2"])
     const stats = await query(ctx.app, "work.taskStats", wang, { taskId: worker })
     expect(stats.data).toMatchObject({ queued: 3, running: 2, occupied: 2, maxRunning: 2 })
+    // 全部被派任务一次给：同样的数字，加上占名额的是哪两次运行
+    const overview = (await query(ctx.app, "work.queueStats", wang)).data.find((each: { taskId: string }) => each.taskId === worker)
+    expect(overview).toMatchObject({ enabled: true, dispatchable: true, queued: 3, running: 2, occupied: 2, maxRunning: 2 })
+    expect([...overview.holders].sort()).toEqual(running.map((item) => item.sessionId).sort())
 
     let maxOccupied = 0
     g.open()
@@ -362,7 +366,7 @@ describe("5 处结束回写", () => {
     // 人派的：运行算派的人开的，没有父运行
     expect(await sessionRow(ctx.db, failed.sessionId!)).toMatchObject({ createdById: "u-wang", parentSessionId: null })
     const [first] = await messagesOf(ctx.db, failed.sessionId!)
-    expect(JSON.stringify(first!.content)).toContain("王悦在派活页派的活")
+    expect(JSON.stringify(first!.content)).toContain("王悦手动派的活")
   })
 
   it("control.ts 的取消：人取消被派的运行 → 单没办成，原因写谁取消的", async () => {
@@ -574,7 +578,32 @@ describe("上限、权限、停用", () => {
   })
 })
 
-describe("派活页的人工操作", () => {
+describe("名额和排队一览（work.queueStats）、按页码翻（offset）", () => {
+  it("关了被派活、单还排着的任务也列；没被派活、也没单的任务不列；不登录不能看", async () => {
+    const { patrol, worker } = await makePair({ workerModel: "test/none", enabled: false })
+    const keys = ["O-1", "O-2", "O-3"]
+    const ids: string[] = []
+    for (const key of keys) ids.push(await fakeItem(worker, { key }))
+    const before = (await query(ctx.app, "work.queueStats", wang)).data as { taskId: string }[]
+    expect(before.find((each) => each.taskId === worker)).toMatchObject({ enabled: false, dispatchable: true, queued: 3, running: 0, occupied: 0, holders: [] })
+    expect(before.some((each) => each.taskId === patrol)).toBe(false)
+    await ctx.db.update(t.tasks).set({ dispatch: null }).where(eq(t.tasks.id, worker))
+    const after = (await query(ctx.app, "work.queueStats", wang)).data as { taskId: string }[]
+    expect(after.find((each) => each.taskId === worker)).toMatchObject({ dispatchable: false, maxRunning: 0, queued: 3 })
+    expect((await query(ctx.app, "work.queueStats", undefined)).status).toBe(401)
+
+    // offset：会话页「排队中」按页码翻，新派的在前；给了 offset 就不看 cursor
+    const page = (offset: number) => query(ctx.app, "work.list", wang, { taskId: worker, status: "queued", days: 0, limit: 2, offset, cursor: ids[2] })
+    const first = (await page(0)).data
+    expect(first.items.map((each: { id: string }) => each.id)).toEqual([ids[2], ids[1]])
+    expect(first.counts.queued).toBe(3)
+    const second = (await page(2)).data
+    expect(second.items.map((each: { id: string }) => each.id)).toEqual([ids[0]])
+    expect(second.nextCursor).toBeNull()
+  })
+})
+
+describe("人工操作（任务详情的派活单）", () => {
   it("lookup、派一张（默认标题、已经有了）、改参数（去重的不能改）、不办了、重办", async () => {
     const { worker } = await makePair({ workerModel: "test/none", enabled: false })
     expect((await query(ctx.app, "work.lookup", wang, { taskId: worker, params: { 单号: "H-1" } })).data).toBeNull()

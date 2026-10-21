@@ -31,7 +31,7 @@ import { useAction } from "@/lib/mutations"
 import { href } from "@/lib/router"
 import { useMe } from "@/lib/session"
 import { trpc } from "@/lib/trpc"
-import { ParamsTable, WorkItemBadge, shortName, timeText } from "@/pages/work/parts"
+import { ParamsTable, WorkItemBadge, shortName, timeText, workLink } from "./work-parts"
 
 import { VerificationReport } from "./verification"
 import { CheckpointList, Elapsed, RunStatusBadge, StepList, WaitingAlert, checkpointSummary, focusedCheckpoint, money } from "./parts"
@@ -404,7 +404,7 @@ function RunMeta({ run, rest }: { run: SessionSummary; rest: string }) {
     <span className="inline-flex flex-wrap items-center gap-x-1">
       <SendIcon className="size-3" />
       派活触发 ·
-      <a className="font-mono underline underline-offset-4" href={href("work", { id: run.workItemId })}>{run.workItemId}</a>
+      <a className="font-mono underline underline-offset-4" href={workLink({ id: run.workItemId, taskId: run.taskId })}>{run.workItemId}</a>
       {item && (item.via === "agent" && item.fromTaskId ? (
         <>
           · 来自「{shortName(item.fromTaskTitle)}」
@@ -427,7 +427,7 @@ function DispatchedIn({ run, itemId }: { run: SessionSummary; itemId: string }) 
     <DetailSection
       title="派来的活"
       description="这次运行是别的任务派来办一件事的，参数在第一条消息里交给了 agent。办完的总结会写回派活单。"
-      action={<Button variant="outline" size="sm" nativeButton={false} render={<a href={href("work", { id: itemId })} />}>看派活单 {itemId}</Button>}
+      action={<Button variant="outline" size="sm" nativeButton={false} render={<a href={workLink({ id: itemId, taskId: run.taskId })} />}>看派活单 {itemId}</Button>}
     >
       {detail.isPending ? (
         <Spinner />
@@ -449,7 +449,7 @@ function DispatchedIn({ run, itemId }: { run: SessionSummary; itemId: string }) 
   )
 }
 
-/** 派过活的运行：派出去的活，每行一张单，点了去派活页 */
+/** 派过活的运行：派出去的活，每行一张单，点了在被派任务的抽屉里看那张单 */
 function DispatchedOut({ run, events }: { run: SessionSummary; events?: RunEvent[] }) {
   const page = useQuery(trpc.work.list.queryOptions({ fromSessionId: run.id, days: 0, limit: 200 }))
   const list = page.data?.items ?? []
@@ -464,7 +464,7 @@ function DispatchedOut({ run, events }: { run: SessionSummary; events?: RunEvent
       ) : list.length ? (
         <ItemGroup className="gap-2">
           {list.map((item) => (
-            <Item key={item.id} variant="outline" size="sm" render={<a href={href("work", { id: item.id })} />}>
+            <Item key={item.id} variant="outline" size="sm" render={<a href={workLink(item)} />}>
               <ItemContent className="min-w-0">
                 <ItemTitle><span className="font-mono">{item.id}</span>{item.title}</ItemTitle>
                 <ItemDescription className="line-clamp-1">派给「{item.taskTitle}」 · {timeText(item.createdAt)}</ItemDescription>

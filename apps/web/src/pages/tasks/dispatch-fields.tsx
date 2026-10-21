@@ -217,7 +217,7 @@ export function DispatchFields({ id, control, register, errors, fromOptions, fro
     <FieldSet>
       <FieldLegend variant="label" className="flex items-center gap-1">
         被派活
-        <HelpTip>打开后，别的任务可以把一件件事派给它办，一件事开一次运行；人也能在派活页手动派。</HelpTip>
+        <HelpTip>打开后，别的任务可以把一件件事派给它办，一件事开一次运行；人也能在任务详情里点「派一张」手动派。</HelpTip>
       </FieldLegend>
       <Controller
         control={control}
