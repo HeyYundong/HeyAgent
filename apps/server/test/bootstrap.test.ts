@@ -17,7 +17,7 @@ import { resetTestDatabase, tempKeyring, testDatabaseUrl } from "./helpers.js"
 
 const FAKE_KEY = "sk-or-v1-bootstrap-test-key-0000000000"
 const catalog = {
-  data: ["anthropic/claude-sonnet-5.5", "anthropic/claude-opus-5.5", "google/gemini-3.8-flash", "qwen/qwen3.8-flash"].map((id) => ({
+  data: ["deepseek/deepseek-v4.1-flash-1017", "anthropic/claude-opus-5.5", "google/gemini-3.8-flash", "qwen/qwen3.8-flash"].map((id) => ({
     id,
     name: id,
     context_length: 1_000_000,
@@ -88,7 +88,7 @@ describe("空白环境初始化", () => {
     expect(decryptText(keyring, secret!.enc, { table: "secrets", id: secret!.id, version: secret!.version })).toBe(FAKE_KEY)
     const defaults = Object.fromEntries((await db.select().from(t.modelDefaults)).map((row) => [row.role, row.modelId]))
     expect(defaults).toEqual({
-      run: "openrouter/anthropic/claude-sonnet-5.5",
+      run: "openrouter/deepseek/deepseek-v4.1-flash-1017",
       plan: "openrouter/anthropic/claude-opus-5.5",
       verify: "openrouter/google/gemini-3.8-flash",
       embed: "openrouter/google/gemini-embedding-2",

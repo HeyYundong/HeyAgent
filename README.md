@@ -32,11 +32,11 @@ scripts/pod.sh up        # 第一次要构建镜像、下载 Chrome，比较慢
 
 | 用途 | 默认模型 |
 |---|---|
-| 执行 | Claude Sonnet 5.5 |
+| 执行 | DeepSeek V4.1 Flash 1017 |
 | 规划（翻译规则、压缩长对话时写摘要） | Claude Opus 5.5 |
 | 三方验收 | Gemini 3.8 Flash |
 
-验收模型不能和执行模型是同一家。想先省钱试跑，可以在任务里把执行模型选成 Claude Haiku 5.5。
+验收模型不能和执行模型是同一家。执行要更强的模型，可以在任务里单独选，例如 Claude Sonnet 5.5。
 
 ### 4. 跑通第一个任务（1 分钟）
 

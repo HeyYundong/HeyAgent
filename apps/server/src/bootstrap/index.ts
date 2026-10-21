@@ -19,7 +19,7 @@ import type { Keyring } from "../lib/crypto.js"
 import { setupNeeded } from "./setup.js"
 
 /** 初始化时选的默认模型（OpenRouter 上的名字）：执行、规划、验收（验收和执行不同家） */
-export const BOOTSTRAP_MODELS = { run: "anthropic/claude-sonnet-5.5", plan: "anthropic/claude-opus-5.5", verify: "google/gemini-3.8-flash" } as const
+export const BOOTSTRAP_MODELS = { run: "deepseek/deepseek-v4.1-flash-1017", plan: "anthropic/claude-opus-5.5", verify: "google/gemini-3.8-flash" } as const
 
 /**
  * 图库默认的 embedding 模型（用户 2026-10-17 同意用推荐的，以后在模型页能换）：图文同一个向量空间（能用一句描述找图），中文好；
