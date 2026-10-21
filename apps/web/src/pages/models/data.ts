@@ -35,6 +35,10 @@ export function connectionRows(provider: Provider): [string, string][] {
   return [
     ["地址", provider.baseUrl || "还没填"],
     ["API Key", provider.apiKeyMasked ?? (provider.kind === "custom" ? "没填" : "不需要")],
+    // 自定义服务：结构化输出把格式发给服务，还是写进提示词
+    ...(provider.kind === "custom"
+      ? [["支持 json_schema", provider.supportsJsonSchema ? "是（格式发给服务）" : "否（格式写进提示词）"] as [string, string]]
+      : []),
     ["状态", `${providerStatusLabel[provider.status]}${latency}`],
     ["检查时间", provider.checkedAt ? fmtDateTime(provider.checkedAt) : "还没检查过"],
   ]

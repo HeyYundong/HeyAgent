@@ -468,7 +468,7 @@ export async function addProvider(
   db: Db,
   keyring: Keyring,
   actorId: string | null,
-  input: { kind: ModelProviderKind; name?: string; baseUrl: string; apiKey?: string },
+  input: { kind: ModelProviderKind; name?: string; baseUrl: string; apiKey?: string; supportsJsonSchema?: boolean },
   options: { verifyKey?: boolean } = {}
 ) {
   if (providerNeedsKey(input.kind) && !input.apiKey) throw badRequest(`填 ${providerKindLabel[input.kind]} 的 API Key`)
@@ -485,6 +485,8 @@ export async function addProvider(
       status: "ok",
       checkedAt: new Date(),
       latencyMs: check.latencyMs ?? null,
+      // 只有自定义服务看这一列，其余类型一律存 false
+      supportsJsonSchema: input.kind === "custom" && input.supportsJsonSchema === true,
       position: (last?.position ?? 0) + 1,
     })
     if (input.apiKey) {
@@ -492,7 +494,7 @@ export async function addProvider(
       await tx.update(t.modelProviders).set({ apiKeySecretId: secretId }).where(eq(t.modelProviders.id, id))
     }
     if (listed !== false) await writeModels(tx, id, models, embeddingsKnown)
-    await audit(tx, actorId, "model_provider.create", "model_providers", id, { kind: input.kind, baseUrl: trimUrl(input.baseUrl), models: models.length, apiKeySet: Boolean(input.apiKey) })
+    await audit(tx, actorId, "model_provider.create", "model_providers", id, { kind: input.kind, baseUrl: trimUrl(input.baseUrl), models: models.length, apiKeySet: Boolean(input.apiKey), ...(input.kind === "custom" ? { supportsJsonSchema: input.supportsJsonSchema === true } : {}) })
     return id
   })
   return { id, check }
@@ -510,7 +512,7 @@ function defaultProviderName(kind: ModelProviderKind, id: string, baseUrl: strin
   return id === kind ? providerKindLabel[kind] : `${providerKindLabel[kind]} ${id.split("-").at(-1)}`
 }
 
-export async function createProvider(ctx: WriteCtx, input: { kind: ModelProviderKind; name?: string; baseUrl: string; apiKey?: string }) {
+export async function createProvider(ctx: WriteCtx, input: { kind: ModelProviderKind; name?: string; baseUrl: string; apiKey?: string; supportsJsonSchema?: boolean }) {
   assertCan(ctx.actor, "config.manage", {}, "只有主管能加模型服务")
   return addProvider(ctx.db, ctx.keyring(), ctx.actor.id, input)
 }
@@ -521,8 +523,8 @@ async function loadProvider(db: DbOrTx, id: string) {
   return row
 }
 
-/** 改地址、换 key：先用新的连一次，连上了才存，同时刷新模型列表 */
-export async function updateProvider(ctx: WriteCtx, input: { id: string; name?: string; baseUrl: string; apiKey?: string }) {
+/** 改地址、换 key：先用新的连一次，连上了才存，同时刷新模型列表。supportsJsonSchema 不传 = 不改 */
+export async function updateProvider(ctx: WriteCtx, input: { id: string; name?: string; baseUrl: string; apiKey?: string; supportsJsonSchema?: boolean }) {
   assertCan(ctx.actor, "config.manage", {}, "只有主管能改模型服务")
   const before = await loadProvider(ctx.db, input.id)
   const apiKey = input.apiKey || (await providerKey(ctx.db, ctx.keyring(), before.apiKeySecretId))
@@ -532,12 +534,13 @@ export async function updateProvider(ctx: WriteCtx, input: { id: string; name?: 
   await ctx.db.transaction(async (tx) => {
     let apiKeySecretId = before.apiKeySecretId
     if (input.apiKey) apiKeySecretId = await putSecret(tx, ctx.keyring(), { scope: "model_provider", refId: input.id, name: "api_key" }, input.apiKey, ctx.actor.id, 9)
+    const supportsJsonSchema = before.kind === "custom" ? (input.supportsJsonSchema ?? before.supportsJsonSchema) : false
     await tx
       .update(t.modelProviders)
-      .set({ name: input.name || before.name, baseUrl: trimUrl(input.baseUrl), apiKeySecretId, status: "ok", checkedAt: new Date(), latencyMs: check.latencyMs ?? null })
+      .set({ name: input.name || before.name, baseUrl: trimUrl(input.baseUrl), apiKeySecretId, supportsJsonSchema, status: "ok", checkedAt: new Date(), latencyMs: check.latencyMs ?? null })
       .where(eq(t.modelProviders.id, input.id))
     if (listed !== false) await writeModels(tx, input.id, models, embeddingsKnown)
-    await audit(tx, ctx.actor.id, "model_provider.update", "model_providers", input.id, { baseUrl: trimUrl(input.baseUrl), apiKeyChanged: Boolean(input.apiKey), models: models.length })
+    await audit(tx, ctx.actor.id, "model_provider.update", "model_providers", input.id, { baseUrl: trimUrl(input.baseUrl), apiKeyChanged: Boolean(input.apiKey), models: models.length, ...(before.kind === "custom" ? { supportsJsonSchema } : {}) })
   })
   return { id: input.id, check }
 }

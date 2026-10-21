@@ -294,6 +294,11 @@ export const modelProviders = pgTable("model_providers", {
   status: providerStatusEnum("status").notNull(),
   checkedAt: ts("checked_at"),
   latencyMs: integer("latency_ms"),
+  /**
+   * 自定义服务认不认 response_format: json_schema（vLLM、strata 等认）。认：结构化输出把 JSON Schema 发给服务按格式回答；
+   * 不认（默认）：只发 json_object，格式写进提示词。其余类型不看这一列
+   */
+  supportsJsonSchema: boolean("supports_json_schema").notNull().default(false),
   position: position(),
   createdAt: createdAt(),
   updatedAt: updatedAt(),

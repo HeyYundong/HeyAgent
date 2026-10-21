@@ -1,15 +1,17 @@
-// 添加 / 编辑模型服务：类型（OpenRouter / 直连 Claude、OpenAI、DeepSeek / 自定义 / Ollama，编辑时不能改）、地址、API Key；自定义服务还有名称。
+// 添加 / 编辑模型服务：类型（OpenRouter / 直连 Claude、OpenAI、DeepSeek / 自定义 / Ollama，编辑时不能改）、地址、API Key；自定义服务还有名称、「支持 json_schema」开关。
 // 保存前后端先真的连一次（会核对 key），连不上就报错、不保存，弹窗保持打开让人改。
 // 表单：React Hook Form + shared 的 providerInputSchema；编辑时提交前去掉 kind（接口是 providerUpdateSchema）。
 import { zodResolver } from "@hookform/resolvers/zod"
 import { Controller, useForm, useWatch } from "react-hook-form"
 import { providerInputSchema, providerNeedsKey, providerTakesKey, type ModelProviderKind, type ProviderCheck, type ProviderInput } from "@heyagent/shared"
 
+import { HelpTip } from "@/components/shell/simple-page"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field"
+import { Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { Spinner } from "@/components/ui/spinner"
+import { Switch } from "@/components/ui/switch"
 import { toast } from "@/components/ui/toast"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 
@@ -52,7 +54,7 @@ function connectedToast(title: string, check: ProviderCheck) {
 export function ProviderDialog({ provider, onClose }: ProviderDialogProps) {
   const form = useForm<ProviderInput>({
     resolver: zodResolver(providerInputSchema),
-    defaultValues: { kind: provider?.kind ?? "openrouter", name: provider?.name ?? "", baseUrl: provider?.baseUrl || DEFAULT_URL[provider?.kind ?? "openrouter"], apiKey: "" },
+    defaultValues: { kind: provider?.kind ?? "openrouter", name: provider?.name ?? "", baseUrl: provider?.baseUrl || DEFAULT_URL[provider?.kind ?? "openrouter"], apiKey: "", supportsJsonSchema: provider?.supportsJsonSchema ?? false },
   })
   const { errors } = form.formState
   const kind = useWatch({ control: form.control, name: "kind" })
@@ -64,16 +66,18 @@ export function ProviderDialog({ provider, onClose }: ProviderDialogProps) {
     const apiKey = values.apiKey?.trim() || undefined
     // 名称只有自定义服务填（其余用类型名）；空着交给后端：新加时用地址里的域名，编辑时不改
     const name = picked === "custom" ? values.name?.trim() || undefined : undefined
+    // 「支持 json_schema」也只有自定义服务有
+    const supportsJsonSchema = picked === "custom" ? values.supportsJsonSchema === true : undefined
     if (provider) {
       // 编辑：key 留空 = 不改
-      if (await update.submit({ id: provider.id, name, baseUrl, apiKey })) onClose()
+      if (await update.submit({ id: provider.id, name, baseUrl, apiKey, supportsJsonSchema })) onClose()
       return
     }
     if (providerNeedsKey(picked) && !apiKey) {
       form.setError("apiKey", { message: `填 ${KIND_LABEL[picked]} 的 API Key` })
       return
     }
-    const created = await create.submit({ kind: picked, name, baseUrl, apiKey })
+    const created = await create.submit({ kind: picked, name, baseUrl, apiKey, supportsJsonSchema })
     if (created) {
       onClose()
       navigate("models", { id: created.id })
@@ -133,6 +137,25 @@ export function ProviderDialog({ provider, onClose }: ProviderDialogProps) {
               </Field>
             ) : (
               <FieldDescription>Ollama 不需要 API Key。</FieldDescription>
+            )}
+            {kind === "custom" && (
+              <Controller
+                control={form.control}
+                name="supportsJsonSchema"
+                render={({ field }) => (
+                  <Field orientation="horizontal">
+                    <FieldContent>
+                      <FieldLabel htmlFor="mp-json-schema" className="flex items-center gap-1">
+                        支持 json_schema
+                        <HelpTip>
+                          比物、规则翻译、复核、验收要模型按固定格式回答。打开后把 JSON Schema 发给服务，由服务按格式回答（vLLM、strata 等支持）；服务不认、报错就关掉，HeyAgent 会把格式写进提示词。
+                        </HelpTip>
+                      </FieldLabel>
+                    </FieldContent>
+                    <Switch id="mp-json-schema" checked={field.value ?? false} onCheckedChange={(on) => field.onChange(Boolean(on))} />
+                  </Field>
+                )}
+              />
             )}
           </FieldGroup>
           <DialogFooter>

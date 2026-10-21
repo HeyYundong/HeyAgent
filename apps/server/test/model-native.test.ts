@@ -1,11 +1,12 @@
 // 直连厂商的模型层（不连库、不连外网）：用假的 fetch 看真正发出去的请求长什么样、回来的用量怎么算钱，
 // 以及厂商列出的模型怎么到 OpenRouter 公开目录里查价格。
 import { tool, type ModelMessage } from "ai"
+import { MockLanguageModelV4 } from "ai/test"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { z } from "zod"
 
 import { customCatalog, nativeCatalog, type NativeModel } from "../src/data/config/models.js"
-import { callModel, callStructured, costOf, languageModel, type ResolvedModel } from "../src/engine/model.js"
+import { callModel, callStructured, costOf, languageModel, schemaInPrompt, type ResolvedModel } from "../src/engine/model.js"
 
 const tools = { web_open: tool({ description: "打开网页", inputSchema: z.object({ url: z.string() }) }) }
 
@@ -197,6 +198,103 @@ describe("自定义服务（OpenAI 兼容）", () => {
     const sent = fakeApi(reply)
     await callModel(custom(undefined), { system: "s", messages: [{ role: "user", content: "x" }], tools })
     expect(sent[0]!.headers.get("authorization")).toBeNull()
+  })
+})
+
+describe("结构化输出：请求里带不上 schema 时把格式写进提示词", () => {
+  // 和比物的输出同一类：枚举、对象数组，模型不看 schema 只能猜
+  const schema = z.object({
+    confidence: z.enum(["high", "medium", "low"]),
+    dimensions: z.array(z.object({ name: z.string(), score: z.number(), note: z.string() })),
+  })
+  const answer = { confidence: "medium", dimensions: [{ name: "颜色", score: 80, note: "差不多" }] }
+  const system = "你比较两张图"
+  const messages: ModelMessage[] = [{ role: "user", content: "比一下" }]
+
+  type DoGenerate = Extract<NonNullable<ConstructorParameters<typeof MockLanguageModelV4>[0]>["doGenerate"], (...args: never[]) => unknown>
+  /** 假模型：记下收到的调用，回一段合 schema 的 JSON */
+  function fakeModel() {
+    const calls: Parameters<DoGenerate>[0][] = []
+    const model = new MockLanguageModelV4({
+      doGenerate: async (options) => {
+        calls.push(options)
+        return {
+          content: [{ type: "text", text: JSON.stringify(answer) }],
+          finishReason: { unified: "stop", raw: "stop" },
+          usage: { inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 5, text: 5, reasoning: 0 } },
+          warnings: [],
+        }
+      },
+    })
+    return { model, calls }
+  }
+  const systemText = (call: Parameters<DoGenerate>[0]) =>
+    call.prompt.filter((message) => message.role === "system").map((message) => message.content).join("\n")
+
+  it("schemaInPrompt：系统提示后面接上格式要求和 JSON Schema（字段名、枚举值都在）", async () => {
+    const { model, calls } = fakeModel()
+    const result = await callStructured({ model, modelId: "x/y", priceIn: 0, priceOut: 0, vision: false, schemaInPrompt: true }, { system, messages, schema, name: "comparison" })
+    expect(result.object).toEqual(answer)
+    const sent = systemText(calls[0]!)
+    expect(sent.startsWith(system)).toBe(true)
+    expect(sent).toContain("只回答一个 JSON 对象")
+    for (const word of ["confidence", "dimensions", "score", "note", "\"high\"", "\"medium\"", "\"low\"", "required"]) expect(sent).toContain(word)
+    expect(sent).not.toContain("$schema")
+  })
+
+  it("不用时系统提示原样，schema 只走 responseFormat", async () => {
+    const { model, calls } = fakeModel()
+    await callStructured({ model, modelId: "x/y", priceIn: 0, priceOut: 0, vision: false }, { system, messages, schema, name: "comparison" })
+    expect(systemText(calls[0]!)).toBe(system)
+    expect(calls[0]!.responseFormat).toMatchObject({ type: "json", name: "comparison", schema: { properties: { confidence: { enum: ["high", "medium", "low"] } } } })
+  })
+
+  it("哪些服务要写：只有没开「支持 json_schema」的自定义服务", () => {
+    expect(schemaInPrompt("custom", false)).toBe(true)
+    expect(schemaInPrompt("custom", true)).toBe(false)
+    for (const kind of ["openrouter", "anthropic", "openai", "deepseek"] as const) expect(schemaInPrompt(kind, false)).toBe(false)
+  })
+
+  const reply = (content: string) => ({
+    id: "c1",
+    object: "chat.completion",
+    created: 1,
+    model: "local-model",
+    choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }],
+    usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 },
+  })
+  const custom = (supportsJsonSchema: boolean): ResolvedModel => ({
+    model: languageModel("custom", "local-model", undefined, "https://local.example/v1", { supportsJsonSchema }),
+    modelId: "custom/local-model",
+    kind: "custom",
+    priceIn: 0,
+    priceOut: 0,
+    vision: true,
+    schemaInPrompt: schemaInPrompt("custom", supportsJsonSchema),
+  })
+  type ChatBody = { response_format?: { type: string; json_schema?: { name?: string; schema?: { properties?: Record<string, unknown> } } }; messages: { role: string; content: unknown }[] }
+
+  it("自定义服务没开「支持 json_schema」：只发 json_object，格式写在 system 消息里", async () => {
+    const sent = fakeApi(reply(JSON.stringify(answer)))
+    const result = await callStructured(custom(false), { system, messages, schema, name: "comparison" })
+    expect(result.object).toEqual(answer)
+    const body = sent[0]!.body as ChatBody
+    expect(sent[0]!.url).toBe("https://local.example/v1/chat/completions")
+    expect(body.response_format).toEqual({ type: "json_object" })
+    const systemMessage = body.messages.find((message) => message.role === "system")
+    expect(systemMessage?.content).toEqual(expect.stringContaining("\"confidence\""))
+    expect(systemMessage?.content).toEqual(expect.stringContaining("\"medium\""))
+  })
+
+  it("自定义服务开了「支持 json_schema」：发 response_format: json_schema，提示词不加格式", async () => {
+    const sent = fakeApi(reply(JSON.stringify(answer)))
+    const result = await callStructured(custom(true), { system, messages, schema, name: "comparison" })
+    expect(result.object).toEqual(answer)
+    const body = sent[0]!.body as ChatBody
+    expect(body.response_format?.type).toBe("json_schema")
+    expect(body.response_format?.json_schema?.name).toBe("comparison")
+    expect(Object.keys(body.response_format?.json_schema?.schema?.properties ?? {})).toEqual(["confidence", "dimensions"])
+    expect(body.messages.find((message) => message.role === "system")?.content).toBe(system)
   })
 })
 

@@ -80,6 +80,11 @@ export const modelProviderSchema = z.object({
   /** 上次检查连接的时间；未配置时没有 */
   checkedAt: isoTime.optional(),
   latencyMs: z.number().optional(),
+  /**
+   * 只有自定义服务有：服务认不认 response_format: json_schema。认：结构化输出（比物、规则翻译、复核、验收、压缩摘要）把 JSON Schema 发给服务按格式回答；
+   * 不认：只要求回 JSON，格式写进提示词
+   */
+  supportsJsonSchema: z.boolean().optional(),
   /** 能调工具的聊天模型（任务、执行 / 规划 / 验收用） */
   models: z.array(modelInfoSchema),
   /**

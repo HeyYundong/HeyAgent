@@ -49,6 +49,11 @@ export interface ResolvedModel {
   priceIn: number
   priceOut: number
   vision: boolean
+  /**
+   * 结构化输出时请求里带不上 JSON Schema（自定义服务没开「支持 json_schema」：只发 json_object，schema 被丢掉），
+   * callStructured 要把格式写进提示词，不然模型不知道字段名、枚举值，只能猜
+   */
+  schemaInPrompt?: boolean
 }
 
 type ProviderOptions = Parameters<typeof generateText>[0]["providerOptions"]
@@ -100,21 +105,33 @@ export async function resolveModel(
     ? modelId.slice(provider.id.length + 1)
     : modelId
   return {
-    model: languageModel(provider.kind, slug, apiKey, provider.baseUrl),
+    model: languageModel(provider.kind, slug, apiKey, provider.baseUrl, { supportsJsonSchema: provider.supportsJsonSchema }),
     modelId,
     kind: provider.kind,
     priceIn: info?.priceIn ?? 0,
     priceOut: info?.priceOut ?? 0,
     vision: info?.vision ?? false,
+    schemaInPrompt: schemaInPrompt(provider.kind, provider.supportsJsonSchema),
   }
 }
 
-/** apiKey 只有自定义服务可以不给（其余由 resolveModel 先检查过） */
+/**
+ * 结构化输出时要不要把 JSON Schema 写进提示词（按各家 provider 包实际发出去的请求定）：
+ * - OpenRouter、直连 OpenAI：response_format / text.format 是 json_schema；直连 Anthropic：output_config.format 或 JSON 工具，都带 schema；
+ * - 直连 DeepSeek：发 json_object，但 @ai-sdk/deepseek 自己把 schema 写进了 system 消息；
+ * - 自定义服务（@ai-sdk/openai-compatible）：没开 supportsStructuredOutputs 时只发 json_object、schema 直接丢掉，要我们补上
+ */
+export function schemaInPrompt(kind: ModelProviderKind, supportsJsonSchema: boolean) {
+  return kind === "custom" && !supportsJsonSchema
+}
+
+/** apiKey 只有自定义服务可以不给（其余由 resolveModel 先检查过）；supportsJsonSchema 只有自定义服务看 */
 export function languageModel(
   kind: Exclude<ModelProviderKind, "ollama">,
   slug: string,
   apiKey: string | undefined,
-  baseUrl: string
+  baseUrl: string,
+  options: { supportsJsonSchema?: boolean } = {}
 ): LanguageModel {
   switch (kind) {
     case "openrouter": {
@@ -139,13 +156,15 @@ export function languageModel(
     case "deepseek":
       return createDeepSeek({ apiKey, baseURL: baseUrl || DEEPSEEK_DEFAULT_URL })(slug)
     // 走 /chat/completions（各家兼容得最好的接口）；includeUsage 让流式输出（助手）最后也带回 token 用量，不然算不了钱。
-    // 结构化输出用 json_object（json_schema 不少服务不支持），不合 schema 时 callStructured 会再抠一次 JSON
+    // 结构化输出：开了「支持 json_schema」就发 response_format: json_schema（服务按 schema 回答）；
+    // 默认只发 json_object（json_schema 不少服务不认），schema 由 callStructured 写进提示词，不合 schema 时再抠一次 JSON
     case "custom":
       return createOpenAICompatible({
         name: "custom",
         baseURL: baseUrl,
         apiKey: apiKey || undefined,
         includeUsage: true,
+        supportsStructuredOutputs: options.supportsJsonSchema === true,
       }).chatModel(slug)
   }
 }
@@ -320,7 +339,22 @@ export interface StructuredResult<T> {
 }
 
 /**
- * 结构化输出（规则翻译、三方验收、压缩摘要用）：ai 7 里 generateObject 已标记废弃，用 generateText + output: Output.object。
+ * 请求里带不上 schema 时接在系统提示后面的格式要求。$schema 那一行对模型没用，去掉省 token
+ */
+export function schemaDirective(jsonSchema: object) {
+  const rest: Record<string, unknown> = { ...jsonSchema }
+  delete rest.$schema
+  return [
+    "## 回答格式",
+    "只回答一个 JSON 对象，符合下面的 JSON Schema：必填（required）的字段都要有，字段名照抄，枚举（enum）只能用列出的值之一，类型要对（数字不要写成字符串）。",
+    "不要用 Markdown，不要用 ``` 代码块包起来，JSON 前后不要加任何别的文字。",
+    JSON.stringify(rest),
+  ].join("\n")
+}
+
+/**
+ * 结构化输出（比物、规则翻译、复核、三方验收、压缩摘要用）：ai 7 里 generateObject 已标记废弃，用 generateText + output: Output.object。
+ * resolved.schemaInPrompt 时（请求里带不上 schema）把 JSON Schema 接在系统提示后面。
  * 模型返回的 JSON 不合 schema 时抛 NoObjectGeneratedError；这里再按文字抠一次 JSON 用 zod 校验，还不行才抛错。
  * 花费照样算（失败时也尽量从错误里拿到 usage）。
  */
@@ -335,15 +369,16 @@ export async function callStructured<T>(
   }
 ): Promise<StructuredResult<T>> {
   const started = Date.now()
+  const schema = zodSchema(input.schema)
+  const instructions = resolved.schemaInPrompt
+    ? `${input.system}\n\n${schemaDirective(await schema.jsonSchema)}`
+    : input.system
   try {
     const result = await generateText({
       model: resolved.model,
-      instructions: input.system,
+      instructions,
       messages: input.messages,
-      output: Output.object({
-        schema: zodSchema(input.schema),
-        name: input.name,
-      }),
+      output: Output.object({ schema, name: input.name }),
       providerOptions: providerOptionsFor(resolved, input.messages),
       maxRetries: 1,
       abortSignal: input.abortSignal,

@@ -417,6 +417,8 @@ export const providerInputSchema = z.object({
   baseUrl: z.string().trim().regex(/^https?:\/\/\S+$/, "填完整地址，以 http:// 或 https:// 开头"),
   /** 新 key；编辑时不填表示不改 */
   apiKey: z.string().trim().max(1000).optional(),
+  /** 只有自定义服务看：服务认不认 response_format: json_schema（不传 = 新加时关、编辑时不改；其余类型忽略） */
+  supportsJsonSchema: z.boolean().optional(),
 })
 export type ProviderInput = z.input<typeof providerInputSchema>
 export const providerUpdateSchema = providerInputSchema.omit({ kind: true }).extend({ id: z.string().min(1) })

@@ -617,6 +617,42 @@ describe("模型", () => {
     expect((await mutate(ctx.app, "models.deleteProvider", lin, { id: "custom" })).error).toBeUndefined()
   })
 
+  it("自定义服务的「支持 json_schema」：默认关；加、改时能开关，改时不传不动；引擎按它决定格式写不写进提示词；别的类型不存", async () => {
+    const providerOf = async (id: string) => (await query(ctx.app, "models.overview", lin)).data.providers.find((p: { id: string }) => p.id === id)
+    const created = await mutate(ctx.app, "models.createProvider", lin, { kind: "custom", name: "本地", baseUrl: "https://nolist.example/v1" })
+    expect(created.error).toBeUndefined()
+    const id = created.data.id as string
+    expect((await providerOf(id)).supportsJsonSchema).toBe(false)
+    await mutate(ctx.app, "models.addModel", lin, { providerId: id, modelName: "my-model", contextK: 8, vision: true, priceIn: 0, priceOut: 0 })
+    expect(await resolveModel(ctx.db, `${id}/my-model`)).toMatchObject({ kind: "custom", schemaInPrompt: true })
+
+    expect((await mutate(ctx.app, "models.updateProvider", lin, { id, baseUrl: "https://nolist.example/v1", supportsJsonSchema: true })).error).toBeUndefined()
+    expect((await providerOf(id)).supportsJsonSchema).toBe(true)
+    expect(await lastAudit("model_provider.update")).toMatchObject({ targetId: id, detail: { supportsJsonSchema: true } })
+    expect(await resolveModel(ctx.db, `${id}/my-model`)).toMatchObject({ kind: "custom", schemaInPrompt: false })
+    // 不传 = 不改
+    expect((await mutate(ctx.app, "models.updateProvider", lin, { id, name: "本地 strata", baseUrl: "https://nolist.example/v1" })).error).toBeUndefined()
+    expect(await providerOf(id)).toMatchObject({ name: "本地 strata", supportsJsonSchema: true })
+    expect((await mutate(ctx.app, "models.updateProvider", lin, { id, baseUrl: "https://nolist.example/v1", supportsJsonSchema: false })).error).toBeUndefined()
+    expect((await providerOf(id)).supportsJsonSchema).toBe(false)
+    expect((await mutate(ctx.app, "models.deleteProvider", lin, { id })).error).toBeUndefined()
+
+    // 加的时候就打开
+    const on = await mutate(ctx.app, "models.createProvider", lin, { kind: "custom", baseUrl: "https://nolist.example/v1", supportsJsonSchema: true })
+    expect((await providerOf(on.data.id as string)).supportsJsonSchema).toBe(true)
+    expect(await lastAudit("model_provider.create")).toMatchObject({ targetId: on.data.id, detail: { supportsJsonSchema: true } })
+    expect((await mutate(ctx.app, "models.deleteProvider", lin, { id: on.data.id })).error).toBeUndefined()
+
+    // 别的类型传了也不存、不给
+    const other = await mutate(ctx.app, "models.createProvider", lin, { kind: "openrouter", baseUrl: "https://models.example/api/v1", apiKey: "sk-or-v1-good-1111111111111", supportsJsonSchema: true })
+    expect(other.error).toBeUndefined()
+    const otherId = other.data.id as string
+    expect((await providerOf(otherId)).supportsJsonSchema).toBeUndefined()
+    const [row] = await ctx.db.select({ supportsJsonSchema: t.modelProviders.supportsJsonSchema }).from(t.modelProviders).where(eq(t.modelProviders.id, otherId))
+    expect(row?.supportsJsonSchema).toBe(false)
+    expect((await mutate(ctx.app, "models.deleteProvider", lin, { id: otherId })).error).toBeUndefined()
+  })
+
   it("有任务在用它的模型：服务删不了", async () => {
     const res = await mutate(ctx.app, "models.deleteProvider", lin, { id: "openrouter" })
     expect(res.error?.data?.code).toBe("CONFLICT")

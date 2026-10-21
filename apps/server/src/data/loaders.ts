@@ -635,6 +635,7 @@ export async function loadModels(db: Db): Promise<{ providers: ModelProvider[]; 
         status: provider.status,
         checkedAt: isoOpt(provider.checkedAt),
         latencyMs: opt(provider.latencyMs),
+        supportsJsonSchema: provider.kind === "custom" ? provider.supportsJsonSchema : undefined,
         models: modelsOf(provider.id, "chat"),
         embeddingModels: embeddingModels.length ? embeddingModels : undefined,
       })

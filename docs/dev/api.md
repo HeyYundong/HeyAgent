@@ -364,17 +364,23 @@ curl -s -b 'better-auth.session_token=<COOKIE>' -H 'content-type: application/js
 
 `kind` 是 `ollama`、`openrouter`、`anthropic`、`openai`、`deepseek`、`custom`。连接服务**不花钱**：OpenRouter 用公开的 `GET /models` 读模型目录（只留 `supported_parameters` 含 `tools` 的模型，因为 agent 每一步都要调工具），有 key 时再 `GET /key` 核对；Ollama 用 `GET /api/tags`；直连厂商带 key `GET /models`。超时 15 秒。
 
-**`custom`（自定义服务，2026-10-20，迁移 0024）**：任何兼容 OpenAI 聊天接口的服务（地址填到 `/v1` 为止，调用走 `{地址}/chat/completions`，引擎用 `@ai-sdk/openai-compatible`）。`apiKey` 可不填（有就带 `Authorization: Bearer`）。没填 `name` 时用地址里的域名。连接时带 key `GET {地址}/models`：
+**`custom`（自定义服务，2026-10-20，迁移 0027）**：任何兼容 OpenAI 聊天接口的服务（地址填到 `/v1` 为止，调用走 `{地址}/chat/completions`，引擎用 `@ai-sdk/openai-compatible`）。`apiKey` 可不填（有就带 `Authorization: Bearer`）。没填 `name` 时用地址里的域名。连接时带 key `GET {地址}/models`：
 - 读到了：`data[].id` 全当聊天模型（按名字去掉 embedding、rerank、语音、画图模型），上下文长度、能不能看图按模型名（去掉前面的「厂商/」）到 OpenRouter 公开目录宽松匹配；**单价一律 0**（「未知」，各家价格和 OpenRouter 不一样），`note` 提醒；
 - 401 / 403 → key 不对，不存；连不上（超时、域名不对）→ 不存；
 - 其余（404、不是 JSON、列表为空）→ `ok: true`、`models: 0`、`note` 说明「没有模型列表，手动加」，服务照样存，**已有的模型不动**（不当成全下架）。`testProvider`、`updateProvider` 这时再用服务里排第一的模型试发一句话（`POST /chat/completions`，`max_tokens: 16`，花很少的钱），404 / 401 / 其他错误都返回原因。
+
+**「支持 json_schema」（`supportsJsonSchema`，2026-10-21，迁移 0028，`model_providers.supports_json_schema`，默认 false）**：只有自定义服务看。结构化输出（`callStructured`：比物、规则翻译、复核、三方验收、压缩摘要）时：
+- 打开：`createOpenAICompatible({ supportsStructuredOutputs: true })`，请求带 `response_format: { type: "json_schema", json_schema: { schema, strict: true, name } }`，由服务按格式回答；
+- 关着（默认）：请求只带 `response_format: { type: "json_object" }`（`@ai-sdk/openai-compatible` 会把 schema 丢掉），引擎把一段格式要求加 JSON Schema 接在系统提示后面（`ResolvedModel.schemaInPrompt`，`schemaDirective`）。
+- 别的类型不用：OpenRouter、直连 OpenAI 发 json_schema，直连 Anthropic 用 `output_config.format`（或 JSON 工具），直连 DeepSeek 发 json_object 但 `@ai-sdk/deepseek` 自己把 schema 写进 system 消息。
+`ModelProvider.supportsJsonSchema` 只有自定义服务给（true / false）。
 
 `models` 表多一列 `manual`（人手动加的）：刷新模型列表时不删；列表里有同名模型时以手动填的为准（不覆盖）。`ModelInfo.manual` 只在为真时给。花费按 `models.price_in / price_out` 估，自定义服务没有缓存折扣（按原价算）。
 
 | 接口 | 谁能调 | 输入 | 返回 | 主要错误 | 审计 / 推送 |
 |---|---|---|---|---|---|
-| `models.createProvider` | 主管 | `{ kind, name?(≤100), baseUrl(http(s)://), apiKey? }`。OpenRouter 必须带 `apiKey`（默认地址 `https://openrouter.ai/api/v1`） | `{ id, check: ProviderCheck }` | `BAD_REQUEST`：没填 key、**连不上**（`message` 是原因，不存）、key 不对 | `model_provider.create`；**先连一次，连上才存**，同时写入模型目录；key 加密存；推 `model_providers`、`models`、`secrets` |
-| `models.updateProvider` | 主管 | `{ id, name?, baseUrl, apiKey? }`（`apiKey` 不填沿用已存的） | `{ id, check }` | `NOT_FOUND`、`BAD_REQUEST`（同上） | `model_provider.update`；先用新配置连一次，连上才存并刷新模型列表 |
+| `models.createProvider` | 主管 | `{ kind, name?(≤100), baseUrl(http(s)://), apiKey?, supportsJsonSchema?(只有 custom 看，不传 = 关) }`。OpenRouter 必须带 `apiKey`（默认地址 `https://openrouter.ai/api/v1`） | `{ id, check: ProviderCheck }` | `BAD_REQUEST`：没填 key、**连不上**（`message` 是原因，不存）、key 不对 | `model_provider.create`；**先连一次，连上才存**，同时写入模型目录；key 加密存；推 `model_providers`、`models`、`secrets` |
+| `models.updateProvider` | 主管 | `{ id, name?, baseUrl, apiKey?, supportsJsonSchema? }`（`apiKey` 不填沿用已存的；`supportsJsonSchema` 不传不改，非 custom 一律存 false） | `{ id, check }` | `NOT_FOUND`、`BAD_REQUEST`（同上） | `model_provider.update`；先用新配置连一次，连上才存并刷新模型列表 |
 | `models.testProvider` | 主管 | `{ id }` | `ProviderCheck`：`{ ok, latencyMs?, models?, message }` | `NOT_FOUND`。**连不上不抛错**，返回 `ok: false` 和原因 | `model_provider.test`；写回 `status`（`ok/error`）、`checkedAt`、`latencyMs` |
 | `models.refreshProvider` | 主管 | `{ id }` | `ProviderCheck` | 同上（不抛错） | `model_provider.refresh`；OpenRouter 只用公开接口、不带 key，其余带存着的 key；成功才更新模型目录。目录里没了的模型会删掉，**除非还是默认模型或是手动加的** |
 | `models.deleteProvider` | 主管 | `{ id }` | `{ id, defaults }`（删完后三个角色的默认模型，会自动换成别家的） | `NOT_FOUND`；`CONFLICT`：有任务在用它的模型 | `model_provider.delete`；key 密文一起删 |
