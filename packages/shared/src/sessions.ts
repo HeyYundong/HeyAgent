@@ -44,6 +44,10 @@ export const sessionPageInputSchema = z.object({
   outcome: runOutcomeSchema.optional(),
   /** 搜 session 编号、任务编号、任务名、派活单号（不分大小写） */
   q: z.string().trim().max(200).optional(),
+  /** 按哪一列排：开始时间（默认）/ 结束时间。没结束的结束时间是空的，不管正序倒序都排在最后 */
+  sort: z.enum(["started", "ended"]).default("started"),
+  /** 倒序（默认，新的在前）/ 正序 */
+  dir: z.enum(["asc", "desc"]).default("desc"),
   page: z.number().int().min(1).default(1),
   pageSize: z.number().int().min(1).max(200).default(50),
 })
@@ -69,6 +73,11 @@ export const sessionPageSchema = z.object({
   counts: sessionCountsSchema,
   /** 今天（上海时间）开始的运行一共花了多少，美元。不看任何筛选 */
   spentToday: z.number(),
+  /**
+   * 已结束的运行里办成、没办成各几个（「已结束」标签旁边的成功率）：筛选同 counts。和 outcomeOf 一样，没记结果的没完成、出错算没办成；
+   * 已结束、还没有结果的（复核还在跑）两边都不算
+   */
+  endedOutcome: z.object({ achieved: z.number().int(), notAchieved: z.number().int() }),
 })
 export type SessionPage = z.infer<typeof sessionPageSchema>
 

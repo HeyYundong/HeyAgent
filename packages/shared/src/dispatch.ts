@@ -245,6 +245,8 @@ export const workListInputSchema = z.object({
   days: z.number().int().min(0).max(3650).default(WORK_LIST_DEFAULT_DAYS),
   /** 翻页：上一页最后一张的 id */
   cursor: z.string().optional(),
+  /** 按页码翻（会话页「排队中」）：跳过前面几张；给了就不看 cursor */
+  offset: z.number().int().min(0).optional(),
   limit: z.number().int().min(1).max(200).default(50),
 })
 export type WorkListInput = z.input<typeof workListInputSchema>
@@ -284,7 +286,27 @@ export const workTaskStatsSchema = z.object({
 })
 export type WorkTaskStats = z.infer<typeof workTaskStatsSchema>
 
-/** 人在派活页「派一张」 */
+/**
+ * 被派任务的名额和排队（work.queueStats，一次给全部）：能被派活的任务，加上还有没结束的单的任务（关了被派活、单还留着的）。
+ * 任务页卡片上的「排队 3 · 在办 2」、会话页「排队中」的「在等什么」用
+ */
+export const workQueueStatsSchema = z.object({
+  taskId: z.string(),
+  enabled: z.boolean(),
+  /** 现在还开着「可以被派活」 */
+  dispatchable: z.boolean(),
+  /** 同时最多几个在跑；关了被派活的为 0 */
+  maxRunning: z.number().int(),
+  queued: z.number().int(),
+  running: z.number().int(),
+  /** 现在占着名额的运行数（同 work.taskStats） */
+  occupied: z.number().int(),
+  /** 占着名额的运行编号，先开始的在前 */
+  holders: z.array(z.string()),
+})
+export type WorkQueueStats = z.infer<typeof workQueueStatsSchema>
+
+/** 人手动「派一张」（任务详情里） */
 export const workDispatchInputSchema = z.object({
   taskId: z.string().min(1, "选一个任务"),
   params: z.record(z.string(), z.string().trim().max(2000)),

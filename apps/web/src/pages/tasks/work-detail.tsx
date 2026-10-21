@@ -1,16 +1,12 @@
-// 派活页（docs/dev/dispatch.md 第 9.2 节，设计稿 design/BRIEF-dispatch.md）：一个任务的 agent 用内置工具「派活」，把一件件事（派活单 W-57）派给另一个任务；
-// 平台按被派任务的名额一张单开一次运行，办完把结果写回单上。同一件事只办一次，没办成的由人点「重办」。
-// 左边是派活单列表（搜索、按状态、按被派的任务筛，默认最近 7 天，再往前翻页），右边是一张单的详情：参数、结果、处理记录。右上角「派一张」。
-// 筛选放在网址里（?task=&status=&from=&id=），任务抽屉点「排队 5」能直接跳过来并筛好。
-// 2026-10-20 标签从「排队 / 在办 / 办完 / 没办成」+「结果」下拉改成三个：没结束（排队 + 在办）/ 办成 / 没办成（含出错、不办了），按单的结果分
-// （workItemOutcome，负责人改过结果的跟着结果走）；结束了的单只挂结果徽章。旧网址的 ?status=queued 等、?outcome= 照样认。
+// 一张派活单的详情（docs/dev/dispatch.md 第 9.2 节；2026-10-21 派活页去掉后从 pages/work/index.tsx 搬来，见 docs/dev/work-into-tasks.md）。
+// 放在被派任务的抽屉里（#/tasks?id=T-…&work=W-…）和会话页「排队中」的抽屉里（#/sessions?status=queue&id=W-…）。
+// 标题卡（状态和结果、第几次、派给谁、谁派的、时间；「去看运行」「⋯」：改参数 / 重办 / 不办了）+ 最上面一条提示（现在卡在哪）+ 参数 + 结果 + 处理记录。
 // 第二期（docs/dev/dispatch-p2.md 3.4、4.4 节）：结果区块加「报结果」写的字段表、在办时「已报：…」；没办成按 failKind 分「运行出错」「agent 判断办不成」；
-// 排队等自动重试的单徽章写「排队 · 16:38 重试」，顶部提示和处理记录里写第几次重试；?new=1 直接打开「派一张」（导入后的「派一张试试」用）。
-// 运行结果（docs/dev/run-outcome.md 第 6.2、8 节）：单的结果跟着最后那次运行的结果（办成 / 没办成），列表和详情都有结果徽章；
-// 没办成多一种：缺要交回的结果（missing_result）。
+// 排队等自动重试的单徽章写「排队 · 16:38 重试」，顶部提示和处理记录里写第几次重试。
+// 运行结果（docs/dev/run-outcome.md 第 6.2、8 节）：单的结果跟着最后那次运行的结果（办成 / 没办成）；没办成多一种：缺要交回的结果（missing_result）。
 // 2026-10-20 以前的旧单可能是 failKind = partial（部分办成），或者办完 + 结果没办成（原来「没核实」的，迁移 0026 改的），照样显示。
 import * as React from "react"
-import { keepPreviousData, useInfiniteQuery, useQuery } from "@tanstack/react-query"
+import { useQuery } from "@tanstack/react-query"
 import {
   ArrowRightIcon,
   BotIcon,
@@ -25,296 +21,58 @@ import {
   PencilIcon,
   RotateCwIcon,
   ScanSearchIcon,
-  SearchIcon,
   SearchXIcon,
-  SendIcon,
   TimerIcon,
   UserIcon,
-  XIcon,
 } from "lucide-react"
 import {
   can,
   runStatusLabel,
-  sameShanghaiDay,
-  WORK_LIST_DEFAULT_DAYS,
   WORK_RETRY_DELAY_DEFAULT,
   runOutcomeLabel,
   workItemOutcome,
   type RunStatus,
   type SessionSummary,
-  type TaskDef,
   type WorkItemDetail,
-  type WorkListView,
   type WorkLogEntry,
   type WorkRun,
 } from "@heyagent/shared"
 
 import { FileList } from "@/components/files"
 import { MarkdownView } from "@/components/markdown"
-import { DetailPanel, DetailSection, EmptyState, HelpTip, MasterDetail, PageFrame, PickGroup, PickItem, SimpleHeader } from "@/components/shell/simple-page"
+import { DetailPanel, DetailSection, EmptyState } from "@/components/shell/simple-page"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
-import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group"
 import { Progress } from "@/components/ui/progress"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Spinner } from "@/components/ui/spinner"
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { Trace, TraceDescription, TraceIcon, TraceLine, TraceTitle } from "@/components/ui/trace"
-import { useBoardQuery, useHumanItems, useRunNow, useSessionsQuery, useStaffName, useStaffQuery, useTasksQuery } from "@/lib/data"
-import { href, navigate, setParams, useRoute } from "@/lib/router"
+import { useHumanItems, useRunNow, useSessionsQuery, useStaffName } from "@/lib/data"
+import { href } from "@/lib/router"
 import { useMe } from "@/lib/session"
 import { trpc } from "@/lib/trpc"
-import { delayText } from "@/pages/tasks/dispatch-fields"
-import { WaitingAlert, money } from "@/pages/tasks/parts"
 
-import { CancelDialog, DispatchDialog, EditParamsDialog, RedoDoneDialog, dispatchedToast, useRedo } from "./dialogs"
-import { ParamsTable, ReportTable, WorkItemBadge, failReason, reportText, retryAt, shortName, timeText, useWorkTaskStats } from "./parts"
+import { delayText } from "./dispatch-fields"
+import { WaitingAlert, money } from "./parts"
+import { CancelDialog, EditParamsDialog, RedoDoneDialog, useRedo } from "./work-dialogs"
+import { ParamsTable, ReportTable, WorkItemBadge, failReason, reportText, retryAt, shortName, timeText, useWorkTaskStats } from "./work-parts"
 
-// 没有「全部」：网址里没写状态时看「没结束」；出错、「不办了」的单算在「没办成」里
-const FILTERS: { id: WorkListView; name: string; count: "open" | "achieved" | "notAchieved" }[] = [
-  { id: "open", name: "没结束", count: "open" },
-  { id: "achieved", name: "办成", count: "achieved" },
-  { id: "not_achieved", name: "没办成", count: "notAchieved" },
-]
-
-/** 网址里的 ?status=（旧的 queued / running / done / failed 也认）、?outcome= → 标签 */
-function viewOf(params: URLSearchParams): WorkListView {
-  const value = params.get("status") ?? params.get("outcome")
-  if (value === "achieved" || value === "done") return "achieved"
-  if (value === "not_achieved" || value === "failed" || value === "cancelled") return "not_achieved"
-  return "open"
-}
-
-const PAGE_SIZE = 50
-
-export default function WorkPage() {
-  const { user } = useMe()
-  const { params } = useRoute()
-  const staffName = useStaffName()
-  const [query, setQuery] = React.useState("")
-  // 默认只列最近 7 天；翻到 7 天的底再点「再看更早的」就不限天数
-  const [allTime, setAllTime] = React.useState(false)
-  const [creating, setCreating] = React.useState(false)
+/** 一张单的详情，带「⋯」里三个操作的弹窗（改参数、不办了、办完的重办先确认） */
+export function WorkItemView({ id }: { id: string }) {
   const [editing, setEditing] = React.useState<WorkItemDetail | null>(null)
   const [cancelling, setCancelling] = React.useState<WorkItemDetail | null>(null)
   const [redoing, setRedoing] = React.useState<WorkItemDetail | null>(null)
   const redo = useRedo()
-
-  const filter = viewOf(params)
-  const taskFilter = params.get("task") ?? "all"
-  const fromFilter = params.get("from")
-  const selectedId = params.get("id")
-  const urlFilters = { status: filter === "open" ? null : filter, outcome: null, task: taskFilter === "all" ? null : taskFilter, from: fromFilter }
-
-  const q = useDebouncedText(query.trim())
-  const tasksQuery = useTasksQuery()
-  const tasks = tasksQuery.data ?? []
-  const anyQuery = useQuery(trpc.work.list.queryOptions({ days: 0, limit: 1 }))
-  const listQuery = useInfiniteQuery(
-    trpc.work.list.infiniteQueryOptions(
-      {
-        q: q || undefined,
-        view: filter,
-        taskId: taskFilter === "all" ? undefined : taskFilter,
-        fromTaskId: fromFilter ?? undefined,
-        days: allTime ? 0 : WORK_LIST_DEFAULT_DAYS,
-        limit: PAGE_SIZE,
-      },
-      { getNextPageParam: (page) => page.nextCursor ?? undefined, placeholderData: keepPreviousData }
-    )
-  )
-  // 详情里要：人名、正在跑的运行（检查点、在等什么）、挡住运行的要人办的事
-  const queries = [anyQuery, listQuery, tasksQuery, useStaffQuery(), useSessionsQuery(), useBoardQuery()]
-
-  const pages = listQuery.data?.pages ?? []
-  const items = pages.flatMap((page) => page.items)
-  const counts = pages[0]?.counts
-  const dispatchable = tasks.filter((task) => task.dispatch)
-  const manageable = dispatchable.filter((task) => can(user, "task.manage", { ownerId: task.ownerId }))
-  const scopedTask = tasks.find((task) => task.id === taskFilter)
-  const taskOptions = scopedTask && !scopedTask.dispatch ? [...dispatchable, scopedTask] : dispatchable
-  const now = new Date()
-  const today = items.filter((item) => sameShanghaiDay(item.createdAt, now))
-  const earlier = items.filter((item) => !sameShanghaiDay(item.createdAt, now))
-  const filtered = Boolean(q) || taskFilter !== "all" || Boolean(fromFilter)
-  const canMore = listQuery.hasNextPage || (!allTime && !q)
-  // ?new=1：导入后「派一张试试」等直接打开「派一张」，任务按 ?task= 选好；关掉时把 new 从网址里去掉
-  const creatingFromUrl = params.get("new") === "1" && manageable.length > 0
-  const dialogOpen = creating || creatingFromUrl
-  const closeDialog = () => {
-    setCreating(false)
-    if (creatingFromUrl) setParams({ new: null })
-  }
-
-  const header = (
-    <SimpleHeader
-      title="派活"
-      description="一个任务找出要办的事，一件一张单派给另一个任务；轮到了开一次运行，办完把结果写回单上。同一件事只办一次。"
-      action={
-        manageable.length > 0 && (
-          <Button onClick={() => setCreating(true)}>
-            <SendIcon data-icon="inline-start" />
-            派一张
-          </Button>
-        )
-      }
-    />
-  )
-
   return (
     <>
-      <PageFrame
-        header={header}
-        queries={queries}
-        isEmpty={anyQuery.data?.counts.all === 0}
-        empty={
-          <EmptyState
-            icon={<SendIcon />}
-            title="还没有派活单"
-            description="在要接活的任务上打开「可以被派活」、写好参数，再把派活的任务加进「谁能派活给它」，那个任务的 agent 就能派活了。也可以点「派一张」手动派。"
-          />
-        }
-      >
-        <MasterDetail
-          hasSelection={Boolean(selectedId)}
-          emptyHint="从左边选一张单看详情"
-          list={
-            <>
-              <div className="flex flex-col gap-2">
-                <InputGroup>
-                  <InputGroupAddon>
-                    <SearchIcon />
-                  </InputGroupAddon>
-                  <InputGroupInput placeholder="搜单号、标题、参数" value={query} onChange={(event) => setQuery(event.target.value)} aria-label="搜派活单" />
-                  {listQuery.isFetching && !listQuery.isFetchingNextPage && (
-                    <InputGroupAddon align="inline-end">
-                      <Spinner />
-                    </InputGroupAddon>
-                  )}
-                </InputGroup>
-                <ToggleGroup variant="outline" size="sm" spacing={0} className="w-full" value={[filter]} onValueChange={(value) => value[0] && setParams({ status: value[0] === "open" ? null : value[0], outcome: null })} aria-label="按结果筛选">
-                  {FILTERS.map((each) => (
-                    <ToggleGroupItem key={each.id} value={each.id} className="flex-1">
-                      {each.name}
-                      <span className="tabular-nums text-muted-foreground">{counts?.[each.count] ?? 0}</span>
-                    </ToggleGroupItem>
-                  ))}
-                </ToggleGroup>
-                <Select
-                  items={[{ value: "all", label: "全部被派的任务" }, ...taskOptions.map((task) => ({ value: task.id, label: `${task.id} ${task.title}` }))]}
-                  value={taskFilter}
-                  onValueChange={(value) => value && setParams({ task: value === "all" ? null : String(value) })}
-                >
-                  <SelectTrigger className="w-full" aria-label="按被派的任务筛选">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">全部被派的任务</SelectItem>
-                    {taskOptions.map((task) => (
-                      <SelectItem key={task.id} value={task.id}>
-                        {task.id} {task.title}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                {fromFilter && (
-                  <Button variant="outline" size="xs" className="self-start" onClick={() => setParams({ from: null })}>
-                    只看「{shortName(tasks.find((task) => task.id === fromFilter)?.title) || fromFilter}」派的
-                    <XIcon data-icon="inline-end" />
-                  </Button>
-                )}
-                {scopedTask?.dispatch && <QuotaLine task={scopedTask} />}
-              </div>
-              {items.length > 0 ? (
-                <>
-                  {[
-                    { label: "今天派的", list: today },
-                    { label: "更早", list: earlier },
-                  ].map(
-                    (group) =>
-                      group.list.length > 0 && (
-                        <PickGroup key={group.label} label={group.label}>
-                          {group.list.map((item) => (
-                            <PickItem
-                              key={item.id}
-                              to={href("work", { ...urlFilters, id: item.id })}
-                              selected={item.id === selectedId}
-                              title={item.title}
-                              description={`${item.id} · ${timeText(item.createdAt)} · ${item.via === "agent" ? `${shortName(item.fromTaskTitle)}派的` : `${staffName(item.fromUserId ?? undefined)}派的`} → ${shortName(item.taskTitle)}`}
-                              badge={<WorkItemBadge item={item} />}
-                            />
-                          ))}
-                        </PickGroup>
-                      )
-                  )}
-                  {canMore && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={listQuery.isFetchingNextPage}
-                      onClick={() => (listQuery.hasNextPage ? void listQuery.fetchNextPage() : setAllTime(true))}
-                    >
-                      {listQuery.isFetchingNextPage && <Spinner data-icon="inline-start" />}
-                      再看更早的
-                    </Button>
-                  )}
-                  {!allTime && !q && !listQuery.hasNextPage && <p className="px-1 text-xs text-muted-foreground">上面是最近 {WORK_LIST_DEFAULT_DAYS} 天派的；搜索不限天数。</p>}
-                </>
-              ) : (
-                <EmptyState
-                  icon={<SearchXIcon />}
-                  title={filtered ? "没有符合条件的单" : `最近 ${WORK_LIST_DEFAULT_DAYS} 天没有「${FILTERS.find((each) => each.id === filter)?.name}」的单`}
-                  description={q ? `没找到「${q}」，换个单号或参数试试。` : filtered ? "这一类现在没有单。" : "更早派的单点下面看。"}
-                  action={
-                    filtered ? (
-                      <Button
-                        variant="outline"
-                        onClick={() => {
-                          setQuery("")
-                          setParams({ task: null, from: null })
-                        }}
-                      >
-                        清空筛选
-                      </Button>
-                    ) : (
-                      !allTime && (
-                        <Button variant="outline" onClick={() => setAllTime(true)}>
-                          再看更早的
-                        </Button>
-                      )
-                    )
-                  }
-                />
-              )}
-            </>
-          }
-          detail={
-            selectedId && (
-              <WorkDetail
-                key={selectedId}
-                id={selectedId}
-                onEdit={setEditing}
-                onCancel={setCancelling}
-                onRedo={(item) => (item.status === "done" ? setRedoing(item) : redo.mutate({ id: item.id }))}
-              />
-            )
-          }
-        />
-      </PageFrame>
-      <DispatchDialog
-        key={dialogOpen ? "open" : "closed"}
-        open={dialogOpen}
-        onOpenChange={(open) => (open ? setCreating(true) : closeDialog())}
-        taskOptions={manageable}
-        initialTaskId={scopedTask?.dispatch && manageable.includes(scopedTask) ? scopedTask.id : undefined}
-        onDone={(item, existing) => {
-          setCreating(false)
-          dispatchedToast(item, existing, tasks.find((task) => task.id === item.taskId)?.enabled ?? true)
-          navigate("work", { ...urlFilters, id: item.id })
-        }}
+      <WorkDetail
+        key={id}
+        id={id}
+        onEdit={setEditing}
+        onCancel={setCancelling}
+        onRedo={(item) => (item.status === "done" ? setRedoing(item) : redo.mutate({ id: item.id }))}
       />
       <EditParamsDialog item={editing} onClose={() => setEditing(null)} />
       <CancelDialog item={cancelling} onClose={() => setCancelling(null)} />
@@ -323,26 +81,9 @@ export default function WorkPage() {
   )
 }
 
-/** 搜索框停 300 ms 再查，不每敲一个字查一次 */
-function useDebouncedText(text: string) {
-  const [value, setValue] = React.useState(text)
-  React.useEffect(() => {
-    const timer = setTimeout(() => setValue(text), 300)
-    return () => clearTimeout(timer)
-  }, [text])
-  return value
-}
-
-/** 选了某个任务时，列表上面一行：名额和占用 */
-function QuotaLine({ task }: { task: TaskDef }) {
-  const stats = useWorkTaskStats(task.id).data
-  if (!stats) return null
-  return (
-    <p className="flex flex-wrap items-center gap-x-1 text-xs text-muted-foreground">
-      {task.enabled ? `同时最多 ${stats.maxRunning} 个在跑 · 现在占 ${stats.occupied} 个 · 排队 ${stats.queued} 张` : `任务停用了，排队的 ${stats.queued} 张先不开始`}
-      <HelpTip>执行中、验收中、等浏览器的运行占名额；agent 自己挂起等待、等人处理的不占，空出来的位子给下一张单。挂起的被叫醒继续时不卡名额，所以偶尔会比上限多。</HelpTip>
-    </p>
-  )
+/** 名额的一行（任务详情「派来的活」）：同时最多几个在跑、现在占几个、排队几张；停用了写「先不开始」 */
+export function quotaText(task: { enabled: boolean }, stats: { maxRunning: number; occupied: number; queued: number }) {
+  return task.enabled ? `同时最多 ${stats.maxRunning} 个在跑 · 现在占 ${stats.occupied} 个 · 排队 ${stats.queued} 张` : `任务停用了，排队的 ${stats.queued} 张先不开始`
 }
 
 const RUN_ICON: Record<RunStatus, typeof CircleCheckIcon> = { running: BotIcon, waiting: HourglassIcon, needs_human: HandIcon, verifying: ScanSearchIcon, done: CircleCheckIcon, incomplete: CircleAlertIcon, failed: CircleXIcon }
@@ -400,7 +141,7 @@ function WorkDetail({ id, onEdit, onCancel, onRedo }: { id: string; onEdit: (ite
           ) : (
             <>
               <UserIcon className="size-3" />
-              {staffName(item.fromUserId ?? undefined)}在派活页派的
+              {staffName(item.fromUserId ?? undefined)}手动派的
             </>
           )}
           <span>· 派于 {timeText(item.createdAt)}</span>
@@ -812,7 +553,7 @@ function EventLine({ item, entry }: { item: WorkItemDetail; entry: WorkLogEntry 
         title:
           item.via === "agent"
             ? `派进来：「${shortName(item.fromTaskTitle)}」的运行 ${item.fromSessionId ?? ""} 用「派活」派的`
-            : `派进来：${staffName(entry.byId ?? item.fromUserId ?? undefined)}在派活页手动派的`,
+            : `派进来：${staffName(entry.byId ?? item.fromUserId ?? undefined)}手动派的`,
       }
     if (entry.kind === "redo") return { icon: <RotateCwIcon />, title: `${who} 点了「重办」` }
     if (entry.kind === "params_changed") return { icon: <PencilIcon />, title: entry.byId ? `${who} 改了参数` : "参数改了（派活方用新参数覆盖）" }

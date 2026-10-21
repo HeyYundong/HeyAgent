@@ -1383,7 +1383,7 @@ function useFollowUpPreview(plan: ImportPlan): FollowUpPreview[] {
     list.push({ key: `rule-${rule.key}`, icon: <ShieldCheckIcon />, title: `翻译并确认规则「${rule.name}」`, description: "导入后到「规则」页看「系统理解为」，确认了才生效。" })
   for (const task of tasks)
     list.push(task.dispatch ? {
-      // 派活第二期：被派活的任务不定时，导入后在详情里点「派一张试试」打开派活页的「派一张」（#/work?task=<id>&new=1）
+      // 派活第二期：被派活的任务不定时，导入后在详情里点「派一张试试」打开任务详情的「派一张」（#/tasks?id=<id>&dispatch=1）
       key: `run-${task.key}`,
       icon: <SendIcon />,
       title: `派一张试试「${task.title}」`,

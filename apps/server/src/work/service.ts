@@ -8,6 +8,7 @@ import {
   type WorkItemDetail,
   type WorkListInput,
   type WorkPage,
+  type WorkQueueStats,
   type WorkRun,
   type WorkTaskStats,
   workListInputSchema,
@@ -131,7 +132,7 @@ export async function toWorkItems(db: DbOrTx, rows: WorkItemRow[]): Promise<Work
 /** 单的结果，和 @heyagent/shared 的 workItemOutcome 一样：没记结果的旧单，办完算办成、其余算没办成（排队、在办的不用它） */
 const itemOutcome = sql<RunOutcome>`coalesce(${t.workItems.outcome}::text, case when ${t.workItems.status} = 'done' then 'achieved' else 'not_achieved' end)`
 
-/** 派活页左边的列表：新派的在前；同样的筛选（不算状态）下各状态、各标签的张数 */
+/** 派活单列表（任务详情「派来的活」、会话页「排队中」等）：新派的在前；同样的筛选（不算状态）下各状态、各标签的张数。翻页用 cursor 或 offset */
 export async function listWorkItems(db: DbOrTx, rawInput: WorkListInput): Promise<WorkPage> {
   const input = workListInputSchema.parse(rawInput)
   const base: SQL[] = []
@@ -152,7 +153,7 @@ export async function listWorkItems(db: DbOrTx, rawInput: WorkListInput): Promis
   // 派活页的三个标签（没结束 / 办成 / 没办成），同样不算进张数
   if (input.view === "open") where.push(inArray(t.workItems.status, ["queued", "running"]))
   else if (input.view) where.push(and(inArray(t.workItems.status, ["done", "failed", "cancelled"]), eq(itemOutcome, input.view))!)
-  if (input.cursor) {
+  if (input.cursor && input.offset === undefined) {
     const [cursor] = await db.select({ createdAt: t.workItems.createdAt, id: t.workItems.id }).from(t.workItems).where(eq(t.workItems.id, input.cursor))
     if (cursor) where.push(or(lt(t.workItems.createdAt, cursor.createdAt), and(eq(t.workItems.createdAt, cursor.createdAt), lt(t.workItems.id, cursor.id)))!)
   }
@@ -163,7 +164,8 @@ export async function listWorkItems(db: DbOrTx, rawInput: WorkListInput): Promis
       .from(t.workItems)
       .where(where.length ? and(...where) : undefined)
       .orderBy(desc(t.workItems.createdAt), desc(t.workItems.id))
-      .limit(input.limit + 1),
+      .limit(input.limit + 1)
+      .offset(input.offset ?? 0),
     db
       .select({ status: t.workItems.status, outcome: itemOutcome, n: count() })
       .from(t.workItems)
@@ -254,4 +256,43 @@ export async function workTaskStats(db: DbOrTx, taskId: string): Promise<WorkTas
     doneToday: doneToday?.n ?? 0,
     failed: by.get("failed") ?? 0,
   }
+}
+
+/**
+ * 全部被派任务的名额和排队，一次给（work.queueStats）：能被派活的任务，加上还有排队、在办的单的任务（关了被派活的）。
+ * 三条查询：任务、按任务和状态数没结束的单、占着名额的运行
+ */
+export async function workQueueStats(db: DbOrTx): Promise<WorkQueueStats[]> {
+  const [grouped, holders] = await Promise.all([
+    db
+      .select({ taskId: t.workItems.taskId, status: t.workItems.status, n: count() })
+      .from(t.workItems)
+      .where(inArray(t.workItems.status, ["queued", "running"]))
+      .groupBy(t.workItems.taskId, t.workItems.status),
+    db
+      .select({ taskId: t.sessions.taskId, id: t.sessions.id })
+      .from(t.sessions)
+      .where(and(isNotNull(t.sessions.workItemId), occupiesSlotSql()))
+      .orderBy(asc(t.sessions.startedAt), asc(t.sessions.id)),
+  ])
+  const withItems = [...new Set(grouped.map((row) => row.taskId))]
+  const tasks = await db
+    .select({ id: t.tasks.id, enabled: t.tasks.enabled, dispatch: t.tasks.dispatch })
+    .from(t.tasks)
+    .where(withItems.length ? or(isNotNull(t.tasks.dispatch), inArray(t.tasks.id, withItems)) : isNotNull(t.tasks.dispatch))
+    .orderBy(asc(t.tasks.id))
+  return tasks.map((task) => {
+    const n = (status: "queued" | "running") => grouped.find((row) => row.taskId === task.id && row.status === status)?.n ?? 0
+    const held = holders.filter((row) => row.taskId === task.id).map((row) => row.id)
+    return {
+      taskId: task.id,
+      enabled: task.enabled,
+      dispatchable: Boolean(task.dispatch),
+      maxRunning: task.dispatch?.maxRunning ?? 0,
+      queued: n("queued"),
+      running: n("running"),
+      occupied: held.length,
+      holders: held,
+    }
+  })
 }

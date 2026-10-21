@@ -1,4 +1,4 @@
-// 运行 / 派活单的「结果」徽章（docs/dev/run-outcome.md 第 8 节）：会话列表、运行详情、派活页、看板都用这一个。
+// 运行 / 派活单的「结果」徽章（docs/dev/run-outcome.md 第 8 节）：会话列表、运行详情、派活单都用这一个。
 // 结果只有两种（2026-10-20 简化）。按 ui-rules 第 4 节的映射，不加新颜色，图标和文字都不一样，不只靠颜色：
 // 办成 outline + 勾、没办成 destructive + 叉；运行结束了、复核还在跑的写「复核中」（secondary + Spinner）；还没结束写「—」。
 // 有原因的，鼠标放上去（或键盘聚焦）用 Tooltip 显示原因。
@@ -14,7 +14,7 @@ const OUTCOME = {
   not_achieved: { variant: "destructive", icon: CircleXIcon },
 } as const
 
-/** 结果筛选的选项（会话页、派活页共用） */
+/** 结果筛选的选项（会话页） */
 export const OUTCOME_FILTERS: { value: RunOutcome; label: string }[] = (Object.keys(OUTCOME) as RunOutcome[]).map((value) => ({ value, label: runOutcomeLabel[value] }))
 
 export function OutcomeBadge({ outcome, reason, reviewing, className }: { outcome?: RunOutcome | null; reason?: string | null; reviewing?: boolean; className?: string }) {

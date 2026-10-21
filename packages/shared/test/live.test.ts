@@ -6,7 +6,7 @@ describe("实时推送要重新拉的查询", () => {
   it("运行的过程变了：列表（摘要）整个失效，运行详情只失效推来的那个 session", () => {
     expect(liveTargets({ table: "session_events", id: "R-1" })).toEqual({ paths: ["sessions.list", "sessions.page"], byId: [{ path: "sessions.get", id: "R-1" }] })
     expect(liveTargets({ table: "sessions", id: "R-1" })).toEqual({
-      paths: ["sessions.list", "sessions.page", "work.list", "work.get", "work.taskStats"],
+      paths: ["sessions.list", "sessions.page", "work.list", "work.get", "work.taskStats", "work.queueStats"],
       byId: [{ path: "sessions.get", id: "R-1" }],
     })
   })

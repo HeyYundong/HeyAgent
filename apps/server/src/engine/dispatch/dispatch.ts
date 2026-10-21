@@ -1,4 +1,4 @@
-// 派活：新建派活单（方案 4.1～4.3、8.3）。agent 调内置工具 work.dispatch、人在派活页「派一张」都走 createItemsInTx：
+// 派活：新建派活单（方案 4.1～4.3、8.3）。agent 调内置工具 work.dispatch、人在任务详情「派一张」都走 createItemsInTx：
 // 每张单各自判断（参数、去重键、上限），一张不合格不影响别的；同一个任务下同一个去重键只有一张（唯一约束 + 先查），
 // 已经有的单只返回现状（ifExists = update 只改排队的）；有新单就在同一个事务里发 work.pump。
 import {
@@ -225,7 +225,7 @@ export async function notifyDayLimitOnce(db: Db, task: DispatchTarget, limit: nu
     userIds: [task.ownerId],
     title,
     body: `今天已经被派了 ${limit} 张（设置里的「一个任务每天最多被派几张」），再派来的单都被拒了。要放宽就去设置页调大，或者看看派活的任务是不是派重了。`,
-    link: `#/work?task=${encodeURIComponent(task.id)}`,
+    link: `#/tasks?id=${encodeURIComponent(task.id)}`,
     taskId: task.id,
   })
 }

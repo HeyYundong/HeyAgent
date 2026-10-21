@@ -344,7 +344,7 @@ describe("导入直接导成派活", () => {
     // 导入后还要做的事：被派的任务是「派一张试试」，派活方照旧试跑
     const detail = (await query(ctx.app, "imports.get", lin, { id })).data
     const tryReceiver = detail.followUps.find((each: { key: string }) => each.key === `try_run:${ids.t2}`)
-    expect(tryReceiver).toMatchObject({ title: "派一张试试「办一件事（导入）」", done: false, link: `#/work?task=${ids.t2}&new=1` })
+    expect(tryReceiver).toMatchObject({ title: "派一张试试「办一件事（导入）」", done: false, link: `#/tasks?id=${ids.t2}&dispatch=1` })
     expect(tryReceiver.action).toBeUndefined()
     expect(detail.followUps.find((each: { key: string }) => each.key === `try_run:${ids.t1}`)).toMatchObject({ action: "run_task" })
     await fakeItem(ids.t2!, { key: "try-1", status: "cancelled" })

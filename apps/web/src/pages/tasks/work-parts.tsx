@@ -1,13 +1,18 @@
-// 派活页、任务页、运行详情共用的小块：派活单的状态徽章、时间、短任务名、参数表、报的结果、被派任务的一行数字。
+// 派活单的小块（任务详情「派来的活」、单详情、会话页「排队中」、运行详情共用）：状态徽章、时间、短任务名、参数表、报的结果、被派任务的数字、单的链接。
+// 2026-10-21 派活页去掉了（docs/dev/work-into-tasks.md），从 pages/work/parts.tsx 搬来。
 import { useQuery } from "@tanstack/react-query"
 import { CircleCheckIcon, CircleSlashIcon, CircleXIcon, HandIcon, HourglassIcon, ListOrderedIcon, RotateCwIcon, ScanSearchIcon } from "lucide-react"
-import { fmtClock, relativeDayText, sameShanghaiDay, workItemOutcome, type TaskDispatchParam, type WorkItem, type WorkReportValue } from "@heyagent/shared"
+import { fmtClock, relativeDayText, sameShanghaiDay, workItemOutcome, type TaskDispatchParam, type WorkItem, type WorkQueueStats, type WorkReportValue } from "@heyagent/shared"
 
 import { OutcomeBadge } from "@/components/shell/outcome-badge"
 import { Badge } from "@/components/ui/badge"
 import { Spinner } from "@/components/ui/spinner"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { href } from "@/lib/router"
 import { trpc } from "@/lib/trpc"
+
+/** 一张单在哪看：被派任务的抽屉里（#/tasks?id=T-…&work=W-…） */
+export const workLink = (item: { id: string; taskId: string }) => href("tasks", { id: item.taskId, work: item.id })
 
 /** 「16:00」（今天）「昨天 10:05」「10-14 15:00」；没有就是「—」 */
 export function timeText(at?: string | null) {
@@ -158,4 +163,27 @@ export function ParamsTable({ declared, values, showDedupe = false }: { declared
 /** 被派任务的一行数字（排队、在办、占名额、今天办完、没办成）；任务不能被派活时不查 */
 export function useWorkTaskStats(taskId: string | undefined, enabled = true) {
   return useQuery(trpc.work.taskStats.queryOptions({ taskId: taskId ?? "" }, { enabled: enabled && Boolean(taskId) }))
+}
+
+/** 全部被派任务的名额和排队，一次取（任务页卡片、会话页「排队中」用） */
+export function useWorkQueueStats(enabled = true) {
+  return useQuery(trpc.work.queueStats.queryOptions(undefined, { enabled }))
+}
+
+/**
+ * 排队的单在等什么（会话页「排队中」一列，和单详情最上面的提示同一套判断）：等自动重试 / 关了被派活 / 任务停用了 / 名额满了（谁占着）/ 有空位马上开始
+ */
+export function queueWaitText(item: Pick<WorkItem, "status" | "notBefore" | "attempts" | "queuePosition">, stats?: WorkQueueStats) {
+  const retry = retryAt(item)
+  if (retry) return `第 ${Math.max(1, item.attempts)} 次出错，${timeText(retry)} 自动重试`
+  if (!stats) return "排队"
+  if (!stats.dispatchable) return "任务关了被派活，单先排着"
+  if (!stats.enabled) return "任务停用了，单先排着"
+  if (stats.occupied >= stats.maxRunning) {
+    const ahead = (item.queuePosition ?? 1) - 1
+    const shown = stats.holders.slice(0, 3).join("、")
+    const holders = stats.holders.length > 3 ? `${shown} 等 ${stats.holders.length} 个` : shown
+    return `名额满了：${holders || `占着 ${stats.occupied} 个`} 在跑${ahead > 0 ? `，前面还有 ${ahead} 张` : ""}`
+  }
+  return "有空位，马上开始"
 }

@@ -24,7 +24,6 @@ import { isUnauthorized, queryClient, trpc } from "@/lib/trpc"
 const PAGES: Record<PageId, React.LazyExoticComponent<() => React.ReactNode>> = {
   tasks: lazy(() => import("@/pages/tasks")),
   sessions: lazy(() => import("@/pages/sessions")),
-  work: lazy(() => import("@/pages/work")),
   gallery: lazy(() => import("@/pages/gallery")),
   compare: lazy(() => import("@/pages/compare")),
   memory: lazy(() => import("@/pages/memory")),

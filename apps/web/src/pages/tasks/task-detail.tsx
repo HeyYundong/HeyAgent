@@ -1,7 +1,7 @@
 // 任务详情（放在右侧抽屉里）：分区卡 + 抽屉底部的操作。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
-import { ArrowRightIcon, CircleStopIcon, EllipsisIcon, FlagIcon, HandIcon, HourglassIcon, PaperclipIcon, PencilIcon, PlayIcon, SendIcon, Trash2Icon } from "lucide-react"
+import { CircleStopIcon, EllipsisIcon, FlagIcon, HandIcon, HourglassIcon, PaperclipIcon, PencilIcon, PlayIcon, SendIcon, Trash2Icon } from "lucide-react"
 
 import { DetailSection } from "@/components/shell/simple-page"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
@@ -11,24 +11,21 @@ import { Button } from "@/components/ui/button"
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "@/components/ui/item"
 import { Spinner } from "@/components/ui/spinner"
 import { Switch } from "@/components/ui/switch"
-import { alwaysOnToolIds, BROWSER_TOOL_ID, can, findById, sameShanghaiDay, toolIdsOfTask, WORK_DISPATCH_TOOL_ID, type SessionSummary, type TaskDef } from "@heyagent/shared"
+import { alwaysOnToolIds, BROWSER_TOOL_ID, findById, sameShanghaiDay, toolIdsOfTask, WORK_DISPATCH_TOOL_ID, type SessionSummary, type TaskDef } from "@heyagent/shared"
 
 import { useBrowsersQuery, useMemoriesQuery, useModels, useRulesQuery, useSkillsQuery, useTasksQuery, useToolName, useToolsQuery } from "@/lib/data"
 import { useAction } from "@/lib/mutations"
-import { href, navigate, setParams, type PageId } from "@/lib/router"
-import { useMe } from "@/lib/session"
+import { href, setParams, useRoute, type PageId } from "@/lib/router"
 import { trpc } from "@/lib/trpc"
-import { DispatchDialog, dispatchedToast } from "@/pages/work/dialogs"
-import { useWorkTaskStats } from "@/pages/work/parts"
 
 import { compileOf, ruleSelectable, ruleVerifies } from "@/pages/rules/compile"
 
 import { StepList, type TasksState } from "./parts"
 import { CancelRunDialog, isActive, ResumeButton, RunWithFilesDialog, TaskAttachments, useStartRun } from "./run-actions"
-import { retryText } from "./dispatch-fields"
 import { TaskDialog } from "./task-dialog"
 import { TaskMemorySection } from "./task-memory"
 import { TaskScheduleSection } from "./task-schedule"
+import { DispatchInSection, TaskDispatchDialog } from "./work-section"
 
 /** 抽屉底部的操作（负责人和主管）：启动开关 + 编辑 / 带附件运行 / 取消 / 删除 + 主按钮。
  * 主按钮按最近一次运行的状态变：挂起等待 → 立即继续；等人处理 → 去处理（会话页打开这次运行，顶上就能处理）；执行中 → 正在运行；其他 → 立即运行 */
@@ -43,6 +40,13 @@ export function TaskActions({ task, state }: { task: TaskDef; state: TasksState 
   const remove = useAction(trpc.tasks.delete.mutationOptions({ onSuccess: () => setParams({ id: null, run: null }) }), { success: `任务 ${task.id} 已删除` })
   const start = useStartRun(task)
   const [dispatching, setDispatching] = React.useState(false)
+  // ?dispatch=1（导入后的「派一张试试」、旧的 #/work?task=…&new=1）直接打开「派一张」；关掉时从网址里去掉
+  const { params } = useRoute()
+  const dispatchFromUrl = Boolean(task.dispatch) && params.get("dispatch") === "1"
+  const closeDispatch = (open: boolean) => {
+    setDispatching(open)
+    if (!open && dispatchFromUrl) setParams({ dispatch: null })
+  }
   let primary: React.ReactNode
   // 能被派活的任务：「立即运行」换成「派一张」（不然开出来的运行没有参数，agent 不知道办哪件）；同时可能有好几个运行，不按最近一次变
   if (task.dispatch)
@@ -77,7 +81,7 @@ export function TaskActions({ task, state }: { task: TaskDef; state: TasksState 
         </DropdownMenu>
         {primary}
       </div>
-      {task.dispatch && <TaskDispatchDialog task={task} open={dispatching} onOpenChange={setDispatching} />}
+      {task.dispatch && <TaskDispatchDialog task={task} open={dispatching || dispatchFromUrl} onOpenChange={closeDispatch} />}
       <RunWithFilesDialog key={withFiles ? "files-open" : "files-closed"} task={task} open={withFiles} onOpenChange={setWithFiles} />
       {latest && <CancelRunDialog key={`${latest.id}-${cancelling}`} run={latest} open={cancelling} onOpenChange={setCancelling} />}
       <TaskDialog key={editing ? "edit" : "closed"} open={editing} onOpenChange={setEditing} task={task} />
@@ -118,7 +122,7 @@ export function TaskDetail({ task, state, canEdit }: { task: TaskDef; state: Tas
   const taskRuns = state.runsOf(task.id)
   return (
     <>
-      {task.dispatch && <DispatchSection task={task} />}
+      {task.dispatch && <DispatchInSection task={task} />}
       {task.toolIds.includes(WORK_DISPATCH_TOOL_ID) && <DispatchOutSection task={task} />}
       <GoalAndSteps task={task} latest={taskRuns[0]} />
       <TaskScheduleSection task={task} canEdit={canEdit} />
@@ -227,66 +231,6 @@ const ConfigLine = ({ label, children }: { label: string; children: React.ReactN
   </div>
 )
 
-/** 抽屉里的「派一张」：任务已经选好；派出去以后提示，带「去派活页」 */
-function TaskDispatchDialog({ task, open, onOpenChange }: { task: TaskDef; open: boolean; onOpenChange: (open: boolean) => void }) {
-  const { user } = useMe()
-  const tasks = useTasksQuery().data ?? []
-  const options = tasks.filter((each) => each.dispatch && can(user, "task.manage", { ownerId: each.ownerId }))
-  return (
-    <DispatchDialog
-      key={open ? "open" : "closed"}
-      open={open}
-      onOpenChange={onOpenChange}
-      taskOptions={options.some((each) => each.id === task.id) ? options : [task, ...options]}
-      initialTaskId={task.id}
-      onDone={(item, existing) => {
-        onOpenChange(false)
-        dispatchedToast(item, existing, tasks.find((each) => each.id === item.taskId)?.enabled ?? true, { label: "去派活页", onClick: () => navigate("work", { task: item.taskId, id: item.id }) })
-      }}
-    />
-  )
-}
-
-/** 能被派活的任务：一行数字（点了去派活页并筛好）+ 参数、名额、谁能派 */
-function DispatchSection({ task }: { task: TaskDef }) {
-  const tasks = useTasksQuery().data ?? []
-  const stats = useWorkTaskStats(task.id).data
-  const dispatch = task.dispatch!
-  const link = (status?: string) => href("work", { task: task.id, status })
-  const numbers = [
-    { label: "排队", value: stats?.queued, status: undefined },
-    { label: "在办", value: stats?.running, status: undefined },
-    { label: "今天办成", value: stats?.doneToday, status: "achieved" },
-    { label: "没办成", value: stats?.failed, status: "not_achieved" },
-  ]
-  const title = (id: string) => tasks.find((each) => each.id === id)?.title ?? id
-  return (
-    <DetailSection
-      title="派活"
-      description="别的任务（或人）把一件件事派给这个任务，一件事开一次运行。点数字去派活页看那些单。"
-      action={<Button variant="outline" size="sm" nativeButton={false} render={<a href={link()} />}>去派活页<ArrowRightIcon data-icon="inline-end" /></Button>}
-    >
-      <div className="flex flex-col gap-3">
-        <p className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          {numbers.map((n, i) => (
-            <span key={n.label} className="inline-flex items-center gap-2">
-              {i > 0 && <span className="text-muted-foreground">·</span>}
-              <a href={link(n.status)} className="underline-offset-4 hover:underline">
-                <span className="text-muted-foreground">{n.label}</span> <span className="font-medium tabular-nums">{n.value ?? "—"}</span>
-              </a>
-            </span>
-          ))}
-        </p>
-        <p className="text-muted-foreground">
-          参数：{dispatch.params.map((p) => `${p.name}（${[p.required ? "必填" : "可选", p.dedupe && "去重"].filter(Boolean).join("，")}）`).join("、") || "没有"} · 同时最多 {dispatch.maxRunning} 个在跑 ·
-          {dispatch.results?.length ? `要交回：${dispatch.results.map((r) => `${r.name}${r.required ? "（必填）" : ""}`).join("、")} · ` : ""}
-          谁能派活给它：{task.dispatchFrom.length ? task.dispatchFrom.map((id) => `「${title(id)}」`).join("、") : "只能人派"} · {retryText(dispatch)}
-        </p>
-      </div>
-    </DetailSection>
-  )
-}
-
 /** 选了内置工具「派活」的任务：派给谁、今天派了几张、一共几张 */
 function DispatchOutSection({ task }: { task: TaskDef }) {
   const tasks = useTasksQuery().data ?? []
@@ -300,16 +244,24 @@ function DispatchOutSection({ task }: { task: TaskDef }) {
   return (
     <DetailSection
       title="派出去的活"
-      description="这个任务的 agent 用内置工具「派活」派出去的单。同一件事重复派不会重复办。"
-      action={<Button variant="outline" size="sm" nativeButton={false} render={<a href={href("work", { from: task.id })} />}>去派活页<ArrowRightIcon data-icon="inline-end" /></Button>}
+      description="这个任务的 agent 用内置工具「派活」派出去的单。同一件事重复派不会重复办。每张单在被派任务详情的「派来的活」里看。"
     >
       {targets.length === 0 && mine.length === 0 ? (
         <p className="text-muted-foreground">还没有任务允许它派活：去要接活的任务上打开「可以被派活」，把它加进「谁能派活给它」。</p>
       ) : (
         <p>
-          派给 {targets.map((each) => `「${each.title}」`).join("、") || "（现在没有任务允许它派活）"} · 今天派了 <span className="font-medium tabular-nums">{today}</span> 张 · 一共{" "}
+          派给 {targets.length ? targets.map((each, index) => (
+            <React.Fragment key={each.id}>
+              {index > 0 && "、"}
+              <a className="underline underline-offset-4" href={href("tasks", { id: each.id })}>「{each.title}」</a>
+            </React.Fragment>
+          )) : "（现在没有任务允许它派活）"} · 今天派了 <span className="font-medium tabular-nums">{today}</span> 张 · 一共{" "}
           <span className="font-medium tabular-nums">{page?.counts.all ?? "—"}</span> 张
-          {lastRun && <span className="text-muted-foreground"> · 最近一次有新单的运行 {lastRun}（派了 {lastCount} 张）</span>}
+          {lastRun && (
+            <span className="text-muted-foreground">
+              {" "}· 最近一次有新单的运行 <a className="font-mono underline underline-offset-4" href={href("sessions", { id: lastRun })}>{lastRun}</a>（派了 {lastCount} 张）
+            </span>
+          )}
         </p>
       )}
     </DetailSection>

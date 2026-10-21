@@ -1,5 +1,5 @@
-// 派活的 tRPC 接口（派活页、任务抽屉、运行详情用）。agent 用内置工具「派活」（work.dispatch），不走这里。
-// 读：list / get / taskStats（work/service.ts）；写：lookup / dispatch / updateParams / redo / cancel（engine/dispatch/manage.ts）。
+// 派活的 tRPC 接口（任务抽屉的「派来的活」、会话页「排队中」、运行详情用）。agent 用内置工具「派活」（work.dispatch），不走这里。
+// 读：list / get / taskStats / queueStats（work/service.ts）；写：lookup / dispatch / updateParams / redo / cancel（engine/dispatch/manage.ts）。
 import {
   workCancelInputSchema,
   workDispatchInputSchema,
@@ -9,6 +9,7 @@ import {
   workListInputSchema,
   workLookupInputSchema,
   workPageSchema,
+  workQueueStatsSchema,
   workRedoInputSchema,
   workTaskStatsSchema,
   workUpdateParamsInputSchema,
@@ -18,7 +19,7 @@ import { z } from "zod"
 
 import { cancelWorkItem, dispatchByHuman, lookupWorkItem, redoWorkItem, updateWorkParams } from "../engine/dispatch/manage.js"
 import { EngineError } from "../engine/sessions.js"
-import { getWorkItem, listWorkItems, WorkError, workTaskStats } from "../work/service.js"
+import { getWorkItem, listWorkItems, WorkError, workQueueStats, workTaskStats } from "../work/service.js"
 import { protectedProcedure, router } from "./init.js"
 
 /** 派活的错误换成 tRPC 的错误码（message 原样给页面看） */
@@ -34,7 +35,7 @@ async function translate<T>(action: () => Promise<T>): Promise<T> {
 }
 
 export const workRouter = router({
-  /** 派活页左边：新派的在前，默认最近 7 天，能搜、按状态 / 被派的任务 / 来源筛，翻页 */
+  /** 派活单列表：新派的在前，默认最近 7 天，能搜、按状态 / 被派的任务 / 来源筛，翻页（cursor 或 offset） */
   list: protectedProcedure
     .input(workListInputSchema)
     .output(workPageSchema)
@@ -48,6 +49,8 @@ export const workRouter = router({
     .input(z.object({ taskId: z.string().min(1) }))
     .output(workTaskStatsSchema)
     .query(({ ctx, input }) => translate(() => workTaskStats(ctx.db, input.taskId))),
+  /** 全部被派任务的名额和排队（任务页卡片的「排队 · 在办」、会话页「排队中」的「在等什么」） */
+  queueStats: protectedProcedure.output(z.array(workQueueStatsSchema)).query(({ ctx }) => workQueueStats(ctx.db)),
   /** 「派一张」弹窗填参数时：同一件事已经有单了吗（没有返回 null） */
   lookup: protectedProcedure
     .input(workLookupInputSchema)

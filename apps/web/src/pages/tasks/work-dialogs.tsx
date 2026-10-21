@@ -1,5 +1,5 @@
-// 派活页的弹窗：派一张（按被派任务声明的参数生成表单）、改参数（只有排队的单）、不办了 / 重办的确认。
-// 「派一张」任务页的抽屉里也用（能被派活的任务，「立即运行」换成「派一张」）。
+// 派活单的弹窗：派一张（按被派任务声明的参数生成表单）、改参数（只有排队的单）、不办了 / 重办的确认。
+// 「派一张」在任务抽屉里用（能被派活的任务，「立即运行」换成「派一张」；「派来的活」右上角也有）。2026-10-21 从 pages/work/dialogs.tsx 搬来。
 // 表单用 React Hook Form + Field（docs/ui-rules.md 第 8 节登记过的写法）；参数按声明顺序放在一个数组里，免得参数名里的「.」被当成路径。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
@@ -20,10 +20,9 @@ import { Spinner } from "@/components/ui/spinner"
 import { Textarea } from "@/components/ui/textarea"
 import { toast } from "@/components/ui/toast"
 import { useAction } from "@/lib/mutations"
-import { href } from "@/lib/router"
 import { trpc } from "@/lib/trpc"
 
-import { WorkItemBadge, timeText, useWorkTaskStats } from "./parts"
+import { WorkItemBadge, timeText, useWorkTaskStats, workLink } from "./work-parts"
 
 /** 按声明把表单里的数组换成参数对象：去掉首尾空白，空的不带 */
 function toParams(declared: TaskDispatchParam[], values: string[] = []) {
@@ -186,7 +185,7 @@ function DuplicateAlert({ item }: { item: WorkItem }) {
       </AlertTitle>
       <AlertDescription>同一件事只办一次。{ended ? "要再办一次，去那张单上点「重办」。" : "已经在排队或在办了，不用再派。"}</AlertDescription>
       <AlertAction>
-        <Button variant="outline" size="sm" nativeButton={false} render={<a href={href("work", { id: item.id })} />}>
+        <Button variant="outline" size="sm" nativeButton={false} render={<a href={workLink(item)} />}>
           去看 {item.id}
           <ArrowRightIcon data-icon="inline-end" />
         </Button>
