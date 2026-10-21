@@ -4,7 +4,7 @@
 // 宽屏每一行的结果徽章旁边有「更多」菜单：已经结束的运行（已结束、出错、取消的），负责人和主管能直接「改结果」（和运行详情同一个弹窗）。
 // 窄屏一条就是一个链接，里面不放按钮：点开抽屉，在「结果」区块里改。
 // 翻页在服务端（sessions.page），这里只画列表下面的页码；页码在网址 ?page=，第 1 页不写。
-// 宽屏「开始」「结束」两列的表头能点：按这一列排（再点换正序 / 倒序），排序也在服务端（?sort=ended&dir=asc，默认的开始、倒序不写）。
+// 宽屏「开始」「结束」两列的表头能点：按这一列排（再点换正序 / 倒序），排序也在服务端（?sort=ended&dir=asc；默认已结束按结束倒序、别的按开始倒序，不写）。
 // 派活触发的运行，「来源」里的单号（派活 W-3）是链接：在被派任务的抽屉里打开那张单。
 import * as React from "react"
 import { ArrowDownIcon, ArrowUpDownIcon, ArrowUpIcon, EllipsisIcon, HandIcon, PencilIcon } from "lucide-react"

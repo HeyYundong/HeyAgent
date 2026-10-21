@@ -5,7 +5,7 @@
 // 列表在服务端筛、数、翻页（sessions.page，一页 50 个）；不挡运行的事从 todos.board 来，只在「等人处理」（和「只看等我处理」）的第 1 页、列表最上面，不算进翻页。
 // 点一行从右侧打开详情（?id=）：运行是完整的运行详情，顶上就能处理挡着它的事；不挡运行的事是它的处理面板。打开的运行不在这一页也行（按 id 取）。
 // 网址：?status=queue|human|waiting|verifying|ended（执行中不写）、?mine=1、?page=（第 1 页不写；换标签、筛选、搜索、排序都回第 1 页）、?id=、
-// ?sort=ended&dir=asc（点「开始」「结束」表头排序，默认按开始倒序不写）；别的页面还能带 ?q= ?source= ?task= ?outcome= 过来。旧的 #/todos 跳到 ?status=human，旧的 #/work 跳到 ?status=queue。
+// ?sort=ended&dir=asc（点「开始」「结束」表头排序；默认已结束按结束倒序、别的按开始倒序，不写）；别的页面还能带 ?q= ?source= ?task= ?outcome= 过来。旧的 #/todos 跳到 ?status=human，旧的 #/work 跳到 ?status=queue。
 // 右上角一行：排队 · 执行中 · 等人处理 · 今天花了；看「已结束」时再加 办成 · 没办成 · 成功率（同样的筛选，服务端算）。
 // 人加的待办（到点、等事件让 agent 去做）在任务详情的「什么时候跑」里。
 import * as React from "react"
@@ -56,7 +56,10 @@ export default function SessionsPage() {
   const mine = params.get("mine") === "1"
   // 排队中：只看等我处理开着时让给它
   const queueMode = statusParam === "queue" && !mine
-  const sort: SessionSort["by"] = params.get("sort") === "ended" ? "ended" : "started"
+  // 默认排序：已结束按结束时间倒序，别的标签按开始时间倒序；默认的不写进网址
+  const defaultSort: SessionSort["by"] = !mine && group === "ended" ? "ended" : "started"
+  const sortParam = params.get("sort")
+  const sort: SessionSort["by"] = sortParam === "ended" || sortParam === "started" ? sortParam : defaultSort
   const dir: SessionSort["dir"] = params.get("dir") === "asc" ? "asc" : "desc"
   const pageParam = Math.max(1, Number.parseInt(params.get("page") ?? "1", 10) || 1)
   const [query, setQuery] = React.useState(() => params.get("q") ?? "") // 别的页面可以带 ?q= 过来
@@ -162,14 +165,14 @@ export default function SessionsPage() {
   const pageLink = (next: number) => href("sessions", { ...Object.fromEntries(params.entries()), page: next > 1 ? String(next) : null })
   // 换标签、只看等我处理、来源、结果、任务、搜索：回到第 1 页
   const firstPage = () => params.has("page") && setParams({ page: null })
-  const pickGroup = (next: Group | "queue") => setParams({ status: next === DEFAULT_GROUP ? null : next, mine: null, page: null })
-  // 点「开始」「结束」表头：换一列从新到旧，同一列再点换方向；默认的（开始、倒序）不写进网址
+  const pickGroup = (next: Group | "queue") => setParams({ status: next === DEFAULT_GROUP ? null : next, mine: null, page: null, sort: null, dir: null })
+  // 点「开始」「结束」表头：换一列从新到旧，同一列再点换方向；这个标签默认的那一列、倒序不写进网址
   const sortBy: SessionSort = {
     by: sort,
     dir,
     onSort: (column) => {
       const next = column === sort && dir === "desc" ? "asc" : "desc"
-      setParams({ sort: column === "started" ? null : column, dir: next === "desc" ? null : next, page: null })
+      setParams({ sort: column === defaultSort ? null : column, dir: next === "desc" ? null : next, page: null })
     },
   }
   // 已结束：办成、没办成、成功率（复核中的两边都不算）
@@ -212,7 +215,7 @@ export default function SessionsPage() {
               </ToggleGroupItem>
             ))}
           </ToggleGroup>
-          <Toggle variant="outline" pressed={mine} onPressedChange={(on) => setParams({ mine: on ? "1" : null, page: null })} aria-label="只看等我处理的事">
+          <Toggle variant="outline" pressed={mine} onPressedChange={(on) => setParams({ mine: on ? "1" : null, page: null, sort: null, dir: null })} aria-label="只看等我处理的事">
             <UserIcon />
             只看等我处理
             <span className="tabular-nums text-muted-foreground">{myItems.length}</span>
