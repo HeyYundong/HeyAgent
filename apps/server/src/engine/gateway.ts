@@ -5,6 +5,7 @@ import { jsonSchema, tool, type ToolSet } from "ai"
 import {
   BROWSER_TOOL_ID,
   COMPARE_TOOL_ID,
+  DESKTOP_TOOL_ID,
   GALLERY_TOOL_ID,
   builtinToolInputs,
   type Risk,
@@ -19,6 +20,7 @@ import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
 import { saveFile, spacePathOf } from "../files/service.js"
 import { compareToolEntries } from "../compare/tools.js"
+import { DesktopTools } from "../desktop/tools.js"
 import { galleryToolEntries } from "../gallery/tools.js"
 import {
   runAfterToolHooks,
@@ -132,6 +134,8 @@ export class ToolGateway {
   private readonly mcp: McpPool
   /** 任务选了「浏览器」时的整组浏览器工具（M2） */
   private browser?: BrowserTools
+  /** 任务选了「桌面」时的整组桌面工具（docs/dev/desktop.md） */
+  private desktop?: DesktopTools
   private readonly ctx: {
     db: Db
     session: SessionRow
@@ -172,6 +176,10 @@ export class ToolGateway {
         await this.buildBrowser(taken)
         continue
       }
+      if (def.id === DESKTOP_TOOL_ID && def.source === "builtin") {
+        await this.buildDesktop(taken)
+        continue
+      }
       // 「图库」展开成一组：检索、比对、看一张、传图、改文本和标签（gallery/tools.ts）
       if (def.id === GALLERY_TOOL_ID && def.source === "builtin") {
         for (const entry of galleryToolEntries(this.ctx))
@@ -191,7 +199,7 @@ export class ToolGateway {
         this.entries.push({
           id,
           name,
-          def,
+          def: this.adjustBuiltin(def),
           jsonSchema: builtinJsonSchema(id),
           validator: builtinToolInputs[id],
           execute: (input) => executeBuiltin(this.ctx, id, input),
@@ -285,14 +293,57 @@ export class ToolGateway {
     }
   }
 
+  /**
+   * 有「桌面」工具组的运行：通用的「问人」说明里写明，要人在桌面上动手的事走 desktop_ask_human
+   * （模型分不清时会用通用的问人：没有截图、不保留桌面、人打不开远程画面）
+   */
+  private adjustBuiltin(def: SnapshotTool): SnapshotTool {
+    if (def.id !== "ask.human" || !this.ctx.snapshot.desktop) return def
+    return {
+      ...def,
+      summary: `${def.summary}（要人在桌面上动手的事用 desktop_ask_human）`,
+      description: `只用来问问题、请人批准或拍板。要人在桌面上动手做的事（扫码、登录、点一下、处理弹框、在软件里操作）不要用它，用 desktop_ask_human：那个会截图、把桌面保留给你、让人打开远程画面。${def.description}`,
+    }
+  }
+
+  /** 「桌面」展开成一组：desktop.use + Windows-MCP 白名单工具 + look / send_file / fetch_file / ask_human（建不起来时给一个说明原因的占位工具） */
+  private async buildDesktop(taken: Set<string>) {
+    try {
+      this.desktop = await DesktopTools.create(this.ctx)
+      for (const entry of this.desktop.entries())
+        this.entries.push({ ...entry, name: safeName(entry.id, taken) })
+    } catch (error) {
+      const reason = (error as Error).message
+      const def: SnapshotTool = {
+        id: "desktop.use",
+        name: "桌面",
+        summary: "桌面（现在不可用）",
+        description: `（现在不可用：${reason}）`,
+        source: "builtin",
+        risk: "external",
+      }
+      this.entries.push({
+        id: def.id,
+        name: safeName(def.id, taken),
+        def,
+        jsonSchema: { type: "object", additionalProperties: true },
+        validator: z.record(z.string(), z.unknown()),
+        execute: async () => ({
+          output: `桌面现在不可用：${reason}`,
+          isError: true,
+        }),
+      })
+    }
+  }
+
   /** 浏览器工具组（系统提示里写浏览器用法时用） */
   hasBrowser() {
     return Boolean(this.browser)
   }
 
-  /** 规则「截图存证」：这次运行开着 Chrome 时截当前页面 */
+  /** 规则「截图存证」：这次运行开着 Chrome 时截当前页面；没有 Chrome、占着桌面时截桌面 */
   async screenshot(): Promise<{ fileId: string } | undefined> {
-    return this.browser?.evidenceScreenshot()
+    return (await this.browser?.evidenceScreenshot()) ?? (await this.desktop?.evidenceScreenshot())
   }
 
   /** 给 AI SDK 的工具定义（不带 execute） */
@@ -453,5 +504,6 @@ export class ToolGateway {
   async close() {
     await this.mcp.closeAll()
     await this.browser?.close()
+    await this.desktop?.close()
   }
 }

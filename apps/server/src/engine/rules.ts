@@ -58,10 +58,13 @@ export function inactiveRules(snapshot: SessionSnapshot) {
   )
 }
 
-/** 规则里的工具 id 命中：完全相同；写「browser」表示整组浏览器工具 */
+/** 规则里的工具 id 命中：完全相同；写「browser」表示整组浏览器工具，「desktop」表示整组桌面工具 */
 export function toolMatches(toolIds: readonly string[], toolId: string) {
   return toolIds.some(
-    (id) => id === toolId || (id === "browser" && toolId.startsWith("browser."))
+    (id) =>
+      id === toolId ||
+      (id === "browser" && toolId.startsWith("browser.")) ||
+      (id === "desktop" && toolId.startsWith("desktop."))
   )
 }
 

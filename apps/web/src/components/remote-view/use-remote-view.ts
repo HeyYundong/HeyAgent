@@ -1,14 +1,24 @@
-// 远程画面的连接：WebSocket GET /api/browser/view/:browserId（同源，cookie 自动带上）。
+// 远程画面的连接：WebSocket GET /api/browser/view/:browserId 或 /api/desktop/view/:desktopId（同源，cookie 自动带上）。
 // - 二进制消息是一帧 JPEG：只画最新的一帧，解码跟不上就丢掉中间的；
-// - JSON 消息：meta（视口尺寸、标签页、地址、能不能操作）、dialog / dialogClosed（网页弹框）、closed（Chrome 关了）；
+// - JSON 消息：meta（画面坐标的尺寸、能不能操作；Chrome 还有标签页、地址）、dialog / dialogClosed（网页弹框，只有 Chrome）、closed（关了）；
+//   桌面的 meta 没有标签页和地址，尺寸是屏幕的物理像素（shared 的 DesktopViewerServerMessage）；
 //   agent 的光标和动作说明（cursor / cursorHidden / agentAction）不进 state，交给订阅的人（虚拟光标）直接改 DOM；
 // - 断线自动重连（服务端说 closed 的除外）；一直连不上就停下，告诉人「可能已经关了」。
 import * as React from "react"
-import type { ViewerClientMessage, ViewerServerMessage } from "@heyagent/shared"
+import type { DesktopViewerClientMessage, DesktopViewerServerMessage, ViewerClientMessage, ViewerServerMessage } from "@heyagent/shared"
 
-export type Meta = Extract<ViewerServerMessage, { t: "meta" }>
+import type { RemoteTarget } from "./store"
+
+export type BrowserMeta = Extract<ViewerServerMessage, { t: "meta" }>
+export type Meta = BrowserMeta | Extract<DesktopViewerServerMessage, { t: "meta" }>
 export type PageDialog = Extract<ViewerServerMessage, { t: "dialog" }>
-export type AgentMessage = Extract<ViewerServerMessage, { t: "cursor" | "cursorHidden" | "agentAction" }>
+type ServerMessage = ViewerServerMessage | DesktopViewerServerMessage
+export type AgentMessage = Extract<ServerMessage, { t: "cursor" | "cursorHidden" | "agentAction" }>
+/** 发给服务端的消息：Chrome 那套，加上桌面的组合键 */
+export type ClientMessage = ViewerClientMessage | DesktopViewerClientMessage
+
+/** Chrome 的 meta 才有标签页和地址 */
+export const browserMeta = (meta?: Meta): BrowserMeta | undefined => (meta && "tabs" in meta ? meta : undefined)
 
 export type ViewStatus = "connecting" | "open" | "reconnecting" | "closed"
 
@@ -25,13 +35,20 @@ export interface RemoteViewState {
 /** 连续失败几次（一次都没连上）就不再重连 */
 const MAX_FAILURES = 5
 
-function viewUrl(browserId: string, viewOnly: boolean) {
+function viewUrl(kind: RemoteTarget["kind"], id: string, viewOnly: boolean) {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
-  return `${protocol}//${window.location.host}/api/browser/view/${encodeURIComponent(browserId)}${viewOnly ? "?viewOnly=1" : ""}`
+  return `${protocol}//${window.location.host}/api/${kind}/view/${encodeURIComponent(id)}${viewOnly ? "?viewOnly=1" : ""}`
+}
+
+/** 一直连不上时说的原因 */
+const GONE: Record<RemoteTarget["kind"], string> = {
+  browser: "连不上远程画面，这个 Chrome 可能已经关了",
+  desktop: "连不上远程画面：桌面可能没开机、桌面服务没在运行，或者你没有看这台桌面的权限",
 }
 
 /** viewOnly：只看不操作（有权限也不给操作，例如浏览器页「当前的 session」里的「查看」） */
-export function useRemoteView(browserId: string, canvasRef: React.RefObject<HTMLCanvasElement | null>, viewOnly = false) {
+export function useRemoteView(target: Pick<RemoteTarget, "kind" | "id">, canvasRef: React.RefObject<HTMLCanvasElement | null>, viewOnly = false) {
+  const { kind, id } = target
   const [state, setState] = React.useState<RemoteViewState>({ status: "connecting", hasFrame: false })
   const socketRef = React.useRef<WebSocket | null>(null)
   const agentListeners = React.useRef(new Set<(message: AgentMessage) => void>())
@@ -43,6 +60,7 @@ export function useRemoteView(browserId: string, canvasRef: React.RefObject<HTML
     // 解码中时新来的帧先放这里，解码完只画最新的那一帧
     let decoding = false
     let pending: Blob | null = null
+    let canvasTimer: ReturnType<typeof setTimeout> | undefined
     let gotFrame = false
 
     async function draw(blob: Blob) {
@@ -54,6 +72,19 @@ export function useRemoteView(browserId: string, canvasRef: React.RefObject<HTML
       try {
         const bitmap = await createImageBitmap(blob)
         const canvas = canvasRef.current
+        if (!canvas && !disposed) {
+          // 画布还没挂上（弹窗刚打开）。桌面画面不变时不会马上来新帧，留着这一帧，等画布挂上再画
+          bitmap.close()
+          decoding = false
+          pending = pending ?? blob
+          clearTimeout(canvasTimer)
+          canvasTimer = setTimeout(() => {
+            const next = pending
+            pending = null
+            if (next) void draw(next)
+          }, 100)
+          return
+        }
         if (canvas && !disposed) {
           if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
             canvas.width = bitmap.width
@@ -78,7 +109,7 @@ export function useRemoteView(browserId: string, canvasRef: React.RefObject<HTML
     }
 
     function connect() {
-      const ws = new WebSocket(viewUrl(browserId, viewOnly))
+      const ws = new WebSocket(viewUrl(kind, id, viewOnly))
       ws.binaryType = "blob"
       socketRef.current = ws
       let opened = false
@@ -93,9 +124,9 @@ export function useRemoteView(browserId: string, canvasRef: React.RefObject<HTML
           void draw(event.data)
           return
         }
-        let message: ViewerServerMessage
+        let message: ServerMessage
         try {
-          message = JSON.parse(event.data) as ViewerServerMessage
+          message = JSON.parse(event.data) as ServerMessage
         } catch {
           return
         }
@@ -114,7 +145,7 @@ export function useRemoteView(browserId: string, canvasRef: React.RefObject<HTML
         if (disposed || closedByServer) return
         if (!opened) failures += 1
         if (failures >= MAX_FAILURES) {
-          setState((prev) => ({ ...prev, status: "closed", dialog: undefined, reason: "连不上远程画面，这个 Chrome 可能已经关了" }))
+          setState((prev) => ({ ...prev, status: "closed", dialog: undefined, reason: GONE[kind] }))
           return
         }
         setState((prev) => ({ ...prev, status: "reconnecting", dialog: undefined }))
@@ -126,13 +157,14 @@ export function useRemoteView(browserId: string, canvasRef: React.RefObject<HTML
     return () => {
       disposed = true
       clearTimeout(retryTimer)
+      clearTimeout(canvasTimer)
       const ws = socketRef.current
       socketRef.current = null
       ws?.close(1000)
     }
-  }, [browserId, canvasRef, viewOnly])
+  }, [kind, id, canvasRef, viewOnly])
 
-  const send = React.useCallback((message: ViewerClientMessage) => {
+  const send = React.useCallback((message: ClientMessage) => {
     const ws = socketRef.current
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message))
   }, [])

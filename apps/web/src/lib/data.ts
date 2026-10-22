@@ -34,6 +34,7 @@ export const useSkillsQuery = () => useQuery(trpc.skills.list.queryOptions())
 export const useRulesQuery = () => useQuery(trpc.rules.list.queryOptions())
 export const useToolsQuery = () => useQuery(trpc.tools.list.queryOptions())
 export const useBrowsersQuery = () => useQuery(trpc.browsers.list.queryOptions())
+export const useDesktopsQuery = () => useQuery(trpc.desktops.list.queryOptions())
 export const usePlatformsQuery = () => useQuery(trpc.platforms.list.queryOptions())
 export const useModelsQuery = () => useQuery(trpc.models.overview.queryOptions())
 

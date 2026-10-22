@@ -1,7 +1,7 @@
 // 新建 / 编辑任务（按用户草图）：一行任务 → 步骤（每步可勾「等待」「检查点」，可以一步都不写）→ 目标 → 用哪些 → 模型 → 定时运行。
 // 表单：React Hook Form + shared 的 taskInputSchema；执行模型和三方验收模型不许同一家（前端先拦，后端也拦）。
 // M3：规则只能选已经生效的（没生效的列出来但选不了，写明原因）；可以给任务单独选验收模型。
-// tasks.update 是整体替换：verifyModelId、浏览器的三项、派活的三项（dispatch、dispatchFrom、cronSkipIfRunning）都要带上，不然会被清空。
+// tasks.update 是整体替换：verifyModelId、浏览器的三项、桌面的两项（desktopIds、allowDesktopVision）、派活的三项（dispatch、dispatchFrom、cronSkipIfRunning）都要带上，不然会被清空。
 // 运行结果（docs/dev/run-outcome.md 5.4 节）：「完成」一组放三方验收模型和复核模型。复核一定做（2026-10-20 去掉了开关），复核模型必填，
 // 新任务和以前没选的旧任务都先填上默认复核模型；选了「交给三方验收」的规则时，验收通过的不再复核。
 // 派活（docs/dev/dispatch.md 9.1 节）：「被派活」一组（参数、名额、谁能派活给它，第二期加自动重试，组件在 dispatch-fields.tsx，导入向导也用）；定时那里「上一次还没跑完就跳过」；选了内置工具「派活」时写能派给谁。
@@ -13,6 +13,7 @@ import {
   BROWSER_TOOL_ID,
   can,
   checkpointKindLabel,
+  DESKTOP_TOOL_ID,
   modelFamily,
   recognizeCheckpoints,
   sameFamily,
@@ -36,7 +37,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Spinner } from "@/components/ui/spinner"
 import { Textarea } from "@/components/ui/textarea"
 
-import { useBrowsersQuery, useMemoriesQuery, useModels, useRulesQuery, useSkillsQuery, useStaffQuery, useTasksQuery, useToolName, useToolsQuery } from "@/lib/data"
+import { useBrowsersQuery, useDesktopsQuery, useMemoriesQuery, useModels, useRulesQuery, useSkillsQuery, useStaffQuery, useTasksQuery, useToolName, useToolsQuery } from "@/lib/data"
 import { domainsText, invalidDomainsMessage, parseDomains } from "@/lib/domains"
 import { useAction } from "@/lib/mutations"
 import { navigate } from "@/lib/router"
@@ -197,6 +198,41 @@ export function BrowserFields({ control, domainText, domainError, onDomainText, 
   )
 }
 
+/** 选了「桌面」工具才出现：允许用哪些桌面、是否允许看画面（docs/dev/desktop.md 第 7 节） */
+export function DesktopFields({ control }: { control: Control<TaskInput> }) {
+  const desktops = useDesktopsQuery().data ?? []
+  const options = desktops.map((desktop) => ({ value: desktop.id, label: desktop.name, hint: desktop.description }))
+  return (
+    <FieldSet className="sm:col-span-2">
+      <FieldLegend variant="label">桌面</FieldLegend>
+      <FieldDescription>选了「桌面」工具才有这两项。agent 在登记好的 Windows 电脑上操作电脑软件：先读界面上的控件再点；要扫码、登录这类只有人能做的事，停下来交给负责人在远程画面里处理。</FieldDescription>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Controller
+          control={control}
+          name="desktopIds"
+          render={({ field }) => (
+            <MultiPick id="task-desktopIds" label="能用哪些桌面" options={options} value={field.value ?? []} onChange={field.onChange}
+              description={desktops.length ? "不选 = 全部都能用，agent 按每台的说明自己挑。都被占着时运行会排队等。" : "还没有桌面：先去「桌面」页登记。"} />
+          )}
+        />
+        <Controller
+          control={control}
+          name="allowDesktopVision"
+          render={({ field }) => (
+            <Field orientation="horizontal" className="sm:col-span-2">
+              <Checkbox id="task-allowDesktopVision" checked={!!field.value} onCheckedChange={(on) => field.onChange(Boolean(on))} />
+              <FieldContent>
+                <FieldLabel htmlFor="task-allowDesktopVision">允许看画面</FieldLabel>
+                <FieldDescription>agent 可以截桌面画面给模型看（读不到控件的软件、图片里的字用得上）。不开时只能读界面控件。每看一次多花一张图的模型费用。</FieldDescription>
+              </FieldContent>
+            </Field>
+          )}
+        />
+      </div>
+    </FieldSet>
+  )
+}
+
 const DEFAULT_CRON = "0 9 * * *"
 
 export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpenChange: (open: boolean) => void; task?: TaskDef }) {
@@ -224,6 +260,8 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
           allowedDomains: task.allowedDomains,
           allowBrowserEvaluate: task.allowBrowserEvaluate,
           allowBrowserVision: task.allowBrowserVision,
+          desktopIds: task.desktopIds,
+          allowDesktopVision: task.allowDesktopVision,
           verifyModelId: task.verifyModelId ?? "",
           // 复核模型必填（2026-10-20）：以前没选的旧任务先填上默认复核模型
           reviewModelId: task.reviewModelId ?? defaults.review ?? "",
@@ -233,7 +271,7 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
         }
       : {
           title: "", goal: "", steps: [{ text: "", wait: false }], modelId: defaults.run, ownerId: user.id, schedule: null, enabled: true,
-          memoryIds: [], skillIds: [], toolIds: [], ruleIds: [], browserProfileIds: [], allowedDomains: [], allowBrowserEvaluate: false, allowBrowserVision: false, verifyModelId: "",
+          memoryIds: [], skillIds: [], toolIds: [], ruleIds: [], browserProfileIds: [], allowedDomains: [], allowBrowserEvaluate: false, allowBrowserVision: false, desktopIds: [], allowDesktopVision: false, verifyModelId: "",
           reviewModelId: defaults.review ?? "",
           dispatch: null, dispatchFrom: [], cronSkipIfRunning: true,
         },
@@ -259,6 +297,7 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
         : `「派活」：还没有任务允许它派活。去要接活的任务上打开「可以被派活」，把${task ? "它" : "这个任务（建好以后）"}加进「谁能派活给它」。`]
     : undefined
   const usesBrowser = (toolIds ?? []).includes(BROWSER_TOOL_ID)
+  const usesDesktop = (toolIds ?? []).includes(DESKTOP_TOOL_ID)
   const options = usePickOptions({ memoryIds: memoryIds ?? [], skillIds: skillIds ?? [] }, task?.ruleIds ?? [])
   const rules = useRulesQuery().data ?? []
   // 选着的规则里没生效 / 改过还没确认的：写清楚运行时会怎样
@@ -407,6 +446,7 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
                       form.clearErrors("allowedDomains")
                     }} />
                   )}
+                  {usesDesktop && <DesktopFields control={form.control} />}
                   <Field data-invalid={!!modelClash} className="sm:col-span-2">
                     <FieldLabel htmlFor="task-model">模型</FieldLabel>
                     <Controller

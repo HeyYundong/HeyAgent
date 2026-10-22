@@ -110,6 +110,8 @@ export async function listTasks(db: Db, ids?: string[]): Promise<TaskDef[]> {
       allowedDomains: row.allowedDomains,
       allowBrowserEvaluate: row.allowBrowserEvaluate,
       allowBrowserVision: row.allowBrowserVision,
+      desktopIds: row.desktopIds,
+      allowDesktopVision: row.allowDesktopVision,
       verifyModelId: opt(row.verifyModelId),
       reviewModelId: opt(row.reviewModelId),
       dispatch: row.dispatch ?? undefined,

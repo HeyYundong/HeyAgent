@@ -80,7 +80,7 @@ export function LoginBrowserDialog({ browserId, title, description, accountName,
   return (
     <RemoteViewDialog
       open
-      browserId={browserId}
+      target={{ kind: "browser", id: browserId }}
       title={title}
       description={description}
       onOpenChange={(open) => !open && void closeBrowser()}

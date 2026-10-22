@@ -75,6 +75,11 @@ async function checkTask(db: DbOrTx, input: TaskInput, previousRuleIds: string[]
     const missing = input.browserProfileIds.filter((id) => !rows.some((row) => row.id === id))
     if (missing.length) throw badRequest(`找不到 Chrome 配置：${missing.join("、")}`)
   }
+  if (input.desktopIds.length) {
+    const rows = await db.select({ id: t.desktops.id }).from(t.desktops).where(inArray(t.desktops.id, input.desktopIds))
+    const missing = input.desktopIds.filter((id) => !rows.some((row) => row.id === id))
+    if (missing.length) throw badRequest(`找不到桌面：${missing.join("、")}`)
+  }
   // 每个任务都自带的工具不用存关联
   const alwaysOn = input.toolIds.length
     ? (await db.select({ id: t.tools.id }).from(t.tools).where(and(inArray(t.tools.id, input.toolIds), eq(t.tools.alwaysOn, true)))).map((row) => row.id)
@@ -131,6 +136,8 @@ function columns(input: TaskInput, modelId: string, verifyModelId: string | null
     allowedDomains: [...new Set(input.allowedDomains)],
     allowBrowserEvaluate: input.allowBrowserEvaluate,
     allowBrowserVision: input.allowBrowserVision,
+    desktopIds: [...new Set(input.desktopIds)],
+    allowDesktopVision: input.allowDesktopVision,
     verifyModelId,
     reviewModelId,
     // 派活：参数声明和名额（已经按 shared 的 taskDispatchSchema 校验过：参数名不重复）；null = 不能被派活

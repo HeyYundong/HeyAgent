@@ -6,6 +6,7 @@ import { startControlServer, type ControlServer } from "../browser/control.js"
 import { BrowserManager, setBrowserManager } from "../browser/manager.js"
 import { recoverRunningComparisons, runComparison } from "../compare/run.js"
 import { ensureDefaultStandard } from "../compare/service.js"
+import { DESKTOP_SWEEP_MS, sweepDesktops } from "../desktop/leases.js"
 import { runImportRead } from "../imports/reader.js"
 import type { Db } from "../db/client.js"
 import { cleanupSessionSandbox, sweepSandboxDirs, sweepThrottled } from "../sandbox/code-run.js"
@@ -44,6 +45,8 @@ export interface EngineWorkerOptions {
    * 默认 HEYAGENT_BROWSER_CONTROL_PORT 或 3190；0 = 随机端口（测试用）；false = 不开浏览器管理
    */
   browserControlPort?: number | false
+  /** 桌面巡查的间隔（毫秒）。默认 HEYAGENT_DESKTOP_SWEEP_MS 或 30 秒；false = 不开定时巡查（测试里自己调 sweepDesktops，免得和断言抢） */
+  desktopSweepMs?: number | false
 }
 
 export interface EngineWorker {
@@ -95,6 +98,15 @@ export async function startEngineWorker(
     setBrowserManager(browser)
     log(`浏览器内部控制接口：${control.url}`)
   }
+
+  // 桌面：过期没续的占用、保留时间到了的放掉，叫醒等桌面的（docs/dev/desktop.md 第 3 节）。不依赖浏览器管理
+  const desktopSweep =
+    options.desktopSweepMs === false
+      ? undefined
+      : setInterval(() => {
+          void sweepDesktops(db).catch((error) => console.warn("[worker] 桌面巡查出错", error))
+        }, options.desktopSweepMs ?? DESKTOP_SWEEP_MS)
+  desktopSweep?.unref()
 
   let stopping = false
   const controllers = new Set<AbortController>()
@@ -239,6 +251,7 @@ export async function startEngineWorker(
     browser,
     async stop() {
       stopping = true
+      clearInterval(desktopSweep)
       for (const controller of controllers) controller.abort()
       await boss.stop({ graceful: true, timeout: 20_000 })
       // 运行都停了以后：剩下的 Chrome（等人处理保留着的、打开 Chrome的）写回或直接关掉

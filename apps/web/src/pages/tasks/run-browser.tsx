@@ -68,7 +68,7 @@ export function SessionBrowserDialog({ runId, browserId, item, onClose, onResolv
   return (
     <RemoteViewDialog
       open
-      browserId={browserId}
+      target={{ kind: "browser", id: browserId }}
       title={`运行 ${runId} 的浏览器`}
       description={description || "这次运行正在用的 Chrome"}
       onOpenChange={(open) => !open && onClose()}

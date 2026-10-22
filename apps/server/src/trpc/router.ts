@@ -109,6 +109,7 @@ import { setOutcomeImpl } from "../engine/control.js"
 import { EngineError } from "../engine/sessions.js"
 import { protectedProcedure, router, type Context, type SessionUser } from "./init.js"
 import { browserRouter } from "./browser-router.js"
+import { desktopRouter, desktopsRouter } from "./desktop-router.js"
 import { engineRouter } from "./engine-router.js"
 import { apiKeysRouter, galleryRouter } from "./gallery-router.js"
 import { compareRouter } from "./compare-router.js"
@@ -381,6 +382,10 @@ export const appRouter = router({
 
   /** 浏览器（M2）：打开 Chrome（关闭时保存登录状态）、远程画面相关 */
   browser: browserRouter,
+
+  /** 桌面（docs/dev/desktop.md）：配置（列表、增删改、测试连接）和运行时（运行占着的桌面、主管强制放开） */
+  desktops: desktopsRouter,
+  desktop: desktopRouter,
 
   /** 图库：图片墙、找相似、按描述找、改文本和标签、删（传图和上传一张图来搜走 HTTP 接口 /api/gallery/*） */
   gallery: galleryRouter,

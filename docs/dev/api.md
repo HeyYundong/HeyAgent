@@ -24,6 +24,7 @@
 16. 派活（2026-10-18）
 17. Session 空间和运行代码（2026-10-20）
 18. 运行结果（2026-10-20）
+19. 桌面（2026-10-22）
 
 ---
 
@@ -600,9 +601,11 @@ curl -s -X POST http://localhost:3100/api/events \
 | `skills` `skill_tools` `skill_suggestions` | `skills.list` |
 | `rules` `rule_tools` | `rules.list` |
 | `tools` `mcp_servers` | `tools.list` |
-| `secrets` | `tools.list` `models.overview` `browsers.list` |
+| `secrets` | `tools.list` `models.overview` `browsers.list` `desktops.list` |
 | `browser_profiles` `browser_accounts` `browser_vaults` `account_leases` | `browsers.list` |
 | `platforms` | `platforms.list` `browsers.list` |
+| `desktops`（第 19 节） | `desktops.list` |
+| `desktop_leases`（推桌面 id；续约不推） | `desktops.list` `desktop.sessionDesktop` |
 | `model_providers` `models` `model_defaults` | `models.overview` |
 | `notifications` | `engine.notifications.list` |
 | `files` | `engine.sessionFiles` `engine.taskAttachments` |
@@ -628,6 +631,7 @@ curl -s -X POST http://localhost:3100/api/events \
 | 规则 | `rule.create` `rule.update` `rule.delete` `rule.restore` `rule.compile` `rule.confirm`（M3） |
 | 工具 | `tool.create` `tool.update` `tool.delete` `tool.restore` `secret.create` `secret.update` `secret.delete` `mcp_server.create` `mcp_server.update` `mcp_server.delete` |
 | 浏览器 | `browser_profile.create` `browser_profile.update` `browser_profile.delete` `platform.create` `platform.delete` `browser_account.create` `browser_account.update` `browser_account.delete` |
+| 桌面（第 19 节） | `desktop.create` `desktop.update`（`detail.changed` 改了哪些字段，换了密钥记 `key: "set"`，不记密钥）`desktop.delete` `desktop.release`（主管强制放开；`detail.sessionId`、`state`，本来空着记 `wasFree`） |
 | 模型 | `model_provider.create` `model_provider.update` `model_provider.test` `model_provider.refresh` `model_provider.delete` `model_defaults.update` `model.create` `model.update` `model.delete`（自定义服务手动加的模型） |
 | 图库（第 13 节） | `gallery.create` `gallery.update` `gallery.delete`（`detail.via` 是 web / api / mcp / agent；agent 传的 `actor_id` 为空，`detail.sessionId` 是哪次运行）`api_key.create` `api_key.delete` |
 | 比物（第 15 节） | `compare.create`（`detail.via`、`apiKeyId`、`sessionId`；agent 发起的 `actor_id` 为空）`compare.delete` `compare_standard.create`（启动时自动建的 `detail.by = "bootstrap"`，`actor_id` 为空）`compare_standard.update` `compare_standard.delete` `compare_standard.set_default` |
@@ -1419,3 +1423,49 @@ claude mcp add --transport http heyagent-compare http://<host>:8080/api/compare/
 ### 18.7 审计
 
 `session.set_outcome`（`detail: { from, to, reason }`）。
+
+## 19. 桌面（2026-10-22）
+
+开发说明 `docs/dev/desktop.md`，契约 `packages/shared/src/desktop.ts`，迁移 0029。一台桌面 = 一台跑着 Windows-MCP 0.8.8（端口 8000）和桌面服务（`apps/desktop-agent`，端口 8001）的 Windows 电脑，两个服务共用一个密钥（`Authorization: Bearer`，只存密文 `secrets.scope = desktop`，`ref_id` = 桌面 id）。
+
+### 19.1 配置（`appRouter.desktops`）
+
+| procedure | 权限 | 输入 | 返回 | 错误 | 说明 |
+|---|---|---|---|---|---|
+| `desktops.list`（query） | 登录即可 | 无 | `Desktop[]`（按 `position`、创建时间） | | `keyMask` 只留最后 4 位（`••••••••3f2a`）；`use` = `{ state: free / running / held, sessionId?, taskTitle?, since?（占上的时间）, holdUntil?（held 时）}` |
+| `desktops.create` | 主管 | `desktopCreateSchema`：`{ name(1-100), description(≤1000), mcpUrl, agentUrl, key(16-500) }` | `{ id }`（`dk-<名字的英文短名>`，全中文是 `dk-desktop`，重复加 `-2`） | `FORBIDDEN`；`BAD_REQUEST`（地址不是 http(s)://、密钥太短）；`CONFLICT`（同名） | `desktop.create`（不记密钥）；新的排在最后 |
+| `desktops.update` | 主管 | `desktopUpdateSchema`：上面的字段 + `id`，`key` 可选 | 无 | `NOT_FOUND`；`CONFLICT`（同名）；`BAD_REQUEST`（填了密钥但不到 16 位） | `key` 不填或空串 = 不改 |
+| `desktops.delete` | 主管 | `{ id }` | 无 | `NOT_FOUND`；`CONFLICT`「桌面正被运行占着，先放开再删」 | 密钥一起删 |
+| `desktops.test`（mutation） | 主管（和 `engine.listMcpServerTools` 一样，要用密钥连出去） | `{ id }` | `DesktopHealth`：`{ mcp: { ok, ms, toolCount?, error? }, agent: { ok, ms, version?, screen?, error? } }` | `NOT_FOUND` | MCP 连上列一次工具，桌面服务调 `GET /health`，两边并行、各自最多 10 秒，不改任何东西。密钥不对时 `agent.error` 是「桌面服务拒绝了请求：密钥不对……」 |
+
+任务字段 `desktopIds`（选了「桌面」工具时允许哪些桌面，空 = 全部；`tasks.create/update` 时每个都要存在，否则 `BAD_REQUEST`「找不到桌面：…」）、`allowDesktopVision`。
+
+### 19.2 运行时（`appRouter.desktop`）
+
+| procedure | 权限 | 输入 | 返回 | 说明 |
+|---|---|---|---|---|
+| `desktop.sessionDesktop`（query） | 登录即可 | `{ sessionId }` | `SessionDesktop`：`{ open, desktopId?, desktopName?, state?, canControl }` | `open` = 这个运行现在占着桌面（running / held）；`desktopId` 没占着时是 `sessions.desktop_id`（分到过的）；`canControl` 同浏览器（主管、任务负责人、这个运行开着的要人办的事的处理人）。找不到运行 `NOT_FOUND` |
+| `desktop.release`（mutation） | 主管 | `{ desktopId }` | 无 | 删掉占用、叫醒等它的；原来占着的运行记一条「桌面「名字」被主管放开了」，它下一次调桌面工具时重新占（被占着就等）。审计 `desktop.release`。找不到桌面 `NOT_FOUND` |
+
+### 19.3 远程画面：`GET /api/desktop/view/:desktopId[?viewOnly=1]`（WebSocket）
+
+- 要登录（cookie），带 Origin 的必须可信（同浏览器）；桌面不存在 404。
+- 能看能操作：主管；或者这台桌面正被某个运行占着时，该运行的 `canControlSession`。其他人（包括桌面空着时的员工）403。`viewOnly=1` 只看。
+- API 用密钥连桌面服务的 `/view`（`agentUrl` 换成 ws(s)），连不上 502。下行二进制是 JPEG 帧（控制台积压 ≥1MB 就丢），JSON 照转，`meta.canControl` 改成这个人的；上行只有能操作才转，按 `desktopViewerClientMessageSchema`（mouse / key / text / combo）校验后重新序列化，不认识的丢掉（例如浏览器的 nav、tab、dialog）。
+- 桌面服务密钥不对（它先接受再用 4401 关）：控制台先收到 `{ t: "closed", reason: "桌面服务拒绝了连接：密钥不对（请在「桌面」页检查密钥）" }`，再被用关闭码 4401 关掉。
+- 和浏览器的远程画面共用一个 upgrade 监听（`lib/ws-relay.ts`），都不认的路径 404。
+
+### 19.4 agent 的「桌面」工具组
+
+任务选了内置工具 `desktop`（`DESKTOP_TOOL_ID`）：快照 `snapshot.desktop = { desktops: [{ id, name, description }], allowVision }`，自动带上 `file.read`；工具网关展开成 `desktop.use`、Windows-MCP 白名单 12 个（`desktop.snapshot` … `desktop.multi_edit`，参数写死在 `desktop/mcp-tools.ts`）、`desktop.send_file`、`desktop.fetch_file`、`desktop.ask_human`，打开「允许看画面」再加 `desktop.look`（`desktop.snapshot` 多出 `use_vision` 等截图参数；没打开时一律发 `use_vision: false`）。模型看到的名字把点换成下划线（`desktop_snapshot`）。
+
+- 分配：第一次调桌面工具（`desktop.use` 除外）时占；`sessions.desktop_id` 有值只要它，否则按快照顺序挑空着的、MCP 连得上的（连不上的放开换下一台，全连不上报错）。新占到记 `plan` 事件「用桌面「名字」」，detail 以 `桌面 <id>；` 开头。
+- 都被占着：挂起等 `desktop:<id>`（指定了 / 只允许一台）或 `desktop:any`，`what` 以「等待桌面：」开头；等桌面的派活运行照旧占名额（和等浏览器一样）。
+- 占用 `desktop_leases`：running 每次调工具、工具网关开着时每 30 秒续 `expires_at`（`HEYAGENT_DESKTOP_LEASE_TTL_MS`，默认 120000）；工具网关关闭时放开并叫醒等的，调过 `desktop.ask_human` 的改成 held 保留 `browser.humanHoldMinutes` 分钟。worker 每 30 秒巡查（`HEYAGENT_DESKTOP_SWEEP_MS`）：running 过期的、held 过了保留时间的（在那个运行里记「桌面保留时间到了，已放开」）、held 但运行已经不在等人处理的放开，再把还在等桌面、桌面已经空着的叫一次。
+- `desktop.ask_human({ reason })`：截图存 `needs-human-*.jpg`，生成 `login` 类要人办的事（`title`「在桌面上处理：<reason 前 40 字>」，`detail.link = { page: "desktops", id }`，`detail.desktop = { desktopId, sessionId, reason, screenshotFileId? }`，主按钮「已处理好了」）。继续时接着用同一台。
+- `desktop.send_file({ fileId })`（这次运行的文件或附件）→ 桌面服务 `POST /files`，返回桌面上的路径；`desktop.fetch_file({ path })` → `GET /files`，存成运行文件（`kind = download`），返回文件 id。
+- 有人正在操作这台桌面（Windows-MCP 回 `USER_CONTROL` 等）：自动等它说的秒数再试，总共最多约 15 秒，还不行报「有人正在操作这台桌面（远程画面里），等人停手再试」；做到一半被抢走的（`CONTROL_PREEMPTED` 且做了几步）不重试。
+- `desktop.type` 的文字有 ASCII 以外的字（中文等）时不走 Windows-MCP 的 Type：先 `Click` 点输入框、`clear` 时 ctrl+a / backspace、移光标，文字交给桌面服务 `POST /type { text }`，再按回车（`press_enter`）。
+- 有桌面工具组的运行里，通用 `ask.human` 的说明写明「要人在桌面上动手的事用 desktop_ask_human」。
+- 桌面连不上：工具结果是错误「桌面「名字」连不上：……」，不挂起。规则里写 `desktop` 匹配整组 `desktop.*`；「自动记录检查点」不把桌面工具记成外发消息；规则「截图存证」没有 Chrome 时截桌面。
+

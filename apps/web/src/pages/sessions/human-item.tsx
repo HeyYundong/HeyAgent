@@ -5,6 +5,7 @@
 // 记忆审核、技能修改直接调配置接口（M1 P2）；审批、验收、登录、花费到了上限要不要继续，调 engine.resolveHumanItem（M1 P3）：
 // how = approve（批准）/ reject（拒绝）/ done（已处理，用于登录这类「去做了」的事），加备注；处理完关联的 session 继续。
 // M2：遇到验证码 / 登录页的「登录」类事带 detail.browser：多一段「远程画面」（截图 + 去浏览器里处理），主按钮是「已处理好了」
+// 桌面：agent 请人在桌面上处理的事带 detail.desktop：同样多一段「远程画面」（截图 + 打开桌面），主按钮是「已处理好了」
 // M3：「审批工具调用」带 detail.toolCall：显示工具名和参数，只有「批准」「拒绝」，可以加备注；
 //     「验收争议」带 detail.verification：显示验收报告（逐条结论），三种处理「算通过」「算失败」「补充说明后继续」（engine.resolveVerifyDispute，说明必填）；
 //     记忆审核、技能修改：可以直接批，也可以按 memoryId / skillId 去记忆页、技能页看全文再审。
@@ -32,6 +33,7 @@ import { trpc } from "@/lib/trpc"
 import { VerificationReport } from "@/pages/tasks/verification"
 
 import { HumanBrowserSection } from "./human-browser"
+import { HumanDesktopSection } from "./human-desktop"
 import { Block, Part, TextLink, dots } from "./parts"
 
 /** 会话页上写的种类：验收这类到了人这里的都是「验收争议」 */
@@ -80,8 +82,8 @@ export function HumanItemPanel({ item, inRun = false, onDone }: Props) {
   }
   const busy = resolve.isPending || approveMemory.isPending || rejectMemory.isPending || acceptSkill.isPending || rejectSkill.isPending
   const doneButton = <Button disabled={busy} onClick={() => done()}>{busy ? <Spinner data-icon="inline-start" /> : <CheckIcon data-icon="inline-start" />}{detail.primary}</Button>
-  // 带浏览器信息的：在这里（或远程画面里）直接点「已处理好了」；没有的（旧数据）主按钮仍是去浏览器页的链接
-  const primary = detail.browser ? doneButton : detail.link ? <Button nativeButton={false} render={<a href={href(detail.link.page, { id: detail.link.id })} />}>{detail.primary}</Button>
+  // 带浏览器、桌面信息的：在这里（或远程画面里）直接点「已处理好了」；没有的（旧数据）主按钮仍是去浏览器页 / 桌面页的链接
+  const primary = detail.browser || detail.desktop ? doneButton : detail.link ? <Button nativeButton={false} render={<a href={href(detail.link.page, { id: detail.link.id })} />}>{detail.primary}</Button>
     : detail.pay ? <PayButton label={detail.primary} confirm={detail.pay} onConfirm={() => done()} />
       : doneButton
   const secondary = detail.secondaryDone ? <Button variant="outline" disabled={busy} onClick={() => done("done")}>{detail.secondary}</Button>
@@ -128,6 +130,7 @@ export function HumanItemPanel({ item, inRun = false, onDone }: Props) {
           </Part>
         ))}
         {detail.browser && <HumanBrowserSection item={item} info={detail.browser} canAct={canAct} onResolved={() => onDone?.()} />}
+        {detail.desktop && <HumanDesktopSection item={item} info={detail.desktop} canAct={canAct} onResolved={() => onDone?.()} />}
         {(item.memoryId || item.skillId) && <ReviewLink item={item} />}
         {run?.waiting && (item.kind === "approval" || item.kind === "login") && (
           <Part title="处理完之后" description="不会新开 session">

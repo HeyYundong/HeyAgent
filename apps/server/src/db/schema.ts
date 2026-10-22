@@ -150,7 +150,7 @@ export const modelRoleEnum = pgEnum("model_role", values(modelRoleSchema.options
  * 密钥属于什么：HTTP 工具模板里的 {{名字}}、MCP 服务器的环境变量、模型服务的 API key、Chrome 代理密码；
  * import：导入时从 zip 包里挪出来的、人在确认时填的密钥值（ref_id = 导入 id），导入时转存成 http_tool 的全局密钥
  */
-export const secretScopeEnum = pgEnum("secret_scope", ["http_tool", "mcp_env", "model_provider", "browser_proxy", "browser_account", "import"])
+export const secretScopeEnum = pgEnum("secret_scope", ["http_tool", "mcp_env", "model_provider", "browser_proxy", "browser_account", "import", "desktop"])
 export const importStatusEnum = pgEnum("import_status", values(importStatusSchema.options))
 export const compareStatusEnum = pgEnum("compare_status", values(compareStatusSchema.options))
 export const compareConfidenceEnum = pgEnum("compare_confidence", values(compareConfidenceSchema.options))
@@ -513,6 +513,10 @@ export const tasks = pgTable(
     allowBrowserEvaluate: boolean("allow_browser_evaluate").notNull().default(false),
     /** 是否允许 agent 看画面（browser.look 截图发给模型 + 按坐标操作），默认不允许 */
     allowBrowserVision: boolean("allow_browser_vision").notNull().default(false),
+    /** 桌面：选了「桌面」工具时，允许用哪些桌面（desktops.id）；空表示不限 */
+    desktopIds: text("desktop_ids").array().notNull().default(sql`'{}'::text[]`),
+    /** 桌面：是否允许 agent 看画面（desktop.look、desktop.snapshot 带截图），默认不允许 */
+    allowDesktopVision: boolean("allow_desktop_vision").notNull().default(false),
     /** M3：这个任务自己选的三方验收模型；为空用默认验收模型 */
     verifyModelId: text("verify_model_id"),
     /**
@@ -644,6 +648,8 @@ export const sessions = pgTable(
      * 或者 agent 先调 browser.use 指定。分到以后从头到尾只用它，绝不切换：挂起再继续时它被别的运行占着就等它
      */
     browserProfileId: text("browser_profile_id"),
+    /** 桌面：这次运行用的桌面。和 Chrome 一样，分到以后从头到尾只用它（docs/dev/desktop.md 第 3 节） */
+    desktopId: text("desktop_id"),
     /** M3：规则执行的状态（例如「花费超过 X」已经触发过的规则，不再重复触发） */
     ruleState: jsonb("rule_state").$type<SessionRuleState>().notNull().default({}),
     /** 运行结束后三方 AI 的总结和任务记忆候选（人点「总结」才有；审核通过的记进 task_memory_entries） */
@@ -808,6 +814,45 @@ export const accountLeases = pgTable(
     index("account_leases_active_idx").on(t.accountId).where(sql`${t.releasedAt} is null`),
     uniqueIndex("account_leases_one_active_idx").on(t.accountId, t.sessionId).where(sql`${t.releasedAt} is null`),
   ]
+)
+
+// ---------- 桌面（docs/dev/desktop.md） ----------
+
+/** 一台桌面：装了 Windows-MCP 和桌面服务的 Windows 电脑。两个服务共用一个密钥（只存密文，secrets.scope = desktop） */
+export const desktops = pgTable("desktops", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  /** 给 agent 看的说明：装了哪些软件、登的哪个账号 */
+  description: text("description").notNull().default(""),
+  mcpUrl: text("mcp_url").notNull(),
+  agentUrl: text("agent_url").notNull(),
+  keySecretId: text("key_secret_id").references(() => secrets.id, { onDelete: "set null" }),
+  position: position(),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+})
+
+/**
+ * 桌面的占用：一台桌面最多一行（同一时间只给一个运行用）。有行 = 被占着；运行结束删掉。
+ * running：运行在用，worker 每次调工具、每 30 秒续 expires_at，过期没续（worker 死了）由巡查删掉并叫醒等它的运行；
+ * held：转人工时保留给这个运行，到 hold_until 还没处理完就放掉
+ */
+export const desktopLeases = pgTable(
+  "desktop_leases",
+  {
+    desktopId: text("desktop_id")
+      .primaryKey()
+      .references(() => desktops.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .unique()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    state: text("state").$type<"running" | "held">().notNull(),
+    acquiredAt: ts("acquired_at").notNull().defaultNow(),
+    expiresAt: ts("expires_at").notNull(),
+    holdUntil: ts("hold_until"),
+  },
+  (t) => [check("desktop_leases_state_check", sql`${t.state} in ('running', 'held')`)]
 )
 
 /** M2：带 Chrome 的 worker（每个进程一行，心跳）。API 按 control_url 找它：打开 Chrome、远程画面转发 */

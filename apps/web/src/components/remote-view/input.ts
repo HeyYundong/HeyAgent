@@ -1,5 +1,5 @@
 // 远程画面的输入换算（纯函数）：本机的鼠标、键盘事件 → 发给服务端的消息（格式见 shared 的 ViewerClientMessage）。
-// 坐标按 meta.width/height 换算：那是页面视口的 CSS 像素，不是画面图片的尺寸（图片缩到了 960 宽）。
+// 坐标按 meta.width/height 换算：Chrome 是页面视口的 CSS 像素，桌面是屏幕的物理像素，都不是画面图片的尺寸（图片缩过）。
 import type { ViewerClientMessage } from "@heyagent/shared"
 
 type Modifiers = { altKey: boolean; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }

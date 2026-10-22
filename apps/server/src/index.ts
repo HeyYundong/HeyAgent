@@ -8,6 +8,7 @@ import { createAuth } from "./auth.js"
 import { bootstrap, retryOpenRouterInBackground, type BootstrapOptions } from "./bootstrap/index.js"
 import { attachBrowserViewRelay } from "./browser/view-relay.js"
 import { createDb } from "./db/client.js"
+import { attachDesktopViewRelay } from "./desktop/view-relay.js"
 import { initEngineClient } from "./engine/queue.js"
 import { env } from "./env.js"
 import { startGalleryEmbeddings } from "./gallery/background.js"
@@ -33,13 +34,16 @@ const app = createApp({ db, auth, hub, keyring })
 const server = serve({ fetch: app.fetch, port: env.port, hostname: env.host }, (info) => {
   console.log(`HeyAgent API 已启动：http://${info.address}:${info.port}`)
 })
-// 远程画面（M2）：GET /api/browser/view/:browserId 的 WebSocket 升级，转到 worker 里的 Chrome
-attachBrowserViewRelay(server as Server, {
+// 远程画面（M2）：GET /api/browser/view/:browserId 的 WebSocket 升级，转到 worker 里的 Chrome；
+// 桌面：GET /api/desktop/view/:desktopId，转到桌面服务（两个共用一个 upgrade 监听）
+const relayDeps = {
   db,
   auth,
   keyring: () => keyring,
   trustedOrigins: [...env.trustedOrigins, new URL(env.authUrl).origin],
-})
+}
+attachBrowserViewRelay(server as Server, relayDeps)
+attachDesktopViewRelay(server as Server, relayDeps)
 
 async function shutdown(signal: string) {
   console.log(`收到 ${signal}，正在关闭`)

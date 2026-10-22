@@ -141,6 +141,10 @@ export const taskInputSchema = z.object({
   allowBrowserEvaluate: z.boolean().default(false),
   /** 是否允许 agent 看画面：browser.look 截当前画面发给模型、按坐标点击拖动（Playwright MCP 的 --caps vision），默认不允许 */
   allowBrowserVision: z.boolean().default(false),
+  /** 选了「桌面」工具时允许用哪些桌面；空 = 全部桌面都能用 */
+  desktopIds: ids.default([]),
+  /** 是否允许 agent 看桌面画面：desktop.look 截图发给模型、desktop.snapshot 带截图，默认不允许 */
+  allowDesktopVision: z.boolean().default(false),
   /** 三方验收模型（M3）；不填（或空串）用默认验收模型。必须和执行模型不是同一家 */
   verifyModelId: z.string().optional(),
   /** 复核模型（必填）：运行结束后一定复核（三方验收通过的除外）。新任务预填默认复核模型 */

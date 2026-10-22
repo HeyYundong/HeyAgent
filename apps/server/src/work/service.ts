@@ -36,12 +36,12 @@ const iso = (value: Date) => value.toISOString()
 const isoOrNull = (value: Date | null) => (value ? value.toISOString() : null)
 
 /**
- * 占名额的运行（SQL 条件，用在 sessions 上）：派活触发的、执行中 / 验收中，或者挂起但等的是浏览器（browser.lease: / browser.profile:）。
+ * 占名额的运行（SQL 条件，用在 sessions 上）：派活触发的、执行中 / 验收中，或者挂起但等的是浏览器（browser.lease: / browser.profile:）、桌面（desktop:）。
  * agent 自己挂起（session.wait）、等人处理不占。领单（包 A）和页面上的数字都用它，口径一致
  */
 export function occupiesSlotSql(): SQL {
   return sql`(${t.sessions.status} in ('running', 'verifying') or (${t.sessions.status} = 'waiting' and exists (
-    select 1 from ${t.sessionWaits} w where w.session_id = ${t.sessions.id} and w.status = 'waiting' and w.event like 'browser.%'
+    select 1 from ${t.sessionWaits} w where w.session_id = ${t.sessions.id} and w.status = 'waiting' and (w.event like 'browser.%' or w.event like 'desktop:%')
   )))`
 }
 

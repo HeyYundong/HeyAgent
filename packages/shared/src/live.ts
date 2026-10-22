@@ -30,7 +30,7 @@ export const liveQueriesByTable: Record<string, string[]> = {
   rule_tools: ["rules.list"],
   tools: ["tools.list"],
   mcp_servers: ["tools.list"],
-  secrets: ["tools.list", "models.overview", "browsers.list"],
+  secrets: ["tools.list", "models.overview", "browsers.list", "desktops.list"],
   browser_profiles: ["browsers.list"],
   browser_accounts: ["browsers.list", "browser.accountStatus"],
   browser_vaults: ["browsers.list"],
@@ -38,6 +38,8 @@ export const liveQueriesByTable: Record<string, string[]> = {
   // M2：开着的 Chrome（远程画面入口、谁在看）
   browser_instances: ["browser.live", "browser.sessionBrowser"],
   browser_actions: ["browser.history"],
+  desktops: ["desktops.list"],
+  desktop_leases: ["desktops.list", "desktop.sessionDesktop"],
   platforms: ["platforms.list", "browsers.list"],
   model_providers: ["models.overview"],
   models: ["models.overview"],

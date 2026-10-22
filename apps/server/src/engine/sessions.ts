@@ -4,6 +4,7 @@ import {
   ALWAYS_ON_BUILTIN_TOOLS,
   BROWSER_TOOL_ID,
   COMPARE_TOOL_ID,
+  DESKTOP_TOOL_ID,
   GALLERY_TOOL_ID,
   RUN_FINISH_TOOL_ID,
   WORK_DISPATCH_TOOL_ID,
@@ -27,6 +28,7 @@ import { appendEvent, appendMessage, writeAudit } from "./records.js"
 import {
   browserSnapshotTool,
   compareSnapshotTool,
+  desktopSnapshotTool,
   gallerySnapshotTool,
   builtinSnapshotTool,
   isBuiltinTool,
@@ -124,6 +126,7 @@ export async function buildSnapshot(
     if (tools.some((each) => each.id === tool.id)) continue
     if (tool.source === "builtin") {
       if (tool.id === BROWSER_TOOL_ID) tools.push(browserSnapshotTool())
+      else if (tool.id === DESKTOP_TOOL_ID) tools.push(desktopSnapshotTool())
       else if (tool.id === GALLERY_TOOL_ID) tools.push(gallerySnapshotTool())
       else if (tool.id === COMPARE_TOOL_ID) tools.push(compareSnapshotTool())
       else if (isBuiltinTool(tool.id)) tools.push(builtinSnapshotTool(tool.id))
@@ -172,6 +175,17 @@ export async function buildSnapshot(
     }
   }
 
+  // 桌面：允许的桌面（空 = 全部）连同给 agent 看的说明、是否允许看画面，冻结进快照（docs/dev/desktop.md 第 2 节）
+  let desktop: SessionSnapshot["desktop"]
+  if (tools.some((tool) => tool.id === DESKTOP_TOOL_ID)) {
+    const desktops = await db
+      .select({ id: t.desktops.id, name: t.desktops.name, description: t.desktops.description })
+      .from(t.desktops)
+      .where(task.desktopIds.length ? inArray(t.desktops.id, task.desktopIds) : undefined)
+      .orderBy(asc(t.desktops.position), asc(t.desktops.createdAt))
+    desktop = { desktops, allowVision: task.allowDesktopVision }
+  }
+
   const taskAttachments = await listTaskAttachments(db, taskId)
   const attachments = [...taskAttachments, ...extra.runAttachments].map(
     (file) => ({
@@ -183,12 +197,12 @@ export async function buildSnapshot(
   )
 
   // 选了技能却没选「读取技能」、带了附件却没选「读附件」，agent 就只看得到目录读不到内容：这两个跟着自动带上。
-  // 选了「浏览器」也带上「读附件」：在网页里下载的文件（例如导出的 Excel）要能读。
+  // 选了「浏览器」「桌面」也带上「读附件」：在网页里下载的、从桌面取回的文件（例如导出的 Excel）要能读。
   // 派活第二期：选了「派活」自动带上「查派过的活」；被派来的运行自动带上「报结果」（这两个不能单独选）
   const publishedSkills = skills.filter((skill) => skill.status === "published")
   const implied: BuiltinToolId[] = []
   if (publishedSkills.length) implied.push("skill.load")
-  if (attachments.length || tools.some((tool) => tool.id === BROWSER_TOOL_ID)) implied.push("file.read")
+  if (attachments.length || tools.some((tool) => tool.id === BROWSER_TOOL_ID || tool.id === DESKTOP_TOOL_ID)) implied.push("file.read")
   if (tools.some((tool) => tool.id === WORK_DISPATCH_TOOL_ID)) implied.push(WORK_LIST_TOOL_ID)
   if (extra.dispatch) implied.push(WORK_REPORT_TOOL_ID)
   for (const id of implied) {
@@ -269,6 +283,7 @@ export async function buildSnapshot(
     ...(extra.dispatch ? { dispatch: extra.dispatch } : {}),
     ...(dispatchTargets ? { dispatchTargets } : {}),
     ...(browser ? { browser } : {}),
+    ...(desktop ? { desktop } : {}),
   }
 }
 

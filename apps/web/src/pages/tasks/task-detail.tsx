@@ -11,9 +11,9 @@ import { Button } from "@/components/ui/button"
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "@/components/ui/item"
 import { Spinner } from "@/components/ui/spinner"
 import { Switch } from "@/components/ui/switch"
-import { alwaysOnToolIds, BROWSER_TOOL_ID, findById, sameShanghaiDay, toolIdsOfTask, WORK_DISPATCH_TOOL_ID, type SessionSummary, type TaskDef } from "@heyagent/shared"
+import { alwaysOnToolIds, BROWSER_TOOL_ID, DESKTOP_TOOL_ID, findById, sameShanghaiDay, toolIdsOfTask, WORK_DISPATCH_TOOL_ID, type SessionSummary, type TaskDef } from "@heyagent/shared"
 
-import { useBrowsersQuery, useMemoriesQuery, useModels, useRulesQuery, useSkillsQuery, useTasksQuery, useToolName, useToolsQuery } from "@/lib/data"
+import { useBrowsersQuery, useDesktopsQuery, useMemoriesQuery, useModels, useRulesQuery, useSkillsQuery, useTasksQuery, useToolName, useToolsQuery } from "@/lib/data"
 import { useAction } from "@/lib/mutations"
 import { href, setParams, useRoute, type PageId } from "@/lib/router"
 import { trpc } from "@/lib/trpc"
@@ -197,6 +197,7 @@ function UsedConfig({ task }: { task: TaskDef }) {
       <LinkBadges label="工具" page="tools" items={toolIdsOfTask(task, alwaysOn).map((id) => ({ id, name: alwaysOn.includes(id) ? `${toolName(id)} · 自带` : toolName(id) }))} />
       <LinkBadges label="规则" page="rules" items={named(rules, task.ruleIds).map((rule) => ({ id: rule.id, name: ruleSelectable(rule) ? (compileOf(rule).outdated ? `${rule.name} · 按旧版本` : rule.name) : `${rule.name} · 未生效，不执行` }))} />
       {task.toolIds.includes(BROWSER_TOOL_ID) && <BrowserConfig task={task} />}
+      {task.toolIds.includes(DESKTOP_TOOL_ID) && <DesktopConfig task={task} />}
     </div>
   </DetailSection>
   )
@@ -213,6 +214,19 @@ function BrowserConfig({ task }: { task: TaskDef }) {
       <ConfigLine label="白名单">{task.allowedDomains.length ? task.allowedDomains.join("、") : "不限制"}</ConfigLine>
       <ConfigLine label="脚本">{task.allowBrowserEvaluate ? "允许在网页里执行脚本" : "不允许在网页里执行脚本"}</ConfigLine>
       <ConfigLine label="看画面">{task.allowBrowserVision ? "允许截图看画面、按坐标点" : "不允许看画面"}</ConfigLine>
+    </>
+  )
+}
+
+/** 选了「桌面」工具时：允许的桌面、是否允许看画面 */
+function DesktopConfig({ task }: { task: TaskDef }) {
+  const desktops = useDesktopsQuery().data ?? []
+  return (
+    <>
+      {task.desktopIds.length > 0
+        ? <LinkBadges label="桌面" page="desktops" items={named(desktops, task.desktopIds)} />
+        : <ConfigLine label="桌面">全部桌面都能用，agent 自己挑</ConfigLine>}
+      <ConfigLine label="看桌面">{task.allowDesktopVision ? "允许截桌面画面给模型看" : "不允许看画面，只读界面控件"}</ConfigLine>
     </>
   )
 }

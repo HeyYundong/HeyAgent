@@ -1,5 +1,5 @@
-// 远程画面放进一个大弹窗：session 的「看浏览器」、要人办的事里的「去浏览器里处理」、浏览器页的「打开 Chrome」都用它，
-// 区别只在底部的按钮（footer）。
+// 远程画面放进一个大弹窗：session 的「看浏览器」「看桌面」、要人办的事里的「去浏览器里处理」「打开桌面」、浏览器页的「打开 Chrome」、
+// 桌面页的「看画面」都用它，区别只在看什么（target）和底部的按钮（footer）。
 // 弹窗能缩成小窗（Card，默认在右上角，按住标题栏拖到任意位置），小窗不挡页面，还能接着看、接着操作；点「放大」回到弹窗。
 // 弹窗和小窗之间切换不重连：RemoteView 只渲染一份（portal 到一个固定的 div 里），切换时只把这个 div 挪到弹窗或小窗里。
 // 都由挂在应用根部的 RemoteViewHost 渲染（见 store.ts）：打开它的抽屉、页面关了，小窗还在。
@@ -13,7 +13,7 @@ import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, Di
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 
 import { RemoteView } from "."
-import { remoteViews, type RemoteViewEntry, type RemoteViewEntryProps } from "./store"
+import { remoteViews, targetKey, type RemoteViewEntry, type RemoteViewEntryProps } from "./store"
 
 interface RemoteViewDialogProps extends RemoteViewEntryProps {
   open: boolean
@@ -29,23 +29,24 @@ export function RemoteViewDialog({ open, ...props }: RemoteViewDialogProps) {
     latest.current = props
     remoteViews.update(owner, props)
   })
-  const { browserId } = props
+  const key = targetKey(props.target)
   React.useLayoutEffect(() => {
     if (!open) return
     remoteViews.register(owner, latest.current)
-    return () => remoteViews.release(owner, browserId)
-  }, [owner, browserId, open])
+    return () => remoteViews.release(owner, key)
+  }, [owner, key, open])
   return null
 }
 
 /** 挂在应用根部（登录后），渲染所有打开着的远程画面 */
 export function RemoteViewHost() {
   const entries = React.useSyncExternalStore(remoteViews.subscribe, remoteViews.snapshot)
-  return entries.map((entry) => <RemoteViewWindow key={entry.props.browserId} entry={entry} />)
+  return entries.map((entry) => <RemoteViewWindow key={targetKey(entry.props.target)} entry={entry} />)
 }
 
 function RemoteViewWindow({ entry }: { entry: RemoteViewEntry }) {
-  const { browserId, title, description, footer, onOpenChange, onClosed, viewOnly } = entry.props
+  const { target, title, description, footer, onOpenChange, onClosed, viewOnly } = entry.props
+  const key = targetKey(target)
   const { minimized } = entry
   // 打开它的组件已经没了：底部按钮里的操作也跟着没了，不再显示
   const detached = entry.owner === null
@@ -58,7 +59,7 @@ function RemoteViewWindow({ entry }: { entry: RemoteViewEntry }) {
   }, [host])
   // 先从根部拿掉，再告诉打开它的组件（例如登录用的 Chrome 关掉就保存）
   const close = () => {
-    remoteViews.remove(browserId)
+    remoteViews.remove(key)
     onOpenChange(false)
   }
 
@@ -69,7 +70,7 @@ function RemoteViewWindow({ entry }: { entry: RemoteViewEntry }) {
         <DialogContent showCloseButton={false} className="max-h-svh overflow-y-auto sm:max-w-5xl">
           <div className="absolute top-2 right-2 flex gap-1">
             <Tooltip>
-              <TooltipTrigger render={<Button variant="ghost" size="icon-sm" aria-label="缩成小窗" onClick={() => remoteViews.setMinimized(browserId, true)} />}>
+              <TooltipTrigger render={<Button variant="ghost" size="icon-sm" aria-label="缩成小窗" onClick={() => remoteViews.setMinimized(key, true)} />}>
                 <Minimize2Icon />
               </TooltipTrigger>
               <TooltipContent>缩成小窗</TooltipContent>
@@ -87,9 +88,9 @@ function RemoteViewWindow({ entry }: { entry: RemoteViewEntry }) {
         </DialogContent>
       </Dialog>
       {minimized && (
-        <MiniWindow title={title} initial={position} onMoved={setPosition} slot={slot} onRestore={() => remoteViews.setMinimized(browserId, false)} onClose={close} />
+        <MiniWindow title={title} initial={position} onMoved={setPosition} slot={slot} onRestore={() => remoteViews.setMinimized(key, false)} onClose={close} />
       )}
-      {createPortal(<RemoteView browserId={browserId} onClosed={onClosed} viewOnly={viewOnly} compact={minimized} />, host)}
+      {createPortal(<RemoteView target={target} onClosed={onClosed} viewOnly={viewOnly} compact={minimized} />, host)}
     </>
   )
 }

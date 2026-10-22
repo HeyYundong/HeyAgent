@@ -1,9 +1,20 @@
-// 打开着的远程画面（按 browserId 一个）。弹窗、小窗和连接都由挂在应用根部的 RemoteViewHost 渲染，
+// 打开着的远程画面（每个目标一个：服务器上的 Chrome 按 browserId、桌面按 desktopId，键是「kind:id」）。弹窗、小窗和连接都由挂在应用根部的 RemoteViewHost 渲染，
 // 打开它的组件（抽屉、页面）只是登记：组件没了（例如关掉 session 详情的抽屉）时，缩成小窗的留着接着看，大弹窗跟着关。
 import * as React from "react"
 
+/** 远程画面看的是什么：服务器上的一个 Chrome（/api/browser/view/:id），或者一台桌面（/api/desktop/view/:id） */
+export interface RemoteTarget {
+  kind: "browser" | "desktop"
+  id: string
+  /** 桌面的名字：桌面模式的工具栏上显示 */
+  name?: string
+}
+
+/** store 里的键：同一个目标只开一份 */
+export const targetKey = (target: Pick<RemoteTarget, "kind" | "id">) => `${target.kind}:${target.id}`
+
 export interface RemoteViewEntryProps {
-  browserId: string
+  target: RemoteTarget
   title: React.ReactNode
   description?: React.ReactNode
   /** 底部按钮；不传就只有右上角的关闭 */
@@ -29,9 +40,10 @@ function commit(next: RemoteViewEntry[]) {
   listeners.forEach((listener) => listener())
 }
 
-const find = (browserId: string) => entries.find((entry) => entry.props.browserId === browserId)
-const replace = (browserId: string, change: (entry: RemoteViewEntry) => RemoteViewEntry) =>
-  commit(entries.map((entry) => (entry.props.browserId === browserId ? change(entry) : entry)))
+const keyOf = (entry: RemoteViewEntry) => targetKey(entry.props.target)
+const find = (key: string) => entries.find((entry) => keyOf(entry) === key)
+const replace = (key: string, change: (entry: RemoteViewEntry) => RemoteViewEntry) =>
+  commit(entries.map((entry) => (keyOf(entry) === key ? change(entry) : entry)))
 
 export const remoteViews = {
   subscribe(listener: () => void) {
@@ -39,27 +51,29 @@ export const remoteViews = {
     return () => void listeners.delete(listener)
   },
   snapshot: () => entries,
-  /** 打开；同一个 Chrome 已经有小窗时接过来、放大，不重连 */
+  /** 打开；同一个目标已经有小窗时接过来、放大，不重连 */
   register(owner: symbol, props: RemoteViewEntryProps) {
-    if (find(props.browserId)) replace(props.browserId, () => ({ props, owner, minimized: false }))
+    const key = targetKey(props.target)
+    if (find(key)) replace(key, () => ({ props, owner, minimized: false }))
     else commit([...entries, { props, owner, minimized: false }])
   },
   /** 打开它的组件重新渲染了：标题、底部按钮等跟着变 */
   update(owner: symbol, props: RemoteViewEntryProps) {
-    const entry = find(props.browserId)
-    if (entry?.owner === owner && entry.props !== props) replace(props.browserId, (each) => ({ ...each, props }))
+    const key = targetKey(props.target)
+    const entry = find(key)
+    if (entry?.owner === owner && entry.props !== props) replace(key, (each) => ({ ...each, props }))
   },
-  /** 打开它的组件没了：小窗留着，大弹窗关掉 */
-  release(owner: symbol, browserId: string) {
-    const entry = find(browserId)
+  /** 打开它的组件没了：小窗留着，大弹窗关掉。key 是 targetKey(target) */
+  release(owner: symbol, key: string) {
+    const entry = find(key)
     if (entry?.owner !== owner) return
-    if (entry.minimized) replace(browserId, (each) => ({ ...each, owner: null }))
-    else remoteViews.remove(browserId)
+    if (entry.minimized) replace(key, (each) => ({ ...each, owner: null }))
+    else remoteViews.remove(key)
   },
-  remove(browserId: string) {
-    if (find(browserId)) commit(entries.filter((entry) => entry.props.browserId !== browserId))
+  remove(key: string) {
+    if (find(key)) commit(entries.filter((entry) => keyOf(entry) !== key))
   },
-  setMinimized(browserId: string, minimized: boolean) {
-    replace(browserId, (each) => ({ ...each, minimized }))
+  setMinimized(key: string, minimized: boolean) {
+    replace(key, (each) => ({ ...each, minimized }))
   },
 }

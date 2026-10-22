@@ -98,7 +98,7 @@ const SYSTEM = `你是 HeyAgent 平台的规则翻译器。员工用一句话写
 （ask_human 也一样：批准才执行、拒绝就把理由告诉 agent，都是 ask_human 本身的流程。）
 能用的组合：before_tool → deny / ask_human / screenshot / notify；after_tool → screenshot / notify / sync_checkpoint；url_not_allowed → deny / ask_human / screenshot / notify；page_needs_human → screenshot / notify；cost_over → ask_human / notify / deny；agent_done → verify / notify；agent_proposes → deny / notify。一条规则里 deny 和 ask_human 只能有一个。
 要求：
-- 工具 id 只能用工具清单里的（browser 代表整组浏览器工具，也可以写 browser.navigate、browser.click 这类具体的浏览器动作）；员工只能用员工清单里的 id。规则提到的工具或人在清单里找不到，就 supported = false 并说明。
+- 工具 id 只能用工具清单里的（browser 代表整组浏览器工具，也可以写 browser.navigate、browser.click 这类具体的浏览器动作；desktop 代表整组桌面工具，也可以写 desktop.click、desktop.type 这类具体的桌面动作）；员工只能用员工清单里的 id。规则提到的工具或人在清单里找不到，就 supported = false 并说明。
 - 「交给谁」写的是岗位或角色、清单里对不上具体的人时：负责人、本人之类用 owner；主管、经理之类用 admin。
 - 触发条件要靠理解内容才能判断的（例如「内容可疑时」「客户是新客户时」「价格太高时」），或者要用上面没有的动作，supported = false，reason 写清楚，不要硬凑。
 - 只输出要求的 JSON。`
@@ -153,7 +153,7 @@ export function normalizeRuleOutput(
   if (!output.supported)
     return unsupported(output.reason.trim() || "这条规则 v1 还不支持")
   const toolOk = (id: string) =>
-    known.toolIds.has(id) || /^browser\.[a-z_]+$/.test(id)
+    known.toolIds.has(id) || /^(browser|desktop)\.[a-z_]+$/.test(id)
   const raw = output.trigger
   const badTools = raw.toolIds.filter((id) => !toolOk(id))
   if (

@@ -1489,6 +1489,7 @@ describe("其他接口", () => {
       "checkpoint.mark",
       "code.run",
       "compare",
+      "desktop",
       "file.read",
       "file.save",
       "gallery",

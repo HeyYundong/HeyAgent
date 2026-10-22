@@ -67,7 +67,7 @@ export function stepsText(steps: Step[]) {
   return steps.map((step, index) => `${index + 1}. ${stepText(step)}`).join("\n")
 }
 
-const KIND_TEXT = { user: "人", model: "模型", skill: "技能", memory: "记忆", tool: "工具", rule: "规则", browser: "Chrome", task: "任务" } as const
+const KIND_TEXT = { user: "人", model: "模型", skill: "技能", memory: "记忆", tool: "工具", rule: "规则", browser: "Chrome", desktop: "桌面", task: "任务" } as const
 
 /**
  * 出卡时收集「引用了但库里没有」的编号：模型常会编一个编号（例如工具 mcp-playwright），
@@ -92,7 +92,7 @@ export class Names {
     this.db = db
   }
 
-  private async load(kind: "user" | "model" | "skill" | "memory" | "tool" | "rule" | "browser" | "task", ids: string[]) {
+  private async load(kind: "user" | "model" | "skill" | "memory" | "tool" | "rule" | "browser" | "desktop" | "task", ids: string[]) {
     const map = this.cache.get(kind) ?? new Map<string, string>()
     this.cache.set(kind, map)
     const missing = [...new Set(ids)].filter((id) => id && !map.has(id))
@@ -118,6 +118,8 @@ export class Names {
         return this.db.select({ id: t.rules.id, name: t.rules.name }).from(t.rules).where(inArray(t.rules.id, ids))
       case "browser":
         return this.db.select({ id: t.browserProfiles.id, name: t.browserProfiles.name }).from(t.browserProfiles).where(inArray(t.browserProfiles.id, ids))
+      case "desktop":
+        return this.db.select({ id: t.desktops.id, name: t.desktops.name }).from(t.desktops).where(inArray(t.desktops.id, ids))
       case "task":
         return this.db.select({ id: t.tasks.id, name: t.tasks.title }).from(t.tasks).where(inArray(t.tasks.id, ids))
       default:

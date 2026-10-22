@@ -70,8 +70,8 @@ describe("空白环境初始化", () => {
   it("没有任何演示数据：任务、记忆、技能、规则、工具（内置的除外）、MCP、浏览器、平台、待办、session 都是空的", async () => {
     // 内置工具由 bootstrap 同步进 tools 表（M1 P3）：worker 还没起时工具页也能看到
     const tools = await db.select({ id: t.tools.id, source: t.tools.source }).from(t.tools)
-    // 另加 M2 的「浏览器」、图库的「图库」、比物的「比物」（选了它们就开放整组工具）
-    expect(tools.map((tool) => tool.id).sort()).toEqual([...SELECTABLE_BUILTIN_TOOLS.map((tool) => tool.id), "browser", "gallery", "compare"].sort())
+    // 另加 M2 的「浏览器」、「桌面」、图库的「图库」、比物的「比物」（选了它们就开放整组工具）
+    expect(tools.map((tool) => tool.id).sort()).toEqual([...SELECTABLE_BUILTIN_TOOLS.map((tool) => tool.id), "browser", "desktop", "gallery", "compare"].sort())
     expect(tools.every((tool) => tool.source === "builtin")).toBe(true)
     const tables = { tasks: t.tasks, memories: t.memories, skills: t.skills, rules: t.rules, mcpServers: t.mcpServers, browserProfiles: t.browserProfiles, platforms: t.platforms, humanTodos: t.humanTodos, humanItems: t.humanItems, sessions: t.sessions }
     for (const [name, table] of Object.entries(tables)) {
@@ -112,7 +112,7 @@ describe("空白环境初始化", () => {
     expect(await db.select().from(t.users)).toHaveLength(0)
     expect(await db.select().from(t.modelProviders)).toHaveLength(1)
     expect(calls).toHaveLength(2)
-    expect(await db.select().from(t.tools)).toHaveLength(SELECTABLE_BUILTIN_TOOLS.length + 3)
+    expect(await db.select().from(t.tools)).toHaveLength(SELECTABLE_BUILTIN_TOOLS.length + 4)
     expect(await db.select().from(t.compareStandards)).toHaveLength(1)
   })
 

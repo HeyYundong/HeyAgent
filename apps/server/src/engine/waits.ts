@@ -51,8 +51,8 @@ export async function suspendInTx(
     )
     .returning({ id: t.sessions.id, taskId: t.sessions.taskId, workItemId: t.sessions.workItemId })
   if (updated.length === 0) return undefined
-  // 被派的运行挂起：agent 自己挂起、等人处理不占名额，空出位子给排队的单；等浏览器的照样占名额，不发
-  if (updated[0]!.workItemId && !input.event?.startsWith("browser."))
+  // 被派的运行挂起：agent 自己挂起、等人处理不占名额，空出位子给排队的单；等浏览器、等桌面的照样占名额，不发
+  if (updated[0]!.workItemId && !input.event?.startsWith("browser.") && !input.event?.startsWith("desktop:"))
     await sendPumpInTx(db, tx, updated[0]!.taskId)
   const [wait] = await tx
     .insert(t.sessionWaits)

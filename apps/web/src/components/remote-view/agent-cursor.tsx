@@ -1,6 +1,6 @@
 // agent 的虚拟光标（自定义组件，登记在 docs/ui-rules.md 第 8 节）：叠在远程画面上，显示 agent 的鼠标在哪、点了哪、在做什么。
 // 组件库没有光标类组件：箭头用 lucide 的 MousePointer2Icon，动作说明用 Badge，点击的波纹是 rounded-full + animate-ping。
-// - 位置按页面视口的 CSS 像素换算成百分比，在 ref 上改 left/top（和输入框的定位一样，不走 React 渲染，JSX 里不写 style）；
+// - 位置按画面坐标（Chrome 是页面视口的 CSS 像素，桌面是屏幕的物理像素）换算成百分比，在 ref 上改 left/top（和输入框的定位一样，不走 React 渲染，JSX 里不写 style）；
 // - 移动有 200 毫秒的过渡：有人看时服务端会在按下前等 200 毫秒，光标先到、再点下去；
 // - 能操作的人自己点画面时先把它收起来，agent 再动时再出来。
 import * as React from "react"

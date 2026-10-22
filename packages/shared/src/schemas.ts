@@ -379,6 +379,10 @@ export const taskSchema = z.object({
   allowBrowserEvaluate: z.boolean(),
   /** 是否允许 agent 看画面（browser.look 截图发给模型 + 按坐标操作的工具） */
   allowBrowserVision: z.boolean(),
+  /** 桌面：选了「桌面」工具时允许用哪些桌面；空 = 全部 */
+  desktopIds: z.array(z.string()),
+  /** 桌面：是否允许 agent 看画面（desktop.look 截图发给模型、desktop.snapshot 带截图） */
+  allowDesktopVision: z.boolean(),
   /** M3：这个任务自己选的三方验收模型；没有就用默认验收模型。必须和执行模型不是同一家 */
   verifyModelId: z.string().optional(),
   /**
@@ -658,7 +662,7 @@ export const humanDetailSchema = z.object({
   /** 涉及金钱：主按钮先弹 AlertDialog 二次确认 */
   pay: pairSchema.optional(),
   /** 主按钮是链接（去浏览器里登录） */
-  link: z.object({ page: z.literal("browsers"), id: z.string() }).optional(),
+  link: z.object({ page: z.enum(["browsers", "desktops"]), id: z.string() }).optional(),
   done: pairSchema.optional(),
   secondary: z.string(),
   secondaryDone: pairSchema.optional(),
@@ -676,6 +680,18 @@ export const humanDetailSchema = z.object({
       profileId: z.string(),
       accountId: z.string().optional(),
       url: z.string(),
+      reason: z.string(),
+      screenshotFileId: z.string().optional(),
+    })
+    .optional(),
+  /**
+   * 桌面：agent 用 desktop.ask_human 请人在桌面上操作（扫码登录、处理弹框……）。桌面这时保留给这个运行（held），
+   * 人在远程画面（/api/desktop/view/:desktopId）里处理完点「已处理好了」接着跑
+   */
+  desktop: z
+    .object({
+      desktopId: z.string(),
+      sessionId: z.string(),
       reason: z.string(),
       screenshotFileId: z.string().optional(),
     })

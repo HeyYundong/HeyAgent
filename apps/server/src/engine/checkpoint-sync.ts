@@ -85,7 +85,9 @@ export function recordsFor(
   if (
     ctx.risk === "external" &&
     !ctx.toolId.startsWith("browser.") &&
-    ctx.toolId !== "browser"
+    ctx.toolId !== "browser" &&
+    !ctx.toolId.startsWith("desktop.") &&
+    ctx.toolId !== "desktop"
   )
     out.push({
       kind: "message",

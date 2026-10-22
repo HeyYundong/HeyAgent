@@ -20,7 +20,7 @@ import {
 import type { ToolOutcome } from "./builtin.js"
 
 const CONNECT_TIMEOUT_MS = 20_000
-const CALL_TIMEOUT_MS = 120_000
+export const CALL_TIMEOUT_MS = 120_000
 
 /** 把一行命令拆成程序和参数（支持单双引号，不经过 shell） */
 export function splitCommand(command: string): string[] {
@@ -192,41 +192,7 @@ export async function executeMcpTool(
       arguments: input,
       options: { timeout: CALL_TIMEOUT_MS },
     })
-    const parts: string[] = []
-    const content = (result as { content?: unknown[] }).content
-    if (Array.isArray(content)) {
-      for (const item of content as {
-        type: string
-        text?: string
-        mimeType?: string
-        resource?: { text?: string; uri?: string }
-      }[]) {
-        if (item.type === "text") parts.push(item.text ?? "")
-        else if (item.type === "resource")
-          parts.push(
-            item.resource?.text ?? `[资源 ${item.resource?.uri ?? ""}]`
-          )
-        else
-          parts.push(
-            `[${item.type}${item.mimeType ? ` ${item.mimeType}` : ""}]`
-          )
-      }
-    } else if ("toolResult" in (result as object)) {
-      parts.push(JSON.stringify((result as { toolResult: unknown }).toolResult))
-    }
-    const structured = (result as { structuredContent?: unknown })
-      .structuredContent
-    if (parts.length === 0 && structured !== undefined)
-      parts.push(JSON.stringify(structured))
-    const isError = Boolean((result as { isError?: boolean }).isError)
-    return {
-      output: redactSecrets(
-        parts.join("\n") || "（没有返回内容）",
-        connection.secrets
-      ),
-      isError,
-      secrets: connection.secrets,
-    }
+    return mcpResultOutcome(result, connection.secrets)
   } catch (error) {
     return {
       output: redactSecrets(
@@ -236,6 +202,57 @@ export async function executeMcpTool(
       isError: true,
       secrets: connection.secrets,
     }
+  }
+}
+
+/**
+ * MCP 工具的返回 → ToolOutcome：文字拼起来（资源取文字），其他类型写个占位。
+ * images：图片交给模型看（outcome.images，桌面的 desktop.snapshot 带截图时用）；不给就只写占位，不发图
+ */
+export function mcpResultOutcome(
+  result: unknown,
+  secrets: string[],
+  options: { images?: boolean; imageName?: string } = {}
+): ToolOutcome {
+  const parts: string[] = []
+  const images: NonNullable<ToolOutcome["images"]> = []
+  const content = (result as { content?: unknown[] }).content
+  if (Array.isArray(content)) {
+    for (const item of content as {
+      type: string
+      text?: string
+      data?: string
+      mimeType?: string
+      resource?: { text?: string; uri?: string }
+    }[]) {
+      if (item.type === "text") parts.push(item.text ?? "")
+      else if (item.type === "resource")
+        parts.push(item.resource?.text ?? `[资源 ${item.resource?.uri ?? ""}]`)
+      else if (item.type === "image" && options.images && item.data) {
+        const mime = item.mimeType ?? "image/png"
+        images.push({
+          name: `${options.imageName ?? "image"}-${images.length + 1}.${mime.split("/")[1] ?? "png"}`,
+          mime,
+          base64: item.data,
+        })
+      } else
+        parts.push(`[${item.type}${item.mimeType ? ` ${item.mimeType}` : ""}]`)
+    }
+  } else if ("toolResult" in (result as object)) {
+    parts.push(JSON.stringify((result as { toolResult: unknown }).toolResult))
+  }
+  const structured = (result as { structuredContent?: unknown }).structuredContent
+  if (parts.length === 0 && structured !== undefined)
+    parts.push(JSON.stringify(structured))
+  const isError = Boolean((result as { isError?: boolean }).isError)
+  return {
+    output: redactSecrets(
+      parts.join("\n") || (images.length ? "（只返回了图片）" : "（没有返回内容）"),
+      secrets
+    ),
+    isError,
+    secrets,
+    ...(images.length ? { images } : {}),
   }
 }
 

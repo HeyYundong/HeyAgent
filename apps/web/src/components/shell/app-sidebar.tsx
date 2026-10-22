@@ -11,6 +11,7 @@ import {
   LayoutGridIcon,
   LightbulbIcon,
   LogOutIcon,
+  MonitorIcon,
   PackageOpenIcon,
   ScanEyeIcon,
   SettingsIcon,
@@ -60,11 +61,12 @@ export const NAV_WORK: NavItem[] = [
   { id: "sessions", title: "会话", icon: HistoryIcon },
 ]
 
-/** agent 干活时用的东西：图片、浏览器 */
+/** agent 干活时用的东西：图片、浏览器、桌面 */
 export const NAV_RESOURCES: NavItem[] = [
   { id: "gallery", title: "图库", icon: ImagesIcon },
   { id: "compare", title: "比物", icon: ScanEyeIcon },
   { id: "browsers", title: "浏览器", icon: GlobeIcon },
+  { id: "desktops", title: "桌面", icon: MonitorIcon },
 ]
 
 export const NAV_CONFIG: NavItem[] = [

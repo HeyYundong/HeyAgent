@@ -38,6 +38,7 @@ import { z } from "zod"
 
 import * as load from "../data/loaders.js"
 import { assertCan, findSecret, type WriteCtx } from "../data/config/common.js"
+import { listDesktops } from "../data/config/desktops.js"
 import * as memories from "../data/config/memories.js"
 import { confirmRuleInTx, insertRule, updateRule, deleteRule } from "../data/config/rules.js"
 import * as skills from "../data/config/skills.js"
@@ -163,6 +164,8 @@ const taskInputOf = (task: TaskDef): TaskInput => ({
   allowedDomains: task.allowedDomains,
   allowBrowserEvaluate: task.allowBrowserEvaluate,
   allowBrowserVision: task.allowBrowserVision,
+  desktopIds: task.desktopIds,
+  allowDesktopVision: task.allowDesktopVision,
   verifyModelId: task.verifyModelId,
   // 2026-10-20 以前建的任务可能没选复核模型：先空着，withReviewModel 补默认的
   reviewModelId: task.reviewModelId ?? "",
@@ -311,6 +314,8 @@ const TASK_LABELS: Partial<Record<keyof TaskInput, string>> = {
   allowedDomains: "网址白名单",
   allowBrowserEvaluate: "允许在网页里执行脚本",
   allowBrowserVision: "允许看画面",
+  desktopIds: "桌面",
+  allowDesktopVision: "允许看桌面画面",
   cronSkipIfRunning: "上一次没跑完就跳过这次",
 }
 
@@ -339,11 +344,14 @@ function taskFormatter(names: Names) {
         return names.list("rule", (value as string[]) ?? [])
       case "browserProfileIds":
         return (value as string[])?.length ? names.list("browser", value as string[]) : "全部 Chrome 配置"
+      case "desktopIds":
+        return (value as string[])?.length ? names.list("desktop", value as string[]) : "全部桌面"
       case "allowedDomains":
         return (value as string[])?.length ? (value as string[]).join("、") : "不限"
       case "enabled":
       case "allowBrowserEvaluate":
       case "allowBrowserVision":
+      case "allowDesktopVision":
       case "cronSkipIfRunning":
         return yesNo(Boolean(value))
       default:
@@ -402,6 +410,7 @@ export const TOOLS: Record<string, ToolDef> = {
           tools: await names.list("tool", task.toolIds),
           rules: await names.list("rule", task.ruleIds),
           browsers: task.browserProfileIds.length ? await names.list("browser", task.browserProfileIds) : "全部 Chrome 配置",
+          desktops: task.desktopIds.length ? await names.list("desktop", task.desktopIds) : "全部桌面",
         },
         taskMemoryCount: memoryCount?.n ?? 0,
       }
@@ -523,6 +532,15 @@ export const TOOLS: Record<string, ToolDef> = {
       return { browsers: rows.map((profile) => ({ id: profile.id, name: profile.name, description: profile.description, sites: profile.sites.map((site) => ({ platformId: site.platformId, account: site.account, status: site.status })) })) }
     },
   }),
+  list_desktops: read({
+    description: "列桌面（编号、名字、给 agent 看的说明、现在空着还是被运行占着）。只读",
+    input: z.object({}),
+    label: () => "查桌面",
+    run: async (ctx) => {
+      const rows = await listDesktops(ctx.db)
+      return { desktops: rows.map((desktop) => ({ id: desktop.id, name: desktop.name, description: desktop.description, use: desktop.use.state })) }
+    },
+  }),
   list_sessions: read({
     description: "最近 20 次运行（编号、任务、状态、开始结束时间、花费），可以按任务筛。只读",
     input: z.object({ taskId: z.string().optional().describe("可选：只看这个任务的") }),
@@ -612,6 +630,7 @@ export const TOOLS: Record<string, ToolDef> = {
           if (key === "enabled" && value === true) continue
           if (key === "allowBrowserEvaluate" && value === false) continue
           if (key === "allowBrowserVision" && value === false) continue
+          if (key === "allowDesktopVision" && value === false) continue
           if (key === "cronSkipIfRunning" && value === true) continue
         }
         fields.push({ label, after: clip(await format(key, value)) })

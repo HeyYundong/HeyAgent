@@ -1,12 +1,15 @@
-// 远程画面（自定义组件，登记在 docs/ui-rules.md 第 8 节）：看、操作服务器上的 Chrome。
+// 远程画面（自定义组件，登记在 docs/ui-rules.md 第 8 节）：看、操作服务器上的 Chrome，或者一台桌面（target.kind）。
 // 组件库没有「远程桌面 / 画面」类组件，这里用 canvas 画 JPEG 帧，外面全部用 registry 组件组合：
 // 工具栏 Button + InputGroup（地址栏，连接状态放在它右端）、标签页 Tabs、网页弹框 AlertDialog、加载 Spinner、关闭后 Empty；agent 的虚拟光标见 agent-cursor.tsx。
-// - 坐标按 meta.width/height（页面视口的 CSS 像素）换算；
+// 桌面模式（docs/dev/desktop.md 第 5 节）：没有地址栏、前进后退、标签页、网页弹框和空白页提示；工具栏是桌面名、连接状态和「组合键」下拉
+// （Win、Alt+Tab 这类在本机按会被本机系统截走，用按钮发）。鼠标、键盘、输入法、粘贴、虚拟光标、小窗都一样。
+// - 坐标按 meta.width/height（Chrome 是页面视口的 CSS 像素，桌面是屏幕的物理像素）换算；
 // - 键盘和输入法：焦点放在一个看不见的 textarea 上，组好的中文和粘贴的文字发 { t: "text" }，其余按键发 key 消息；
 // - 空白页（about:blank）：地址栏第一次自动拿到焦点，画面上提示先输网址；
 // - 没有操作权限（meta.canControl = false）时只读：不发任何输入，按钮和标签页都禁用，地址栏只读（还能选中复制）。
 import * as React from "react"
-import { ArrowLeftIcon, ArrowRightIcon, EyeIcon, MonitorOffIcon, MousePointerClickIcon, RotateCwIcon, UnplugIcon, XIcon } from "lucide-react"
+import { ArrowLeftIcon, ArrowRightIcon, ChevronDownIcon, EyeIcon, KeyboardIcon, MonitorIcon, MonitorOffIcon, MousePointerClickIcon, RotateCwIcon, UnplugIcon, XIcon } from "lucide-react"
+import type { DesktopCombo } from "@heyagent/shared"
 
 import {
   AlertDialog,
@@ -19,6 +22,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuShortcut, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
 import { Input } from "@/components/ui/input"
 import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from "@/components/ui/input-group"
@@ -29,12 +33,13 @@ import { cn } from "@/lib/utils"
 
 import { AgentCursor } from "./agent-cursor"
 import { buttonOf, keyDownMessage, keyUpMessage, modifiersOf, normalizeAddress, pressedButton, textChunks, toPage, wheelDelta } from "./input"
-import { useRemoteView, type PageDialog, type RemoteViewState } from "./use-remote-view"
+import type { RemoteTarget } from "./store"
+import { browserMeta, useRemoteView, type PageDialog, type RemoteViewState } from "./use-remote-view"
 
 export interface RemoteViewProps {
-  browserId: string
+  target: RemoteTarget
   className?: string
-  /** Chrome 关了（服务端发了 closed，或一直连不上） */
+  /** 关了（服务端发了 closed，或一直连不上） */
   onClosed?: (reason: string) => void
   /** 只看不操作 */
   viewOnly?: boolean
@@ -42,13 +47,15 @@ export interface RemoteViewProps {
   compact?: boolean
 }
 
-export function RemoteView({ browserId, className, onClosed, viewOnly, compact }: RemoteViewProps) {
+export function RemoteView({ target, className, onClosed, viewOnly, compact }: RemoteViewProps) {
   const canvasRef = React.useRef<HTMLCanvasElement | null>(null)
-  const view = useRemoteView(browserId, canvasRef, viewOnly)
+  const view = useRemoteView(target, canvasRef, viewOnly)
   const { status, meta, send } = view
+  const desktop = target.kind === "desktop"
+  const page = browserMeta(meta)
   const canControl = status === "open" && Boolean(meta?.canControl)
   const closedReason = status === "closed" ? (view.reason ?? "远程画面已断开") : undefined
-  const opening = useOpening(meta?.url)
+  const opening = useOpening(page?.url)
 
   React.useEffect(() => {
     if (closedReason) onClosed?.(closedReason)
@@ -56,22 +63,29 @@ export function RemoteView({ browserId, className, onClosed, viewOnly, compact }
 
   return (
     <div className={cn("flex min-w-0 flex-col gap-2", className)}>
-      <Toolbar view={view} canControl={canControl} opening={opening} />
-      {meta && meta.tabs.length > 1 && <BrowserTabs view={view} canControl={canControl} />}
-      <Screen view={view} canvasRef={canvasRef} canControl={canControl} closedReason={closedReason} openingUrl={opening.url} />
-      {!compact && <p className="text-xs text-muted-foreground">
-        {canControl
-          ? "点一下画面就能直接操作：打字、回车、滚动都会发到服务器上的 Chrome。中文用本机输入法，粘贴用 Ctrl+V。看不到 Chrome 自己的地址栏，用上面的地址栏。"
-          : meta && !meta.canControl
-            ? "只读：你能看，不能操作。只有任务负责人、被分配处理的人和主管（登录用的 Chrome 是打开它的人）能操作。"
-            : "连上以后显示服务器上这个 Chrome 的实时画面。"}
-      </p>}
-      <PageDialogPrompt dialog={view.dialog} canControl={canControl} onDismiss={view.dismissDialog} onAnswer={(accept, promptText) => {
+      {desktop ? <DesktopToolbar view={view} name={target.name} canControl={canControl} /> : <Toolbar view={view} canControl={canControl} opening={opening} />}
+      {page && page.tabs.length > 1 && <BrowserTabs view={view} canControl={canControl} />}
+      <Screen view={view} canvasRef={canvasRef} canControl={canControl} closedReason={closedReason} openingUrl={opening.url} blankHint={!desktop} />
+      {!compact && <p className="text-xs text-muted-foreground">{hintText(desktop, canControl, meta)}</p>}
+      {!desktop && <PageDialogPrompt dialog={view.dialog} canControl={canControl} onDismiss={view.dismissDialog} onAnswer={(accept, promptText) => {
         send({ t: "dialog", accept, ...(promptText !== undefined ? { promptText } : {}) })
         view.dismissDialog()
-      }} />
+      }} />}
     </div>
   )
+}
+
+/** 画面下面的一句说明 */
+function hintText(desktop: boolean, canControl: boolean, meta?: { canControl: boolean }) {
+  if (canControl)
+    return desktop
+      ? "点一下画面就能直接操作：打字、回车、滚动都会发到这台桌面。中文用本机输入法，粘贴用 Ctrl+V（按字发过去）。Win、Alt+Tab 这类在本机按会被本机截走，用上面的「组合键」。"
+      : "点一下画面就能直接操作：打字、回车、滚动都会发到服务器上的 Chrome。中文用本机输入法，粘贴用 Ctrl+V。看不到 Chrome 自己的地址栏，用上面的地址栏。"
+  if (meta && !meta.canControl)
+    return desktop
+      ? "只读：你能看，不能操作。只有主管、正在用这台桌面的任务负责人和被分配处理的人能操作。"
+      : "只读：你能看，不能操作。只有任务负责人、被分配处理的人和主管（登录用的 Chrome 是打开它的人）能操作。"
+  return desktop ? "连上以后显示这台桌面的实时画面。" : "连上以后显示服务器上这个 Chrome 的实时画面。"
 }
 
 type View = ReturnType<typeof useRemoteView>
@@ -98,7 +112,7 @@ const isBlankPage = (url?: string) => !url || url === "about:blank"
 const STATUS_TEXT: Record<RemoteViewState["status"], string> = { connecting: "连接中", open: "已连接", reconnecting: "重连中", closed: "已断开" }
 
 /** 连接状态：图标 + 文字，放在地址栏右端 */
-function StatusText({ view, canControl, opening }: { view: View; canControl: boolean; opening: boolean }) {
+function StatusText({ view, canControl, opening = false }: { view: View; canControl: boolean; opening?: boolean }) {
   if (view.status === "open" && opening) return <InputGroupText><Spinner />打开中</InputGroupText>
   if (view.status === "open" && view.meta && !view.meta.canControl)
     return <InputGroupText><EyeIcon />只读</InputGroupText>
@@ -111,13 +125,14 @@ function StatusText({ view, canControl, opening }: { view: View; canControl: boo
 
 /** 后退 / 前进 / 刷新 + 地址栏 + 连接状态 */
 function Toolbar({ view, canControl, opening }: { view: View; canControl: boolean; opening: Opening }) {
-  const url = view.meta?.url ?? ""
+  const page = browserMeta(view.meta)
+  const url = page?.url ?? ""
   const [draft, setDraft] = React.useState(url)
   const [editing, setEditing] = React.useState(false)
   const addressRef = React.useRef<HTMLInputElement | null>(null)
   const autoFocused = React.useRef(false)
   // 是空白页就把焦点放到地址栏（选中原来的字，直接打就替换掉）；只在第一次连上时做，不抢人后来的焦点
-  const blank = canControl && view.hasFrame && isBlankPage(view.meta?.url)
+  const blank = canControl && view.hasFrame && isBlankPage(page?.url)
   React.useEffect(() => {
     if (!blank || autoFocused.current) return
     autoFocused.current = true
@@ -187,9 +202,53 @@ function Toolbar({ view, canControl, opening }: { view: View; canControl: boolea
   )
 }
 
+/** 组合键：在本机按会被本机系统截走的几个，工具栏上用菜单发（shared 的 desktopComboSchema） */
+const COMBOS: { keys: DesktopCombo; label: string; shortcut: string }[] = [
+  { keys: "win", label: "开始菜单", shortcut: "Win" },
+  { keys: "alt+tab", label: "切换窗口", shortcut: "Alt+Tab" },
+  { keys: "alt+f4", label: "关掉当前窗口", shortcut: "Alt+F4" },
+  { keys: "win+d", label: "显示桌面", shortcut: "Win+D" },
+  { keys: "win+r", label: "运行", shortcut: "Win+R" },
+]
+
+/** 桌面模式的工具栏：桌面名 + 连接状态 + 组合键 */
+function DesktopToolbar({ view, name, canControl }: { view: View; name?: string; canControl: boolean }) {
+  return (
+    <div className="flex items-center gap-2">
+      <InputGroup className="min-w-0 flex-1">
+        <InputGroupAddon>
+          <MonitorIcon />
+        </InputGroupAddon>
+        <InputGroupInput aria-label="桌面" readOnly value={name ?? "桌面"} className="truncate" />
+        <InputGroupAddon align="inline-end">
+          <StatusText view={view} canControl={canControl} />
+        </InputGroupAddon>
+      </InputGroup>
+      <DropdownMenu>
+        <DropdownMenuTrigger render={<Button variant="outline" disabled={!canControl} />}>
+          <KeyboardIcon data-icon="inline-start" />
+          组合键
+          <ChevronDownIcon data-icon="inline-end" />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-48">
+          <DropdownMenuGroup>
+            <DropdownMenuLabel>发到桌面上</DropdownMenuLabel>
+            {COMBOS.map((combo) => (
+              <DropdownMenuItem key={combo.keys} onClick={() => view.send({ t: "combo", keys: combo.keys })}>
+                {combo.label}
+                <DropdownMenuShortcut>{combo.shortcut}</DropdownMenuShortcut>
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuGroup>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  )
+}
+
 /** Chrome 里开着好几个标签页时才显示：切换、关掉当前这个（最后一个不能关） */
 function BrowserTabs({ view, canControl }: { view: View; canControl: boolean }) {
-  const tabs = view.meta?.tabs ?? []
+  const tabs = browserMeta(view.meta)?.tabs ?? []
   const active = tabs.find((tab) => tab.active)
   return (
     <div className="flex min-w-0 items-center gap-1">
@@ -215,7 +274,15 @@ function BrowserTabs({ view, canControl }: { view: View; canControl: boolean }) 
 }
 
 /** 画面 + 输入：鼠标在 canvas 上，键盘和输入法在看不见的 textarea 上 */
-function Screen({ view, canvasRef, canControl, closedReason, openingUrl }: { view: View; canvasRef: React.RefObject<HTMLCanvasElement | null>; canControl: boolean; closedReason?: string; openingUrl?: string }) {
+function Screen({ view, canvasRef, canControl, closedReason, openingUrl, blankHint }: {
+  view: View
+  canvasRef: React.RefObject<HTMLCanvasElement | null>
+  canControl: boolean
+  closedReason?: string
+  openingUrl?: string
+  /** Chrome 的空白页提示（桌面没有） */
+  blankHint: boolean
+}) {
   const { send, meta } = view
   const stageRef = React.useRef<HTMLDivElement | null>(null)
   const imeRef = React.useRef<HTMLTextAreaElement | null>(null)
@@ -320,7 +387,7 @@ function Screen({ view, canvasRef, canControl, closedReason, openingUrl }: { vie
         width={960}
         height={540}
         aria-label={canControl ? "远程画面（可以操作）" : "远程画面（只读）"}
-        // 页面视口的 CSS 像素尺寸：自动化测试按它算点哪里
+        // 画面坐标的尺寸（Chrome 是页面视口的 CSS 像素，桌面是屏幕的物理像素）：自动化测试按它算点哪里
         data-page-width={meta?.width}
         data-page-height={meta?.height}
         className={cn("block h-auto w-full touch-none select-none", !view.hasFrame && "invisible")}
@@ -363,7 +430,7 @@ function Screen({ view, canvasRef, canControl, closedReason, openingUrl }: { vie
         }}
       />
       <AgentCursor onAgent={view.onAgent} width={meta?.width} height={meta?.height} canControl={canControl} />
-      {view.hasFrame && canControl && !closedReason && isBlankPage(meta?.url) && (
+      {blankHint && view.hasFrame && canControl && !closedReason && isBlankPage(browserMeta(meta)?.url) && (
         // 不挡鼠标：点画面照样能操作
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-4">
           <p className="flex items-center gap-2 border bg-background px-4 py-3 text-sm text-muted-foreground">

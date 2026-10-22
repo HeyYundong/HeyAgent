@@ -4,6 +4,7 @@ import {
   ALWAYS_ON_BUILTIN_TOOLS,
   BROWSER_TOOL_ID,
   COMPARE_TOOL_ID,
+  DESKTOP_TOOL_ID,
   GALLERY_TOOL_ID,
   builtinToolInputs,
   type BuiltinToolId,
@@ -220,6 +221,30 @@ export function browserSnapshotTool(): SnapshotTool {
 }
 
 /**
+ * 「桌面」：任务选了它，工具网关就开放整组桌面工具（desktop.use、Windows-MCP 白名单工具、look / send_file / fetch_file / ask_human，
+ * 见 desktop/tools.ts）。和「浏览器」一样本身不能直接调用。
+ */
+export const DESKTOP_TOOL_DEF = {
+  id: DESKTOP_TOOL_ID,
+  name: "桌面",
+  summary: "操作一台 Windows 电脑上的软件：读界面控件、点击、输入、快捷键、传文件，要人扫码登录时交给人",
+  description:
+    "开放整组桌面工具：系统从任务允许的桌面里自动分配一台空着的（同一时间一台桌面只给一个运行用，要用特定的可以用 desktop.use 指定），读界面控件（窗口、按钮、输入框）、点击、输入文字、滚动、快捷键、打开和切换软件、剪贴板、把文件传到桌面和取回来；要扫码登录或只有人能做的事交给人在远程画面里处理。打开「允许看画面」后还能截图看。",
+  risk: "external" as Risk,
+}
+
+export function desktopSnapshotTool(): SnapshotTool {
+  return {
+    id: DESKTOP_TOOL_DEF.id,
+    name: DESKTOP_TOOL_DEF.name,
+    summary: DESKTOP_TOOL_DEF.summary,
+    description: DESKTOP_TOOL_DEF.description,
+    source: "builtin",
+    risk: DESKTOP_TOOL_DEF.risk,
+  }
+}
+
+/**
  * 「图库」：任务选了它，工具网关就开放整组图库工具（gallery.search / compare / get / add / update，见 gallery/tools.ts）。
  * 和「浏览器」一样本身不能直接调用。agent 不能删图。
  */
@@ -299,7 +324,7 @@ export function builtinSnapshotTool(id: BuiltinToolId): SnapshotTool {
 
 /** 启动时把内置工具同步进 tools 表：有就更新，没有就插入；代码里已经没有的内置工具删掉 */
 export async function syncBuiltinTools(db: DbLike) {
-  const all: { id: string; name: string; summary: string; description: string; risk: Risk }[] = [...SELECTABLE_BUILTIN_TOOLS, BROWSER_TOOL_DEF, GALLERY_TOOL_DEF, COMPARE_TOOL_DEF]
+  const all: { id: string; name: string; summary: string; description: string; risk: Risk }[] = [...SELECTABLE_BUILTIN_TOOLS, BROWSER_TOOL_DEF, DESKTOP_TOOL_DEF, GALLERY_TOOL_DEF, COMPARE_TOOL_DEF]
   for (const [position, def] of all.entries()) {
     const values = {
       id: def.id,

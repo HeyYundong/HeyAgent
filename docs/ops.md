@@ -17,6 +17,7 @@
 11. 常见问题
 12. 安全提醒
 13. 东西都在哪
+14. 桌面（给 agent 用的 Windows 电脑）
 
 ---
 
@@ -268,3 +269,88 @@ systemctl --user restart heyagent
 | 备份 | `~/heyagent-backups/` |
 
 `podman volume ls` 里还会看到和 secret 同名的几个卷（`heyagent-kek` 等）：那是 Podman 把 secret 展开给容器用的，每次启动按 secret 重写，不用管，也不要备份。
+
+## 14. 桌面（给 agent 用的 Windows 电脑）
+
+「桌面」是 agent 干活的第二种环境（第一种是浏览器）：一台 Windows 电脑，agent 通过它操作装在上面的软件（例如聊天软件、办公软件的桌面版）。开发说明见 `docs/dev/desktop.md`。
+
+一台桌面上跑两个服务，用**同一个密钥**：
+
+| 服务 | 端口 | 干什么 |
+|---|---|---|
+| Windows-MCP 0.8.8 | 8000 | agent 读界面控件、点击、输入 |
+| 桌面服务（`apps/desktop-agent`） | 8001 | 控制台的远程画面、截图、传文件 |
+
+两个服务都跑在**自动登录的那个 Windows 用户的桌面会话**里（登录时由计划任务启动，不出窗口）。所以这台电脑要一直开着、那个用户一直登录着，**不要注销、不要锁屏**（安装脚本已经关掉了锁屏、屏保和睡眠）。重启后会自动登录、自动启动两个服务。
+
+可以用服务器上的虚拟机（14.1），也可以用一台实体 Windows 电脑或公司已有虚拟化平台上的 Windows（14.2）。**Windows 的授权由公司自己解决**：虚拟机装的是没激活的 Windows 11，能用，但桌面右下角会有「激活 Windows」水印、个性化设置改不了；正式用请按公司的授权方式激活。
+
+### 14.1 在服务器上起虚拟机
+
+要求：
+
+- CPU 支持虚拟化（有 `/dev/kvm`），当前用户在 `kvm` 组：`sudo usermod -aG kvm heyagent`，然后重新登录；
+- 每台虚拟机默认 8 GB 内存、4 核、64 GB 盘，**盘要放 SSD**：机械盘上装 Windows 要 2 小时，平时 agent 读一次界面要十几到几十秒；
+- 第一次启动要从微软下载 Windows 11 镜像（约 6 GB），要能上外网。
+
+```bash
+# 例：虚拟机盘放在 SSD 的 /ssd/heyagent-desktops 下，端口绑在服务器的内网 IP 上
+scripts/desktop-vm.sh up --name heyagent-desktop-1 --storage /ssd/heyagent-desktops/1 --bind 10.0.0.5
+scripts/desktop-vm.sh up --help                    # 全部参数：内存、CPU、盘、端口、语言……
+scripts/desktop-vm.sh up ... --dry-run             # 只看要执行的 podman 命令
+```
+
+脚本做的事：生成密钥（`<storage>/key`）和 Windows 登录密码（`<storage>/vm.env`，平时用不到）→ 下载 Python 3.14 安装包（核对 sha256）→ 准备第一次登录时运行的安装脚本 → 用 Podman 起 `dockurr/windows`（固定版本）。之后虚拟机自己装 Windows、自动登录，再自动装 Python、Windows-MCP 和桌面服务，全程不用管。
+
+- 看安装进度：在服务器上用浏览器打开 `http://127.0.0.1:8006`（dockur 自带的网页屏幕，没有密码，只绑本机；从别的电脑看用 `ssh -L 8006:127.0.0.1:8006 服务器`）。
+- 装好了没有：`scripts/desktop-vm.sh status --name heyagent-desktop-1 --storage /ssd/heyagent-desktops/1`，两行都正常就好了。没好看虚拟机里的 `C:\OEM\heyagent-install.log`。
+- 关机 / 开机：`scripts/desktop-vm.sh down|up --name …`（关机会给 Windows 2 分钟正常关机）。虚拟机盘一直保留在 `<storage>/disk`，软件、登录状态都在里面，**不要删、不要回滚快照**。
+- 服务器重启后自动开机：`podman generate systemd --name heyagent-desktop-1 --files`，把生成的 `.service` 放进 `~/.config/systemd/user/` 后 `systemctl --user enable --now container-heyagent-desktop-1`。
+- 一台服务器起几台：换 `--name`、`--storage` 和端口（`--mcp-port 8010 --agent-port 8011 --web-port 8016`）。
+
+**地址要让 HeyAgent 的容器连得到**：容器里的 `127.0.0.1` 是容器自己，所以和 HeyAgent 在同一台服务器上时，`--bind` 填服务器的内网 IP，登记时也填这个 IP。
+
+### 14.2 在实体机（或已有的 Windows 虚拟机）上装
+
+1. 准备一个专用的 Windows 用户，设成**自动登录**（`netplwiz` 取消「要使用本计算机，用户必须输入用户名和密码」，或者用微软的 Sysinternals Autologon）。电脑上别的人别用它，别注销。
+2. 装 Python 3.14（python.org 的 Windows 安装包，勾选「Add python.exe to PATH」，选「为所有用户安装」）。
+3. 生成密钥（在服务器上 `openssl rand -hex 24`），把仓库里的 `apps/desktop-agent` 整个目录拷到这台电脑上。
+4. 用那个用户登录，「以管理员身份运行」PowerShell：
+
+   ```powershell
+   cd <拷过来的 desktop-agent 目录>
+   powershell -ExecutionPolicy Bypass -File .\install.ps1 -Key <密钥> -AllowFrom <HeyAgent 服务器的 IP>
+   ```
+
+   最后显示「装好了」和两个地址就成功了。`-AllowFrom` 让 Windows 防火墙只放行 HeyAgent 服务器；不填就是谁都能连（还是要密钥）。
+
+装好后的东西都在 `C:\HeyAgent`：`key`（密钥，只有这个用户和管理员能读）、`logs\`（两个服务的日志）、`files\`（agent 传过去的文件）。任务计划程序里是 `\HeyAgent\WindowsMCP`、`\HeyAgent\DesktopAgent` 两个任务。
+
+### 14.3 在控制台登记
+
+「桌面」页 → 新建：
+
+- **名字**、**说明**：说明是给 agent 看的，写清楚装了哪些软件、登的哪个账号，agent 按它挑桌面；
+- **MCP 地址**：`http://<IP>:8000/mcp`；**桌面服务地址**：`http://<IP>:8001`（虚拟机填 14.1 里映射出来的地址和端口）；
+- **密钥**：和安装时的一样。
+
+点「测试连接」，两项都通过才算好。然后在任务里选「桌面」工具、勾上能用哪些桌面。
+
+### 14.4 第一次登录软件
+
+在「桌面」页点「看画面」，在远程画面里打开软件、扫码或输入账号登录（勾上「记住登录」之类的选项）。登录状态存在 Windows 的盘上，之后 agent 直接用；掉线了 agent 会转人工，按提示在远程画面里重新扫码就行。
+
+### 14.5 更新、排查
+
+- **更新桌面服务**：把新的 `apps/desktop-agent` 拷到那台电脑上，以管理员身份再跑一次 `install.ps1`（不用再给 `-Key`，沿用原来的密钥）。重复运行是安全的；运行中两个服务会重启，远程画面断开一下再连上。服务器上的虚拟机：把目录拷到 `<storage>/shared/`，在远程画面里打开桌面上的「Shared」文件夹，把 `desktop-agent` 拷到 `C:\HeyAgent\src\`，再在 PowerShell 里运行（dockur 装的 Windows 关掉了「用户账户控制」，PowerShell 本来就是管理员）：
+  `powershell -ExecutionPolicy Bypass -File C:\HeyAgent\src\desktop-agent\install.ps1`
+- **换密钥**：`install.ps1 -Key <新密钥>`，再在控制台「桌面」页编辑、填新密钥。
+- **连不上**：先 `status`（虚拟机）或在那台电脑上打开 `http://127.0.0.1:8001/health`（会提示密钥不对，说明服务在跑）；再看 `C:\HeyAgent\logs\desktop-agent.log`、`windows-mcp.log`。最常见的原因是那个用户被注销了、电脑锁屏了，或者没自动登录。
+- **画面是黑的、点不动**：Windows 在锁屏或者正在弹「用户账户控制」的确认框（那个框在安全桌面上，截不到也点不了）。虚拟机用 14.1 的网页屏幕处理，实体机到电脑跟前处理。实体机上如果经常要装软件，可以在「用户账户控制设置」里调低，不让它切到安全桌面。
+
+### 14.6 安全
+
+- 有密钥就能完全操作这台 Windows（Windows-MCP 本身还能执行 PowerShell，只是 HeyAgent 不开放给 agent），**密钥按服务器密码对待**，只填在控制台里。
+- 两个端口是明文 HTTP：**只在内网开放**，不要映射到外网；能限制来源的就只放行 HeyAgent 服务器（实体机用 `-AllowFrom`，虚拟机用 `--bind` 绑内网地址，再配合服务器防火墙）。
+- 这台 Windows 上登的是公司的账号：当作服务器一样管，别给不相关的人远程登录。
+

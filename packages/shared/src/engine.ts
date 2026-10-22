@@ -2,6 +2,7 @@
 // 平台通用：这里只有通用的概念（任务、检查点、等待、问人、文件），不出现任何业务。
 import { z } from "zod"
 
+import { sessionDesktopSnapshotSchema } from "./desktop.js"
 import {
   checkpointKindSchema,
   httpSpecSchema,
@@ -133,6 +134,8 @@ export const sessionSnapshotSchema = z.object({
       allowVision: z.boolean().default(false),
     })
     .optional(),
+  /** 任务选了「桌面」工具时才有：允许的桌面（含给 agent 看的说明）、是否允许看画面 */
+  desktop: sessionDesktopSnapshotSchema.optional(),
 })
 export type SessionSnapshot = z.infer<typeof sessionSnapshotSchema>
 

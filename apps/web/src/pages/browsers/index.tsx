@@ -218,7 +218,7 @@ export default function BrowsersPage() {
       {watching && (
         <RemoteViewDialog
           open
-          browserId={watching.browserId}
+          target={{ kind: "browser", id: watching.browserId }}
           title={watching.kind === "session" ? `运行 ${watching.sessionId ?? ""}` : `${staffName(watching.openedById)} 打开的 Chrome`}
           description={`${LIVE_STATE[watching.state]}${watching.holdUntil ? `，保留到 ${fmtShort(watching.holdUntil)}` : ""} · 只能看`}
           viewOnly

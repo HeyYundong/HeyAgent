@@ -150,6 +150,8 @@ export async function setupEngine(
   options: {
     superviseIntervalSeconds?: number
     cronWorkerIntervalSeconds?: number
+    /** 桌面巡查的定时器：false = 不开（桌面测试自己调 sweepDesktops） */
+    desktopSweepMs?: number | false
   } = {}
 ): Promise<EngineTestContext> {
   await dropBossSchema()
@@ -174,6 +176,7 @@ export async function setupEngine(
     cronWorkerIntervalSeconds: options.cronWorkerIntervalSeconds,
     concurrency: 4,
     browserControlPort: 0,
+    desktopSweepMs: options.desktopSweepMs,
   })
   return {
     ...app,

@@ -39,6 +39,7 @@ import { HumanItemPanel } from "@/pages/sessions/human-item"
 
 import { CancelRunDialog, eventOf, FireEventButton, isActive, ResumeButton } from "./run-actions"
 import { RunBrowserButton } from "./run-browser"
+import { RunDesktopButton } from "./run-desktop"
 import { RunSpaceButton } from "./run-space"
 import { RunDigestSection } from "./run-digest"
 import { RunOutcomeSection } from "./run-outcome"
@@ -76,6 +77,7 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionSummary }
       actions={<>
         <RunSpaceButton run={run} />
         <RunBrowserButton run={run} />
+        <RunDesktopButton run={run} />
         {run.status === "waiting" && can(user, "session.resume", { taskOwnerId: task.ownerId }) && <ResumeButton run={run} size="sm" />}
         {/* 在等事件的，主管可以手动触发这个事件（和外部系统推来一样） */}
         {waitingEvent && user.isAdmin && <FireEventButton event={waitingEvent} size="sm" />}
