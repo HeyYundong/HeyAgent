@@ -21,7 +21,7 @@ import { OutcomeBadge } from "@/components/shell/outcome-badge"
 
 import { useModels, useRunNow, useStaffName } from "@/lib/data"
 import { useMe } from "@/lib/session"
-import { Elapsed, RunStatusBadge, money, tokens } from "@/pages/tasks/parts"
+import { Elapsed, RunStatusBadge, tokens } from "@/pages/tasks/parts"
 import { SetOutcomeDialog } from "@/pages/tasks/run-outcome"
 import { workLink } from "@/pages/tasks/work-parts"
 
@@ -155,7 +155,6 @@ export function SessionTable({ rows, tasks, selectedId, linkTo, sort }: ListProp
             <SortHead label="结束" column="ended" sort={sort} />
             <TableHead>时长 / 在等什么</TableHead>
             <TableHead className="text-right">token</TableHead>
-            <TableHead className="text-right">花费</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -178,7 +177,6 @@ export function SessionTable({ rows, tasks, selectedId, linkTo, sort }: ListProp
                   <TableCell className="tabular-nums text-muted-foreground">{startText(item.createdAt)}</TableCell>
                   <TableCell className="text-muted-foreground">—</TableCell>
                   <TableCell className="max-w-72 truncate" title={item.title}>{item.title}</TableCell>
-                  <TableCell className="text-right text-muted-foreground">—</TableCell>
                   <TableCell className="text-right text-muted-foreground">—</TableCell>
                 </TableRow>
               )
@@ -207,7 +205,6 @@ export function SessionTable({ rows, tasks, selectedId, linkTo, sort }: ListProp
                 <TableCell className="tabular-nums text-muted-foreground">{run.endedAt ? startText(run.endedAt) : "—"}</TableCell>
                 <TableCell className="max-w-72 truncate"><NowText run={run} items={items} /></TableCell>
                 <TableCell className="text-right tabular-nums">{tokens(run.tokensIn + run.tokensOut)}</TableCell>
-                <TableCell className="text-right tabular-nums">{money(run.costUsd)}</TableCell>
               </TableRow>
             )
           })}
@@ -217,7 +214,7 @@ export function SessionTable({ rows, tasks, selectedId, linkTo, sort }: ListProp
   )
 }
 
-/** 窄屏：一条一个 Item，三行——编号和任务 / 在等什么或时长 / 负责人、开始、花费；右边是状态和结果 */
+/** 窄屏：一条一个 Item，三行——编号和任务 / 在等什么或时长 / 负责人、开始；右边是状态和结果 */
 export function SessionItems({ rows, tasks, selectedId, linkTo }: ListProps) {
   const staffName = useStaffName()
   return (
@@ -250,7 +247,7 @@ export function SessionItems({ rows, tasks, selectedId, linkTo }: ListProps) {
               </ItemTitle>
               <ItemDescription className="line-clamp-1"><NowText run={run} items={items} /></ItemDescription>
               <ItemDescription className="tabular-nums">
-                {sourceText(run)} · {staffName(task?.ownerId)} · {startText(run.startedAt)} · {money(run.costUsd)}
+                {sourceText(run)} · {staffName(task?.ownerId)} · {startText(run.startedAt)}
               </ItemDescription>
             </ItemContent>
             <ItemActions className="flex-col items-end self-start">
