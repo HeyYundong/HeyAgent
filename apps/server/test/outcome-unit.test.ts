@@ -16,8 +16,8 @@ const claims: (AgentClaim | undefined)[] = [
 const checkpointSets: { name: string; list: OutcomeFacts["checkpoints"]; ok: boolean }[] = [
   { name: "没有检查点", list: [], ok: true },
   { name: "全部达成", list: [{ title: "a", status: "done" }, { title: "b", status: "done" }], ok: true },
-  { name: "部分跳过", list: [{ title: "a", status: "done" }, { title: "b", status: "skipped" }], ok: false },
-  { name: "全部跳过", list: [{ title: "a", status: "skipped" }, { title: "b", status: "skipped" }], ok: false },
+  { name: "部分跳过", list: [{ title: "a", status: "done" }, { title: "b", status: "skipped" }], ok: true },
+  { name: "全部跳过", list: [{ title: "a", status: "skipped" }, { title: "b", status: "skipped" }], ok: true },
   { name: "有没达成", list: [{ title: "a", status: "done" }, { title: "b", status: "open" }], ok: false },
 ]
 const reviews: (ReviewVerdict | "error")[] = ["achieved", "not_achieved", "partial", "unsure", "error"]
@@ -31,7 +31,7 @@ describe("硬规则 + 复核（全部组合）", () => {
           it(name, () => {
             const facts: OutcomeFacts = { ...(claim ? { claim } : {}), checkpoints: cps.list, missingResults: missing, ...(verified ? { verified: { by: "verify", headline: "全部通过" } } : {}) }
             const verdict = judgeByRules(facts)
-            // 硬规则：agent 报没办成、缺结果、检查点不过（验收通过的不按检查点判）→ 没办成（定论）
+            // 硬规则：agent 报没办成、缺结果、检查点有没达成的（验收通过的不按检查点判）→ 没办成（定论）；跳过的交给复核
             const rulesOk = claim?.outcome !== "not_achieved" && missing.length === 0 && (verified || cps.ok)
             const expected: RunOutcome = rulesOk ? "achieved" : "not_achieved"
             expect(verdict.outcome).toBe(expected)
@@ -69,10 +69,10 @@ describe("硬规则 + 复核（全部组合）", () => {
     expect(noReviewModel()).toMatchObject({ outcome: "not_achieved", by: "rule", reason: "没配复核模型，没能确认办成", failKind: "not_done" })
   })
 
-  it("检查点的原因：没达成的、全部跳过的、跳过的（部分跳过也是没办成）分别列出来", () => {
+  it("检查点：没达成的列出来；跳过的（部分、全部）不按规则判，交给复核（2026-10-22 起）", () => {
     expect(judgeByRules({ checkpoints: checkpointSets[4]!.list, missingResults: [] }).reason).toBe("1 个检查点没达成：b")
-    expect(judgeByRules({ checkpoints: checkpointSets[3]!.list, missingResults: [] }).reason).toBe("2 个检查点全部跳过，一个都没达成：a、b")
-    expect(judgeByRules({ checkpoints: checkpointSets[2]!.list, missingResults: [] })).toMatchObject({ outcome: "not_achieved", reason: "1 个检查点跳过，只办成了一部分：b", final: true })
+    expect(judgeByRules({ checkpoints: checkpointSets[3]!.list, missingResults: [] })).toMatchObject({ outcome: "achieved", final: false })
+    expect(judgeByRules({ checkpoints: checkpointSets[2]!.list, missingResults: [] })).toMatchObject({ outcome: "achieved", final: false })
   })
 
   it("几条原因都写上，agent 报的排在前面", () => {

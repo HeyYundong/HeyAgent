@@ -1,7 +1,7 @@
 // 运行结果（docs/dev/run-outcome.md）：状态只管流程（正常结束都是「已结束」），办没办成看结果列，只有办成 / 没办成（2026-10-20 简化）。
 // 真实的测试库 + 进程内 worker + 假模型（默认复核模型是 TEST_REVIEWER，没给剧本时判办成）。
 // 覆盖：run.finish（校验、报没办成直接收尾、旧说明的 partial 当没办成、报办成先过验收规则）；旧快照的 run.not_done；只回文字提醒一次；
-// 检查点兜底（没达成、全部跳过、部分跳过 → 没办成；全部达成 → 还要复核）；复核（一定做；判办成才办成；证据不足、出错（重试一次）记没办成；
+// 检查点兜底（没达成 → 没办成；跳过的（部分、全部）、全部达成 → 还要复核，复核看跳过理由按目标判）；复核（一定做；判办成才办成；证据不足、出错（重试一次）记没办成；
 // 没复核模型的不开始运行、旧快照结束时没复核模型记没办成）；被派的运行（单跟着结果走：没办成不重试，缺必交结果 missing_result，
 // 复核完才结算，清扫不结算复核中的、超时记没办成，人取消的不重试）；人改结果（负责人、主管能改；已结束、出错、取消的都能改；单跟着改结果不改状态）；
 // 迁移 0024 + 0026 补旧数据（在事务里灌样例、跑补数据的语句、回滚）。
@@ -272,7 +272,8 @@ describe("检查点兜底", () => {
     expect((await notesOf(sessionId)).map((note) => note.title)).toEqual(["比价：没办成"])
   })
 
-  it("检查点全部跳过 → 没办成（R-1-1 那种：全标跳过、嘴上说做完了）", async () => {
+  it("检查点全部跳过 → 不按规则判，交给复核；复核看跳过理由判没办成（R-1-1 那种：全标跳过、嘴上说做完了）", async () => {
+    const reviewer = useScript(TEST_REVIEWER, new Script([reviewVerdict("not_achieved", "网站打不开，报价一个都没拿到")]))
     useScript(
       "test/out-skip-all",
       new Script([
@@ -281,13 +282,20 @@ describe("检查点兜底", () => {
         step([text("任务完成")]),
       ])
     )
-    const taskId = await createTask(ctx.db, { modelId: "test/out-skip-all", steps: TWO_CHECKPOINTS })
-    const sessionId = await runNow(taskId)
-    const row = await waitOutcome(sessionId)
-    expect(row).toMatchObject({ status: "done", outcome: "not_achieved", outcomeBy: "rule", outcomeReason: "2 个检查点全部跳过，一个都没达成：拿到报价、汇总表已保存" })
+    try {
+      const taskId = await createTask(ctx.db, { modelId: "test/out-skip-all", steps: TWO_CHECKPOINTS })
+      const sessionId = await runNow(taskId)
+      const row = await waitOutcome(sessionId)
+      expect(row).toMatchObject({ status: "done", outcome: "not_achieved", outcomeBy: "review", outcomeReason: "网站打不开，报价一个都没拿到" })
+      expect(reviewer.promptText(0)).toContain("跳过理由：网站打不开")
+      expect(JSON.stringify(reviewer.prompts[0]?.prompt)).toContain("逐条看跳过理由站不站得住")
+    } finally {
+      await resetTestReviewer(ctx.db)
+    }
   })
 
-  it("部分跳过（其余都勾了）→ 没办成（只办成一部分），不复核", async () => {
+  it("部分跳过（其余都勾了）+ 报办成 → 交给复核，跳过理由站得住、复核判办成 → 办成", async () => {
+    const reviewer = useScript(TEST_REVIEWER, new Script([reviewVerdict("achieved", "3 家报价都拿到了；负责人说这次不用存表，跳过理由站得住")]))
     useScript(
       "test/out-skip-some",
       new Script([
@@ -295,10 +303,15 @@ describe("检查点兜底", () => {
         step([finish("achieved")]),
       ])
     )
-    const taskId = await createTask(ctx.db, { modelId: "test/out-skip-some", steps: TWO_CHECKPOINTS })
-    const sessionId = await runNow(taskId)
-    const row = await waitOutcome(sessionId)
-    expect(row).toMatchObject({ status: "done", outcome: "not_achieved", outcomeBy: "rule", outcomeReason: "1 个检查点跳过，只办成了一部分：汇总表已保存", review: null })
+    try {
+      const taskId = await createTask(ctx.db, { modelId: "test/out-skip-some", steps: TWO_CHECKPOINTS })
+      const sessionId = await runNow(taskId)
+      const row = await waitOutcome(sessionId)
+      expect(row).toMatchObject({ status: "done", outcome: "achieved", outcomeBy: "review", review: { verdict: "achieved" } })
+      expect(reviewer.promptText(0)).toContain("跳过理由：负责人说这次不用存表")
+    } finally {
+      await resetTestReviewer(ctx.db)
+    }
   })
 
   it("全部达成 + 报办成 → 还要复核（检查点是 agent 自己勾的），复核判办成才办成", async () => {

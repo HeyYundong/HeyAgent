@@ -1398,7 +1398,7 @@ claude mcp add --transport http heyagent-compare http://<host>:8080/api/compare/
 
 - 内置工具 `run.finish`「收尾报结果」（`run_finish`，read，每个任务都自带、同步进 `tools` 表、`alwaysOn`）：`{ outcome: achieved | not_achieved, summary, evidence, reason? }`；`not_achieved` 没写 `reason` → `isError`，运行不结束。运行中途的模型按旧说明传 `partial` 照收，当 `not_achieved`（给模型看的 JSON Schema 里只有两种）。调了它运行就到此结束：`not_achieved` 直接收尾；`achieved` 也算「说做完了」，先过三方验收的规则。旧快照里的 `run.not_done` 照旧能用（= `not_achieved`，`outcome_by = agent`），它不再同步进 `tools` 表。
 - 只回文字、没调 `run.finish`（快照里有 `run.finish` 时）：第一次追加一条 user 消息「要结束请调用 run_finish 报结果（办成 / 没办成），并对照目标写依据。」接着跑（过程记录 `plan`「agent 只回了文字、没报结果，提醒它调用 run_finish」，标记存在 `sessions.rule_state.finishNudged`，挂起再继续也只提醒一次）；再回文字就按「说做完了、没报结果」收尾，交给复核。
-- 硬规则（`engine/outcome.ts`，在收尾的事务里），有一条不过就是没办成（原因用「；」连起来，谁定的按 agent 报的 > 缺结果 > 检查点）：agent 的报告（`run.finish` / `run.not_done` / 这次运行 `work.report not_done`）；检查点有没达成的、全部跳过的、部分跳过的（三方验收通过的不按检查点判）；被派的运行必填的结果没用 `work.report` 交（值为空也算没交；字段名末尾多了单位括号、大小写不同照样认）→ 原因「缺结果：价格、链接」，`failKind = missing_result`。
+- 硬规则（`engine/outcome.ts`，在收尾的事务里），有一条不过就是没办成（原因用「；」连起来，谁定的按 agent 报的 > 缺结果 > 检查点）：agent 的报告（`run.finish` / `run.not_done` / 这次运行 `work.report not_done`）；检查点有没达成的（三方验收通过的不按检查点判；跳过的 2026-10-22 起不按规则判，交给复核看跳过理由）；被派的运行必填的结果没用 `work.report` 交（值为空也算没交；字段名末尾多了单位括号、大小写不同照样认）→ 原因「缺结果：价格、链接」，`failKind = missing_result`。
 - 硬规则都过了：三方验收通过 → 办成（`verify`；负责人在验收争议里判通过的记 `human`），不复核；其余（agent 说办成了，检查点全部达成也一样）→ 一定复核。复核模型 = `snapshot.reviewModelId` ?? 默认复核模型，都没有 → 没办成（`rule`，「没配复核模型，没能确认办成」）。
 - 出错、取消、人选不继续 → 状态 `failed`，结果没办成（原因 = 错误信息；出错的 `rule`，人取消、人选不继续的 `human`）；验收争议判失败 → 没办成（`human`）。
 - 结束事件（`done`）的标题：「agent 报没办成」「agent 报办成，结果记没办成」「agent 报办成，等 AI 复核」「agent 说做完了（没报结果），等 AI 复核」「验收通过，运行结束」……详情是 agent 的报告（结果、总结、依据、原因）和「结果：…（原因）」（等复核的没有这一句）。

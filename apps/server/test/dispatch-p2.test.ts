@@ -748,7 +748,7 @@ describe("没有检查点就不提检查点", () => {
     expect(promptOf(plain.prompts[0]!)).toContain("验收员会按目标核对结果和证据")
     expect(toolNames(withCp)).toContain("checkpoint_mark")
     expect(promptOf(withCp.prompts[0]!)).toContain("## 检查点清单")
-    expect(promptOf(withCp.prompts[0]!)).toContain("检查点有没勾的、有跳过的都记没办成")
+    expect(promptOf(withCp.prompts[0]!)).toContain("检查点有没勾的记没办成；跳过的看理由，由复核按目标判断")
     // 快照的 tools 不改（任务页、规则页照样显示它是自带的）
     const [session] = await ctx.db.select().from(t.sessions).where(and(eq(t.sessions.taskId, a), like(t.sessions.id, "R-%"))).orderBy(asc(t.sessions.startedAt))
     expect(session!.snapshot!.tools.map((tool) => tool.id)).toContain("checkpoint.mark")

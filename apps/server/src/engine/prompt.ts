@@ -94,7 +94,7 @@ export function buildSystemPrompt(
         `${index + 1}. ${checkpoint.title}（${checkpointKindLabel[checkpoint.kind]}${checkpoint.target ? ` · 目标 ${checkpoint.target}` : ""}）`
     )
     sections.push(
-      `## 检查点清单\n每完成一个就用 checkpoint.mark 勾上并写结果；做不到的标为跳过并写理由。\n${lines.join("\n")}`
+      `## 检查点清单\n每完成一个就用 checkpoint.mark 勾上并写结果；这次用不上或做不到的标为跳过并写清理由（跳过影不影响结果由复核按目标判断）。\n${lines.join("\n")}`
     )
   }
 
@@ -291,10 +291,10 @@ export function buildSystemPrompt(
       finishName
         ? `- 结束时一定调用 ${finishName} 报结果，结果只有办成、没办成两种。只看任务目标要的东西拿没拿到：都拿到了是办成；没拿到（包括确认「没有」）是没办成；拿到一部分也算没办成，在 reason 写清拿到了什么、缺什么。不要把没做成说成做完了。`
         : hasCheckpoints
-          ? "- 全部做完后，直接回复一段总结（做了什么、结果在哪、哪些检查点没完成以及原因），不要再调工具。回复不调工具就表示你认为任务做完了；检查点有没勾的、或者全部跳过的，这次运行会记成「没完成」。"
+          ? "- 全部做完后，直接回复一段总结（做了什么、结果在哪、哪些检查点没完成以及原因），不要再调工具。回复不调工具就表示你认为任务做完了；检查点有没勾的，这次运行会记成没办成；跳过的要写清理由，由复核按目标判断。"
           : "- 全部做完后，直接回复一段总结（做了什么、结果在哪、没做成的以及原因），不要再调工具。回复不调工具就表示你认为任务做完了。",
       finishName
-        ? `- ${finishName} 的 summary 写做了什么、结果在哪，evidence 对照目标逐条写依据（拿到了什么、在哪能看到）。${hasCheckpoints ? "检查点有没勾的、有跳过的都记没办成。" : ""}报办成的还会由 AI 复核一遍，证据不足也记没办成。`
+        ? `- ${finishName} 的 summary 写做了什么、结果在哪，evidence 对照目标逐条写依据（拿到了什么、在哪能看到）。${hasCheckpoints ? "检查点有没勾的记没办成；跳过的看理由，由复核按目标判断。" : ""}报办成的还会由 AI 复核一遍，证据不足也记没办成。`
         : "",
       notDoneName
         ? `- 做不成（试过了、能补救的也补救了，还是不行）就调用 ${notDoneName} 写清原因，这次运行记「没完成」并通知负责人；不要直接回复总结、把没做成说成做完了。`
