@@ -49,21 +49,18 @@ export interface RuleVerdict extends Judged {
 
 const clip = (value: string, max: number) => (value.length > max ? `${value.slice(0, max)}…` : value)
 
-/** 检查点的约束：有没达成的、全部跳过、部分跳过 → 没办成（2026-10-20 起部分跳过也算没办成）；全部达成不压低。没有检查点不管 */
+/**
+ * 检查点的约束：有没达成的 → 没办成；全部达成不压低。没有检查点不管。
+ * 跳过的（部分跳过、全部跳过）不在这里判（2026-10-22 起）：跳过理由站不站得住、影不影响目标交给复核按目标判
+ */
 function checkpointLimit(checkpoints: OutcomeFacts["checkpoints"]): Judged | undefined {
-  if (checkpoints.length === 0) return undefined
   const open = checkpoints.filter((cp) => cp.status === "open")
   if (open.length) return { outcome: "not_achieved", by: "rule", reason: `${open.length} 个检查点没达成：${open.map((cp) => cp.title).join("、")}`, failKind: "not_done" }
-  const skipped = checkpoints.filter((cp) => cp.status === "skipped")
-  if (skipped.length === checkpoints.length)
-    return { outcome: "not_achieved", by: "rule", reason: `${checkpoints.length} 个检查点全部跳过，一个都没达成：${checkpoints.map((cp) => cp.title).join("、")}`, failKind: "not_done" }
-  if (skipped.length)
-    return { outcome: "not_achieved", by: "rule", reason: `${skipped.length} 个检查点跳过，只办成了一部分：${skipped.map((cp) => cp.title).join("、")}`, failKind: "not_done" }
   return undefined
 }
 
 /**
- * 硬规则（第 4 节）：agent 的报告、检查点（三方验收通过的不再按检查点判，验收员已经逐条核对过跳过理由）、必交的结果，
+ * 硬规则（第 4 节）：agent 的报告、检查点有没达成的（三方验收通过的不再按检查点判）、必交的结果，
  * 有一条不过就是没办成（原因都写上）。都过了：三方验收通过 = 办成（定论）；否则上限是办成，等复核。
  * 只回文字（没报结果）当作「说做完了」
  */
