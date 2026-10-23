@@ -13,6 +13,10 @@
 #   api（node 用户）和 worker（browser 用户）都是 uid 1000，都能读。
 # 文件卷 heyagent-pod-files：api（上传、下载）和 worker（agent 存产物、读附件）挂同一个，HEYAGENT_FILES_DIR 一样。
 # 管理员不预先建：第一次打开控制台时，在「设置管理员」页自己定账号和密码（以前放初始密码的状态卷 heyagent-pod-state 已经去掉）。
+# 系统开的桌面（可选，docs/ops.md 第 14 节）：环境变量 HEYAGENT_DESKTOP_STORAGE_ROOTS 不空时，pod.sh 把下面三处「# @desktop-vm:…」占位注释
+#   换成挂载（宿主机 Podman API socket 所在的目录、各存放位置同路径挂进 api 和 worker、宿主机 /sys 只读挂到 api 的 /host/sys），
+#   configmap 加 HEYAGENT_PODMAN_SOCKET 等，pod 的网络用 slirp4netns:allow_host_loopback=true（容器里 10.0.2.2 = 宿主机的 127.0.0.1，
+#   虚拟机的端口只绑在那里）。生成的文件是 .dev/pod/pod.yaml。不配就和以前一样，「桌面」页只能登记已有电脑。写法见 scripts/desktop-host.sh。
 apiVersion: v1
 kind: Pod
 metadata:
@@ -82,6 +86,7 @@ spec:
           readOnly: true
         - name: files
           mountPath: /data/files
+        # @desktop-vm:api-mounts
 
     - name: worker
       image: localhost/heyagent-worker:m1
@@ -117,6 +122,7 @@ spec:
           readOnly: true
         - name: files
           mountPath: /data/files
+        # @desktop-vm:worker-mounts
 
     - name: web
       image: localhost/heyagent-web:m1
@@ -137,3 +143,4 @@ spec:
     - name: secrets
       persistentVolumeClaim:
         claimName: heyagent-pod-secrets
+    # @desktop-vm:volumes

@@ -44,6 +44,8 @@ import {
   workItemStatusSchema,
   workViaSchema,
   type AssistantChange,
+  type DesktopKind,
+  type DesktopVmState,
   type AssistantProposalStatus,
   type HttpSpec,
   type HumanDetail,
@@ -64,6 +66,9 @@ import {
 } from "@heyagent/shared"
 
 import type { Envelope } from "../lib/crypto.js"
+
+/** 虚拟机等着做的一次性操作（desktop_vms.op） */
+export type DesktopVmOp = "restart" | "reset" | "seal" | "delete"
 
 // 枚举值直接取 shared 里 zod schema 的选项，前后端只有一份
 const values = <T extends string>(options: readonly T[]) => options as [T, ...T[]]
@@ -818,19 +823,76 @@ export const accountLeases = pgTable(
 
 // ---------- 桌面（docs/dev/desktop.md） ----------
 
-/** 一台桌面：装了 Windows-MCP 和桌面服务的 Windows 电脑。两个服务共用一个密钥（只存密文，secrets.scope = desktop） */
-export const desktops = pgTable("desktops", {
-  id: text("id").primaryKey(),
-  name: text("name").notNull(),
-  /** 给 agent 看的说明：装了哪些软件、登的哪个账号 */
-  description: text("description").notNull().default(""),
-  mcpUrl: text("mcp_url").notNull(),
-  agentUrl: text("agent_url").notNull(),
-  keySecretId: text("key_secret_id").references(() => secrets.id, { onDelete: "set null" }),
-  position: position(),
-  createdAt: createdAt(),
-  updatedAt: updatedAt(),
-})
+/**
+ * 一台桌面：装了 Windows-MCP 和桌面服务的 Windows 电脑。两个服务共用一个密钥（只存密文，secrets.scope = desktop）。
+ * kind（docs/dev/desktop-vm.md 第 0 节）：manual 手动登记的；vm 系统开的桌面（从模板复制）；template 模板。
+ * vm / template 的地址和密钥由系统管（desktop_vms 一行），模板不分给运行
+ */
+export const desktops = pgTable(
+  "desktops",
+  {
+    id: text("id").primaryKey(),
+    kind: text("kind").$type<DesktopKind>().notNull().default("manual"),
+    name: text("name").notNull(),
+    /** 给 agent 看的说明：装了哪些软件、登的哪个账号 */
+    description: text("description").notNull().default(""),
+    mcpUrl: text("mcp_url").notNull(),
+    agentUrl: text("agent_url").notNull(),
+    keySecretId: text("key_secret_id").references(() => secrets.id, { onDelete: "set null" }),
+    /** 谁建的（系统开的桌面：建的人能开关、重置、删除） */
+    createdById: text("created_by_id").references(() => users.id, { onDelete: "set null" }),
+    position: position(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [check("desktops_kind_check", sql`${t.kind} in ('manual', 'vm', 'template')`)]
+)
+
+/**
+ * 系统开的桌面和模板的虚拟机（docs/dev/desktop-vm.md 第 1、4 节）：一台一行，一台 = 一个 Podman 容器（dockurr/windows）。
+ * 接口只改 desired / op，worker 去做（同一台同时只有一个操作，pg-boss 的 desktop.vm 队列按桌面 id 排）。
+ * op：等着做的一次性操作（restart / reset / seal / delete），做完清掉；开机、关机只改 desired
+ */
+export const desktopVms = pgTable(
+  "desktop_vms",
+  {
+    desktopId: text("desktop_id")
+      .primaryKey()
+      .references(() => desktops.id, { onDelete: "cascade" }),
+    /** 桌面从哪个模板建的（模板自己为空）。模板有桌面在用就删不了 */
+    templateId: text("template_id").references((): AnyPgColumn => desktops.id, { onDelete: "restrict" }),
+    /** 存放位置（HEYAGENT_DESKTOP_STORAGE_ROOTS 里的一个） */
+    storagePath: text("storage_path").notNull(),
+    /** 这台的目录：<存放位置>/heyagent-desktops/<desktopId>，挂进容器的 /storage */
+    dir: text("dir").notNull(),
+    container: text("container").notNull(),
+    state: text("state").$type<DesktopVmState>().notNull(),
+    desired: text("desired").$type<"running" | "stopped">().notNull(),
+    op: text("op").$type<DesktopVmOp>(),
+    message: text("message"),
+    stateSince: ts("state_since").notNull().defaultNow(),
+    /** 模板第一次连上桌面服务（Windows 和两个服务装好了）的时间；之后再开机不算「装 Windows」 */
+    installedAt: ts("installed_at"),
+    memoryGb: integer("memory_gb").notNull(),
+    cpus: integer("cpus").notNull(),
+    diskGb: integer("disk_gb").notNull(),
+    mcpPort: integer("mcp_port").notNull().unique(),
+    agentPort: integer("agent_port").notNull().unique(),
+    /** Windows 的登录密码（模板生成，从它建的桌面共用） */
+    vmPasswordSecretId: text("vm_password_secret_id").references(() => secrets.id, { onDelete: "set null" }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    check(
+      "desktop_vms_state_check",
+      sql`${t.state} in ('creating', 'installing', 'starting', 'running', 'setup', 'ready', 'stopping', 'stopped', 'error', 'deleting')`
+    ),
+    check("desktop_vms_desired_check", sql`${t.desired} in ('running', 'stopped')`),
+    check("desktop_vms_op_check", sql`${t.op} is null or ${t.op} in ('restart', 'reset', 'seal', 'delete')`),
+    index("desktop_vms_template_idx").on(t.templateId),
+  ]
+)
 
 /**
  * 桌面的占用：一台桌面最多一行（同一时间只给一个运行用）。有行 = 被占着；运行结束删掉。

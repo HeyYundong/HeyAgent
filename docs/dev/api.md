@@ -606,10 +606,11 @@ curl -s -X POST http://localhost:3100/api/events \
 | `platforms` | `platforms.list` `browsers.list` |
 | `desktops`（第 19 节） | `desktops.list` |
 | `desktop_leases`（推桌面 id；续约不推） | `desktops.list` `desktop.sessionDesktop` |
+| `desktop_vms`（第 19.5 节，推桌面 id） | `desktops.list` `desktops.host` |
 | `model_providers` `models` `model_defaults` | `models.overview` |
 | `notifications` | `engine.notifications.list` |
 | `files` | `engine.sessionFiles` `engine.taskAttachments` |
-| `settings` | `settings.get` |
+| `settings` | `settings.get` `desktops.host`（存放位置的设置 `desktop.storage`） |
 
 加新表或新查询时：给表建 `heyagent_notify_change` 触发器（照 `0001_triggers.sql`），并在 `liveQueriesByTable` 里补一行，否则页面不会自动刷新。
 
@@ -1469,3 +1470,22 @@ claude mcp add --transport http heyagent-compare http://<host>:8080/api/compare/
 - 有桌面工具组的运行里，通用 `ask.human` 的说明写明「要人在桌面上动手的事用 desktop_ask_human」。
 - 桌面连不上：工具结果是错误「桌面「名字」连不上：……」，不挂起。规则里写 `desktop` 匹配整组 `desktop.*`；「自动记录检查点」不把桌面工具记成外发消息；规则「截图存证」没有 Chrome 时截桌面。
 
+### 19.5 系统开的桌面（2026-10-23，`docs/dev/desktop-vm.md`，契约 `packages/shared/src/desktop-vm.ts`，迁移 0030）
+
+桌面分三种（`Desktop.kind`）：`manual` 手动登记的（上面 19.1 那套）、`template` 模板、`vm` 从模板建的桌面。后两种地址和密钥由系统填（`http://<HEYAGENT_DESKTOP_VM_HOST>:<端口>/mcp`、`http://…:<端口>`，都是合法的 http 地址），`Desktop.vm` 有虚拟机信息（`DesktopVmInfo`：`state`、`message?`、`storagePath`、`diskKind`、`memoryGb`、`cpus`、`templateId?`、`templateName?`、模板才有的 `usedBy`、`diskUsedGb?`（目录里文件实际占的块）、`stateSince`），`Desktop.createdById` 是建的人。虚拟机的操作都是异步的：接口改完库就返回，worker 去做（pg-boss 队列 `desktop.vm`，按桌面 id 排，同一台同时只有一个操作），页面看实时推送的 `vm.state`。
+
+| procedure | 权限 | 输入 | 返回 | 错误 | 说明 |
+|---|---|---|---|---|---|
+| `desktops.host`（query） | 登录即可 | 无 | `DesktopHost` | | `available` = 配了 `HEYAGENT_PODMAN_SOCKET` 且连得上、KVM 设备在、配了存放位置；不能时 `problem` 是一句中文原因。`usedMemoryGb` / `runningVms` 按「开着」算：状态是 creating / installing / starting / running / setup / stopping，或者 desired = running 且不是 error / ready / deleting。`storages` 顺序同 `HEYAGENT_DESKTOP_STORAGE_ROOTS`，`isDefault` = 实际的默认位置（设置里选的且能用 → 第一个 SSD → 第一个能用的） |
+| `desktops.createTemplate` | 主管 | `desktopTemplateCreateSchema` | `{ id }` | `FORBIDDEN`；`BAD_REQUEST`（存放位置不是配置里的）；`CONFLICT`（不能开虚拟机、位置不能用、同名、内存不够、端口用完） | 系统生成密钥（48 位十六进制）和 Windows 密码，只存密文（`secrets.scope = desktop`，`ref_id` = 模板 id，名字 `key` / `vmPassword`）。状态 creating → installing（worker 准备 OEM 目录、建容器、开机）→ setup（第一次连上桌面服务）。审计 `desktop.template.create` |
+| `desktops.createVm` | 所有人（`desktop.create`） | `desktopVmCreateSchema` | `{ id }` | `NOT_FOUND`（模板）；`CONFLICT`（模板不是 ready、不能开虚拟机、位置不能用、同名、内存不够）；`BAD_REQUEST`（位置不是配置里的） | 不填存放位置 = 默认位置；内存、CPU 不填 = 和模板一样。密钥用模板的。creating → starting → running。审计 `desktop.vm.create` |
+| `desktops.vmAction` | vm：建的人（`desktop.manage`）或主管；模板：主管 | `desktopVmActionSchema` | 无 | `NOT_FOUND`；`FORBIDDEN`；`BAD_REQUEST`（手动登记的、给模板 reset、给桌面 seal）；`CONFLICT`（正在删除；做好的模板除了 stop 都不行；seal 时模板还没装好；start / restart 内存不够；正被运行占着且没带 `force`：「桌面「名字」正被运行用着，重置会打断那个运行。确定要重置请再确认一次」） | `start` / `stop` 改 desired；`restart`（关机再开）、`reset`（关机 → 删盘、在模板盘上重建 → 按 desired 开机；MAC 不变）、`seal`（模板：setup，或装好后关着的；关机 → 删容器 → 盘只读 → 删 OEM 目录 → ready）。出错（error）的点任何一个都会重来。带 `force` 先放开占用（`forceReleaseDesktop`），原来的运行记一条事件。审计 `desktop.vm.<action>`（带 `force`、`releasedSessionId`） |
+| `desktops.setStorageSettings` | 主管 | `desktopStorageSettingsSchema` | 无 | `FORBIDDEN`；`BAD_REQUEST`（路径不是配置里的） | 存在设置 `desktop.storage`。审计 `desktop.storage.set` |
+
+19.1 的几个对 vm / template 的变化：
+
+- `desktops.update`：vm 是建的人或主管、模板是主管；只能改名字和说明，`mcpUrl` / `agentUrl` 要原样传回来（和列表里的一样），填了 `key` 或改了地址 `BAD_REQUEST`。
+- `desktops.delete`：vm 是建的人或主管、模板是主管；被运行占着 `CONFLICT`；模板有桌面在用 `CONFLICT`「有 N 台桌面是用模板「名字」建的，先删掉它们再删模板」。标成 deleting 后返回，worker 关机、删容器、删目录、删这一行（模板连同密钥）。审计 `desktop.vm.delete` / `desktop.template.delete`。
+- `desktops.test`：vm 建的人也能测（地址是系统填的）。
+- 远程画面（19.3）：vm 建的人能看能操作（新建后要扫码登录软件）；模板只有主管。
+- 分配：快照不含模板；`tasks.create/update` 选了模板 `BAD_REQUEST`「模板不能给任务用」；vm 只有 running 才分得到（自动分配跳过别的状态的），指定的那台（`desktop.use` 或已经分到的）没开着时工具报错「桌面「名字」关着，请在桌面页开机」（开机中是「正在开机，过一两分钟再试」），不挂起；允许的都用不了时也报错不挂起。

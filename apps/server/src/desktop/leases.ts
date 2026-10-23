@@ -120,8 +120,14 @@ export async function busyDesktopIds(db: DbLike, desktopIds: string[], exceptSes
  * （一台桌面只给一个运行用）。等「任一台」的叫醒后重新挑，抢不到就再排队。
  */
 export async function wakeDesktopWaiters(db: Db, desktopId: string): Promise<string[]> {
-  const [desktop] = await db.select({ name: t.desktops.name }).from(t.desktops).where(eq(t.desktops.id, desktopId))
+  const [desktop] = await db
+    .select({ name: t.desktops.name, kind: t.desktops.kind, vmState: t.desktopVms.state })
+    .from(t.desktops)
+    .leftJoin(t.desktopVms, eq(t.desktopVms.desktopId, t.desktops.id))
+    .where(eq(t.desktops.id, desktopId))
   if (!desktop) return []
+  // 模板不给运行用；系统开的桌面关着时叫醒了也用不上（开机连上以后由 desktop/vm 叫醒）
+  if (desktop.kind === "template" || (desktop.kind === "vm" && desktop.vmState !== "running")) return []
   const [lease] = await db.select({ id: t.desktopLeases.desktopId }).from(t.desktopLeases).where(eq(t.desktopLeases.desktopId, desktopId))
   if (lease) return []
   const waits = await db

@@ -200,19 +200,20 @@ export function BrowserFields({ control, domainText, domainError, onDomainText, 
 
 /** 选了「桌面」工具才出现：允许用哪些桌面、是否允许看画面（docs/dev/desktop.md 第 7 节） */
 export function DesktopFields({ control }: { control: Control<TaskInput> }) {
-  const desktops = useDesktopsQuery().data ?? []
+  // 模板不是给 agent 用的（docs/dev/desktop-vm.md 第 0 节），不列出来
+  const desktops = (useDesktopsQuery().data ?? []).filter((desktop) => desktop.kind !== "template")
   const options = desktops.map((desktop) => ({ value: desktop.id, label: desktop.name, hint: desktop.description }))
   return (
     <FieldSet className="sm:col-span-2">
       <FieldLegend variant="label">桌面</FieldLegend>
-      <FieldDescription>选了「桌面」工具才有这两项。agent 在登记好的 Windows 电脑上操作电脑软件：先读界面上的控件再点；要扫码、登录这类只有人能做的事，停下来交给负责人在远程画面里处理。</FieldDescription>
+      <FieldDescription>选了「桌面」工具才有这两项。agent 在「桌面」页里的 Windows 电脑上操作电脑软件：先读界面上的控件再点；要扫码、登录这类只有人能做的事，停下来交给负责人在远程画面里处理。</FieldDescription>
       <div className="grid gap-4 sm:grid-cols-2">
         <Controller
           control={control}
           name="desktopIds"
           render={({ field }) => (
             <MultiPick id="task-desktopIds" label="能用哪些桌面" options={options} value={field.value ?? []} onChange={field.onChange}
-              description={desktops.length ? "不选 = 全部都能用，agent 按每台的说明自己挑。都被占着时运行会排队等。" : "还没有桌面：先去「桌面」页登记。"} />
+              description={desktops.length ? "不选 = 全部都能用，agent 按每台的说明自己挑（关着的分不到）。都被占着时运行会排队等。" : "还没有桌面：先去「桌面」页新建一台。"} />
           )}
         />
         <Controller

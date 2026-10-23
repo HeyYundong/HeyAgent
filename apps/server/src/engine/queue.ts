@@ -37,6 +37,8 @@ export const QUEUES = {
   workSweep: "work.sweep",
   /** 派活：单最终结束时叫醒等 work.done:<单号> 的运行（第二期）；参数是单号 */
   workNotify: "work.notify",
+  /** 系统开的桌面：让一台虚拟机往目标状态走一步（建、开、关、重置、做成模板、删）；singletonKey = 桌面 id，同一台同时只有一个操作 */
+  desktopVm: "desktop.vm",
 } as const
 
 export const SCHEDULE_TZ = "Asia/Shanghai"
@@ -98,6 +100,14 @@ export function workPumpJobOptions(taskId: string): SendOptions {
   return { singletonKey: taskId, expireInSeconds: 300, retryLimit: 5, retryDelay: 5 }
 }
 
+/**
+ * desktop.vm 的任务参数：同一台桌面的操作排成一个（stately + singletonKey）。关机最多等 2 分钟、拉镜像几分钟、
+ * 复制磁盘几秒；出错由 worker 记在这台的状态里，pg-boss 只在进程崩溃时重试
+ */
+export function desktopVmJobOptions(desktopId: string): SendOptions {
+  return { singletonKey: desktopId, expireInSeconds: 3600, retryLimit: 3, retryDelay: 10 }
+}
+
 /** work.notify 的任务参数：只是找等待、resume，出错重试几次（叫醒是幂等的） */
 export function workNotifyJobOptions(): SendOptions {
   return { expireInSeconds: 300, retryLimit: 5, retryDelay: 5 }
@@ -116,6 +126,7 @@ const QUEUE_SETUP: { name: string; policy: "standard" | "stately" }[] = [
   { name: QUEUES.workPump, policy: "stately" },
   { name: QUEUES.workSweep, policy: "standard" },
   { name: QUEUES.workNotify, policy: "standard" },
+  { name: QUEUES.desktopVm, policy: "stately" },
 ]
 
 export async function ensureQueues(boss: PgBoss) {

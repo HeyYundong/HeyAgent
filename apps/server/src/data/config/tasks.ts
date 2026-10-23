@@ -76,9 +76,12 @@ async function checkTask(db: DbOrTx, input: TaskInput, previousRuleIds: string[]
     if (missing.length) throw badRequest(`找不到 Chrome 配置：${missing.join("、")}`)
   }
   if (input.desktopIds.length) {
-    const rows = await db.select({ id: t.desktops.id }).from(t.desktops).where(inArray(t.desktops.id, input.desktopIds))
+    const rows = await db.select({ id: t.desktops.id, kind: t.desktops.kind, name: t.desktops.name }).from(t.desktops).where(inArray(t.desktops.id, input.desktopIds))
     const missing = input.desktopIds.filter((id) => !rows.some((row) => row.id === id))
     if (missing.length) throw badRequest(`找不到桌面：${missing.join("、")}`)
+    // 模板不给运行用（docs/dev/desktop-vm.md 第 0 节）
+    const templates = rows.filter((row) => row.kind === "template")
+    if (templates.length) throw badRequest(`模板不能给任务用：${templates.map((row) => `「${row.name}」`).join("、")}（用它建一台桌面再选）`)
   }
   // 每个任务都自带的工具不用存关联
   const alwaysOn = input.toolIds.length

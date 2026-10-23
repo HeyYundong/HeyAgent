@@ -5,6 +5,7 @@
 import { z } from "zod"
 
 import { viewerClientMessageSchema } from "./browser-runtime.js"
+import { desktopKindSchema, desktopVmInfoSchema } from "./desktop-vm.js"
 
 const text = (message: string, max: number) => z.string({ error: message }).trim().min(1, message).max(max, `最多 ${max} 个字`)
 const httpUrl = (message: string) =>
@@ -41,6 +42,8 @@ export type DesktopUseState = z.infer<typeof desktopUseStateSchema>
 
 export const desktopSchema = z.object({
   id: z.string(),
+  /** manual 手动登记；vm 系统开的桌面；template 模板（docs/dev/desktop-vm.md） */
+  kind: desktopKindSchema,
   name: z.string(),
   description: z.string(),
   mcpUrl: z.string(),
@@ -55,6 +58,10 @@ export const desktopSchema = z.object({
     /** held 时保留到什么时候 */
     holdUntil: z.string().optional(),
   }),
+  /** 系统开的桌面和模板才有：虚拟机状态、存放位置 */
+  vm: desktopVmInfoSchema.optional(),
+  /** 谁建的（系统开的桌面：建的人能开关、重置、删除） */
+  createdById: z.string().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 })

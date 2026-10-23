@@ -1,10 +1,13 @@
 // 桌面配置（docs/dev/desktop.md 第 1、7 节）：名字、给 agent 看的说明、Windows-MCP 和桌面服务的地址、两个服务共用的密钥。
-// 密钥只存密文（secrets.scope = desktop，ref_id = 桌面 id），接口只给掩码。被运行占着的桌面不能删。只有主管能改。
+// 密钥只存密文（secrets.scope = desktop，ref_id = 桌面 id），接口只给掩码。被运行占着的桌面不能删。手动登记的只有主管能改。
+// 系统开的桌面和模板（kind vm / template，docs/dev/desktop-vm.md）：地址和密钥由系统管，这里只能改名字和说明；删除交给 worker（关机、删容器、删目录）。
 import { asc, count, eq, inArray } from "drizzle-orm"
 import type { Desktop, DesktopHealth } from "@heyagent/shared"
 
 import * as t from "../../db/schema.js"
 import { loadDesktopTarget, testDesktop } from "../../desktop/client.js"
+import { enqueueVm, loadVm } from "../../desktop/vm/lifecycle.js"
+import { assertCanManageVm, markVmDeleted, vmInfos } from "../../desktop/vm/service.js"
 import type { Db } from "../../db/client.js"
 import { assertCan, audit, badRequest, conflict, deleteSecret, freeId, notFound, putSecret, slugOf, type WriteCtx } from "./common.js"
 
@@ -41,6 +44,7 @@ export async function listDesktops(db: Db): Promise<Desktop[]> {
           )
         )
     : []
+  const vms = rows.some((row) => row.desktop.kind !== "manual") ? await vmInfos(db) : new Map()
   return rows.map(({ desktop, masked }) => {
     const found = leases.find((each) => each.lease.desktopId === desktop.id)
     const use: Desktop["use"] = found
@@ -52,14 +56,18 @@ export async function listDesktops(db: Db): Promise<Desktop[]> {
           ...(found.lease.state === "held" && found.lease.holdUntil ? { holdUntil: iso(found.lease.holdUntil) } : {}),
         }
       : { state: "free" }
+    const vm = vms.get(desktop.id)
     return {
       id: desktop.id,
+      kind: desktop.kind,
       name: desktop.name,
       description: desktop.description,
       mcpUrl: desktop.mcpUrl,
       agentUrl: desktop.agentUrl,
       keyMask: masked ?? "",
       use,
+      ...(vm ? { vm } : {}),
+      ...(desktop.createdById ? { createdById: desktop.createdById } : {}),
       createdAt: iso(desktop.createdAt),
       updatedAt: iso(desktop.updatedAt),
     }
@@ -75,7 +83,7 @@ export async function createDesktop(ctx: WriteCtx, input: DesktopFields & { key:
     // 新的排在最后
     const [last] = await tx.select({ n: count() }).from(t.desktops)
     const position = last?.n ?? 0
-    await tx.insert(t.desktops).values({ id, name: input.name, description: input.description, mcpUrl: input.mcpUrl, agentUrl: input.agentUrl, position })
+    await tx.insert(t.desktops).values({ id, kind: "manual", name: input.name, description: input.description, mcpUrl: input.mcpUrl, agentUrl: input.agentUrl, createdById: ctx.actor.id, position })
     const keySecretId = await putKey(tx, ctx, id, input.key)
     await tx.update(t.desktops).set({ keySecretId }).where(eq(t.desktops.id, id))
     await audit(tx, ctx.actor.id, "desktop.create", "desktops", id, { name: input.name, mcpUrl: input.mcpUrl, agentUrl: input.agentUrl, keySet: true })
@@ -84,6 +92,8 @@ export async function createDesktop(ctx: WriteCtx, input: DesktopFields & { key:
 }
 
 export async function updateDesktop(ctx: WriteCtx, input: DesktopFields & { id: string }) {
+  const [current] = await ctx.db.select({ kind: t.desktops.kind, createdById: t.desktops.createdById, mcpUrl: t.desktops.mcpUrl, agentUrl: t.desktops.agentUrl }).from(t.desktops).where(eq(t.desktops.id, input.id))
+  if (current && current.kind !== "manual") return updateSystemDesktop(ctx, input, current)
   assertCan(ctx.actor, "config.manage", {}, "只有主管能修改桌面")
   // 编辑时密钥留空 = 不改；填了就要和新建时一样至少 16 位
   if (input.key && input.key.length < 16) throw badRequest("密钥至少 16 位")
@@ -109,7 +119,35 @@ export async function updateDesktop(ctx: WriteCtx, input: DesktopFields & { id: 
   })
 }
 
+/** 系统开的桌面 / 模板：只能改名字和说明（地址、密钥由系统管）。vm 建的人和主管能改，模板只有主管 */
+async function updateSystemDesktop(ctx: WriteCtx, input: DesktopFields & { id: string }, current: { kind: string; createdById: string | null; mcpUrl: string; agentUrl: string }) {
+  assertCanManageVm(ctx, current, "修改")
+  if (input.key || input.mcpUrl !== current.mcpUrl || input.agentUrl !== current.agentUrl) throw badRequest("系统开的桌面和模板的地址、密钥由系统管，不能改（只能改名字和说明）")
+  await ctx.db.transaction(async (tx) => {
+    const [before] = await tx.select().from(t.desktops).where(eq(t.desktops.id, input.id))
+    if (!before) throw notFound("桌面", input.id)
+    const [sameName] = await tx.select({ id: t.desktops.id }).from(t.desktops).where(eq(t.desktops.name, input.name))
+    if (sameName && sameName.id !== input.id) throw conflict(`已经有叫「${input.name}」的桌面了`)
+    await tx.update(t.desktops).set({ name: input.name, description: input.description, updatedAt: new Date() }).where(eq(t.desktops.id, input.id))
+    const changed = (["name", "description"] as const).filter((key) => before[key] !== input[key])
+    await audit(tx, ctx.actor.id, "desktop.update", "desktops", input.id, { changed })
+  })
+}
+
 export async function deleteDesktop(ctx: WriteCtx, input: { id: string }) {
+  const vm = await loadVm(ctx.db, input.id)
+  if (vm) {
+    const [desktop] = await ctx.db.select({ kind: t.desktops.kind, createdById: t.desktops.createdById }).from(t.desktops).where(eq(t.desktops.id, input.id))
+    assertCanManageVm(ctx, desktop ?? { kind: vm.kind, createdById: null }, "删除")
+    if (vm.op === "delete") return
+    await ctx.db.transaction(async (tx) => {
+      const [lease] = await tx.select({ id: t.desktopLeases.desktopId }).from(t.desktopLeases).where(eq(t.desktopLeases.desktopId, input.id))
+      if (lease) throw conflict("桌面正被运行占着，先放开再删")
+      await markVmDeleted(ctx, tx, vm)
+    })
+    await enqueueVm(ctx.db, input.id)
+    return
+  }
   assertCan(ctx.actor, "config.manage", {}, "只有主管能删除桌面")
   await ctx.db.transaction(async (tx) => {
     const [before] = await tx.select().from(t.desktops).where(eq(t.desktops.id, input.id))
@@ -124,8 +162,10 @@ export async function deleteDesktop(ctx: WriteCtx, input: { id: string }) {
 
 /** 「测试连接」：MCP 列一次工具、桌面服务调 /health（各自最多 10 秒） */
 export async function testDesktopConnection(ctx: WriteCtx, input: { id: string }): Promise<DesktopHealth> {
-  // 和工具页的「连接并读取工具」一样只给主管：要用密钥连出去
-  assertCan(ctx.actor, "config.manage", {}, "只有主管能测试桌面连接")
+  // 和工具页的「连接并读取工具」一样只给主管：要用密钥连出去。系统开的桌面地址是系统填的，建的人也能测
+  const [desktop] = await ctx.db.select({ kind: t.desktops.kind, createdById: t.desktops.createdById }).from(t.desktops).where(eq(t.desktops.id, input.id))
+  if (desktop?.kind === "vm") assertCanManageVm(ctx, desktop, "测试")
+  else assertCan(ctx.actor, "config.manage", {}, "只有主管能测试桌面连接")
   const target = await loadDesktopTarget(ctx.db, ctx.keyring(), input.id)
   if (!target) throw notFound("桌面", input.id)
   return testDesktop(target)

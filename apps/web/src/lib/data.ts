@@ -35,6 +35,8 @@ export const useRulesQuery = () => useQuery(trpc.rules.list.queryOptions())
 export const useToolsQuery = () => useQuery(trpc.tools.list.queryOptions())
 export const useBrowsersQuery = () => useQuery(trpc.browsers.list.queryOptions())
 export const useDesktopsQuery = () => useQuery(trpc.desktops.list.queryOptions())
+/** 本机能不能开虚拟机、内存、存放位置（docs/dev/desktop-vm.md 第 2、3 节） */
+export const useDesktopHostQuery = () => useQuery(trpc.desktops.host.queryOptions())
 export const usePlatformsQuery = () => useQuery(trpc.platforms.list.queryOptions())
 export const useModelsQuery = () => useQuery(trpc.models.overview.queryOptions())
 

@@ -57,7 +57,7 @@ export interface FakeMcp {
   close(): Promise<void>
 }
 
-export async function startFakeMcp(key: string): Promise<FakeMcp> {
+export async function startFakeMcp(key: string, options: { port?: number } = {}): Promise<FakeMcp> {
   const state = { calls: [] as FakeMcp["calls"], rejected: 0, blocks: [] as ControlBlockSpec[], always: undefined as ControlBlockSpec | undefined, blocked: [] as FakeMcp["blocked"] }
   const build = () => {
     const server = new McpServer({ name: "fake-windows-mcp", version: "0.8.8" })
@@ -88,7 +88,7 @@ export async function startFakeMcp(key: string): Promise<FakeMcp> {
   }
   const handler = createMcpHandler(build, { legacy: "stateless" })
   const http = serve({
-    port: 0,
+    port: options.port ?? 0,
     hostname: "127.0.0.1",
     fetch: (request: Request) => {
       if (request.headers.get("authorization") !== `Bearer ${key}`) {
@@ -164,7 +164,8 @@ const DOWNLOAD_ROOTS = ["c:\\users\\", "c:\\heyagent\\files\\"]
  * WebSocket 先接受再用 4401 关；错误都是 { error }；截图失败 503；取文件的路径不在白名单 403、不存在 404；
  * X-File-Name 是百分号编码的 UTF-8；重名加「 (1)」
  */
-export async function startFakeAgent(key: string): Promise<FakeAgent> {
+/** options.port：绑这个端口（系统开的桌面的测试里，假的 Podman「开机」时在分到的端口上起它） */
+export async function startFakeAgent(key: string, options: { port?: number } = {}): Promise<FakeAgent> {
   const jpeg = await sharp({ create: { width: 64, height: 36, channels: 3, background: { r: 20, g: 40, b: 60 } } }).jpeg().toBuffer()
   const files = new Map<string, Buffer>()
   const state = { viewMessages: [] as unknown[], viewConnections: 0, screenshots: 0, screenshotWidths: [] as (string | null)[], failScreenshot: false, omitFileNameHeader: false, typed: [] as string[], noType: false }
@@ -275,7 +276,10 @@ export async function startFakeAgent(key: string): Promise<FakeAgent> {
       })
     })
   })
-  await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve))
+  await new Promise<void>((resolve, reject) => {
+    http.once("error", reject)
+    http.listen(options.port ?? 0, "127.0.0.1", resolve)
+  })
   const port = (http.address() as AddressInfo).port
   return {
     url: `http://127.0.0.1:${port}`,

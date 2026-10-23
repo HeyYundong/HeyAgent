@@ -1,5 +1,5 @@
 // 新建一次运行：冻结任务配置（快照）、建检查点、关联附件、写第一条消息、排进 session.run。
-import { and, asc, count, eq, inArray, like, or } from "drizzle-orm"
+import { and, asc, count, eq, inArray, like, ne, or } from "drizzle-orm"
 import {
   ALWAYS_ON_BUILTIN_TOOLS,
   BROWSER_TOOL_ID,
@@ -181,7 +181,8 @@ export async function buildSnapshot(
     const desktops = await db
       .select({ id: t.desktops.id, name: t.desktops.name, description: t.desktops.description })
       .from(t.desktops)
-      .where(task.desktopIds.length ? inArray(t.desktops.id, task.desktopIds) : undefined)
+      // 模板不给运行用（docs/dev/desktop-vm.md 第 0 节）；系统开的桌面关着时分配时跳过
+      .where(and(ne(t.desktops.kind, "template"), task.desktopIds.length ? inArray(t.desktops.id, task.desktopIds) : undefined))
       .orderBy(asc(t.desktops.position), asc(t.desktops.createdAt))
     desktop = { desktops, allowVision: task.allowDesktopVision }
   }

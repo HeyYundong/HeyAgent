@@ -1,4 +1,4 @@
-// 设置页（主管专用）：一列内容，八张卡片——运行上限、agent（验收轮数、上下文压缩）、派活（四个上限）、助手（两个上限）、浏览器、外部事件令牌、API 密钥、通知渠道。
+// 设置页（主管专用）：一列内容，九张卡片——运行上限、agent（验收轮数、上下文压缩）、派活（四个上限）、助手（两个上限）、浏览器、桌面存放位置、外部事件令牌、API 密钥、通知渠道。
 import { useQuery } from "@tanstack/react-query"
 import { SettingsIcon, ShieldOffIcon } from "lucide-react"
 import { can, type SettingsView } from "@heyagent/shared"
@@ -13,11 +13,12 @@ import { ApiKeysSection } from "./api-keys-section"
 import { AssistantSection } from "./assistant-section"
 import { BrowserSection } from "./browser-section"
 import { ChannelsSection } from "./channels-section"
+import { DesktopStorageSection } from "./desktop-storage-section"
 import { DispatchSection } from "./dispatch-section"
 import { LimitsSection } from "./limits-section"
 import { TokenSection } from "./token-section"
 
-const DESCRIPTION = "全局生效的几项设置：agent 跑多久要停下来问人、验收问几轮、上下文多长就压缩、派活和助手的上限、浏览器开多少、外部系统怎么发事件进来和调接口、通知推到哪里。"
+const DESCRIPTION = "全局生效的几项设置：agent 跑多久要停下来问人、验收问几轮、上下文多长就压缩、派活和助手的上限、浏览器开多少、桌面存在哪块盘、外部系统怎么发事件进来和调接口、通知推到哪里。"
 
 export default function SettingsPage() {
   const { user } = useMe()
@@ -53,6 +54,7 @@ function SettingsManager() {
           <DispatchSection values={dispatchOf(settings)} />
           <AssistantSection values={settings.assistant} />
           <BrowserSection values={settings.browser} />
+          <DesktopStorageSection />
           <TokenSection token={settings.eventToken} />
           <ApiKeysSection />
           <ChannelsSection channels={settings.channels} />

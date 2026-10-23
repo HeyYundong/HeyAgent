@@ -41,6 +41,10 @@ export interface ActionResources {
   "compare.create": Record<string, never>
   /** 删除一条比对记录：发起的人（API 密钥发起的算密钥的创建人）；比对标准是配置，用 config.manage */
   "compare.manage": { createdById: string }
+  /** 从模板新建系统开的桌面（所有人；模板、存放位置的设置是 config.manage） */
+  "desktop.create": Record<string, never>
+  /** 系统开的桌面开机、关机、重启、重置、删除、改名：建的人 */
+  "desktop.manage": { createdById: string }
   /** 派活单的重办、不办了、改参数：被派任务的负责人（人手动派一张用被派任务的 task.manage） */
   "work.manage": { taskOwnerId: string }
 }
@@ -54,6 +58,7 @@ export function can<A extends Action>(user: Actor, action: A, resource: ActionRe
     case "browser.login":
     case "gallery.upload":
     case "compare.create":
+    case "desktop.create":
       return true
     case "task.create":
     case "config.manage":
@@ -78,6 +83,8 @@ export function can<A extends Action>(user: Actor, action: A, resource: ActionRe
       return (resource as ActionResources["gallery.manage"]).createdById === user.id
     case "compare.manage":
       return (resource as ActionResources["compare.manage"]).createdById === user.id
+    case "desktop.manage":
+      return (resource as ActionResources["desktop.manage"]).createdById === user.id
     case "work.manage":
       return (resource as ActionResources["work.manage"]).taskOwnerId === user.id
     default:

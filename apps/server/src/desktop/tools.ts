@@ -35,6 +35,7 @@ import {
 import { acquireDesktop, busyDesktopIds, DESKTOP_HEARTBEAT_MS, holdDesktop, releaseSessionDesktop, renewDesktopLease } from "./leases.js"
 import { desktopControlRetry, HUMAN_BUSY_TEXT, parseControlBlock, retryable, retryDelayMs } from "./control.js"
 import { DESKTOP_MCP_TOOL_DEFS } from "./mcp-tools.js"
+import { desktopAvailability } from "./vm/service.js"
 
 export interface DesktopToolEntry {
   id: string
@@ -221,6 +222,8 @@ export class DesktopTools {
     if (this.assigned === desktopId) return { output: `这次运行已经在用桌面「${this.desktopName(desktopId)}」（${desktopId}），不用再指定。` }
     if (this.assigned)
       return fail(`一次运行只能用一台桌面：这次运行已经在用桌面「${this.desktopName(this.assigned)}」（${this.assigned}），不能换成 ${desktopId}。接着用现在这台就行。`)
+    const unavailable = await this.unavailable([desktopId])
+    if (unavailable.has(desktopId)) return fail(unavailable.get(desktopId)!)
     await this.assign(desktopId)
     return { output: `已指定桌面「${this.desktopName(desktopId)}」（${desktopId}），这次运行之后都用它。下一次调桌面工具时占用；它正被别的运行用着的话会挂起等它。` }
   }
@@ -262,13 +265,38 @@ export class DesktopTools {
   }
 
   /**
+   * 现在不能分给运行的桌面和原因（docs/dev/desktop-vm.md 第 0 节）：模板；系统开的桌面没开着（关着、开机中、出错……）。
+   * 手动登记的不在这里判断（连不上时再报）
+   */
+  private async unavailable(ids: string[]): Promise<Map<string, string>> {
+    const result = new Map<string, string>()
+    for (const [id, info] of await desktopAvailability(this.ctx.db, ids)) {
+      const name = this.desktopName(id)
+      if (info.kind === "template") result.set(id, `「${name}」是模板，不能给运行用`)
+      else if (info.kind === "vm" && info.state !== "running")
+        result.set(id, info.state === "starting" ? `桌面「${name}」正在开机，过一两分钟再试` : `桌面「${name}」关着，请在桌面页开机`)
+    }
+    return result
+  }
+
+  /**
    * 每次调桌面工具前：分配 / 占用 / 续约。返回连接信息，或者要交给 agent 的结果（报错、挂起等桌面）。
-   * 第一次分配时按顺序挑空着的、能连上的；连不上的放开换下一台。
+   * 第一次分配时按顺序挑空着的、能连上的；连不上的放开换下一台。系统开的桌面关着的跳过；指定的那台关着直接报错（不挂起）
    */
   private async ensure(): Promise<DesktopTarget | ToolOutcome> {
     if (!this.desktops.length) return fail("本任务没有可用的桌面（任务里允许的桌面都不在了），请让负责人检查任务设置")
     if (this.assigned) {
       const desktopId = this.assigned
+      const unavailable = (await this.unavailable([desktopId])).get(desktopId)
+      if (unavailable) {
+        // 关着就不占着它（放开等它的人），开机后下一次调工具再占
+        if (this.holding) {
+          await this.dropConnection()
+          await releaseSessionDesktop(this.ctx.db, this.ctx.session.id, { desktopId })
+          this.holding = false
+        }
+        return fail(`${unavailable}。这次运行指定了这台桌面，换不了别的；先不要反复重试，停下来报告。`)
+      }
       if ((await this.take(desktopId)) === "busy") {
         this.holding = false
         return this.busyOutcome(desktopId)
@@ -277,7 +305,11 @@ export class DesktopTools {
       if (!target) return fail(`桌面 ${desktopId} 已经被删掉了，这次运行用不了桌面，请报告给负责人`)
       return target
     }
-    const ids = this.desktops.map((desktop) => desktop.id)
+    const allowed = this.desktops.map((desktop) => desktop.id)
+    const unavailable = await this.unavailable(allowed)
+    const ids = allowed.filter((id) => !unavailable.has(id))
+    if (ids.length === 0)
+      return fail(`本任务允许的桌面现在都用不了：${[...unavailable.values()].join("；")}。先不要反复重试，停下来报告。`)
     const busy = await busyDesktopIds(this.ctx.db, ids, this.ctx.session.id)
     const errors: string[] = []
     for (const desktopId of ids.filter((id) => !busy.has(id))) {

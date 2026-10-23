@@ -207,11 +207,16 @@ export function MasterDetail({
 
 // ---------- 列表 ----------
 
-/** 一组列表项，可带一个小标题（例如按范围、岗位、阶段分组） */
-export function PickGroup({ label, children }: { label?: string; children: React.ReactNode }) {
+/** 一组列表项，可带一个小标题（例如按范围、岗位、阶段分组）；action 是小标题右边的一个小按钮（可选） */
+export function PickGroup({ label, action, children }: { label?: string; action?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1">
-      {label && <span className="px-1 text-xs text-muted-foreground">{label}</span>}
+      {(label || action) && (
+        <div className="flex items-center justify-between gap-2 px-1">
+          <span className="text-xs text-muted-foreground">{label}</span>
+          {action}
+        </div>
+      )}
       <ItemGroup className="gap-1">{children}</ItemGroup>
     </div>
   )

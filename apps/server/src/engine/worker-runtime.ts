@@ -7,6 +7,8 @@ import { BrowserManager, setBrowserManager } from "../browser/manager.js"
 import { recoverRunningComparisons, runComparison } from "../compare/run.js"
 import { ensureDefaultStandard } from "../compare/service.js"
 import { DESKTOP_SWEEP_MS, sweepDesktops } from "../desktop/leases.js"
+import { vmConfig } from "../desktop/vm/config.js"
+import { runVmJob, sweepVms, vmHealthTick } from "../desktop/vm/lifecycle.js"
 import { runImportRead } from "../imports/reader.js"
 import type { Db } from "../db/client.js"
 import { cleanupSessionSandbox, sweepSandboxDirs, sweepThrottled } from "../sandbox/code-run.js"
@@ -47,6 +49,11 @@ export interface EngineWorkerOptions {
   browserControlPort?: number | false
   /** 桌面巡查的间隔（毫秒）。默认 HEYAGENT_DESKTOP_SWEEP_MS 或 30 秒；false = 不开定时巡查（测试里自己调 sweepDesktops，免得和断言抢） */
   desktopSweepMs?: number | false
+  /**
+   * 系统开的桌面的对账间隔（毫秒），开机中的健康检查另有 5 秒的定时器。默认 HEYAGENT_DESKTOP_VM_SWEEP_MS 或 30 秒；
+   * false = 不开这两个定时器（测试里自己调 sweepVms / vmHealthTick）。desktop.vm 任务照常处理
+   */
+  desktopVmSweepMs?: number | false
 }
 
 export interface EngineWorker {
@@ -107,6 +114,25 @@ export async function startEngineWorker(
           void sweepDesktops(db).catch((error) => console.warn("[worker] 桌面巡查出错", error))
         }, options.desktopSweepMs ?? DESKTOP_SWEEP_MS)
   desktopSweep?.unref()
+
+  // 系统开的桌面（docs/dev/desktop-vm.md 第 1 节）：对账、开机中的查 /health。只在配了 Podman 时有事做
+  let vmSweep: NodeJS.Timeout | undefined
+  let vmHealth: NodeJS.Timeout | undefined
+  if (options.desktopVmSweepMs !== false) {
+    let healthBusy = false
+    vmSweep = setInterval(() => {
+      void sweepVms(db).catch((error) => console.warn("[worker] 虚拟机对账出错", error))
+    }, options.desktopVmSweepMs ?? vmConfig.sweepMs)
+    vmHealth = setInterval(() => {
+      if (healthBusy) return
+      healthBusy = true
+      void vmHealthTick(db)
+        .catch((error) => console.warn("[worker] 虚拟机健康检查出错", error))
+        .finally(() => (healthBusy = false))
+    }, vmConfig.healthMs)
+    vmSweep.unref()
+    vmHealth.unref()
+  }
 
   let stopping = false
   const controllers = new Set<AbortController>()
@@ -227,6 +253,9 @@ export async function startEngineWorker(
   // 派活：单最终结束时叫醒等 work.done:<单号> 的运行（第二期）
   await boss.work<{ itemId: string }>(QUEUES.workNotify, polling, async ([job]) => job && (await onWorkNotify(db, job.data)))
   await boss.schedule(QUEUES.workSweep, "* * * * *", {}, { tz: SCHEDULE_TZ })
+  // 系统开的桌面：一台一个操作（同一台排着的只留一个）。几台可以同时做（关机要等 2 分钟）
+  await boss.work<{ desktopId: string }>(QUEUES.desktopVm, { ...polling, localConcurrency: 4 }, async ([job]) => job && (await runVmJob(db, job.data.desktopId)))
+  if (options.desktopVmSweepMs !== false) await sweepVms(db).catch((error) => console.warn("[worker] 虚拟机对账出错", error))
 
   const comparisons = await recoverRunningComparisons(db, (name, data, options) => boss.send(name, data, options))
   if (comparisons) log(`有 ${comparisons} 条比对中的比物，已排队继续`)
@@ -252,6 +281,8 @@ export async function startEngineWorker(
     async stop() {
       stopping = true
       clearInterval(desktopSweep)
+      clearInterval(vmSweep)
+      clearInterval(vmHealth)
       for (const controller of controllers) controller.abort()
       await boss.stop({ graceful: true, timeout: 20_000 })
       // 运行都停了以后：剩下的 Chrome（等人处理保留着的、打开 Chrome的）写回或直接关掉

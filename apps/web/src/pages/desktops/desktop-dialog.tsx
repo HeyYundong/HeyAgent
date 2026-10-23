@@ -1,4 +1,5 @@
-// 新建 / 编辑桌面（只有主管）：名字、给 agent 看的说明、Windows-MCP 地址、桌面服务地址、密钥。
+// 登记已有电脑 / 编辑桌面：名字、给 agent 看的说明、Windows-MCP 地址、桌面服务地址、密钥（登记、编辑手动登记的只有主管）。
+// 系统开的桌面和模板（kind vm / template）地址和密钥由系统管，编辑时只改名字和说明（建的人和主管，docs/dev/desktop-vm.md 第 5 节）。
 // 表单：React Hook Form + shared 的 desktopCreateSchema（新建，密钥必填）/ desktopUpdateSchema（编辑，密钥留空 = 不改）。密钥只进不出。
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm, type Resolver } from "react-hook-form"
@@ -17,10 +18,14 @@ import { trpc } from "@/lib/trpc"
 
 type Values = DesktopInput & { id?: string }
 
+/** 系统开的桌面、模板：只校验名字和说明（地址是系统填的，原样带回去） */
+const nameOnlySchema = desktopUpdateSchema.pick({ id: true, name: true, description: true })
+
 /** desktop 不传就是新建 */
 export function DesktopDialog({ desktop, onClose }: { desktop?: Desktop; onClose: () => void }) {
+  const nameOnly = !!desktop && desktop.kind !== "manual"
   const form = useForm<Values>({
-    resolver: zodResolver(desktop ? desktopUpdateSchema : desktopCreateSchema) as unknown as Resolver<Values>,
+    resolver: zodResolver(nameOnly ? nameOnlySchema : desktop ? desktopUpdateSchema : desktopCreateSchema) as unknown as Resolver<Values>,
     defaultValues: {
       ...(desktop ? { id: desktop.id } : {}),
       name: desktop?.name ?? "",
@@ -36,7 +41,9 @@ export function DesktopDialog({ desktop, onClose }: { desktop?: Desktop; onClose
   const pending = create.isPending || update.isPending
 
   const submit = form.handleSubmit(async (values) => {
-    const input = { name: values.name, description: values.description ?? "", mcpUrl: values.mcpUrl, agentUrl: values.agentUrl }
+    const input = nameOnly
+      ? { name: values.name, description: values.description ?? "", mcpUrl: desktop.mcpUrl, agentUrl: desktop.agentUrl }
+      : { name: values.name, description: values.description ?? "", mcpUrl: values.mcpUrl, agentUrl: values.agentUrl }
     const key = values.key?.trim()
     if (desktop) {
       // 编辑时密钥留空 = 不改。desktops.update 不返回内容，不能用 submit 的返回值判断成没成功；失败时 useAction 已经弹了 toast
@@ -60,8 +67,12 @@ export function DesktopDialog({ desktop, onClose }: { desktop?: Desktop; onClose
       <DialogContent className="max-h-svh overflow-y-auto sm:max-w-lg">
         <form onSubmit={submit} className="flex flex-col gap-4">
           <DialogHeader>
-            <DialogTitle>{desktop ? `编辑「${desktop.name}」` : "登记桌面"}</DialogTitle>
-            <DialogDescription>一台装好了 Windows-MCP 和桌面服务的 Windows 电脑（虚拟机或实体机都行）。同一时间只给一个运行用；任务要用桌面时，系统从任务允许的桌面里挑一台空着的。</DialogDescription>
+            <DialogTitle>{desktop ? `编辑「${desktop.name}」` : "登记已有电脑"}</DialogTitle>
+            <DialogDescription>
+              {nameOnly
+                ? "改名字和说明。这台是系统开的，地址和密钥由系统管。"
+                : "一台已经装好了 Windows-MCP 和桌面服务的 Windows 电脑（实体机，或别处的虚拟机）。同一时间只给一个运行用；任务要用桌面时，系统从任务允许的桌面里挑一台空着的。"}
+            </DialogDescription>
           </DialogHeader>
           <FieldGroup>
             <Field data-invalid={!!errors.name}>
@@ -75,26 +86,30 @@ export function DesktopDialog({ desktop, onClose }: { desktop?: Desktop; onClose
               <FieldDescription>写清楚装了哪些软件、登的哪个账号。任务允许好几台桌面时，agent 靠这段话挑。</FieldDescription>
               <FieldError errors={[errors.description]} />
             </Field>
-            <Field data-invalid={!!errors.mcpUrl}>
-              <FieldLabel htmlFor="dk-mcp">Windows-MCP 地址</FieldLabel>
-              <Input id="dk-mcp" className="font-mono" spellCheck={false} placeholder="http://10.0.0.21:8000/mcp" aria-invalid={!!errors.mcpUrl} {...form.register("mcpUrl")} />
-              <FieldDescription>agent 读界面、点击、输入走这个服务，默认端口 8000，路径 /mcp。</FieldDescription>
-              <FieldError errors={[errors.mcpUrl]} />
-            </Field>
-            <Field data-invalid={!!errors.agentUrl}>
-              <FieldLabel htmlFor="dk-agent">桌面服务地址</FieldLabel>
-              <Input id="dk-agent" className="font-mono" spellCheck={false} placeholder="http://10.0.0.21:8001" aria-invalid={!!errors.agentUrl} {...form.register("agentUrl")} />
-              <FieldDescription>远程画面、截图、传文件走这个服务，默认端口 8001。</FieldDescription>
-              <FieldError errors={[errors.agentUrl]} />
-            </Field>
-            <Field data-invalid={!!errors.key}>
-              <FieldLabel htmlFor="dk-key">密钥</FieldLabel>
-              <Input id="dk-key" type="password" autoComplete="new-password" className="font-mono"
-                placeholder={desktop?.keyMask ? `已存过（${desktop.keyMask}），不改就留空` : "装桌面服务时填的那个，至少 16 位"}
-                aria-invalid={!!errors.key} {...form.register("key")} />
-              <FieldDescription>两个服务共用，和在那台电脑上运行 install.ps1 时 -Key 填的一样。只加密存在服务器上，页面上不再显示。</FieldDescription>
-              <FieldError errors={[errors.key]} />
-            </Field>
+            {!nameOnly && (
+              <>
+                <Field data-invalid={!!errors.mcpUrl}>
+                  <FieldLabel htmlFor="dk-mcp">Windows-MCP 地址</FieldLabel>
+                  <Input id="dk-mcp" className="font-mono" spellCheck={false} placeholder="http://10.0.0.21:8000/mcp" aria-invalid={!!errors.mcpUrl} {...form.register("mcpUrl")} />
+                  <FieldDescription>agent 读界面、点击、输入走这个服务，默认端口 8000，路径 /mcp。</FieldDescription>
+                  <FieldError errors={[errors.mcpUrl]} />
+                </Field>
+                <Field data-invalid={!!errors.agentUrl}>
+                  <FieldLabel htmlFor="dk-agent">桌面服务地址</FieldLabel>
+                  <Input id="dk-agent" className="font-mono" spellCheck={false} placeholder="http://10.0.0.21:8001" aria-invalid={!!errors.agentUrl} {...form.register("agentUrl")} />
+                  <FieldDescription>远程画面、截图、传文件走这个服务，默认端口 8001。</FieldDescription>
+                  <FieldError errors={[errors.agentUrl]} />
+                </Field>
+                <Field data-invalid={!!errors.key}>
+                  <FieldLabel htmlFor="dk-key">密钥</FieldLabel>
+                  <Input id="dk-key" type="password" autoComplete="new-password" className="font-mono"
+                    placeholder={desktop?.keyMask ? `已存过（${desktop.keyMask}），不改就留空` : "装桌面服务时填的那个，至少 16 位"}
+                    aria-invalid={!!errors.key} {...form.register("key")} />
+                  <FieldDescription>两个服务共用，和在那台电脑上运行 install.ps1 时 -Key 填的一样。只加密存在服务器上，页面上不再显示。</FieldDescription>
+                  <FieldError errors={[errors.key]} />
+                </Field>
+              </>
+            )}
           </FieldGroup>
           <DialogFooter>
             <DialogClose render={<Button type="button" variant="outline" />}>取消</DialogClose>

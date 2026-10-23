@@ -5,6 +5,8 @@
 #   HEYAGENT_SEED_DEMO=1 scripts/pod.sh up   起来后灌演示数据（只给开发用，默认不灌）
 #   HEYAGENT_SKIP_BUILD=1 scripts/pod.sh up  不重新构建镜像（镜像已经有了时省时间）
 #   HEYAGENT_PUBLIC_URL                      控制台对外的地址，默认 http://localhost:8080（better-auth 的 baseURL）
+#   HEYAGENT_DESKTOP_STORAGE_ROOTS=/a,/b     开「系统开的桌面」：虚拟机存在这些目录（同路径挂进 api、worker），先 scripts/desktop-host.sh setup；
+#                                            HEYAGENT_HOST_PODMAN_SOCKET 换 Podman API 的 socket（默认 systemd 的 podman.socket），见 docs/ops.md 第 14 节
 # OpenRouter 的 key 从仓库根目录 .env 的 OPENROUTER_API_KEY 读，写进卷里 0400 的文件（不进 configmap、不打印）；
 # 管理员不预先建：空白环境第一次打开控制台时，在「设置管理员」页自己定账号和密码。
 # 兼容 Podman 3.4（podman play kube）和 4.x 以上（podman kube play）。数据卷 down 时保留；要清空用 reset。
@@ -14,6 +16,8 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 POD=heyagent
 YAML=$ROOT/deploy/pod.yaml
 STATE=$ROOT/.dev/pod
+# 实际 play 的 pod 描述：deploy/pod.yaml 加上桌面虚拟机的挂载（没开就是原样的一份）
+RENDERED=$STATE/pod.yaml
 CONFIG=$STATE/config.yaml
 SECRETS=$STATE/secrets.env
 KEK=${HEYAGENT_KEK_FILE:-$ROOT/.dev/kek}
@@ -34,6 +38,9 @@ TRUSTED_ORIGINS=${HEYAGENT_TRUSTED_ORIGINS:-http://localhost:8080,http://127.0.0
 # 按版本号判断：3.4 上 `podman kube play --help` 也会返回 0（打印的是别的帮助），不能拿它判断
 PODMAN_MAJOR=$(podman version --format '{{.Client.Version}}' | cut -d. -f1)
 if [ "$PODMAN_MAJOR" -ge 4 ]; then PLAY=(podman kube play); else PLAY=(podman play kube); fi
+
+# shellcheck source=scripts/desktop-host.sh
+. "$ROOT/scripts/desktop-host.sh"
 
 pod_exists() { podman pod exists "$POD"; }
 
@@ -88,7 +95,9 @@ data:
   TRUSTED_ORIGINS: "$TRUSTED_ORIGINS"
   SEED_PASSWORD: "${seed_password:-heyagent-dev}"
   TZ: "Asia/Shanghai"
+$(desktop_config_lines)
 YAML
+  desktop_render_yaml "$YAML" "$RENDERED"
 }
 
 # 卷：没有就建。主密钥和 OpenRouter key 每次 up 都重新拷进 heyagent-pod-secrets（属主 uid 1000，权限 0400）：
@@ -146,8 +155,14 @@ up() {
     echo "== pod $POD 已经在了，先停掉重建（数据卷保留）"
     "${PLAY[@]}" --down "$YAML" >/dev/null
   fi
-  echo "== ${PLAY[*]} deploy/pod.yaml"
-  "${PLAY[@]}" --configmap "$CONFIG" "$YAML"
+  local network=()
+  if desktop_enabled; then
+    echo "== 系统开的桌面：存放位置 $(desktop_roots | paste -sd, -)"
+    desktop_check || { echo "桌面虚拟机的准备没通过（上面 ✗ 的项），先处理，或者去掉 HEYAGENT_DESKTOP_STORAGE_ROOTS" >&2; exit 1; }
+    network=(--network "$DESKTOP_NETWORK")
+  fi
+  echo "== ${PLAY[*]} ${network[*]} .dev/pod/pod.yaml"
+  "${PLAY[@]}" "${network[@]}" --configmap "$CONFIG" "$RENDERED"
   wait_healthy
   if [ "${HEYAGENT_SEED_DEMO:-0}" = "1" ]; then
     echo "== 灌演示数据"

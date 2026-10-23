@@ -533,12 +533,14 @@ export const TOOLS: Record<string, ToolDef> = {
     },
   }),
   list_desktops: read({
-    description: "列桌面（编号、名字、给 agent 看的说明、现在空着还是被运行占着）。只读",
+    description: "列桌面（编号、名字、给 agent 看的说明、现在空着还是被运行占着；系统开的桌面带开着没有）。模板不能给任务用，不列。只读",
     input: z.object({}),
     label: () => "查桌面",
     run: async (ctx) => {
-      const rows = await listDesktops(ctx.db)
-      return { desktops: rows.map((desktop) => ({ id: desktop.id, name: desktop.name, description: desktop.description, use: desktop.use.state })) }
+      const rows = (await listDesktops(ctx.db)).filter((desktop) => desktop.kind !== "template")
+      return {
+        desktops: rows.map((desktop) => ({ id: desktop.id, name: desktop.name, description: desktop.description, use: desktop.use.state, ...(desktop.vm ? { vmState: desktop.vm.state } : {}) })),
+      }
     },
   }),
   list_sessions: read({

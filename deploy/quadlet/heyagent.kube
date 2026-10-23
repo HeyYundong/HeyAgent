@@ -4,6 +4,8 @@
 #   heyagent-config.yaml   ConfigMap：对外地址、允许的来源、时区（没有密码）
 # 改了这些文件要 systemctl --user daemon-reload，再 systemctl --user restart heyagent。
 # 写法参照 podman-systemd.unit(5)，只用 4.4 就有的键。
+# 配了桌面虚拟机的存放位置（heyagent.env 的 HEYAGENT_DESKTOP_STORAGE_ROOTS）时，server-install.sh 在 ConfigMap= 下面加一行
+#   Network=slirp4netns:allow_host_loopback=true（pod 里连宿主机 127.0.0.1 上虚拟机的端口，docs/ops.md 第 14 节）。
 #
 # 启动 = podman kube play（容器都按 heyagent.yaml 重新建，数据卷保留）；停止 = podman kube down。
 # 开机自启靠 [Install] 和 loginctl enable-linger（server-install.sh 检查）；quadlet 生成的服务不用 systemctl enable。

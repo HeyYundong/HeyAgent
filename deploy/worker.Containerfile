@@ -6,6 +6,7 @@
 # 运行时要的环境变量同 API（.env.example）：DATABASE_URL、HEYAGENT_KEK_FILE（整套 pod 里是卷里 0400 的文件）；
 # 另有 HEYAGENT_FILES_DIR（文件卷，和 API 挂同一个），可选 HEYAGENT_WORKER_CONCURRENCY 等（见 src/worker.ts）；
 # HEYAGENT_BROWSER_CONTROL_PORT：浏览器内部控制接口（只绑 127.0.0.1，API 经它开 Chrome 登录、转发远程画面），默认 3190。
+# 系统开的桌面要的（HEYAGENT_PODMAN_SOCKET、HEYAGENT_DESKTOP_STORAGE_ROOTS 等）见 docs/ops.md 第 14 节，pod.sh / server-install.sh 按配置加。
 # 数据库迁移由 API 容器启动时执行，worker 不跑迁移：pod 里 worker 等 API 健康了再起（deploy/pod.yaml）。
 
 # ---------- 构建：和 API 镜像同一套步骤 ----------
@@ -66,4 +67,8 @@ RUN chmod 0644 /etc/opt/chrome/policies/managed/heyagent.json
 USER browser
 WORKDIR /app
 COPY --from=build --chown=browser:browser /out ./
+# 系统开的桌面（docs/dev/desktop-vm.md）：做模板时 worker 把桌面服务（Python 源码和 install.ps1，不到 200 KB）放进虚拟机的 OEM 目录。
+# 放在最后，改桌面服务不用重建上面的层；tests 目录做 OEM 时会跳过
+COPY --chown=browser:browser apps/desktop-agent /opt/heyagent/desktop-agent
+ENV HEYAGENT_DESKTOP_AGENT_DIR=/opt/heyagent/desktop-agent
 CMD ["node", "dist/worker.js"]

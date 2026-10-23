@@ -4,6 +4,9 @@
 #   2. 镜像用 :current 标签（scripts/deploy.sh 升级时把上一版留成 :previous，可以退回）；
 #   3. 配置（对外地址、允许的来源）来自 heyagent-config.yaml（server-install.sh 生成，Quadlet 的 ConfigMap= 引用，里面没有密码）。
 # 改 deploy/pod.yaml 里的容器（启动命令、环境变量、挂载、安全参数）时，这里要一起改。
+# 系统开的桌面（可选，docs/ops.md 第 14 节）：heyagent.env 里 HEYAGENT_DESKTOP_STORAGE_ROOTS 不空时，server-install.sh 把三处「# @desktop-vm:…」
+#   占位注释换成挂载（Podman API socket 的目录、各存放位置同路径、api 的 /host/sys），heyagent-config.yaml 加 HEYAGENT_PODMAN_SOCKET 等，
+#   heyagent.kube 加 Network=slirp4netns:allow_host_loopback=true。写法和原因见 scripts/desktop-host.sh。
 #
 # Podman secret 怎么进容器：
 #   kube play 的 secret 卷引用同名的 Podman secret，secret 的内容是一份 Kubernetes Secret（server-install.sh 按这个格式写）。
@@ -95,6 +98,7 @@ spec:
           readOnly: true
         - name: files
           mountPath: /data/files
+        # @desktop-vm:api-mounts
 
     - name: worker
       image: localhost/heyagent-worker:current
@@ -132,6 +136,7 @@ spec:
           readOnly: true
         - name: files
           mountPath: /data/files
+        # @desktop-vm:worker-mounts
 
     - name: web
       image: localhost/heyagent-web:current
@@ -167,3 +172,4 @@ spec:
       secret:
         secretName: heyagent-openrouter
         defaultMode: 292
+    # @desktop-vm:volumes

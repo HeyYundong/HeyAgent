@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # HeyAgent 正式服务器的安装（Ubuntu 24.04 + Podman 4.4 以上，普通用户 rootless 运行，Quadlet 交给 systemd 管理）。
 # 可以重复执行：已经有的 secret、卷、配置都不动，只补缺的；镜像和单元文件每次按当前代码更新，最后重启服务。
-# 步骤：检查环境 → 构建镜像 → 创建 Podman secret → 建数据卷 → 装 Quadlet 和备份定时器 → 启动 → 等健康检查 → 提示打开控制台设置管理员。
+# 步骤：检查环境 → 构建镜像 → 创建 Podman secret → 建数据卷 →（配了存放位置时）准备桌面虚拟机 → 装 Quadlet 和备份定时器 → 启动 → 等健康检查 → 提示打开控制台设置管理员。
 #
 # 用法：在仓库目录里（建议放在 ~/heyagent）运行 scripts/server-install.sh
 # 可选的环境变量：
@@ -29,6 +29,10 @@ HELPER_IMAGE=docker.io/pgvector/pgvector:0.8.7-pg18-trixie
 VOLUMES=(heyagent-pod-pgdata heyagent-pod-files)
 MIN_PODMAN=4.4.0
 
+# 系统开的桌面：宿主机的准备、pod 描述的挂载（docs/ops.md 第 14 节）
+# shellcheck source=scripts/desktop-host.sh
+. "$ROOT/scripts/desktop-host.sh"
+
 log() { echo "== $*"; }
 warn() { echo "⚠ $*" >&2; }
 die() { echo "✗ $*" >&2; exit 1; }
@@ -52,6 +56,11 @@ HEYAGENT_TRUSTED_ORIGINS=
 # 备份目录（可以是另一块盘或 NAS 的挂载点）和保留天数
 HEYAGENT_BACKUP_DIR=$HOME/heyagent-backups
 HEYAGENT_BACKUP_KEEP_DAYS=14
+# 系统开的桌面（Windows 虚拟机，docs/ops.md 第 14 节）：虚拟机存在哪些目录，逗号隔开的绝对路径，SSD 放前面（HDD 也能写，页面会标出来）。
+# 留空 = 不开虚拟机，「桌面」页只能登记已有电脑。配了以后安装时会检查 KVM、kvm 组、podman.socket（scripts/desktop-host.sh check）
+HEYAGENT_DESKTOP_STORAGE_ROOTS=
+# 开虚拟机时留给系统、数据库、浏览器的内存（GB）：开着的虚拟机内存合计不超过「本机内存 − 这个数」
+HEYAGENT_DESKTOP_RESERVED_GB=24
 EOF
     chmod 600 "$CONFIG_ENV"
     echo "已生成配置 $CONFIG_ENV（默认值，可以改完再跑一次）"
@@ -262,11 +271,18 @@ ensure_volumes() {
 install_units() {
   mkdir -p "$QUADLET_DIR" "$SYSTEMD_USER_DIR"
   local yaml=$QUADLET_DIR/heyagent.yaml
-  # 端口：只改 web 容器那一行 hostPort
-  sed "s/^\(\s*hostPort:\) 8080$/\1 $PORT/" "$ROOT/deploy/quadlet/heyagent.yaml" > "$yaml.tmp"
+  # 配了存放位置时加桌面虚拟机的挂载（占位注释换掉）；端口：只改 web 容器那一行 hostPort
+  desktop_render_yaml "$ROOT/deploy/quadlet/heyagent.yaml" "$yaml.src" || die "加桌面虚拟机的挂载失败"
+  sed "s/^\(\s*hostPort:\) 8080$/\1 $PORT/" "$yaml.src" > "$yaml.tmp"
+  rm -f "$yaml.src"
   [ "$(grep -c "hostPort: $PORT\$" "$yaml.tmp")" = 1 ] || die "改写 heyagent.yaml 的端口失败"
   mv -f "$yaml.tmp" "$yaml"
   cp -f "$ROOT/deploy/quadlet/heyagent.kube" "$QUADLET_DIR/heyagent.kube"
+  # 桌面虚拟机的端口只绑宿主机的 127.0.0.1：pod 要能连宿主机的回环（容器里的 10.0.2.2）
+  if desktop_enabled; then
+    sed -i "s/^ConfigMap=heyagent-config.yaml$/&\nNetwork=$DESKTOP_NETWORK/" "$QUADLET_DIR/heyagent.kube"
+    grep -q "^Network=$DESKTOP_NETWORK$" "$QUADLET_DIR/heyagent.kube" || die "改写 heyagent.kube 的网络失败"
+  fi
   cat > "$QUADLET_DIR/heyagent-config.yaml" <<EOF
 # scripts/server-install.sh 按 $CONFIG_ENV 生成，不要手改（改那个文件再跑一次安装）。这里没有密码。
 apiVersion: v1
@@ -277,6 +293,7 @@ data:
   BETTER_AUTH_URL: "$PUBLIC_URL"
   TRUSTED_ORIGINS: "$TRUSTED_ORIGINS"
   TZ: "Asia/Shanghai"
+$(desktop_config_lines)
 EOF
   # 备份单元里写的是默认位置 %h/heyagent，仓库放在别处时换成实际路径
   local unit
@@ -353,6 +370,10 @@ main() {
   ensure_secrets
   log "数据卷"
   ensure_volumes
+  if desktop_enabled; then
+    log "桌面虚拟机（存放位置 $(desktop_roots | paste -sd, -)）"
+    desktop_setup || die "桌面虚拟机的准备没通过（上面 ✗ 的项），处理后再跑一次；不开虚拟机就把 $CONFIG_ENV 里的 HEYAGENT_DESKTOP_STORAGE_ROOTS 留空"
+  fi
   log "装 Quadlet（$QUADLET_DIR）和备份定时器（$SYSTEMD_USER_DIR）"
   install_units
   restart_service

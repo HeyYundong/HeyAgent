@@ -6,3 +6,4 @@ design
 .dev
 .env
 coverage
+**/__pycache__

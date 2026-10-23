@@ -1,5 +1,5 @@
 // GET /api/desktop/view/:desktopId[?viewOnly=1]（WebSocket 升级，要求登录）：把控制台和桌面服务的远程画面接起来（docs/dev/desktop.md 第 5 节）。
-// - 能看、能操作：主管；或者这台桌面正被某个运行占着（running / held），该运行的任务负责人、该运行开着的要人办的事的处理人。其他人 403；
+// - 能看、能操作：主管；系统开的桌面建的人；或者这台桌面正被某个运行占着（running / held），该运行的任务负责人、该运行开着的要人办的事的处理人。其他人 403；
 //   ?viewOnly=1 有权限也只能看；
 // - 上游：桌面服务的 /view（ws / wss），带 Authorization: Bearer <密钥>（密钥只在 API 里解密，不给控制台）；
 // - 下行：画面帧照转（跟不上就丢），JSON 照转，但 meta.canControl 按这个人改写；
@@ -9,11 +9,13 @@
 import type { IncomingMessage, Server } from "node:http"
 import type { Duplex } from "node:stream"
 
-import { desktopViewerClientMessageSchema, type DesktopViewerServerMessage } from "@heyagent/shared"
+import { can, desktopViewerClientMessageSchema, type DesktopViewerServerMessage } from "@heyagent/shared"
+import { eq } from "drizzle-orm"
 import { WebSocket, WebSocketServer } from "ws"
 
 import { canControlSession } from "../browser/access.js"
 import type { Db } from "../db/client.js"
+import * as t from "../db/schema.js"
 import type { Keyring } from "../lib/crypto.js"
 import { addUpgradeHandler, authenticateUpgrade, refuse, relay, type RelayAuthDeps } from "../lib/ws-relay.js"
 import { desktopViewUrl, loadDesktopTarget } from "./client.js"
@@ -70,6 +72,11 @@ export async function handleDesktopViewUpgrade(deps: DesktopViewRelayDeps, wss: 
     return true
   }
   let allowed = user.isAdmin
+  // 系统开的桌面：建的人能看能操作（新建后要在远程画面里扫码登录软件，docs/dev/desktop-vm.md）
+  if (!allowed) {
+    const [desktop] = await deps.db.select({ kind: t.desktops.kind, createdById: t.desktops.createdById }).from(t.desktops).where(eq(t.desktops.id, target.id))
+    allowed = desktop?.kind === "vm" && can(user, "desktop.manage", { createdById: desktop.createdById ?? "" })
+  }
   if (!allowed) {
     const lease = await desktopLease(deps.db, target.id)
     allowed = Boolean(lease && (await canControlSession(deps.db, user, lease.sessionId)))

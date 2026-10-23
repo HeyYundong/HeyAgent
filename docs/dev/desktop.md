@@ -104,7 +104,7 @@ worker（agent 引擎）──MCP streamable-http（Bearer 密钥）──► Wi
 
 ## 8. 部署
 
-- `scripts/desktop-vm.sh`：在服务器上用 Podman + KVM 起一台 Windows 11 虚拟机（`docker.io/dockurr/windows`，固定版本），自动装 Python 3.14、本仓库的桌面服务和 Windows-MCP（OEM 脚本调 `install.ps1`），端口只绑 127.0.0.1（或参数指定的地址）。前提：当前用户在 `kvm` 组；rootless Podman 3.4 要 `--network slirp4netns:port_handler=slirp4netns`（`sg kvm` 下 rootlessport 起不来）。**虚拟机盘要放 SSD**：机械盘上装 Windows 要 2 小时，忙时读一次控件树 17～55 秒。
+- `scripts/desktop-vm.sh`（**2026-10-23 删掉了**：系统开的桌面 `docs/dev/desktop-vm.md` 取代了它，做模板时 worker 做同样的事，运维见 `docs/ops.md` 第 14 节。下面是原来的说明）：在服务器上用 Podman + KVM 起一台 Windows 11 虚拟机（`docker.io/dockurr/windows`，固定版本），自动装 Python 3.14、本仓库的桌面服务和 Windows-MCP（OEM 脚本调 `install.ps1`），端口只绑 127.0.0.1（或参数指定的地址）。前提：当前用户在 `kvm` 组；rootless Podman 3.4 要 `--network slirp4netns:port_handler=slirp4netns`（`sg kvm` 下 rootlessport 起不来）。**虚拟机盘要放 SSD**：机械盘上装 Windows 要 2 小时，忙时读一次控件树 17～55 秒。
 - `docs/ops.md` 加「桌面」一节：建虚拟机、实体机怎么装（手动跑 `install.ps1`）、在控制台登记、扫码登录后软件会记住登录（虚拟机盘一直保留）、Windows 授权要公司自己解决。
 
 ## 9. 分包

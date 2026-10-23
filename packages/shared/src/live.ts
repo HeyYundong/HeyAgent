@@ -40,6 +40,8 @@ export const liveQueriesByTable: Record<string, string[]> = {
   browser_actions: ["browser.history"],
   desktops: ["desktops.list"],
   desktop_leases: ["desktops.list", "desktop.sessionDesktop"],
+  // 系统开的桌面：虚拟机状态（开机中 → 开着……）、开着几台占多少内存
+  desktop_vms: ["desktops.list", "desktops.host"],
   platforms: ["platforms.list", "browsers.list"],
   model_providers: ["models.overview"],
   models: ["models.overview"],
@@ -47,7 +49,8 @@ export const liveQueriesByTable: Record<string, string[]> = {
   // 引擎（M1）：新通知、新产物 / 附件、设置
   notifications: ["engine.notifications.list"],
   files: ["engine.sessionFiles", "engine.taskAttachments"],
-  settings: ["settings.get"],
+  // desktop.storage（桌面存放位置）在 desktops.host 里
+  settings: ["settings.get", "desktops.host"],
   // 图库：图的增删改（向量表不推，重算进度靠页面轮询 gallery.stats）
   gallery_images: ["gallery.list", "gallery.get", "gallery.stats", "gallery.tags"],
   api_keys: ["apiKeys.list"],
