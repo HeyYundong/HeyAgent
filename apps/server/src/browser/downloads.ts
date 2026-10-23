@@ -29,23 +29,27 @@ interface Progress {
   filePath?: string
 }
 
-/** 可能引出下载的动作（点导出按钮、回车提交、打开下载链接……）：调完先等一小会儿看有没有新下载开始 */
+/**
+ * 可能引出下载的动作（点导出按钮、回车提交、打开下载链接……）：调完先等一小会儿看有没有新下载开始。
+ * 只改输入框的（填字不带回车、填表单、选下拉）不等：几乎不会引出下载，真引出了也照样在后台存好、下次调浏览器工具时说（docs/dev/browser-speed.md D）
+ */
 const TRIGGER_TOOLS = new Set([
   "browser_click",
   "browser_mouse_click_xy",
   "browser_mouse_up",
   "browser_press_key",
   "browser_keyup",
-  "browser_type",
-  "browser_fill_form",
-  "browser_select_option",
   "browser_navigate",
   "browser_reload",
   "browser_tabs",
   "browser_handle_dialog",
   "browser_evaluate",
 ])
-const START_GRACE_MS = 600
+/**
+ * 等多久：MCP 做完动作已经等过这一步引起的请求（下载的请求收到响应头时下载就开始了）和 settle，这里只兜一下底。
+ * 原来 600 毫秒，每次点击、打开网页都要多等这么久（分段计时量出来的）
+ */
+const START_GRACE_MS = 250
 /** 已经开始的下载，调完工具最多等这么久下完（再长的下载照样在后台下完、存好，下次调浏览器工具时再说） */
 const FINISH_WAIT_MS = 20_000
 
@@ -125,9 +129,10 @@ export class DownloadCapture {
    * 调完一个浏览器工具：可能引出下载的动作先等一小会儿看有没有新下载，已经开始的等它下完（有上限），
    * 取走要告诉 agent 的话（包括之前在后台下完的、人在远程画面里下的）。
    */
-  async collect(mcpToolName: string): Promise<string[]> {
+  async collect(mcpToolName: string, input: Record<string, unknown> = {}): Promise<string[]> {
     if (this.closed) return []
-    if (TRIGGER_TOOLS.has(mcpToolName) && !this.pending.size) await sleep(START_GRACE_MS)
+    const trigger = TRIGGER_TOOLS.has(mcpToolName) || (mcpToolName === "browser_type" && Boolean(input.submit))
+    if (trigger && !this.pending.size) await sleep(START_GRACE_MS)
     const deadline = Date.now() + FINISH_WAIT_MS
     while (this.pending.size && Date.now() < deadline) await sleep(200)
     await Promise.all([...this.saving])

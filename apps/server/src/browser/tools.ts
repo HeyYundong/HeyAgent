@@ -6,9 +6,10 @@
 // - Playwright MCP 的工具，browser_xxx 统一换成 browser.xxx（给模型的名字把点换成下划线，又变回 browser_xxx）；
 //   一律屏蔽 browser_run_code_unsafe，browser_evaluate 要任务里打开「允许执行脚本」才给；
 //   按坐标操作的工具（browser_mouse_click_xy 等）和 browser.look（截当前画面发给模型）要打开「允许看画面」才给；
-// - 剪贴板工具 browser.copy_image / clipboard_read / clipboard_paste（browser/clipboard.ts），在线表格、文档大块读写数据、贴图用。
-// 每次调用：调之前查导航参数（白名单、账号租约）→ 交给 MCP → 调完后兜底扫一遍页面、取走被拦下的导航、
-// 截图存成 session 文件、检测验证码和登录页。验证码先自己试着过（设置里的开关，captcha.ts），
+// - 剪贴板工具 browser.copy_image / clipboard_read / clipboard_paste（browser/clipboard.ts），在线表格、文档大块读写数据、贴图用；
+// - browser.batch：连着做几步（docs/dev/browser-speed.md A），定义在这里，在工具网关里展开（每一步走一次普通调用）。
+// 每次调用：调之前查导航参数（白名单、账号租约）→ 交给 MCP（被弹窗挡住时认得出的无害关闭按钮点掉、再做一次）→ 调完后兜底扫一遍页面、
+// 取走被拦下的导航、跳转后在后台截图存档、检测验证码和登录页 → 末尾附上页面概况（标题网址、弹窗、文件选择框，page-brief.ts）。验证码先自己试着过（设置里的开关，captcha.ts），
 // 过不了的和登录页（存了密码的先自动登录）截图、生成「登录」类要人办的事、session 等人处理，Chrome 保留着。
 import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { extname, join } from "node:path"
@@ -48,6 +49,8 @@ import { ProfileFullError, type BlockedNavigation, type BrowserInstance } from "
 import { accountForHost, busyProfileIds } from "./leases.js"
 import { getBrowserManager } from "./manager.js"
 import { BLOCKED_MCP_TOOLS, EVALUATE_TOOL, listBrowserMcpTools, VISION_MCP_TOOLS } from "./mcp.js"
+import { blockedKind, DISMISS_ATTR, explainError, formatBrief, modalGuidance, overlayText, readPageBrief, stripAnsi, stripPageSections } from "./page-brief.js"
+import { phaseTimer, recordBrowserTiming } from "./timing.js"
 
 export interface BrowserToolEntry {
   id: string
@@ -71,6 +74,11 @@ type HumanHit = Omit<Hit, "verdict"> & { verdict: Exclude<Verdict, { kind: "none
 
 const FILL_CAPTCHA_TOOL = "browser.fill_captcha"
 const LOOK_TOOL = "browser.look"
+export const BATCH_TOOL = "browser.batch"
+/** 批里一次最多几步 */
+export const BATCH_MAX_STEPS = 20
+/** 批做完附的快照默认多深 */
+export const BATCH_SNAPSHOT_DEPTH = 6
 
 /** 同一个页面（主机名 + 路径）：自动过验证码按页面数次数 */
 function pageKey(url: string) {
@@ -86,10 +94,28 @@ function pageKey(url: string) {
 const NAVIGATION_TOOLS = new Set(["browser_navigate", "browser_navigate_back"])
 /** 只读的工具：调完不用扫页面、不用检测 */
 const READ_ONLY_TOOLS = new Set(["browser_snapshot", "browser_find", "browser_console_messages", "browser_network_requests", "browser_network_request", "browser_take_screenshot"])
+/** 点元素的动作：被弹窗挡住时（Playwright 的 intercepts pointer events，或超时且认出了弹窗）先试着关掉弹窗再做一次 */
+const POINTER_TOOLS = new Set(["browser_click", "browser_hover", "browser_type", "browser_fill_form", "browser_select_option", "browser_check", "browser_uncheck", "browser_drag", "browser_press_sequentially"])
+/** 不能放进 browser.batch 的：batch 自己、指定 Chrome、只读的（看页面的放最后由 snapshot 参数做） */
+const NOT_BATCHABLE = new Set([BATCH_TOOL, "browser.use", LOOK_TOOL, "browser.clipboard_read", ...[...READ_ONLY_TOOLS].map((name) => browserToolIdOf(name))])
+
+function browserToolIdOf(mcpName: string) {
+  return `browser.${mcpName.replace(/^browser_/, "")}`
+}
+
+/** 批里的 tool 写法（click、browser_click、browser.click 都认）→ 工具 id */
+export function batchToolId(tool: string) {
+  return `browser.${tool.trim().replace(/^browser[._]/, "")}`
+}
+
+/** 这个工具能不能放进 browser.batch（还要是这个任务给了的） */
+export const batchable = (toolId: string) => toolId.startsWith("browser.") && !NOT_BATCHABLE.has(toolId)
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg"])
 const PROXY_ERROR = /ERR_(SOCKS_CONNECTION_FAILED|PROXY_CONNECTION_FAILED|TUNNEL_CONNECTION_FAILED|SOCKS_CONNECTION_HOST_UNREACHABLE|PROXY_AUTH_UNSUPPORTED)/
 
-export const browserToolId = (mcpName: string) => `browser.${mcpName.replace(/^browser_/, "")}`
+export const browserToolId = browserToolIdOf
 
 function zodFromJsonSchema(schema: Record<string, unknown>): z.ZodType {
   try {
@@ -166,6 +192,10 @@ export class BrowserTools {
   /** 遇到验证码 / 登录页挂起时：Chrome 保留多少分钟（gateway 关闭时交给 manager） */
   holdMinutes?: number
   private readonly clipboard: ClipboardTools
+  /** 在 browser.batch 里：中间的步骤不读页面概况，批做完由网关统一附一次 */
+  private batching = false
+  /** 跳转后在后台存的存档截图（网关关闭时等它们存完） */
+  private readonly pendingSaves = new Set<Promise<void>>()
 
   private constructor(ctx: Ctx, mcpTools: McpToolInfo[]) {
     this.ctx = ctx
@@ -295,7 +325,74 @@ export class BrowserTools {
         execute: (input) => this.callMcp(tool.name, (input ?? {}) as Record<string, unknown>),
       })
     }
+    const batchTools = entries.filter((entry) => batchable(entry.id)).map((entry) => entry.id.replace(/^browser\./, ""))
+    entries.push({
+      id: BATCH_TOOL,
+      def: {
+        id: BATCH_TOOL,
+        name: "浏览器：连着做几步",
+        summary: "按顺序连着做几步浏览器动作（哪一步出错就停），返回每步结果、页面概况和页面快照",
+        description: `按顺序连着做 actions 里的几步浏览器动作，每一步和单独调用那个工具一样（规则、网址白名单、验证码 / 登录页检测都照常），哪一步出错就停，后面的不做。返回每步的结果、现在的页面概况和页面快照（默认 depth ${BATCH_SNAPSHOT_DEPTH}，snapshot: false 不要），不用再单独看页面。同一页面上能预见的几步（填表、点按钮、关弹窗、翻页）用它一次做完。tool 写工具名（click、browser_click 都行），input 和单独调用那个工具的参数一样；一次最多 ${BATCH_MAX_STEPS} 步。能放进来的：${batchTools.join("、")}；snapshot、find 这类只读的不能放（最后的页面由 snapshot 参数给）。跳转以后快照里的 ref 失效：跨页面的步骤用选择器当 target（role=button[name="继续录入"]、text=继续录入）。某一步要人审批时停在那一步之前，那一步要单独调用。`,
+        source: "builtin",
+        risk: "external",
+      },
+      jsonSchema: {
+        type: "object",
+        properties: {
+          actions: {
+            type: "array",
+            minItems: 1,
+            maxItems: BATCH_MAX_STEPS,
+            description: "按顺序做的动作",
+            items: {
+              type: "object",
+              properties: {
+                tool: { type: "string", description: `工具名，例如 click、type、fill_form、press_key、navigate（能放的：${batchTools.join("、")}）` },
+                input: { type: "object", description: "这个工具的参数（和单独调用时一样）", additionalProperties: true },
+              },
+              required: ["tool"],
+              additionalProperties: false,
+            },
+          },
+          snapshot: {
+            description: `做完后附上的页面快照，默认 { "depth": ${BATCH_SNAPSHOT_DEPTH} }；false 不要`,
+            anyOf: [{ type: "boolean", enum: [false] }, { type: "object", properties: { depth: { type: "integer", minimum: 1, maximum: 30 } }, additionalProperties: false }],
+          },
+        },
+        required: ["actions"],
+        additionalProperties: false,
+      },
+      validator: z.object({
+        actions: z
+          .array(z.object({ tool: z.string().min(1), input: z.record(z.string(), z.unknown()).optional() }))
+          .min(1)
+          .max(BATCH_MAX_STEPS),
+        snapshot: z.union([z.literal(false), z.object({ depth: z.number().int().min(1).max(30).optional() })]).optional(),
+      }),
+      // 网关展开（每一步走一次普通调用），不会走到这里
+      execute: async () => fail("browser.batch 要由工具网关展开"),
+    })
     return entries
+  }
+
+  /** browser.batch 开始 / 结束：中间的步骤不读页面概况 */
+  setBatching(on: boolean) {
+    this.batching = on
+  }
+
+  /** browser.batch 做完：页面概况的几行（lastOutput：最后一步的输出，里面的 ### Modal state 翻成中文） */
+  async briefLines(lastOutput = ""): Promise<string[]> {
+    const instance = this.instance
+    const page = instance?.currentPage()
+    if (!instance || !page) return modalGuidance(lastOutput)
+    return formatBrief(await readPageBrief(page, { dialogOpen: instance.dialogs.has(page) }), lastOutput)
+  }
+
+  /** browser.batch 做完附的快照（直接调 MCP，不再单独记一条过程）；拿不到（选择框、网页弹框开着）返回 undefined */
+  async batchSnapshot(depth: number): Promise<string | undefined> {
+    if (!this.instance) return undefined
+    const result = await this.callMcp("browser_snapshot", { depth })
+    return result.isError ? undefined : result.output
   }
 
   private async use(profileId: string): Promise<ToolOutcome> {
@@ -457,7 +554,14 @@ export class BrowserTools {
     return undefined
   }
 
+  /** MCP 的工具：分段计时（docs/dev/browser-speed.md D），网关记下来 */
   private async callMcp(name: string, input: Record<string, unknown>): Promise<ToolOutcome> {
+    const timer = phaseTimer()
+    const outcome = await this.runMcp(name, input, timer)
+    return { ...outcome, timings: timer.phases }
+  }
+
+  private async runMcp(name: string, input: Record<string, unknown>, timer: ReturnType<typeof phaseTimer>): Promise<ToolOutcome> {
     // 白名单不用等 Chrome 起来就能查
     const target = this.navigationUrl(name, input)
     if (target) {
@@ -467,7 +571,7 @@ export class BrowserTools {
         return fail(`被拦下：${allowed.reason}。只能打开白名单里的网址。`)
       }
     }
-    const ready = await this.ensure()
+    const ready = await timer.time("ensure", () => this.ensure())
     if (!("id" in ready)) return ready
     const instance = ready
     instance.touch()
@@ -499,11 +603,22 @@ export class BrowserTools {
     const before = new Set(listImages(instance.workDir))
     const mcp = await instance.ensureMcp()
     instance.viewer.announce(browserActionLabel(name, input))
-    const result = await executeMcpTool(this.connection(instance, mcp.client), name, args)
-    const lines: string[] = [result.output]
+    const run = () =>
+      timer.time("mcp", async () => {
+        const outcome = await executeMcpTool(this.connection(instance, mcp.client), name, args)
+        return outcome.isError ? { ...outcome, output: stripAnsi(outcome.output) } : outcome
+      })
+    let result = await run()
+    // 被弹窗挡住：认得出无害的关闭按钮就点掉、再做一次；认不出就写清楚是哪个弹窗挡着
+    let unblocked: string | undefined
+    if (result.isError && POINTER_TOOLS.has(name)) ({ result, note: unblocked } = await this.unblock(instance, result, run, timer))
+    const hint = result.isError ? explainError(result.output) : undefined
+    // 补的说明放在 MCP 原文前面（原文的 ### 段可能被去掉）
+    const lines: string[] = [...(unblocked ? [unblocked] : []), ...(hint ? [hint] : []), result.output]
+    const raw = lines.length - 1
     // 这次（或之前在后台）下载的文件已经存成运行的文件：告诉 agent（browser/downloads.ts）
-    const downloads = (await instance.downloads?.collect(name)) ?? []
-    await this.record(name, Boolean(result.isError), instance.currentPage()?.url() ?? url)
+    const downloads = (await timer.time("downloads", async () => instance.downloads?.collect(name, args))) ?? []
+    await timer.time("record", () => this.record(name, Boolean(result.isError), instance.currentPage()?.url() ?? url))
     if (PROXY_ERROR.test(result.output)) await this.warnProxy(PROXY_ERROR.exec(result.output)![0])
 
     // 截图：存成 session 文件（证据），不交给模型
@@ -523,23 +638,21 @@ export class BrowserTools {
     if (READ_ONLY_TOOLS.has(name)) return { ...result, output: lines.join("\n") }
 
     // 调完：兜底扫一遍页面，取走被拦下的导航
-    await instance.sweepPages()
+    await timer.time("sweep", () => instance.sweepPages())
     const blocked = instance.drainBlocked()
     if (blocked.length) return this.blockedOutcome(blocked, lines.join("\n"))
 
     let facts: ToolOutcome["facts"]
     if ((NAVIGATION_TOOLS.has(name) || (name === "browser_tabs" && args.action === "new")) && !result.isError) {
-      const shot = await instance.screenshot()
-      if (shot) {
-        const row = await saveFile(db, { data: shot, name: `page-${Date.now()}.jpg`, mime: "image/jpeg", kind: "screenshot", sessionId: session.id })
-        lines.push(`（已自动截图存档：${row.id}）`)
-      }
+      // 存档截图在后台存，不让模型等（网关关闭时等它存完）
+      this.archiveScreenshot(instance)
+      lines.push("（已自动截图存档）")
       // 给规则「自动记录检查点」用：打开的是哪个网页
       const page = instance.currentPage()
-      if (page) facts = { url: page.url(), title: await page.title().catch(() => "") }
+      if (page) facts = { url: page.url(), title: await timer.time("facts", () => page.title().catch(() => "")) }
     }
 
-    let hit = await this.detect(instance)
+    let hit = await timer.time("detect", () => this.detect(instance))
     let captchaNote: string | undefined
     if (hit?.verdict.kind === "captcha") {
       // 验证码：先自己试着过（设置里开着时），过了再看一遍页面（过了可能是登录页）；再遇到验证码就不试了，交给人
@@ -561,7 +674,82 @@ export class BrowserTools {
       if (login?.ok) return { output: [...lines, login.text].join("\n"), isError: result.isError, facts }
       return { ...(await this.humanOutcome(instance, hit, lines.join("\n"), login?.text ?? captchaNote)), facts }
     }
-    return { output: lines.join("\n"), isError: result.isError, facts }
+    // 页面概况：批里的中间步骤不读（批做完网关统一附一次），MCP 原文留着给网关翻 ### Modal state
+    let briefLines: string[] = []
+    if (!this.batching) {
+      const page = instance.currentPage()
+      const brief = page ? await timer.time("brief", () => readPageBrief(page, { dialogOpen: instance.dialogs.has(page) })) : undefined
+      if (brief) lines[raw] = stripPageSections(lines[raw]!)
+      briefLines = formatBrief(brief, result.output)
+    }
+    const body = lines.filter(Boolean).join("\n")
+    return { output: [body, briefLines.join("\n")].filter(Boolean).join("\n\n"), isError: result.isError, facts }
+  }
+
+  /**
+   * 动作被别的元素挡住（intercepts pointer events，或超时且页面上认出了弹窗）：弹窗里有文字正好是无害关闭类的按钮
+   * （page-brief.ts 的 HARMLESS_CLOSE_TEXTS）就点掉它、等 300 毫秒、再做一次（只重试一次），过程里记一条；
+   * 否则出错文字写清楚被哪个弹窗挡着、有哪些按钮。不点「接受」「同意」「确定」「OK」这类有含义的按钮。
+   */
+  private async unblock(
+    instance: BrowserInstance,
+    result: ToolOutcome,
+    retry: () => Promise<ToolOutcome>,
+    timer: ReturnType<typeof phaseTimer>
+  ): Promise<{ result: ToolOutcome; note?: string }> {
+    const kind = blockedKind(result.output)
+    const page = instance.currentPage()
+    if (!kind || !page || instance.dialogs.has(page)) return { result }
+    const brief = await timer.time("overlay", () => readPageBrief(page, { findClose: true }))
+    if (!brief?.overlays.length) return { result }
+    const blockedBy = (overlays: typeof brief.overlays) => `点不到：被弹窗${overlays.map(overlayText).join("、")}挡住了，先处理弹窗。`
+    if (!brief.dismiss) return { result: { ...result, output: `${blockedBy(brief.overlays)}\n${result.output}` } }
+    const { overlay, button } = brief.dismiss
+    const target = page.locator(`[${DISMISS_ATTR}]`).first()
+    instance.viewer.announce(browserActionLabel("browser_click", { element: button }))
+    const clicked = await timer.time("overlay", async () => {
+      try {
+        await target.click({ timeout: 2000 })
+        return true
+      } catch {
+        // 点不了（例如又被别的挡着）：直接在元素上触发 click
+        return target
+          .evaluate("(el) => { el.click(); return true }", undefined, { timeout: 1000 })
+          .then(Boolean)
+          .catch(() => false)
+      } finally {
+        await target.evaluate(`(el) => el.removeAttribute(${JSON.stringify(DISMISS_ATTR)})`, undefined, { timeout: 1000 }).catch(() => {})
+      }
+    })
+    if (!clicked) return { result: { ...result, output: `${blockedBy(brief.overlays)}\n${result.output}` } }
+    await sleep(300)
+    await appendEvent(this.ctx.db, this.ctx.session.id, {
+      kind: "plan",
+      title: `自动关掉了弹窗「${overlay}」（点了「${button}」）`,
+      detail: "动作被弹窗挡住了，弹窗里有无害的关闭按钮，系统点掉它后把原来的动作再做了一次。",
+    }).catch(() => {})
+    const again = await retry()
+    const note = `（动作被弹窗「${overlay}」挡住，系统点了「${button}」关掉它，再做了一次${again.isError ? "，还是没成功" : ""}）`
+    if (again.isError && blockedKind(again.output)) {
+      const still = await timer.time("overlay", () => readPageBrief(page))
+      if (still?.overlays.length) return { result: { ...again, output: `${blockedBy(still.overlays)}\n${again.output}` }, note }
+    }
+    return { result: again, note }
+  }
+
+  /** 跳转后的存档截图：后台截、存成 session 文件，出错只记日志；用时也记一条（看原来在关键路径上占多少） */
+  private archiveScreenshot(instance: BrowserInstance) {
+    const { db, session } = this.ctx
+    const job: Promise<void> = (async () => {
+      const timer = phaseTimer()
+      const started = Date.now()
+      const shot = await timer.time("screenshot", () => instance.screenshot())
+      if (shot) await timer.time("save", () => saveFile(db, { data: shot, name: `page-${Date.now()}.jpg`, mime: "image/jpeg", kind: "screenshot", sessionId: session.id }))
+      recordBrowserTiming({ at: started, sessionId: session.id, toolId: "browser.archive_screenshot", totalMs: Date.now() - started, phases: timer.phases })
+    })()
+      .catch((error: unknown) => console.warn(`[browser] 跳转后的存档截图没存上：${(error as Error).message}`))
+      .finally(() => this.pendingSaves.delete(job))
+    this.pendingSaves.add(job)
   }
 
   /** 操作历史记一行（浏览器页看）。记不上不影响工具本身 */
@@ -903,6 +1091,8 @@ export class BrowserTools {
 
   /** gateway 关闭（session 结束、挂起、交接）：要保留就保留（等人处理验证码），否则写回登录态、关掉 Chrome、释放租约 */
   async close(reason = "运行停下了") {
+    // 后台的存档截图先存完（关 Chrome 之前）
+    await Promise.allSettled([...this.pendingSaves])
     const manager = getBrowserManager()
     const { db, session } = this.ctx
     if (!manager || !manager.forSession(session.id)) return

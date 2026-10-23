@@ -92,6 +92,8 @@ export interface ToolOutcome {
   signals?: "page_needs_human"[]
   /** 工具自己已经按规矩截断过（code.run：stdout、stderr 各留末尾，全文另存）：网关不再按 toolOutputMaxChars 截 */
   keepFull?: true
+  /** 浏览器动作的分段用时（毫秒，docs/dev/browser-speed.md D）：网关记下来（browser/timing.ts），不交给模型 */
+  timings?: Record<string, number>
 }
 
 const fail = (output: string): ToolOutcome => ({ output, isError: true })

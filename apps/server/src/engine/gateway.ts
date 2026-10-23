@@ -1,6 +1,6 @@
 // 工具网关：给模型的工具定义不带执行函数，模型提出调用后都到这里。
 // 依次做：调工具前的钩子（范围、参数校验、M3 的规则）→ 执行（内置 / HTTP / MCP）→ 截断大块输出（全文存文件）→ 落库 → 调工具后的钩子。
-// 模型没有任何绕过的路径。
+// 模型没有任何绕过的路径。browser.batch（连着做几步，docs/dev/browser-speed.md A）在这里展开：每一步都当成一次普通调用走 call()。
 import { jsonSchema, tool, type ToolSet } from "ai"
 import {
   BROWSER_TOOL_ID,
@@ -12,10 +12,18 @@ import {
   type SessionSnapshot,
   type SnapshotTool,
 } from "@heyagent/shared"
-import { inArray } from "drizzle-orm"
+import { eq, inArray } from "drizzle-orm"
 import { z } from "zod"
 
-import { BrowserTools } from "../browser/tools.js"
+import { stripPageSections } from "../browser/page-brief.js"
+import { recordBrowserTiming } from "../browser/timing.js"
+import {
+  BATCH_SNAPSHOT_DEPTH,
+  BATCH_TOOL,
+  batchable,
+  batchToolId,
+  BrowserTools,
+} from "../browser/tools.js"
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
 import { saveFile, spacePathOf } from "../files/service.js"
@@ -96,6 +104,44 @@ function zodFromJsonSchema(schema: Record<string, unknown>): z.ZodType {
     return z.record(z.string(), z.unknown())
   }
 }
+
+interface BatchInput {
+  actions: { tool: string; input?: Record<string, unknown> }[]
+  snapshot?: false | { depth?: number }
+}
+
+const seconds = (ms: number) => `${(ms / 1000).toFixed(1)} 秒`
+
+/** 批里一步的说明：工具短名 + 元素描述（「click「提交」」）；不取要填的内容 */
+function stepLabel(toolId: string, input: Record<string, unknown>) {
+  const short = toolId.replace(/^browser\./, "")
+  const str = (value: unknown) => (typeof value === "string" ? value.trim() : "")
+  let detail = str(input.element) || str(input.startElement)
+  if (Array.isArray(input.fields))
+    detail = input.fields
+      .map((field) => str((field as { name?: unknown } | null)?.name))
+      .filter(Boolean)
+      .join("、")
+  detail ||= str(input.key) || str(input.url) || str(input.target)
+  if (detail.length > 40) detail = `${detail.slice(0, 39)}…`
+  return detail ? `${short}「${detail}」` : short
+}
+
+/** 批里一步的输出去掉和页面概况重复的段、段标题，只留要紧的（下载的文件、脚本结果、自动关弹窗……） */
+function stepNote(output: string) {
+  const text = stripPageSections(output)
+    .split("\n")
+    .filter((line) => !/^### /.test(line) && line.trim() !== "（已自动截图存档）")
+    .join("\n")
+    .trim()
+  return text.length > 600 ? `${text.slice(0, 600)}…` : text
+}
+
+const indent = (text: string) =>
+  text
+    .split("\n")
+    .map((line) => `   ${line}`)
+    .join("\n")
 
 /**
  * HTTP 工具用库里现在的模板和参数清单，不用快照里冻住的：主管给模板加了 {speaker}，之前建的运行下次跑起来（开始 / 继续）就认。
@@ -388,9 +434,15 @@ export class ToolGateway {
    */
   async call(
     call: ModelToolCall,
-    options: { approvedRuleIds?: readonly string[] } = {}
+    options: {
+      approvedRuleIds?: readonly string[]
+      /** browser.batch 里的第几步（从 1 开始）：要人审批时不发起审批，批停在这一步之前 */
+      batchStep?: number
+    } = {}
   ): Promise<GatewayResult> {
     const entry = this.entryFor(call.toolName)
+    if (entry?.id === BATCH_TOOL && this.browser)
+      return this.callBatch(call, entry, this.browser)
     // 不在本任务里的内置工具：也换回原来的 id，过程里好认
     const builtin = entry
       ? undefined
@@ -419,11 +471,16 @@ export class ToolGateway {
         ? call.input
         : JSON.stringify(call.input ?? {})
     const decision = await runBeforeToolHooks(hookCtx)
+    const beforeMs = Date.now() - started
     if (decision.action === "ask_human") {
       await appendEvent(this.ctx.db, this.ctx.session.id, {
         kind: "rule",
-        title: `规则「${decision.ruleName}」：拦下 ${toolName}，交给人审批`,
-        detail: decision.reason,
+        title: options.batchStep
+          ? `规则「${decision.ruleName}」：批里的第 ${options.batchStep} 步 ${toolName} 要人审批，没做`
+          : `规则「${decision.ruleName}」：拦下 ${toolName}，交给人审批`,
+        detail: options.batchStep
+          ? `${decision.reason}批里不做要审批的动作，已让 agent 单独调用这一步。`
+          : decision.reason,
         toolId,
         input: redactSecrets(maskSecretFields(inputText), []),
       })
@@ -465,6 +522,7 @@ export class ToolGateway {
     }
 
     let outcome: ToolOutcome
+    const executeStarted = Date.now()
     try {
       outcome = await entry!.execute(decision.input)
     } catch (error) {
@@ -473,22 +531,14 @@ export class ToolGateway {
         isError: true,
       }
     }
+    const executeMs = Date.now() - executeStarted
     const secrets = outcome.secrets ?? []
-    let output = redactSecrets(outcome.output, secrets)
-    const max = runtime.toolOutputMaxChars
-    if (output.length > max && !outcome.keepFull) {
-      const file = await saveFile(this.ctx.db, {
-        data: Buffer.from(output, "utf8"),
-        name: `${toolId}-${call.toolCallId}.txt`.replace(
-          /[^A-Za-z0-9_.-]/g,
-          "_"
-        ),
-        mime: "text/plain",
-        kind: "tool_output",
-        sessionId: this.ctx.session.id,
-      })
-      output = `${output.slice(0, max)}\n…（输出共 ${output.length} 字，这里只给了开头 ${max} 字；全文已存为文件 ${file.id}（${spacePathOf(file)}），需要时用 file.read 读）`
-    }
+    const output = await this.clipOutput(
+      redactSecrets(outcome.output, secrets),
+      outcome,
+      toolId,
+      call.toolCallId
+    )
     await appendEvent(this.ctx.db, this.ctx.session.id, {
       kind: "tool",
       title: outcome.isError ? `${toolName}（出错）` : toolName,
@@ -498,7 +548,216 @@ export class ToolGateway {
       ms: Date.now() - started,
     })
     await runAfterToolHooks({ ...hookCtx, input: decision.input, outcome })
+    // 浏览器动作的分段用时：规则钩子、工具里面各段（MCP、扫页面、检测……）、落库和调工具后的钩子
+    if (outcome.timings) {
+      const totalMs = Date.now() - started
+      recordBrowserTiming({
+        at: started,
+        sessionId: this.ctx.session.id,
+        toolId,
+        totalMs,
+        phases: {
+          before: beforeMs,
+          ...outcome.timings,
+          other: Math.max(
+            0,
+            executeMs -
+              Object.values(outcome.timings).reduce((sum, ms) => sum + ms, 0)
+          ),
+          after: totalMs - beforeMs - executeMs,
+        },
+      })
+    }
     return { toolId, toolName, outcome, output, denied: false }
+  }
+
+  /** 太长的输出：给模型开头一段，全文存成文件 */
+  private async clipOutput(
+    output: string,
+    outcome: ToolOutcome,
+    toolId: string,
+    toolCallId: string
+  ) {
+    const max = runtime.toolOutputMaxChars
+    if (output.length <= max || outcome.keepFull) return output
+    const file = await saveFile(this.ctx.db, {
+      data: Buffer.from(output, "utf8"),
+      name: `${toolId}-${toolCallId}.txt`.replace(/[^A-Za-z0-9_.-]/g, "_"),
+      mime: "text/plain",
+      kind: "tool_output",
+      sessionId: this.ctx.session.id,
+    })
+    return `${output.slice(0, max)}\n…（输出共 ${output.length} 字，这里只给了开头 ${max} 字；全文已存为文件 ${file.id}（${spacePathOf(file)}），需要时用 file.read 读）`
+  }
+
+  /**
+   * browser.batch：按顺序把每一步当成一次普通调用走 call()（规则的前后钩子、白名单、验证码 / 登录页检测、过程记录都和单独调一样），
+   * 哪一步出错、被拦下就停；要人审批的停在那一步之前（审批只支持单次调用）；要挂起的停下，批的结果带上 suspend、signals、facts，
+   * 引擎照常挂起。没挂起时最后附上页面概况和快照。批本身不过规则（每一步都过了），只查参数、落一条总的过程记录
+   */
+  private async callBatch(
+    call: ModelToolCall,
+    entry: ToolEntry,
+    browser: BrowserTools
+  ): Promise<GatewayResult> {
+    const started = Date.now()
+    const toolId = entry.id
+    const toolName = entry.def.name
+    const deny = async (reason: string) => {
+      const output = `被拦下：${reason}`
+      await appendEvent(this.ctx.db, this.ctx.session.id, {
+        kind: "rule",
+        title: `拦下：${toolName}`,
+        detail: reason,
+        toolId,
+        input:
+          typeof call.input === "string"
+            ? call.input
+            : JSON.stringify(call.input ?? {}),
+      })
+      return {
+        toolId,
+        toolName,
+        outcome: { output, isError: true },
+        output,
+        denied: true,
+      }
+    }
+    const parsed = entry.validator.safeParse(call.input ?? {})
+    if (call.invalid || !parsed.success)
+      return deny(
+        `参数不对：${
+          parsed.error?.issues
+            .slice(0, 5)
+            .map(
+              (issue) => `${issue.path.join(".") || "参数"}：${issue.message}`
+            )
+            .join("；") ?? "不是合法的 JSON"
+        }`
+      )
+    const input = parsed.data as BatchInput
+    // 先认出每一步的工具：有一步不能放就整批不做
+    const steps = input.actions.map((action) => ({
+      id: batchToolId(action.tool),
+      tool: action.tool,
+      input: action.input ?? {},
+    }))
+    const allowed = this.entries.filter((each) => batchable(each.id))
+    for (const [index, step] of steps.entries())
+      if (!allowed.some((each) => each.id === step.id))
+        return deny(
+          `第 ${index + 1} 步的 tool「${step.tool}」不能放进批里（${
+            this.entries.some((each) => each.id === step.id)
+              ? "只读的看页面工具不能放，最后的页面由 snapshot 参数给"
+              : "本任务没有这个浏览器工具"
+          }）。能放的：${allowed.map((each) => each.id.replace(/^browser\./, "")).join("、")}`
+        )
+
+    const lines: string[] = []
+    const images: NonNullable<ToolOutcome["images"]> = []
+    let failed = false
+    let suspended: ToolOutcome | undefined
+    let lastOutput = ""
+    const skipped = (from: number) =>
+      from < steps.length ? [`（后面 ${steps.length - from} 步没做）`] : []
+    browser.setBatching(true)
+    try {
+      for (const [index, step] of steps.entries()) {
+        const n = index + 1
+        // 每一步之前看一眼：运行被取消了就不再做
+        if (index > 0 && !(await this.stillRunning())) {
+          lines.push(`（运行停下了，后面 ${steps.length - index} 步没做）`)
+          failed = true
+          break
+        }
+        const stepEntry = this.entries.find((each) => each.id === step.id)!
+        const label = stepLabel(step.id, step.input)
+        const stepStarted = Date.now()
+        const done = await this.call(
+          {
+            toolCallId: `${call.toolCallId}-${n}`,
+            toolName: stepEntry.name,
+            input: step.input,
+          },
+          { batchStep: n }
+        )
+        lastOutput = done.output
+        if (done.approval) {
+          lines.push(
+            `${n}. ${label} 没做：规则「${done.approval.ruleName}」要求这一步先交给人审批，批里不做要审批的动作。单独调用这一步（${stepEntry.name}）。`,
+            ...skipped(n)
+          )
+          failed = true
+          break
+        }
+        if (done.outcome.suspend && !done.denied) {
+          lines.push(`${n}. ${label}：${stepNote(done.output)}`, ...skipped(n))
+          suspended = done.outcome
+          break
+        }
+        if (done.outcome.isError) {
+          lines.push(
+            `${n}. ✗ ${label}：${stepNote(done.output) || "出错了"}`,
+            ...skipped(n)
+          )
+          failed = true
+          break
+        }
+        lines.push(`${n}. ${label} ✓（${seconds(Date.now() - stepStarted)}）`)
+        const note = stepNote(done.output)
+        if (note) lines.push(indent(note))
+        if (done.outcome.images) images.push(...done.outcome.images)
+      }
+    } finally {
+      browser.setBatching(false)
+    }
+    // 没挂起：附上页面概况和快照（挂起的话继续后页面多半变了，不用看）
+    if (!suspended) {
+      const brief = await browser.briefLines(lastOutput)
+      if (brief.length) lines.push("", ...brief)
+      if (input.snapshot !== false) {
+        const snapshot = await browser.batchSnapshot(
+          input.snapshot?.depth ?? BATCH_SNAPSHOT_DEPTH
+        )
+        if (snapshot) lines.push("", "页面快照：", snapshot)
+      }
+    }
+    const outcome: ToolOutcome = {
+      output: lines.join("\n"),
+      isError: failed,
+      ...(suspended
+        ? {
+            suspend: suspended.suspend,
+            ...(suspended.signals ? { signals: suspended.signals } : {}),
+            ...(suspended.facts ? { facts: suspended.facts } : {}),
+          }
+        : {}),
+      ...(images.length ? { images } : {}),
+    }
+    const output = await this.clipOutput(
+      outcome.output,
+      outcome,
+      toolId,
+      call.toolCallId
+    )
+    await appendEvent(this.ctx.db, this.ctx.session.id, {
+      kind: "tool",
+      title: failed ? `${toolName}（出错）` : toolName,
+      toolId,
+      input: redactSecrets(maskSecretFields(JSON.stringify(input)), []),
+      output,
+      ms: Date.now() - started,
+    })
+    return { toolId, toolName, outcome, output, denied: false }
+  }
+
+  /** 运行还在跑（批里每一步之前看一眼，被取消了就停） */
+  private async stillRunning() {
+    const [row] = await this.ctx.db
+      .select({ status: t.sessions.status })
+      .from(t.sessions)
+      .where(eq(t.sessions.id, this.ctx.session.id))
+    return row?.status === "running"
   }
 
   async close() {

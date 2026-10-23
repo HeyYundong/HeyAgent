@@ -146,7 +146,11 @@ export function buildSystemPrompt(
           ? `- 本任务只允许 Chrome「${profiles[0]!.name}」（${profiles[0]!.id}），第一次用浏览器工具时自动打开，不用调 browser_use。它正被别的运行用着时会先挂起，空出来再叫你继续。`
           : `- 直接用浏览器工具就行：第一次用时系统从本任务允许的 Chrome 里自动分配一个空闲的（每个 Chrome 同一时间只给一个运行用），都被占着就先挂起，空出来再叫你继续。一次运行从头到尾只用一个 Chrome，分到以后不能再换。只有任务要求用某个特定的 Chrome 时才调 browser_use 指定，而且要在第一次用浏览器工具之前调。允许的 Chrome：\n${profiles.map((profile) => `  - ${profile.id}「${profile.name}」${profile.description ? `：${profile.description}` : ""}`).join("\n") || "  - （没有可用的 Chrome 配置）"}`,
         "- 看页面：browser_snapshot 一定带 depth（先 4～6）看结构，再用 target 传元素 ref 展开局部；找文字用 browser_find。不要不带 depth 拿整页快照（长页面有几十万字）。",
-        "- 点击、输入这类动作用 target 传快照里的元素 ref（例如 e12）。动作类工具不返回页面内容，做完要看结果就再拿一次快照。",
+        "- 点击、输入这类动作用 target 传快照里的元素 ref（例如 e12），也可以传选择器（role=button[name=\"提交\"]、text=提交）。动作做完的输出末尾附有现在页面的标题、网址、弹窗和弹窗的按钮；要看页面内容再拿快照。",
+        toolNames.has("browser.batch")
+          ? `- 同一页面上能预见的几步（填表、点按钮、关弹窗、翻页）用 ${toolNames.get("browser.batch")} 一次做完：哪一步出错就停，输出里有每步结果和页面快照，不用再单独看。跳转以后旧的 ref 失效：跨页面的步骤用选择器。填表单优先用 browser_fill_form（一次填多个输入框、下拉、勾选）。`
+          : "",
+        "- 动作被弹窗挡住时，弹窗里有「我知道了」「关闭」这类无害的按钮，系统会点掉它再做一次；别的弹窗（按钮是「接受」「同意」这类）要你自己判断怎么处理。",
         allowVision
           ? "- 允许看画面：browser_look 截当前画面发给你，截图里的坐标可以直接用于 browser_mouse_click_xy 等坐标工具。快照解决不了时才用（找菜单、确认操作结果、canvas 画出来的页面），别每步都看（每次多一张图的费用）。别的截图照旧只存档、不发给你。"
           : "- 截图只存档留证（存成这次运行的文件），不会发给你；要读内容用快照。",

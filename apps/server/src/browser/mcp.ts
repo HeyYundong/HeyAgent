@@ -49,6 +49,9 @@ function baseArgs(cdpEndpoint: string, outputDir: string) {
     // 按坐标操作的工具一律列出来（工具清单进程里只列一次、全局缓存），没开「允许看画面」的任务在网关里过滤掉
     "--caps",
     "vision",
+    // 每个动作做完固定等的时间：默认 500 毫秒降到 200（docs/dev/browser-speed.md D）。这一步引起的请求、跳转照样等
+    "--timeout-settle",
+    "200",
   ]
 }
 

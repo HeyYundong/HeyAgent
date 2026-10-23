@@ -23,7 +23,7 @@
 
 ## 一、三个剪贴板工具（选了「浏览器」工具就有，不受开关控制）
 
-放在 `browser/tools.ts` 的 `entries()` 里（和 `browser.use`、`browser.fill_captcha` 一样是网关自己的工具），实现建议放新文件 `browser/clipboard.ts`。
+放在 `browser/tools.ts` 的 `entries()` 里（和 `browser.use`、`browser.fill_captcha`、`browser.batch` 一样是网关自己的工具），实现建议放新文件 `browser/clipboard.ts`。`copy_image`、`clipboard_paste` 也能放进 `browser.batch` 连着做（`clipboard_read` 是只读的，不能放）。
 都要：懒启动 / 分配 Chrome（和别的浏览器工具同一套），远程画面动作提示（`viewer.announce` + `browserActionTag` / `browserActionLabel` 加上这几个名字），
 操作历史（`record`），过程记录里记一行（读写了什么类型、多少行 / 多大，不记内容）。
 
