@@ -240,7 +240,12 @@ ${cookie ? `<div class="cookie" id="cookieBar" role="dialog" aria-label="Cookie 
         page(
           "字母图片表 - 在线文档",
           `<h1>字母图片表</h1><table><tr><th>字母</th><th>图片</th></tr>${LETTERS.map(
-            (letter) => `<tr><td>${letter}</td><td><div class="cell" contenteditable="true" data-row="${letter}" aria-label="字母 ${letter} 的图片格"></div></td></tr>`
+            // 和真的在线文档一样：贴过的图存着，重新打开还在
+            (letter) => {
+              const saved = results.pasted.get(letter)
+              const img = saved ? `<img alt="已贴的图 ${saved.width}×${saved.height}" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="80">` : ""
+              return `<tr><td>${letter}</td><td><div class="cell" contenteditable="true" data-row="${letter}" aria-label="字母 ${letter} 的图片格">${img}</div></td></tr>`
+            }
           ).join("")}</table>
 <script>
 document.querySelectorAll('.cell').forEach((cell) => cell.addEventListener('paste', async (event) => {

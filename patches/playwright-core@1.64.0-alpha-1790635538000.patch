@@ -1,0 +1,24 @@
+diff --git a/lib/coreBundle.js b/lib/coreBundle.js
+index 3d050d3f66703342cead4d35b900e1027c5af8df..7349a63a78e5e4fb626e7d15e9ae425427e8e7ce 100644
+--- a/lib/coreBundle.js
++++ b/lib/coreBundle.js
+@@ -65491,7 +65491,9 @@ async function waitForCompletion(tab2, callback) {
+   }
+   const requestedNavigation = requests2.some((request2) => request2.isNavigationRequest());
+   if (requestedNavigation) {
+-    await tab2.page.mainFrame().waitForLoadState("load", { timeout: 1e4 }).catch(() => {
++    await tab2.page.mainFrame().waitForLoadState("domcontentloaded", { timeout: 1e4 }).catch(() => {
++    });
++    await tab2.page.mainFrame().waitForLoadState("load", { timeout: 1500 }).catch(() => {
+     });
+     return result2;
+   }
+@@ -66545,7 +66547,7 @@ var init_tab = __esm({
+         }
+         if (modalStates.length)
+           return;
+-        await this.waitForLoadState("load", { timeout: 5e3 });
++        await this.waitForLoadState("load", { timeout: 1500 });
+       }
+       async reload() {
+         await this._initializedPromise;

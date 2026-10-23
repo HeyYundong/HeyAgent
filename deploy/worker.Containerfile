@@ -15,6 +15,7 @@ WORKDIR /repo
 RUN npm install -g pnpm@11.23.0 && pnpm --version
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches patches/
 COPY packages/shared/package.json packages/shared/
 COPY apps/server/package.json apps/server/
 RUN pnpm install --frozen-lockfile --filter "@heyagent/server..."

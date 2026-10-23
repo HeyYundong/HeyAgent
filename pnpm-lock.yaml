@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  playwright-core@1.64.0-alpha-1790635538000: 3a12b11f03e07552836206791f1b09e53a85237910f57be7a2fa5bc9fab7a214
+
 importers:
 
   .:
@@ -5165,7 +5168,7 @@ snapshots:
   '@playwright/mcp@0.0.83':
     dependencies:
       playwright: 1.64.0-alpha-1790635538000
-      playwright-core: 1.64.0-alpha-1790635538000
+      playwright-core: 1.64.0-alpha-1790635538000(patch_hash=3a12b11f03e07552836206791f1b09e53a85237910f57be7a2fa5bc9fab7a214)
 
   '@rolldown/binding-android-arm-eabi@1.2.14':
     optional: true
@@ -7269,13 +7272,13 @@ snapshots:
     dependencies:
       find-up: 3.0.0
 
-  playwright-core@1.64.0-alpha-1790635538000: {}
+  playwright-core@1.64.0-alpha-1790635538000(patch_hash=3a12b11f03e07552836206791f1b09e53a85237910f57be7a2fa5bc9fab7a214): {}
 
   playwright-core@1.64.1: {}
 
   playwright@1.64.0-alpha-1790635538000:
     dependencies:
-      playwright-core: 1.64.0-alpha-1790635538000
+      playwright-core: 1.64.0-alpha-1790635538000(patch_hash=3a12b11f03e07552836206791f1b09e53a85237910f57be7a2fa5bc9fab7a214)
 
   postcss-selector-parser@7.1.6:
     dependencies:

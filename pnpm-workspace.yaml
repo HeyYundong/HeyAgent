@@ -5,3 +5,8 @@ packages:
 # esbuild（tsx、drizzle-kit、vite 用）安装时要跑脚本装平台二进制
 allowBuilds:
   esbuild: true
+
+# Playwright MCP 0.0.83（工具在它带的 playwright-core 里）：打开网页、点击引起跳转后最多等整页加载完 5 / 10 秒，
+# 改成页面骨架出来后最多再等 1.5 秒（慢图、广告不再拖住每一步）。docs/dev/browser-speed.md D；升级 @playwright/mcp 时重做
+patchedDependencies:
+  playwright-core@1.64.0-alpha-1790635538000: patches/playwright-core@1.64.0-alpha-1790635538000.patch
