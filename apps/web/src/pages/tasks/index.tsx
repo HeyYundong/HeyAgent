@@ -12,13 +12,14 @@ import { EmptyState, PageFrame, SimpleHeader } from "@/components/shell/simple-p
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
+import { Skeleton } from "@/components/ui/skeleton"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Switch } from "@/components/ui/switch"
 import { toast } from "@/components/ui/toast"
-import { can, fmtDateTime, fmtShort, runsOfTask, type TaskDef, type WorkQueueStats } from "@heyagent/shared"
+import { can, fmtDateTime, fmtShort, runsOfTask, type SessionSummary, type TaskDef, type WorkQueueStats } from "@heyagent/shared"
 
 import {
-  useBoardQuery, useMemoriesQuery, useModelsQuery, useRulesQuery, useSessionsQuery, useSkillsQuery, useStaffName, useStaffQuery, useTasksQuery, useToolsQuery,
+  useBoardQuery, useMemoriesQuery, useModelsQuery, useRulesQuery, useSessionQuery, useSessionsQuery, useSkillsQuery, useStaffName, useStaffQuery, useTasksQuery, useToolsQuery,
 } from "@/lib/data"
 import { useAction } from "@/lib/mutations"
 import { href, setParams, useRoute } from "@/lib/router"
@@ -145,7 +146,7 @@ function TaskSheetBody({ task, runId, workId, state, canEdit }: { task: TaskDef;
         {runId ? (
           <>
             <Button variant="ghost" size="sm" className="self-start" onClick={() => setParams({ run: null })}><ArrowLeftIcon data-icon="inline-start" />{workId ? `派活单 ${workId}` : `${task.id} 任务详情`}</Button>
-            <RunDetail task={task} run={runs.find((run) => run.id === runId)} />
+            <TaskRunDetail task={task} runs={runs} runId={runId} />
           </>
         ) : workId ? (
           <>
@@ -160,6 +161,15 @@ function TaskSheetBody({ task, runId, workId, state, canEdit }: { task: TaskDef;
       </SheetFooter>
     </>
   )
+}
+
+/** 抽屉里的一次运行：先在这个任务的运行列表里找；列表里没有的（固化试跑不进列表，从审核卡、版本记录点进来）按 id 取 */
+function TaskRunDetail({ task, runs, runId }: { task: TaskDef; runs: SessionSummary[]; runId: string }) {
+  const listed = runs.find((run) => run.id === runId)
+  const fetched = useSessionQuery(listed ? undefined : runId)
+  if (!listed && fetched.isPending) return <div className="flex flex-col gap-3"><Skeleton className="h-16 w-full" /><Skeleton className="h-32 w-full" /></div>
+  const run = listed ?? (fetched.data?.taskId === task.id ? fetched.data : undefined)
+  return <RunDetail task={task} run={run} />
 }
 
 /** 卡片里的一行小字：定时 · 下次 · 步骤 */

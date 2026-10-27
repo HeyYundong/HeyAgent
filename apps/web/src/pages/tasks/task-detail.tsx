@@ -24,6 +24,7 @@ import { StepList, type TasksState } from "./parts"
 import { CancelRunDialog, isActive, ResumeButton, RunWithFilesDialog, TaskAttachments, useStartRun } from "./run-actions"
 import { TaskDialog } from "./task-dialog"
 import { TaskMemorySection } from "./task-memory"
+import { TaskRoutineSection } from "./task-routine"
 import { TaskScheduleSection } from "./task-schedule"
 import { DispatchInSection, TaskDispatchDialog } from "./work-section"
 
@@ -116,7 +117,7 @@ export function TaskActions({ task, state }: { task: TaskDef; state: TasksState 
   )
 }
 
-/** 抽屉里的任务详情：只说明任务，分区卡（目标和步骤 / 什么时候跑 / 任务记忆 / 附件 / 用到的配置）。标题和操作在抽屉的头和底。
+/** 抽屉里的任务详情：只说明任务，分区卡（目标和步骤 / 固化流程（有才显示）/ 什么时候跑 / 任务记忆 / 附件 / 用到的配置）。标题和操作在抽屉的头和底。
  * 不放运行状态和运行记录：每次运行在「会话」页看（抽屉头部的「会话」按钮带上这个任务筛好） */
 export function TaskDetail({ task, state, canEdit }: { task: TaskDef; state: TasksState; canEdit: boolean }) {
   const taskRuns = state.runsOf(task.id)
@@ -125,6 +126,7 @@ export function TaskDetail({ task, state, canEdit }: { task: TaskDef; state: Tas
       {task.dispatch && <DispatchInSection task={task} />}
       {task.toolIds.includes(WORK_DISPATCH_TOOL_ID) && <DispatchOutSection task={task} />}
       <GoalAndSteps task={task} latest={taskRuns[0]} />
+      <TaskRoutineSection task={task} canEdit={canEdit} />
       <TaskScheduleSection task={task} canEdit={canEdit} />
       <TaskMemorySection task={task} runs={taskRuns} canEdit={canEdit} />
       <DetailSection title="附件" description="任务附件每次运行都会带上，agent 用「读附件」工具读。只想这一次带的，用「⋯ → 带附件运行」。">

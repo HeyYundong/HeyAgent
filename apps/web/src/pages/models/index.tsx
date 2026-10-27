@@ -157,12 +157,12 @@ function DefaultsSection({ providers, defaults, readOnly, nameOf, saving, onSave
   // 图库只能用能处理图片的 embedding 模型
   const embeddingModels = providers.flatMap((p) => p.embeddingModels ?? []).filter((m) => m.vision)
   const clash = sameFamily(draft.run, draft.verify)
-  const optional = ["embed", "assistant", "review"] as const
+  const optional = ["embed", "assistant", "review", "solidify"] as const
   const dirty = ROLES.some((role) => draft[role.id] !== defaults[role.id]) || optional.some((role) => (draft[role] ?? "") !== (defaults[role] ?? ""))
   return (
     <DetailSection title="默认用哪个模型"
       action={!readOnly && (
-        <Button size="sm" disabled={!dirty || clash || saving} onClick={() => onSave({ ...draft, embed: draft.embed ?? "", assistant: draft.assistant ?? "", review: draft.review ?? "" })}>
+        <Button size="sm" disabled={!dirty || clash || saving} onClick={() => onSave({ ...draft, embed: draft.embed ?? "", assistant: draft.assistant ?? "", review: draft.review ?? "", solidify: draft.solidify ?? "" })}>
           {saving ? <Spinner data-icon="inline-start" /> : <SaveIcon data-icon="inline-start" />}
           保存
         </Button>
@@ -191,6 +191,13 @@ function DefaultsSection({ providers, defaults, readOnly, nameOf, saving, onSave
           <FieldTitle htmlFor="default-assistant" label="助手">右下角助手用的模型，不选就用「规划」那个。每段对话还可以在助手的「本对话的设置」里单独换。</FieldTitle>
           <ModelCombobox id="default-assistant" className="w-full sm:w-96" models={models} value={draft.assistant ?? ""} disabled={readOnly} clearable placeholder={`不选（用规划：${nameOf(draft.plan)}）`}
             onValueChange={(next) => setDraft({ ...draft, assistant: next || undefined })} />
+        </Field>
+        <Field>
+          <FieldTitle htmlFor="default-solidify" label="固化">
+            把办成过的运行写成脚本（「固化流程」）用；没选就用规划的模型。一次固化只调几次模型，可以选比执行模型强一些的，脚本写得更稳。
+          </FieldTitle>
+          <ModelCombobox id="default-solidify" className="w-full sm:w-96" models={models} value={draft.solidify ?? ""} disabled={readOnly} clearable placeholder={`不选（用规划：${nameOf(draft.plan)}）`}
+            onValueChange={(next) => setDraft({ ...draft, solidify: next || undefined })} />
         </Field>
         <Field>
           <FieldTitle htmlFor="default-review" label="复核模型">新任务默认用的复核模型（每个任务都必须有复核模型，任务里可以换）；以前没选复核模型的旧任务运行时也用它。运行结束后它看目标、检查点、agent 的报告、最后几步和最后一张截图，判办成还是没办成，证据不足判没办成。用便宜、能看图的模型就够，每次不到 0.001 美元。</FieldTitle>
@@ -248,6 +255,7 @@ function ProviderDetail({ provider, tasks, defaults, isAdmin, actions }: {
   const embeddings = [...(provider.embeddingModels ?? [])].sort((a, b) => Number(b.vision ?? false) - Number(a.vision ?? false))
   const embedDefault = embeddings.find((m) => m.id === defaults.embed)
   const assistantDefault = provider.models.find((m) => m.id === defaults.assistant)
+  const solidifyDefault = provider.models.find((m) => m.id === defaults.solidify)
   // 只有自定义服务能手动加模型（其余的模型列表由服务给全）
   const canEditModels = isAdmin && provider.kind === "custom"
   /** 添加（model 为空）或编辑哪个模型；null = 弹窗关着 */
@@ -318,6 +326,7 @@ function ProviderDetail({ provider, tasks, defaults, isAdmin, actions }: {
                           {m.manual && <Badge variant="outline">手动</Badge>}
                           {ROLES.filter((role) => defaults[role.id] === m.id).map((role) => <Badge key={role.id} variant="secondary">默认{role.label}</Badge>)}
                           {defaults.assistant === m.id && <Badge variant="secondary">默认助手</Badge>}
+                          {defaults.solidify === m.id && <Badge variant="secondary">默认固化</Badge>}
                         </div>
                       </TableCell>
                       <TableCell className="w-full max-w-0"><div className="truncate" title={m.note}>{m.note}</div></TableCell>
@@ -384,12 +393,13 @@ function ProviderDetail({ provider, tasks, defaults, isAdmin, actions }: {
               <span className="text-xs text-muted-foreground"> · {provider.models.find((m) => m.id === task.modelId)?.name}</span>
             </p>
           ))}
-          {(defaultRoles.length > 0 || embedDefault || assistantDefault) && (
+          {(defaultRoles.length > 0 || embedDefault || assistantDefault || solidifyDefault) && (
             <p className="text-xs text-muted-foreground">
               默认设置里：
               {[
                 ...defaultRoles.map((role) => `${role.label}用 ${provider.models.find((m) => m.id === defaults[role.id])?.name}`),
                 ...(assistantDefault ? [`助手用 ${assistantDefault.name}`] : []),
+                ...(solidifyDefault ? [`固化用 ${solidifyDefault.name}`] : []),
                 ...(embedDefault ? [`图库用 ${embedDefault.name}`] : []),
               ].join("，")}
               。

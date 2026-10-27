@@ -1,4 +1,4 @@
-// 一件「要人办的事」的处理面板（原来「待办」页的 HumanSheet）：审批 / 验收争议 / 登录 / 记忆审核 / 技能修改。
+// 一件「要人办的事」的处理面板（原来「待办」页的 HumanSheet）：审批 / 验收争议 / 登录 / 记忆审核 / 技能修改 / 审核固化流程（human-routine.tsx）。
 // 两处用：运行详情顶上（这次运行没处理的事，每件一张，在哪看到就在哪处理）；会话页「等人处理」里不属于运行的事（记忆审核、技能修改）点开的抽屉。
 // 段落文字在接口返回的 item.detail（原型的 humanDetails），这里按同一个格式渲染。
 // 能不能处理：can(user, "humanItem.resolve")——主管，或者分给自己的事；否则只读（没有操作按钮，写分给了谁）。
@@ -34,6 +34,7 @@ import { VerificationReport } from "@/pages/tasks/verification"
 
 import { HumanBrowserSection } from "./human-browser"
 import { HumanDesktopSection } from "./human-desktop"
+import { RoutineReviewPanel } from "./human-routine"
 import { Block, Part, TextLink, dots } from "./parts"
 
 /** 会话页上写的种类：验收这类到了人这里的都是「验收争议」 */
@@ -42,7 +43,12 @@ export const HUMAN_KIND_LABEL: Record<HumanItemKind, string> = { ...humanItemKin
 // inRun：放在运行详情里（任务、运行不用再写；验收报告在下面「验收」里，不重复）；onDone：处理完（抽屉里用来关抽屉）
 type Props = { item: HumanItem; inRun?: boolean; onDone?: () => void }
 
-export function HumanItemPanel({ item, inRun = false, onDone }: Props) {
+/** 审核固化流程有自己的内容（routine.version）和按钮（routine.review），其余的走通用的处理面板 */
+export function HumanItemPanel(props: Props) {
+  return props.item.kind === "routine" ? <RoutineReviewPanel {...props} /> : <GeneralItemPanel {...props} />
+}
+
+function GeneralItemPanel({ item, inRun = false, onDone }: Props) {
   const { user } = useMe()
   const staffName = useStaffName()
   const { modelName } = useModels()
