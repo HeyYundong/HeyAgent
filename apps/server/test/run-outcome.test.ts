@@ -67,7 +67,16 @@ async function runNow(taskId: string) {
   return res.data.sessionId as string
 }
 
-const notesOf = (sessionId: string) => ctx.db.select().from(t.notifications).where(eq(t.notifications.sessionId, sessionId))
+/** 这次运行的通知。通知在收尾的事务提交以后才写（状态先变、通知晚一点，负载高时看得出来）：等最多 3 秒，有了就返回 */
+async function notesOf(sessionId: string) {
+  const read = () => ctx.db.select().from(t.notifications).where(eq(t.notifications.sessionId, sessionId))
+  for (let i = 0; i < 30; i++) {
+    const rows = await read()
+    if (rows.length) return rows
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  return read()
+}
 // partial 是旧说明里的写法（运行中途的模型可能还会传），照收、当没办成
 const finish = (outcome: "achieved" | "partial" | "not_achieved", extra: { reason?: string; summary?: string; evidence?: string } = {}) =>
   call("run.finish", { outcome, summary: extra.summary ?? "总结", evidence: extra.evidence ?? "依据", ...(extra.reason ? { reason: extra.reason } : {}) })
