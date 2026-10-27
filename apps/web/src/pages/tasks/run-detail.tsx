@@ -7,7 +7,7 @@
 // 传进来的 run 是 sessions.list 的摘要（不带过程）：标题、检查点、验收先显示；过程按 id 另取（sessions.get），取到前是骨架屏。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
-import { BrainIcon, ChevronRightIcon, CircleAlertIcon, CircleCheckIcon, CircleStopIcon, FlagIcon, FoldVerticalIcon, ListTreeIcon, PauseIcon, PlayIcon, SaveIcon, ScanSearchIcon, SearchXIcon, SendIcon, ShieldIcon, TriangleAlertIcon, UserIcon, WrenchIcon, type LucideIcon } from "lucide-react"
+import { BrainIcon, ChevronRightIcon, CircleAlertIcon, CircleCheckIcon, CircleStopIcon, EllipsisIcon, FlagIcon, FoldVerticalIcon, ListTreeIcon, PauseIcon, PlayIcon, SaveIcon, ScanSearchIcon, SearchXIcon, SendIcon, ShieldIcon, TriangleAlertIcon, UserIcon, WorkflowIcon, WrenchIcon, type LucideIcon } from "lucide-react"
 
 import { OutcomeBadge } from "@/components/shell/outcome-badge"
 import { DetailPanel, DetailSection, EmptyState } from "@/components/shell/simple-page"
@@ -16,6 +16,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { CodeBlock, CodeBlockContent, CodeBlockHeader, CodeBlockTitle } from "@/components/ui/code-block"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "@/components/ui/item"
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -43,6 +44,7 @@ import { RunDesktopButton } from "./run-desktop"
 import { RunSpaceButton } from "./run-space"
 import { RunDigestSection } from "./run-digest"
 import { RunOutcomeSection } from "./run-outcome"
+import { canSolidify, isRoutineTest, RoutineRunLine, SolidifyDialog } from "./run-routine"
 
 const EVENT_ICON: Record<RunEventKind, LucideIcon> = { plan: ListTreeIcon, think: BrainIcon, tool: WrenchIcon, checkpoint: FlagIcon, rule: ShieldIcon, wait: PauseIcon, resume: PlayIcon, human: UserIcon, verify: ScanSearchIcon, done: CircleCheckIcon, error: TriangleAlertIcon }
 
@@ -58,6 +60,7 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionSummary }
   const { user } = useMe()
   const { modelName } = useModels()
   const [cancelling, setCancelling] = React.useState(false)
+  const [solidifying, setSolidifying] = React.useState(false)
   const detail = useSessionQuery(run?.id)
   const openItems = useHumanItems().filter((item) => run && item.runId === run.id)
   if (!run) return <EmptyState icon={<SearchXIcon />} title="找不到这次运行" description="可能是网址里的运行编号写错了。" />
@@ -69,11 +72,14 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionSummary }
   const ended = isRunEnded(run.status)
   const canManage = can(user, "task.manage", { ownerId: task.ownerId })
   const waitingEvent = run.status === "waiting" ? eventOf(run.waiting?.trigger) : undefined
+  // 固化试跑：不复核、不算结果，不显示结果、总结这些；办成的普通运行能「固化成流程」
+  const test = isRoutineTest(run)
+  const solidify = canManage && canSolidify(run)
   return (
     <DetailPanel
       title={`${run.id} · ${task.title}`}
-      badges={<><RunStatusBadge status={run.status} />{ended && <OutcomeBadge outcome={outcomeOf(run)} reason={outcomeReasonOf(run)} reviewing={isReviewing(run)} />}{run.status === "running" && <span className="text-xs text-muted-foreground"><Elapsed since={run.startedAt} /></span>}</>}
-      meta={<RunMeta run={run} rest={`模型 ${modelName(run.modelId)} · 输入 ${num(run.tokensIn)} / 输出 ${num(run.tokensOut)} token · 花费 ${money(run.costUsd)} · 开始 ${fmtDateTime(run.startedAt)} · ${run.endedAt ? `结束 ${fmtDateTime(run.endedAt)}` : "还没结束"}`} />}
+      badges={<><RunStatusBadge status={run.status} />{ended && !test && <OutcomeBadge outcome={outcomeOf(run)} reason={outcomeReasonOf(run)} reviewing={isReviewing(run)} />}{run.status === "running" && <span className="text-xs text-muted-foreground"><Elapsed since={run.startedAt} /></span>}</>}
+      meta={<><RunMeta run={run} rest={`模型 ${modelName(run.modelId)} · 输入 ${num(run.tokensIn)} / 输出 ${num(run.tokensOut)} token · 花费 ${money(run.costUsd)} · 开始 ${fmtDateTime(run.startedAt)} · ${run.endedAt ? `结束 ${fmtDateTime(run.endedAt)}` : "还没结束"}`} /><RoutineRunLine run={run} /></>}
       actions={<>
         <RunSpaceButton run={run} />
         <RunBrowserButton run={run} />
@@ -84,9 +90,20 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionSummary }
         {isActive(run) && canManage && (
           <Button variant="outline" size="sm" onClick={() => setCancelling(true)}><CircleStopIcon data-icon="inline-start" />取消运行</Button>
         )}
+        {solidify && (
+          <DropdownMenu>
+            <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" aria-label="这次运行的更多操作" />}>
+              <EllipsisIcon />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-40">
+              <DropdownMenuItem onClick={() => setSolidifying(true)}><WorkflowIcon />{run.routine?.state === "fell_back" ? "重新固化" : "固化成流程"}</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
       </>}
     >
       <CancelRunDialog key={`${run.id}-${cancelling}`} run={run} open={cancelling} onOpenChange={setCancelling} />
+      {solidify && <SolidifyDialog key={`solidify-${run.id}-${solidifying}`} run={run} open={solidifying} onOpenChange={setSolidifying} />}
       {openItems.map((item) => <HumanItemPanel key={item.id} item={item} inRun />)}
       <WaitingAlert run={run} />
       {error && (
@@ -96,14 +113,14 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionSummary }
           {error.detail && <AlertDescription>{error.detail}</AlertDescription>}
         </Alert>
       )}
-      {ended && <RunOutcomeSection run={run} canEdit={canManage} />}
+      {ended && !test && <RunOutcomeSection run={run} canEdit={canManage} />}
       {run.workItemId && <DispatchedIn run={run} itemId={run.workItemId} />}
       {task.toolIds.includes(WORK_DISPATCH_TOOL_ID) && <DispatchedOut run={run} events={events} />}
       <DetailSection title={`检查点 · ${checkpointSummary(run.checkpoints)}`}>
         <CheckpointList run={run} focused={detail.data && focusedCheckpoint(detail.data)} />
       </DetailSection>
       {run.verification && <VerificationSection run={run} verification={run.verification} />}
-      {ended && <RunDigestSection task={task} run={run} canEdit={canManage} />}
+      {ended && !test && <RunDigestSection task={task} run={run} canEdit={canManage} />}
       {run.exploredSteps && run.exploredSteps.length > 0 && (
         <AgentSteps task={task} run={run} steps={run.exploredSteps} events={events} canSave={canManage} />
       )}
@@ -173,6 +190,7 @@ function EventRow({ event, run, running }: { event: RunEvent; run: SessionSummar
   const line = (
     <TraceLine status={running ? "running" : event.kind === "error" ? "error" : undefined}>
       <TraceIcon><RowIcon /></TraceIcon>
+      {event.trace?.routineStep && <Badge variant="outline">流程</Badge>}
       {tag && <Badge variant={tag.variant}>{tag.label}</Badge>}
       <TraceTitle>{event.title}</TraceTitle>
       <TraceDescription>{at}</TraceDescription>
@@ -195,6 +213,7 @@ function EventRow({ event, run, running }: { event: RunEvent; run: SessionSummar
       <TraceCollapsibleTrigger>{line}</TraceCollapsibleTrigger>
       <TraceCollapsibleContent className="flex flex-col gap-2 text-xs">
         <span>工具：{toolName(event.toolId ?? "")}（{event.toolId}）{meta && ` · ${meta}`}</span>
+        {event.trace?.routineStep && <span className="text-muted-foreground">固化流程的脚本做的第 {event.trace.routineStep} 步</span>}
         {event.detail && <span>{event.detail}</span>}
         {codeRun ? <CodeRunView call={codeRun} output={event.output} /> : (
           <>
@@ -202,6 +221,8 @@ function EventRow({ event, run, running }: { event: RunEvent; run: SessionSummar
             {event.output && <IoBlock title="输出" text={event.output} />}
           </>
         )}
+        {event.trace?.code && <IoBlock title="录下的定位代码" text={event.trace.code} />}
+        {event.trace?.urlAfter && event.trace.urlAfter !== event.trace.urlBefore && <span className="break-all text-muted-foreground">做完到了 {event.trace.title ? `「${event.trace.title}」 ` : ""}{event.trace.urlAfter}</span>}
       </TraceCollapsibleContent>
     </TraceCollapsible>
   )
