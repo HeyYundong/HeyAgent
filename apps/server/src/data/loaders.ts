@@ -231,14 +231,18 @@ async function eventSummaries(db: Db, filter: SessionFilter) {
   }
 }
 
-/** session 列表（新的在前）：摘要，不带过程。可以按 id 或任务筛 */
+/**
+ * session 列表（新的在前）：摘要，不带过程。可以按 id 或任务筛。
+ * 不按 id 取时（sessions.list：会话页、任务卡片的最近运行、浏览器页「最近用它的运行」）只列普通运行：
+ * 固化试跑不进会话列表、不算统计（docs/dev/solidify.md 15.3 第 5 条）；按 id 取（sessions.get、会话页的一页）照常能看试跑
+ */
 export async function listSessions(db: Db, filter: SessionFilter = {}): Promise<SessionSummary[]> {
   const rows = await db
     .select()
     .from(t.sessions)
     .where(
       and(
-        filter.ids ? inArray(t.sessions.id, filter.ids) : undefined,
+        filter.ids ? inArray(t.sessions.id, filter.ids) : eq(t.sessions.kind, "run"),
         filter.taskId ? eq(t.sessions.taskId, filter.taskId) : undefined,
         filter.outcome?.length ? inArray(t.sessions.outcome, filter.outcome) : undefined
       )
@@ -652,6 +656,7 @@ export async function loadModels(db: Db): Promise<{ providers: ModelProvider[]; 
       embed: opt(defaultOf("embed") || null),
       assistant: opt(defaultOf("assistant") || null),
       review: opt(defaultOf("review") || null),
+      solidify: opt(defaultOf("solidify") || null),
     }),
   }
 }

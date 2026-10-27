@@ -68,6 +68,9 @@ importers:
       '@trpc/server':
         specifier: 11.19.0
         version: 11.19.0(typescript@6.0.3)
+      acorn:
+        specifier: 8.19.0
+        version: 8.19.0
       ai:
         specifier: 7.0.142
         version: 7.0.142(zod@4.6.7)

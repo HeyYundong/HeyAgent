@@ -35,6 +35,8 @@ export interface CreateHumanItemInput {
   ruleId?: string | null
   memoryId?: string | null
   skillId?: string | null
+  /** 审核固化流程：哪一版（docs/dev/solidify.md 5.7） */
+  routineVersionId?: string | null
   urgency?: number
   detail: HumanDetail
 }
@@ -61,6 +63,7 @@ export async function createHumanItem(
       ruleId: input.ruleId ?? null,
       memoryId: input.memoryId ?? null,
       skillId: input.skillId ?? null,
+      routineVersionId: input.routineVersionId ?? null,
       urgency: input.urgency ?? 3,
       detail: input.detail,
     })
@@ -140,6 +143,9 @@ export async function resolveHumanItemImpl(
       "BAD_REQUEST",
       "记忆审核、技能修改请在记忆页、技能页处理"
     )
+  // 审核固化流程：启用 / 不用由 routine.review 处理（要改流程、开关，还要写理由），不走这里的通用处理
+  if (item.kind === "routine")
+    throw new EngineError("BAD_REQUEST", "审核固化流程请用「启用」「不用」处理（routine.review）")
   const note = input.note?.trim()
   if (item.kind === "verify")
     return resolveVerifyDisputeImpl(db, {
@@ -456,8 +462,8 @@ export async function notifyAssignee(
     userIds: [item.assigneeId],
     title: `等你处理：${item.title}`,
     body: item.summary,
-    // 挡住运行的事打开那次运行（处理面板在详情顶上）；记忆审核、技能修改不挡运行，打开这件事本身
-    link: humanItemLink(item.kind === "memory" || item.kind === "skill" ? item.id : (item.sessionId ?? item.id)),
+    // 挡住运行的事打开那次运行（处理面板在详情顶上）；记忆审核、技能修改、审核固化流程不挡运行，打开这件事本身
+    link: humanItemLink(item.kind === "memory" || item.kind === "skill" || item.kind === "routine" ? item.id : (item.sessionId ?? item.id)),
     taskId: item.taskId,
     sessionId: item.sessionId,
   })

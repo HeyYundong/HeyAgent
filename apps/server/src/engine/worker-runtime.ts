@@ -10,6 +10,7 @@ import { DESKTOP_SWEEP_MS, sweepDesktops } from "../desktop/leases.js"
 import { vmConfig } from "../desktop/vm/config.js"
 import { runVmJob, sweepVms, vmHealthTick } from "../desktop/vm/lifecycle.js"
 import { runImportRead } from "../imports/reader.js"
+import { handleCompileJob } from "../routine/compile.js"
 import type { Db } from "../db/client.js"
 import { cleanupSessionSandbox, sweepSandboxDirs, sweepThrottled } from "../sandbox/code-run.js"
 import * as t from "../db/schema.js"
@@ -253,6 +254,12 @@ export async function startEngineWorker(
   // 派活：单最终结束时叫醒等 work.done:<单号> 的运行（第二期）
   await boss.work<{ itemId: string }>(QUEUES.workNotify, polling, async ([job]) => job && (await onWorkNotify(db, job.data)))
   await boss.schedule(QUEUES.workSweep, "* * * * *", {}, { tz: SCHEDULE_TZ })
+  // 固化（docs/dev/solidify.md 5.6）：一版脚本往下走一步。同一版排着的只留一个（stately + singletonKey = 版本 id）。
+  // queue.ts 的 QUEUE_SETUP 里还没有这个队列，这里建（已经有了不报错）；worker 起来以后 API 那边发任务才不会撞上「队列不存在」
+  await boss.createQueue(QUEUES.routineCompile, { policy: "stately", retryLimit: 2, retryDelay: 10 })
+  await boss.work<{ versionId: string }>(QUEUES.routineCompile, { ...polling, localConcurrency: 2 }, async ([job]) => {
+    if (job) await handleCompileJob(db, job.data)
+  })
   // 系统开的桌面：一台一个操作（同一台排着的只留一个）。几台可以同时做（关机要等 2 分钟）
   await boss.work<{ desktopId: string }>(QUEUES.desktopVm, { ...polling, localConcurrency: 4 }, async ([job]) => job && (await runVmJob(db, job.data.desktopId)))
   if (options.desktopVmSweepMs !== false) await sweepVms(db).catch((error) => console.warn("[worker] 虚拟机对账出错", error))

@@ -431,7 +431,8 @@ export const providerUpdateSchema = providerInputSchema.omit({ kind: true }).ext
  * assistant 同样：不传 = 不改；传空字符串 = 不单独配，助手用 plan 默认模型。
  * review（复核，run-outcome 5.2）同样：不传 = 不改；传空字符串 = 不配默认复核模型（新任务要自己选，没选复核模型的旧任务不能开始运行）
  */
-export const modelDefaultsInputSchema = z.object({ run: z.string().min(1), plan: z.string().min(1), verify: z.string().min(1), embed: z.string().optional(), assistant: z.string().optional(), review: z.string().optional() })
+/** solidify：固化的默认模型（docs/dev/solidify.md 5.2，可选；空字符串 = 不单独配，用 plan） */
+export const modelDefaultsInputSchema = z.object({ run: z.string().min(1), plan: z.string().min(1), verify: z.string().min(1), embed: z.string().optional(), assistant: z.string().optional(), review: z.string().optional(), solidify: z.string().optional() })
 
 /** 单价（美元 / 百万 token）：0 = 不知道 */
 const priceSchema = z.number({ error: "填数字" }).min(0, "不能是负数").max(10_000, "太大了")
