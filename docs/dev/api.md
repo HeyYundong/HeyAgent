@@ -25,6 +25,7 @@
 17. Session 空间和运行代码（2026-10-20）
 18. 运行结果（2026-10-20）
 19. 桌面（2026-10-22）
+20. 固化（2026-10-27）
 
 ---
 
@@ -1489,3 +1490,57 @@ claude mcp add --transport http heyagent-compare http://<host>:8080/api/compare/
 - `desktops.test`：vm 建的人也能测（地址是系统填的）。
 - 远程画面（19.3）：vm 建的人能看能操作（新建后要扫码登录软件）；模板只有主管。
 - 分配：快照不含模板；`tasks.create/update` 选了模板 `BAD_REQUEST`「模板不能给任务用」；vm 只有 running 才分得到（自动分配跳过别的状态的），指定的那台（`desktop.use` 或已经分到的）没开着时工具报错「桌面「名字」关着，请在桌面页开机」（开机中是「正在开机，过一两分钟再试」），不挂起；允许的都用不了时也报错不挂起。
+
+---
+
+## 20. 固化（2026-10-27）
+
+开发说明 `docs/dev/solidify.md`（设计、第 15 节分工），契约 `packages/shared/src/routine.ts`，迁移 0031。办成的运行写成脚本「固化流程」，以后的运行先在沙箱里跑脚本，每一步经工具桥走同一个工具网关；跑不通交给 agent。
+
+### 20.1 数据
+
+- 新表 `routines`（一个任务一个，`RT-<n>`，序列 `routine_no_seq`）：`status`（trial / active / paused）、`active_version`、`direct_streak`、`fallback_streak`、`paused_reason`。
+- 新表 `routine_versions`（`RT-<n>-v<版本>`）：`status`（drafting / testing / review / failed / approved / rejected）、`name`、`description`、`code`、`input_schema`、`output_schema`、`commits`、`assumptions`、`fail_reason`、`source_session_id`、`base_version`、`round`、`skip_test`、`test_report`（`RoutineTestReport`）、`model_id`、`tokens_in`、`tokens_out`、`cost_usd`、`reject_reason`、`created_by_id`、`approved_by_id`、`approved_at`。
+- `tasks.routine_mode`（off / first，默认 off；第一次启用时改成 first）。
+- `sessions.kind`（run / routine_test）、`sessions.routine`（`SessionRoutineState`：脚本跑到哪、停在哪 `stoppedAt { step, kind, tool?, label?, reason }`、提交和核对 `commits`、试跑记下没生效的 `recorded`、`logs`、`screenshotFileId`）。固化试跑的运行 id 是 `RT-<n>-v<版本>-t<轮>`，不进会话列表、会话页的个数和办成率、「今天花了」、定时的「上一次还没跑完」判断；`sessions.get` 按 id 照常能取。
+- `session_events.trace`（`EventTrace`：浏览器动作录下的 Playwright 代码 `code`、`urlBefore`、`urlAfter`、`title`；脚本做的步骤 `routineStep`）。`SessionRun.events[].trace` 原样给出。
+- `human_items.kind` 多一种 `routine`（前缀 `ro-`），`human_items.routine_version_id`，`HumanDetail.routine = { routineId, versionId, version }`。通用的 `engine.resolveHumanItem` 处理这种事 `BAD_REQUEST`，用 `routine.review`。
+- 模型默认角色多一个可选的 `solidify`（`models.setDefaults` 的 `solidify`，空字符串 = 不单独配，用 `plan`）。
+- 快照多了 `routine?: RoutineSnapshot`（开始运行时冻：任务开着 first、流程没停用、有启用的版本；固化试跑冻要试的那一版，`status = test`）。
+- 队列 `routine.compile`（`{ versionId }`，stately，singletonKey = 版本 id）。
+
+### 20.2 接口（`appRouter.routine`）
+
+| 接口 | 类型 | 谁能用 | 输入 → 输出 |
+|---|---|---|---|
+| `get` | query | 登录即可 | `{ taskId }` → `RoutineSummary \| null`：状态、开关、启用的版本、两个计数、停用原因、最近 20 次的成绩（`recent { runs, direct, fellBack, avgMs, agentAvgMs }`）、所有版本（不带脚本） |
+| `version` | query | 登录即可 | `{ id }` → `RoutineVersion`：一版的全部（步骤说明、脚本、两个 JSON Schema、试跑报告、审核结果、待审核时的 `humanItemId`） |
+| `compile` | mutation | 任务负责人、主管 | `{ sessionId, skipTest? }` → `{ routineId, versionId }`。只有已结束、结果办成的普通运行；同一个流程已经有一版在写、试跑或待审核 `CONFLICT`。源运行跑过脚本的，这一版记 `baseVersion`（修那一版） |
+| `review` | mutation | 同上 | `{ versionId, approve, reason? }`（不用要写理由）→ `{ versionId, status }`。只有待审核的；启用 = 这一版 approved、流程指向它、回到试用期、两个计数清零、开关 off 改成 first；不用 = rejected。都把那件「审核固化流程」处理掉 |
+| `setMode` | mutation | 同上 | `{ taskId, mode }` → `{ taskId, mode }`。打开要有启用的版本 |
+| `setPaused` | mutation | 同上 | `{ routineId, paused }` → `{ id, status }`。重新启用回到试用期 |
+| `restore` | mutation | 同上 | `{ routineId, version }` → `{ routineId, activeVersion }`。只能回到启用过的版本，回试用期，开关不动 |
+
+审计：`routine.compile`、`routine.approve`、`routine.reject`、`routine.set_mode`、`routine.pause`、`routine.resume`、`routine.restore`。
+
+### 20.3 固化的状态机（`routine.compile` 的处理函数，`routine/compile.ts`）
+
+- `drafting`：轮数 +1，用默认模型的 `solidify`（没有用 `plan`）读材料（`routine/material.ts`：精简的过程、输入位置、派活声明、修的版本带旧脚本和停下的原因），按 `routine/prompt.ts` 写脚本；不适合 → `failed`；程序检查（`routine/checks.ts`，acorn 解析）不过、模型出错 → 同一个任务里接着写下一轮；过了 → 选了不试跑的直接审核，否则 `testing` 并开试跑。最多 `ROUTINE_MAX_ROUNDS` = 3 轮。
+- `testing`：试跑的运行结束时（不管怎么结束，引擎都发）读它的 `sessions.routine`：停在 `test_commit` / `test_blocked`、或者报了办成都算过；要交回的结果和源运行一项一项对；过了 → `review`，给负责人一件「审核固化流程」；不过 → 不到 3 轮回 `drafting`，到了 `failed`。没成功都通知负责人。
+
+### 20.4 运行时（`routine/runtime/`、`sandbox-sdk/heyagent/`）
+
+- 跑脚本：沙箱（bwrap，不挂出网代理，`/workspace` 只读）里 `node launch.js`，脚本是 `routine.mjs`，SDK 从 `apps/server/sandbox-sdk/heyagent/` 拷进代码目录的 `node_modules/heyagent/`。工具桥的 socket 只读挂到 `/tmp/.tools/tools.sock`（环境变量 `HEYAGENT_BRIDGE`）。上限：1000 次工具调用、10 分钟（压到 `maxRunMs - 1 分钟` 以内）、512 MB，环境变量 `HEYAGENT_ROUTINE_MAX_CALLS` / `HEYAGENT_ROUTINE_MAX_MINUTES` / `HEYAGENT_ROUTINE_MEMORY_MB` 改。
+- 协议（一行一个 JSON）：请求 `{ id, op, … }`，`op` = `tool`（`tool`、`input`）/ `commit`（`label`）/ `verified`（`note`）/ `log`（`text`）/ `fail`（`kind: input | page`、`reason`）/ `now` / `done`；回复 `{ id, ok, text?, data?, error?, code? }`，`code` = `step_error` / `denied` / `stop`。调用 id `<运行号>-r<序号>`，`gateway.call()` 带 `routineStep`。
+- 停下的原因 `routineStopKindSchema`：`step_error`、`denied`、`approval`、`suspend`、`input`、`page`、`script_error`、`timeout`、`limit`、`cancelled`、`sandbox`、`interrupted`、`bad_input`、`run_failed`、`test_commit`、`test_blocked`。
+- 引擎（`engine/loop.ts`）：普通运行快照里有 `routine`、`sessions.routine` 为空 → 先跑脚本；报办成走「说做完了」的规则，报没办成、`ha.fail("input")` 直接收尾，别的停下追加交接的话进 agent 循环（要挂起的和挂起同一个事务）；中途进程被杀记 `interrupted` 交给 agent。试跑每次进来都从头跑，结束时记已结束、结果留空、不复核、发 `routine.compile`；取消（`engine/control.ts`）、`failSession` 也发。
+- 试用、正式、停用（`routine/runtime/stats.ts`，结果定了以后）：脚本报办成且办成 → `direct_streak + 1`，试用满 3 次转正式；交给 agent → `fallback_streak + 1`，满 3 次自动停用；试用期每次都通知负责人。
+
+### 20.5 新的浏览器工具（agent 和脚本都能用，只读，不能放进 batch）
+
+| 工具 | 参数 | 返回 |
+|---|---|---|
+| `browser.extract`「读列表」 | `{ list?, fields: { 名字: 定位 \| { target, attr } }, limit?（默认 50，最多 500） }` | 文字：一张小表（最多 50 行）；`data`：`{ rows, total }`，没找到的字段是 `null`；`attr` 的 href、src 换成完整网址，value 读输入框现在的值 |
+| `browser.wait_any`「等结果」 | `{ outcomes: { 名字: 定位 }, timeout?（秒，默认 10，最多 60） }` | 等到的名字（`data: { matched }`）；定位可以写 `url=片段`；超时是出错，文字带页面概况 |
+
+定位认两种写法：录下来的 JS 写法（`getByRole('button', { name: '查询' }).nth(1)` 等，只认白名单方法和字面量参数）和选择器字符串（`role=…`、`text=…`、CSS）。另外：HTTP 工具返回 JSON 时 `ToolOutcome.data` 是解析后的对象；`file.read` 读表格时 `data` 是 `{ sheet, header, rows, total }`。
