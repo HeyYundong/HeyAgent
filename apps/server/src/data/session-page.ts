@@ -15,7 +15,8 @@ const BLOCKING_KINDS = ["approval", "verify", "login"] as const
 
 export async function pageSessions(db: Db, rawInput: SessionPageInput, actor: { id: string; isAdmin: boolean }): Promise<SessionPage> {
   const input = sessionPageInputSchema.parse(rawInput)
-  const base: SQL[] = []
+  // 固化试跑不进会话页、不算个数和办成率（docs/dev/solidify.md 15.3 第 5 条）：所有查询都从这里起
+  const base: SQL[] = [eq(t.sessions.kind, "run")]
   if (input.source) base.push(eq(t.sessions.triggeredBy, input.source))
   if (input.taskId) base.push(eq(t.sessions.taskId, input.taskId))
   // 结果和 shared 的 outcomeOf 一样：没记结果的老数据，没完成、出错的算没办成
@@ -58,14 +59,18 @@ export async function pageSessions(db: Db, rawInput: SessionPageInput, actor: { 
       .select({ status: t.sessions.status, n: count() })
       .from(t.sessions)
       .leftJoin(t.tasks, eq(t.tasks.id, t.sessions.taskId))
-      .where(base.length ? and(...base) : undefined)
+      .where(and(...base))
       .groupBy(t.sessions.status),
-    db.select({ usd: sql<number>`coalesce(sum(${t.sessions.costUsd}), 0)::float8` }).from(t.sessions).where(sql`${t.sessions.startedAt} >= ${startOfTodayShanghai()}`),
+    // 今天花了：只算普通运行（试跑不调执行模型，固化员的花费记在版本上）
+    db
+      .select({ usd: sql<number>`coalesce(sum(${t.sessions.costUsd}), 0)::float8` })
+      .from(t.sessions)
+      .where(and(eq(t.sessions.kind, "run"), sql`${t.sessions.startedAt} >= ${startOfTodayShanghai()}`)),
     db
       .select({ achieved: sql<number>`count(*) filter (where ${achievedSql})::int`, notAchieved: sql<number>`count(*) filter (where ${notAchievedSql})::int` })
       .from(t.sessions)
       .leftJoin(t.tasks, eq(t.tasks.id, t.sessions.taskId))
-      .where(base.length ? and(...base) : undefined),
+      .where(and(...base)),
   ])
   const total = totalRow?.n ?? 0
   const page = Math.min(input.page, Math.max(1, Math.ceil(total / input.pageSize)))

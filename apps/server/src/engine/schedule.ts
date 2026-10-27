@@ -71,7 +71,8 @@ export async function onTaskCron(db: Db, data: { taskId: string }) {
     const [busy] = await db
       .select({ id: t.sessions.id, status: t.sessions.status })
       .from(t.sessions)
-      .where(and(eq(t.sessions.taskId, task.id), inArray(t.sessions.status, ["running", "verifying"])))
+      // 固化试跑不算（docs/dev/solidify.md 第 8 节：不触发「上一次还没跑完就跳过」）
+      .where(and(eq(t.sessions.taskId, task.id), eq(t.sessions.kind, "run"), inArray(t.sessions.status, ["running", "verifying"])))
       .limit(1)
     if (busy) {
       console.log(`[engine] ${task.id} 定时到点，上一次 ${busy.id} 还${busy.status === "running" ? "在执行" : "在验收"}，跳过这次`)

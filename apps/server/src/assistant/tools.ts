@@ -551,7 +551,8 @@ export const TOOLS: Record<string, ToolDef> = {
       const rows = await ctx.db
         .select({ id: t.sessions.id, taskId: t.sessions.taskId, status: t.sessions.status, triggeredBy: t.sessions.triggeredBy, startedAt: t.sessions.startedAt, endedAt: t.sessions.endedAt, costUsd: t.sessions.costUsd })
         .from(t.sessions)
-        .where(input.taskId ? eq(t.sessions.taskId, input.taskId) : undefined)
+        // 固化试跑不算「运行」（不进会话列表，docs/dev/solidify.md 15.3 第 5 条）
+        .where(and(eq(t.sessions.kind, "run"), input.taskId ? eq(t.sessions.taskId, input.taskId) : undefined))
         .orderBy(desc(t.sessions.startedAt))
         .limit(20)
       return { sessions: rows.map((row) => ({ ...row, startedAt: row.startedAt.toISOString(), endedAt: row.endedAt?.toISOString() })) }

@@ -684,8 +684,10 @@ export async function deleteProvider(ctx: WriteCtx, input: { id: string }) {
     if (current.assistant && !ownIds.includes(current.assistant)) next.assistant = current.assistant
     // 默认复核模型在删掉的服务里就不配了（没选复核模型的旧任务要先选一个才能运行）
     if (current.review && !ownIds.includes(current.review)) next.review = current.review
+    // 固化的默认模型是可选的：在删掉的服务里就不配了，固化回到 plan 默认模型
+    if (current.solidify && !ownIds.includes(current.solidify)) next.solidify = current.solidify
     await tx.delete(t.modelDefaults)
-    for (const role of ["run", "plan", "verify", "embed", "assistant", "review"] as const) {
+    for (const role of ["run", "plan", "verify", "embed", "assistant", "review", "solidify"] as const) {
       const modelId = next[role]
       if (modelId && !ownIds.includes(modelId)) await tx.insert(t.modelDefaults).values({ role, modelId, updatedById: ctx.actor.id })
     }
@@ -704,14 +706,16 @@ async function readDefaults(db: DbOrTx): Promise<ModelDefaults> {
   const embed = of("embed")
   const assistant = of("assistant")
   const review = of("review")
-  return { run: of("run"), plan: of("plan"), verify: of("verify"), ...(embed ? { embed } : {}), ...(assistant ? { assistant } : {}), ...(review ? { review } : {}) }
+  const solidify = of("solidify")
+  return { run: of("run"), plan: of("plan"), verify: of("verify"), ...(embed ? { embed } : {}), ...(assistant ? { assistant } : {}), ...(review ? { review } : {}), ...(solidify ? { solidify } : {}) }
 }
 
 /**
  * 默认模型。执行 / 规划 / 验收要是聊天模型，验收不许和执行同一家（不算第三方）。
  * embed（图库的 embedding 模型）：不传不改，空字符串表示不用；要是能处理图片的 embedding 模型。
  * assistant（右下角助手）：不传不改，空字符串表示不单独配（助手用 plan）；要是聊天模型。
- * review（新任务默认用的复核模型，没选复核模型的旧任务也用它）：不传不改，空字符串表示不配；要是聊天模型，不要求和执行模型不同家
+ * review（新任务默认用的复核模型，没选复核模型的旧任务也用它）：不传不改，空字符串表示不配；要是聊天模型，不要求和执行模型不同家。
+ * solidify（固化：把办成的运行写成脚本，docs/dev/solidify.md 5.2）：不传不改，空字符串表示不单独配（固化用 plan）；要是聊天模型
  */
 export async function writeDefaults(db: DbOrTx, actorId: string | null, input: ModelDefaults) {
   if (sameFamily(input.run, input.verify)) {
@@ -738,10 +742,16 @@ export async function writeDefaults(db: DbOrTx, actorId: string | null, input: M
     if (!review) throw badRequest(`模型不存在：${input.review}`)
     if (review.kind !== "chat") throw badRequest(`${input.review} 是 embedding 模型，不能用来复核`)
   }
+  if (input.solidify) {
+    const [solidify] = await db.select({ kind: t.models.kind }).from(t.models).where(eq(t.models.id, input.solidify))
+    if (!solidify) throw badRequest(`模型不存在：${input.solidify}`)
+    if (solidify.kind !== "chat") throw badRequest(`${input.solidify} 是 embedding 模型，不能用来固化`)
+  }
   const roles: ModelRole[] = ["run", "plan", "verify"]
   if (input.embed) roles.push("embed")
   if (input.assistant) roles.push("assistant")
   if (input.review) roles.push("review")
+  if (input.solidify) roles.push("solidify")
   for (const role of roles) {
     const modelId = input[role]!
     await db
@@ -752,6 +762,7 @@ export async function writeDefaults(db: DbOrTx, actorId: string | null, input: M
   if (input.embed === "") await db.delete(t.modelDefaults).where(eq(t.modelDefaults.role, "embed"))
   if (input.assistant === "") await db.delete(t.modelDefaults).where(eq(t.modelDefaults.role, "assistant"))
   if (input.review === "") await db.delete(t.modelDefaults).where(eq(t.modelDefaults.role, "review"))
+  if (input.solidify === "") await db.delete(t.modelDefaults).where(eq(t.modelDefaults.role, "solidify"))
 }
 
 export async function setModelDefaults(ctx: WriteCtx, input: ModelDefaults) {
