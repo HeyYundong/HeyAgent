@@ -4,15 +4,32 @@
 // 状态只管流程（docs/dev/run-outcome.md）：正常结束都记「已结束」（done），办没办成看结果列（outcome.ts 的硬规则 + review.ts 的复核）。
 // 每一步都先落库再继续，进程随时被杀掉都能从库里接着跑（同一个 session id）。
 // 结束时的顺序：最终结论确定后，先关资源（工具连接、Chrome），再写过程记录，最后写最终状态；复核在收尾的事务之后跑。
+// 固化（docs/dev/solidify.md 6.3）：快照里有固化流程的，先在沙箱里跑脚本（routine/runtime/run.ts），跑通了照常收尾、不调执行模型；
+// 跑不通追加一段交接的话，进 agent 循环（同一个网关、同一个 Chrome）。固化试跑（kind = routine_test）只跑脚本，结束后交给固化（routine.compile）。
 import { setTimeout as sleep } from "node:timers/promises"
 
 import type { ModelMessage, ToolResultPart } from "ai"
 import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm"
-import { RUN_FINISH_TOOL_ID, runOutcomeLabel, type HumanDetail, type RunReview, type SessionSnapshot, type WorkFailKind } from "@heyagent/shared"
+import {
+  RUN_FINISH_TOOL_ID,
+  routineInputOf,
+  routineStopKindLabel,
+  runOutcomeLabel,
+  type HumanDetail,
+  type RunReview,
+  type SessionRoutineState,
+  type SessionSnapshot,
+  type WorkFailKind,
+} from "@heyagent/shared"
 
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
 import type { PendingToolCalls } from "../db/schema.js"
+import { sendRoutineCompile } from "../routine/jobs.js"
+import { buildHandoff } from "../routine/runtime/handoff.js"
+import { runRoutineScript, type RoutineSnapshotted } from "../routine/runtime/run.js"
+import { settleRoutineRun } from "../routine/runtime/stats.js"
+import { endRoutineTestInTx } from "../routine/runtime/test-end.js"
 import { maybeCompact } from "./compact.js"
 import {
   ToolGateway,
@@ -179,9 +196,15 @@ async function failSession(
       retryable: options.retryable,
       ...(options.failKind ? { failKind: options.failKind } : {}),
     })
+    // 固化试跑出错：脚本状态记停下（运行出错），同样交给固化往下走（它看试跑运行的状态，记这一轮没过）
+    await endRoutineTestInTx(db, tx, session.id, { kind: "run_failed", reason })
     return { settled }
   })
   if (!failed) return
+  // 跑过固化流程的运行：试用、转正式、连续跑不通停用（routine/runtime/stats.ts）
+  await settleRoutineRun(db, session.id).catch((error: unknown) => console.warn(`[routine] ${session.id} 的固化流程统计没记上：${(error as Error).message}`))
+  // 固化试跑不通知负责人（固化没成功时由固化那边通知）
+  if (session.kind === "routine_test") return
   if (failed.settled?.kind === "retry") return
   if (snapshot) {
     const retried = failed.settled?.kind === "failed" ? failed.settled.autoRetries : 0
@@ -259,7 +282,36 @@ async function finishRun(
   if (!finished) return "stopped"
   const final = finished.result ?? (await reviewAfterFinish(db, session, snapshot, { modelId: finished.reviewModelId!, report, summary }))
   await notifyFinished(db, session, snapshot, final, summary)
+  // 跑过固化流程的运行：结果定了，记试用 / 正式 / 停用（routine/runtime/stats.ts）
+  await settleRoutineRun(db, session.id).catch((error: unknown) => console.warn(`[routine] ${session.id} 的固化流程统计没记上：${(error as Error).message}`))
   return "done"
+}
+
+/**
+ * 固化试跑结束（docs/dev/solidify.md 5.6）：运行记「已结束」，结果留空、不复核、不通知；写一条「固化试跑结束」过程，
+ * 同一个事务里发 routine.compile，由固化那边看试跑结果往下走。调用前先关资源（Chrome）
+ */
+async function finishRoutineTest(db: Db, session: SessionRow, snapshot: RoutineSnapshotted, state: SessionRoutineState): Promise<RunOutcome> {
+  const stop = state.stoppedAt
+  const detail = [
+    `${state.steps} 步 · ${((state.ms ?? 0) / 1000).toFixed(1)} 秒。`,
+    stop ? `停下：${routineStopKindLabel[stop.kind]}（第 ${stop.step} 步）：${stop.reason}` : state.recorded?.finish ? `脚本报了结果：${runOutcomeLabel[state.recorded.finish.outcome]}。${state.recorded.finish.summary}` : "",
+    state.recorded?.report ? `要交回的结果（没生效）：${JSON.stringify(state.recorded.report)}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n")
+  const ended = await db.transaction(async (tx) => {
+    const updated = await tx
+      .update(t.sessions)
+      .set({ status: "done", endedAt: new Date(), outcome: null, outcomeReason: null, outcomeBy: null })
+      .where(and(eq(t.sessions.id, session.id), inArray(t.sessions.status, ["running", "verifying"])))
+      .returning({ id: t.sessions.id })
+    if (updated.length === 0) return false
+    await appendEvent(tx, session.id, { kind: "done", title: "固化试跑结束", detail })
+    await sendRoutineCompile(db, tx, { versionId: snapshot.routine.versionId })
+    return true
+  })
+  return ended ? "done" : "stopped"
 }
 
 /**
@@ -564,19 +616,25 @@ export async function runSession(
     await gateway.close()
   }
   let messages: ModelMessage[] = []
+  const isTest = first.kind === "routine_test"
+  // 这次先跑固化脚本：试跑每次进来都从头跑；普通运行快照里有固化流程、还没跑过（sessions.routine 为空）
+  const scriptFirst = Boolean(snapshot.routine) && (isTest || !first.routine)
   try {
-    let resolved: ResolvedModel
-    try {
-      resolved = await resolveModel(db, snapshot.modelId)
-    } catch (error) {
-      await failSession(db, first, snapshot, (error as Error).message)
-      return "failed"
-    }
+    // 执行模型：先跑脚本的运行等交给 agent 时再解析（脚本跑通就用不着）
+    let resolved: ResolvedModel | undefined
+    if (!scriptFirst)
+      try {
+        resolved = await resolveModel(db, snapshot.modelId)
+      } catch (error) {
+        await failSession(db, first, snapshot, (error as Error).message)
+        return "failed"
+      }
     gateway = await ToolGateway.create(db, first, snapshot)
     const system = buildSystemPrompt(snapshot, gateway.names())
     const tools = gateway.toolSet()
     const screenshot = () => gateway!.screenshot()
-    if (first.stepCount === 0)
+    // 开始钩子只跑一次：脚本跑完 stepCount 还是 0，要看 sessions.routine；试跑不跑
+    if (!isTest && first.stepCount === 0 && !first.routine)
       await runStartHooks({ db, session: first, snapshot, screenshot })
 
     /** 依次交给网关执行一步里的工具调用。返回 undefined = 接着调模型 */
@@ -713,7 +771,144 @@ export async function runSession(
       return finishRun(db, live, snapshot!, { text, ...(claim ? { claim } : {}) })
     }
 
+    /**
+     * 先跑固化脚本（docs/dev/solidify.md 6.3）：跑通了照常收尾（办成的过「说做完了」的规则）；ha.fail("input") 按没办成收尾；
+     * 跑不通、要挂起、上次中断了的，追加交接的话（挂起的和挂起在同一个事务里落库）。返回 undefined = 交给 agent 接着做
+     */
+    const routinePhase = async (): Promise<RunOutcome | undefined> => {
+      const routine = snapshot.routine!
+      const current = first.routine
+      // 跑过了（交给 agent 以后挂起、交接再进来的）：直接 agent 循环
+      if (current && current.state !== "running") return undefined
+      let state: SessionRoutineState
+      let suspend: { plan: NonNullable<ToolOutcome["suspend"]> } | undefined
+      if (current) {
+        // 上次跑脚本时进程被杀：不确定最后一步做没做，交给 agent
+        state = {
+          ...current,
+          state: "fell_back",
+          stoppedAt: { step: current.steps, kind: "interrupted", reason: `跑到第 ${current.steps} 步时 worker 重启了，脚本中断` },
+          endedAt: new Date().toISOString(),
+          ms: Math.max(0, Date.now() - Date.parse(current.startedAt)),
+        }
+        await db.update(t.sessions).set({ routine: state }).where(eq(t.sessions.id, sessionId))
+        await appendEvent(db, sessionId, { kind: "error", title: `固化流程中断了（第 ${current.steps} 步）`, detail: "worker 重启，脚本没跑完，不确定最后一步做没做。" })
+      } else {
+        const result = await runRoutineScript({
+          db,
+          session: first,
+          snapshot: snapshot as RoutineSnapshotted,
+          gateway: gateway!,
+          mode: "run",
+          input: routineInputOf(snapshot),
+          signal: options.signal,
+        })
+        if (result.aborted) return "stopped"
+        state = result.state
+        if (state.state === "finished" && result.finish) {
+          const live = await loadSession(db, sessionId)
+          if (!live || live.status !== "running") return "stopped"
+          const claim = result.finish
+          if (claim.outcome !== "achieved") {
+            await closeGateway()
+            return finishRun(db, live, snapshot, { text: claim.summary, claim })
+          }
+          // 报了办成：照常过「说做完了」的规则（三方验收可能反问，那就进 agent 循环，所以先记一句脚本做了什么）
+          const note: ModelMessage = {
+            role: "user",
+            content: `（系统）这次运行按固化流程「${routine.name}」第 ${routine.version} 版跑完了（${state.steps} 步，没调执行模型），脚本报了办成：${claim.summary}${claim.evidence ? `\n依据：${claim.evidence}` : ""}`,
+          }
+          await appendMessage(db, sessionId, note)
+          messages = [...messages, note]
+          return agentSaysDone(claim.summary, claim)
+        }
+        if (state.state === "stopped") {
+          const stop = state.stoppedAt
+          if (stop?.kind !== "input") return "stopped"
+          // 输入本身有问题：记没办成，不交 agent
+          const live = await loadSession(db, sessionId)
+          if (!live || live.status !== "running") return "stopped"
+          await closeGateway()
+          const claim = {
+            outcome: "not_achieved" as const,
+            summary: `固化流程发现输入有问题：${stop.reason}`,
+            evidence: `固化流程「${routine.name}」第 ${routine.version} 版在第 ${stop.step} 步停下：${stop.reason}`,
+            reason: `输入有问题：${stop.reason}`,
+            via: "finish" as const,
+          }
+          return finishRun(db, live, snapshot, { text: claim.summary, claim })
+        }
+        if (result.suspend) suspend = { plan: result.suspend.plan }
+      }
+      // 交给 agent：同一个网关、同一个 Chrome，从现在的页面接着做
+      const text = await buildHandoff(db, { sessionId, routine, state, pageLines: () => gateway!.pageLines() })
+      const message: ModelMessage = { role: "user", content: text }
+      await appendEvent(db, sessionId, {
+        kind: "plan",
+        title: `交给 agent 接着做（固化流程停在第 ${state.stoppedAt?.step ?? state.steps} 步：${routineStopKindLabel[state.stoppedAt?.kind ?? "script_error"]}）`,
+        detail: text,
+      })
+      if (suspend) {
+        const live = await loadSession(db, sessionId)
+        if (!live || live.status !== "running") return "stopped"
+        const ok = await suspendWithResults(db, live, [message], suspend.plan)
+        return ok ? "suspended" : "stopped"
+      }
+      await appendMessage(db, sessionId, message)
+      messages = [...messages, message]
+      return undefined
+    }
+
+    /** 固化试跑（docs/dev/solidify.md 5.6）：每次进来都从头跑脚本，不叫 agent；遇到登录页、验证码照常挂起等人 */
+    const routineTest = async (): Promise<RunOutcome> => {
+      if (!snapshot.routine) {
+        await closeGateway()
+        await failSession(db, first, snapshot, "固化试跑的快照里没有要试的脚本", { retryable: false })
+        return "failed"
+      }
+      const routineSnapshot = snapshot as RoutineSnapshotted
+      const result = await runRoutineScript({
+        db,
+        session: first,
+        snapshot: routineSnapshot,
+        gateway: gateway!,
+        mode: "test",
+        input: first.routine?.input ?? routineInputOf(snapshot),
+        signal: options.signal,
+      })
+      if (result.aborted) return "stopped"
+      if (result.state.stoppedAt?.kind === "cancelled") {
+        // 试跑被取消（取消时 control.ts 已经发过一次；脚本这时才停下，状态定了再发一次）：让固化那边往下走
+        await endRoutineTestInTx(db, undefined, sessionId, { kind: "cancelled", reason: "运行被取消了" })
+        return "stopped"
+      }
+      if (result.suspend) {
+        const live = await loadSession(db, sessionId)
+        if (!live || live.status !== "running") return "stopped"
+        const ok = await suspendWithResults(db, live, [], result.suspend.plan)
+        return ok ? "suspended" : "stopped"
+      }
+      await closeGateway()
+      return finishRoutineTest(db, first, routineSnapshot, result.state)
+    }
+
     messages = await loadMessages(db, sessionId)
+
+    if (isTest) return await routineTest()
+    if (snapshot.routine) {
+      const outcome = await routinePhase()
+      if (outcome) return outcome
+    }
+    // 交给 agent 了（或者本来就没有脚本）：这时才要执行模型
+    if (!resolved)
+      try {
+        resolved = await resolveModel(db, snapshot.modelId)
+      } catch (error) {
+        await closeGateway()
+        await failSession(db, (await loadSession(db, sessionId)) ?? first, snapshot, (error as Error).message)
+        return "failed"
+      }
+    const model: ResolvedModel = resolved
 
     // 审批过的工具调用（M3）：先处理它们（批准就执行，拒绝就告诉 agent），再调模型
     const [pendingWait] = await db
@@ -847,7 +1042,7 @@ export async function runSession(
 
       let result: ModelCallResult
       try {
-        result = await callWithRetry(db, sessionId, resolved, {
+        result = await callWithRetry(db, sessionId, model, {
           system,
           messages,
           tools,

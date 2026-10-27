@@ -1,6 +1,8 @@
 // 工具网关：给模型的工具定义不带执行函数，模型提出调用后都到这里。
 // 依次做：调工具前的钩子（范围、参数校验、M3 的规则）→ 执行（内置 / HTTP / MCP）→ 截断大块输出（全文存文件）→ 落库 → 调工具后的钩子。
 // 模型没有任何绕过的路径。browser.batch（连着做几步，docs/dev/browser-speed.md A）在这里展开：每一步都当成一次普通调用走 call()。
+// 固化脚本（docs/dev/solidify.md 第 4 节）也一样：工具桥（routine/runtime/bridge.ts）把脚本的每次调用交给 call()，带上 routineStep。
+// 浏览器动作录下的代码、前后网址存进过程记录的 trace（3.2）。
 import { jsonSchema, tool, type ToolSet } from "ai"
 import {
   BROWSER_TOOL_ID,
@@ -8,6 +10,7 @@ import {
   DESKTOP_TOOL_ID,
   GALLERY_TOOL_ID,
   builtinToolInputs,
+  type EventTrace,
   type Risk,
   type SessionSnapshot,
   type SnapshotTool,
@@ -87,6 +90,18 @@ export interface GatewayResult {
     input: unknown
     risk?: Risk
   }
+}
+
+/** 过程记录的 trace：录下的代码（隐藏密钥）、前后网址、脚本的第几步；什么都没有返回 undefined */
+function traceOf(outcome: ToolOutcome, secrets: string[], routineStep?: number): EventTrace | undefined {
+  const trace: EventTrace = {
+    ...(outcome.code ? { code: redactSecrets(maskSecretFields(outcome.code), secrets) } : {}),
+    ...(outcome.trace?.urlBefore ? { urlBefore: outcome.trace.urlBefore } : {}),
+    ...(outcome.trace?.urlAfter ? { urlAfter: outcome.trace.urlAfter } : {}),
+    ...(outcome.trace?.title ? { title: outcome.trace.title } : {}),
+    ...(routineStep ? { routineStep } : {}),
+  }
+  return Object.keys(trace).length ? trace : undefined
 }
 
 function safeName(id: string, taken: Set<string>) {
@@ -387,6 +402,17 @@ export class ToolGateway {
     return Boolean(this.browser)
   }
 
+  /** 工具的 id 和风险（固化试跑判断「会不会对外发送、改东西」用）；本任务没有这个工具返回 undefined */
+  toolInfo(toolName: string): { id: string; risk?: Risk } | undefined {
+    const entry = this.entryFor(toolName)
+    return entry ? { id: entry.id, risk: entry.def.risk } : undefined
+  }
+
+  /** 现在的页面概况（标题网址、弹窗；交给 agent 的那段话用）；没开浏览器返回空 */
+  async pageLines(): Promise<string[]> {
+    return (await this.browser?.briefLines().catch(() => [])) ?? []
+  }
+
   /** 规则「截图存证」：这次运行开着 Chrome 时截当前页面；没有 Chrome、占着桌面时截桌面 */
   async screenshot(): Promise<{ fileId: string } | undefined> {
     return (await this.browser?.evidenceScreenshot()) ?? (await this.desktop?.evidenceScreenshot())
@@ -438,6 +464,8 @@ export class ToolGateway {
       approvedRuleIds?: readonly string[]
       /** browser.batch 里的第几步（从 1 开始）：要人审批时不发起审批，批停在这一步之前 */
       batchStep?: number
+      /** 固化脚本的第几次工具调用（从 1 开始）：过程记录写进 trace.routineStep；要人审批时不发起审批，脚本停在这一步之前 */
+      routineStep?: number
     } = {}
   ): Promise<GatewayResult> {
     const entry = this.entryFor(call.toolName)
@@ -472,17 +500,23 @@ export class ToolGateway {
         : JSON.stringify(call.input ?? {})
     const decision = await runBeforeToolHooks(hookCtx)
     const beforeMs = Date.now() - started
+    const routineTrace: EventTrace | undefined = options.routineStep ? { routineStep: options.routineStep } : undefined
     if (decision.action === "ask_human") {
       await appendEvent(this.ctx.db, this.ctx.session.id, {
         kind: "rule",
-        title: options.batchStep
-          ? `规则「${decision.ruleName}」：批里的第 ${options.batchStep} 步 ${toolName} 要人审批，没做`
-          : `规则「${decision.ruleName}」：拦下 ${toolName}，交给人审批`,
-        detail: options.batchStep
-          ? `${decision.reason}批里不做要审批的动作，已让 agent 单独调用这一步。`
-          : decision.reason,
+        title: options.routineStep
+          ? `规则「${decision.ruleName}」：脚本的第 ${options.routineStep} 步 ${toolName} 要人审批，没做，交给 agent`
+          : options.batchStep
+            ? `规则「${decision.ruleName}」：批里的第 ${options.batchStep} 步 ${toolName} 要人审批，没做`
+            : `规则「${decision.ruleName}」：拦下 ${toolName}，交给人审批`,
+        detail: options.routineStep
+          ? `${decision.reason}固化脚本不发起审批：停在这一步之前，交给 agent 单独调用这一步（照常交给人审批）。`
+          : options.batchStep
+            ? `${decision.reason}批里不做要审批的动作，已让 agent 单独调用这一步。`
+            : decision.reason,
         toolId,
         input: redactSecrets(maskSecretFields(inputText), []),
+        trace: routineTrace,
       })
       return {
         toolId,
@@ -511,6 +545,7 @@ export class ToolGateway {
           : decision.reason,
         toolId,
         input: inputText,
+        trace: routineTrace,
       })
       return {
         toolId,
@@ -546,6 +581,7 @@ export class ToolGateway {
       input: redactSecrets(JSON.stringify(decision.input ?? {}), secrets),
       output,
       ms: Date.now() - started,
+      trace: traceOf(outcome, secrets, options.routineStep),
     })
     await runAfterToolHooks({ ...hookCtx, input: decision.input, outcome })
     // 浏览器动作的分段用时：规则钩子、工具里面各段（MCP、扫页面、检测……）、落库和调工具后的钩子
@@ -751,8 +787,8 @@ export class ToolGateway {
     return { toolId, toolName, outcome, output, denied: false }
   }
 
-  /** 运行还在跑（批里每一步之前看一眼，被取消了就停） */
-  private async stillRunning() {
+  /** 运行还在跑（批里每一步之前、固化脚本每次调用之前看一眼，被取消了就停） */
+  async stillRunning() {
     const [row] = await this.ctx.db
       .select({ status: t.sessions.status })
       .from(t.sessions)

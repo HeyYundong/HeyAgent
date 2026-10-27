@@ -6,7 +6,8 @@
   "description": "HeyAgent 后端：api（Hono + tRPC）；worker 在 M1 加",
   "files": [
     "dist",
-    "drizzle"
+    "drizzle",
+    "sandbox-sdk"
   ],
   "scripts": {
     "dev": "tsx watch --conditions=@heyagent/source src/index.ts",

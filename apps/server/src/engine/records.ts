@@ -3,7 +3,7 @@
 // 种子数据里的老 session 没有计数器，取「计数器」和「现有最大序号」里大的那个。
 import { asc, eq, sql } from "drizzle-orm"
 import type { ModelMessage } from "ai"
-import type { RunEventKind } from "@heyagent/shared"
+import type { EventTrace, RunEventKind } from "@heyagent/shared"
 
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
@@ -30,6 +30,8 @@ export interface EventInput {
   ms?: number | null
   tokensIn?: number | null
   tokensOut?: number | null
+  /** 固化的录制信息（docs/dev/solidify.md 3.2）：录下的定位代码、前后网址；脚本做的步骤记第几次调用 */
+  trace?: EventTrace | null
   at?: Date
 }
 
@@ -56,6 +58,7 @@ export async function appendEvent(
     ms: event.ms ?? null,
     tokensIn: event.tokensIn ?? null,
     tokensOut: event.tokensOut ?? null,
+    trace: event.trace && Object.keys(event.trace).length ? event.trace : null,
   })
   return seq
 }
