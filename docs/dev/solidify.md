@@ -1,6 +1,6 @@
 # 固化：办成过一次的事，下次照脚本做（技术架构，2026-10-27）
 
-> **状态：用户 2026-10-27 确认（「开动吧」），第 14 节全部按建议，开工做第一期。** 第一期怎么分工、各包的约定见第 15 节。
+> **状态：第一期做完了，在分支 `worktree-solidify-design` 上，等用户验收（2026-10-28）。** 用户 2026-10-27 确认（「开动吧」），第 14 节全部按建议。第一期的分工、约定见第 15 节，做了什么、怎么测的、还差什么见第 16 节；真模型基准等 OpenRouter 的新 key。
 > 来由：2026-10-27 用户看了 Pomerado（github.com/Pomerado/pomerado，「把网站变成 MCP 工具」），说现在用 DeepSeek，很多地方觉得可以自动持久化，但现在还不行，要一个在 HeyAgent 里怎么实现的技术架构。这也是 `browser-speed.md`「不做」里留下的第二阶段（让脚本做重复的事）。
 > 文中写「现在」的，都读 origin/main（8a68ba3）的代码确认过。
 
@@ -688,3 +688,44 @@ P1 验收：
 - 自己起的服务做完关掉。不要 `pkill -f`（会杀掉 8080 的 worker），按 PID 关。
 - 用自己的私有库：worktree 里的 `.env` 已经指好，测试库名以 `_test` 结尾。
 - 结束时汇报：做了什么、怎么验证的（命令和关键输出）、和这份说明不一致的地方、没解决的问题。没验证过的不要说成做完了。
+
+## 16. 实现记录（第一期，2026-10-27 / 28）
+
+分支 `worktree-solidify-design`（基于 main 8a68ba3）。约定和骨架 b09a94b；B 包 70c28e9、C 包 b13a36d、A 包 472ad06，分别合并进来；收尾：`routine.compile` 放进 `QUEUE_SETUP`、从头到尾的浏览器测试、真模型基准、使用手册 5.14、接口文档第 20 节。
+
+### 16.1 和上面说的不一样的地方
+
+- **A 包**：
+  - `routineStopKindSchema` 加了 `run_failed`（运行本身出错），`sessionRoutineStateSchema` 加了 `screenshotFileId`（试跑停下时的截图）。
+  - `file.read` 读表格时给 `data`：`{ sheet, header, rows, total }`。
+  - 上限在 `routine/runtime/run.ts` 的 `routineLimits`，可以用环境变量改。
+  - 取消（`engine/control.ts`）也结束试跑、发 `routine.compile`。
+  - 「结果的来源记 routine」没做：`AgentClaim.via` 照旧是 finish，要看是不是脚本报的，看 `sessions.routine.state`。
+- **B 包**：
+  - 程序检查用 acorn 8.19.0；`ha` 只能直接写成 `ha.xxx`，不能赋给变量、解构，否则看不出用了哪些工具。
+  - 模型出错、程序检查没过的，在同一个队列任务里接着写下一轮。
+  - 试跑的运行和版本改成 testing 在同一个事务里开。
+  - 审核卡的 `sessionId` 是源运行；`restore` 不动任务开关。
+- **C 包**：
+  - 第一期不做删除。
+  - 「固化流程」区块加载中不占位（多数任务没有固化流程，占位会闪一下空卡片）。
+  - 交给过 agent 的运行，「⋯」里叫「重新固化」。
+
+### 16.2 测试
+
+- **单元（假模型）**：`routine-runtime` 12 个、`routine-engine` 11 个、`routine-compile` 20 个，一起跑全过。
+- **全量**：593 个里 591 个过。没过的 1 个是 run-outcome 的通知时序：负载高时测试先看到状态变了、通知还没写。单独跑 32 个全过，已把测试改成等通知出现。
+- **浏览器**（worker 镜像，真 Chrome + bwrap 沙箱）：
+  - `routine` 3 个、`browser-speed` 8 个全过。
+  - 从头到尾的 `routine-e2e` 也过了：agent 办成 → 固化 → 试跑停在提交前，网站上没多存 → 审核启用 → 3 次先跑脚本（每次 7 步、约 5 秒、执行模型 0 次调用、提交前截图）→ 转正式。
+- **`engine.test.ts`**：这个文件在 main（8a68ba3）上原本就不稳，和这次无关。
+  - 第一个测试「账号租约」是时序断言，常常不过。它中途失败时，那两次运行还占着 Chrome，同一个文件里后面的测试排不上 Chrome（「这台 worker 已经开了 1 个 Chrome」），跟着一起超时。
+  - 在 main 的 worktree 里跑一遍：13 个全不过，就是这个连锁。
+  - 这个分支单独跑过一次 12 / 13，只有「账号租约」没过。
+- **真模型基准**（`SPEED_FILE=routine scripts/speed-bench.sh`）：还没跑，`.env` 里的 OpenRouter key 过期了。
+
+### 16.3 已知的问题
+
+- 脚本报了办成、三方验收反问、agent 接着做完的，`sessions.routine.state` 还是 finished，统计会算成一次「脚本直接办成」（很少见）。
+- 试跑被取消时，可能多发一次 `routine.compile`（`handleCompileJob` 遇到已经判过的版本什么都不做，没有影响）。
+- 试跑的运行如果在别处被标失败（不经过 `failSession`、`control.ts`），没人发 `routine.compile`，这一版会停在「试跑中」：第二期加清扫。
