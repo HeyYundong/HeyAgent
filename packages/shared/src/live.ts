@@ -38,6 +38,9 @@ export const liveQueriesByTable: Record<string, string[]> = {
   // M2：开着的 Chrome（远程画面入口、谁在看）
   browser_instances: ["browser.live", "browser.sessionBrowser"],
   browser_actions: ["browser.history"],
+  // 固化（docs/dev/solidify.md）：任务详情的「固化流程」、审核卡
+  routines: ["routine.get", "tasks.list"],
+  routine_versions: ["routine.get", "routine.version"],
   desktops: ["desktops.list"],
   desktop_leases: ["desktops.list", "desktop.sessionDesktop"],
   // 系统开的桌面：虚拟机状态（开机中 → 开着……）、开着几台占多少内存

@@ -116,6 +116,7 @@ import { compareRouter } from "./compare-router.js"
 import { workRouter } from "./work-router.js"
 import { importsRouter } from "./imports-router.js"
 import { assistantRouter } from "./assistant-router.js"
+import { routineRouter } from "./routine-router.js"
 
 const idInput = z.object({ id: z.string().min(1) })
 
@@ -403,6 +404,9 @@ export const appRouter = router({
 
   /** 右下角助手：本人的对话列表、记录、删对话（发消息和应用改动走流式的 /api/assistant/*） */
   assistant: assistantRouter,
+
+  /** 固化（docs/dev/solidify.md）：任务的固化流程、一版的内容、固化成流程、审核、开关、停用、回到旧版本 */
+  routine: routineRouter,
 
   live: router({
     /**

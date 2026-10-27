@@ -38,7 +38,7 @@ export const browserAccountId = (profileIdValue: string, platformId: string, k =
  * 原型的种子数据里记忆审核、技能修改直接用了记忆 / 技能的 id（m-008、sk-find-same），以后新建的用下面的前缀，
  * 并通过 MemoryRef.reviewItemId、Skill.suggestion.itemId 关联。
  */
-export const HUMAN_ITEM_PREFIX = { approval: "ap", verify: "vf", login: "lg", memory: "mr", skill: "ss" } as const
+export const HUMAN_ITEM_PREFIX = { approval: "ap", verify: "vf", login: "lg", memory: "mr", skill: "ss", routine: "ro" } as const
 export const humanItemId = (kind: keyof typeof HUMAN_ITEM_PREFIX, n: number) => `${HUMAN_ITEM_PREFIX[kind]}-${String(n).padStart(2, "0")}`
 
 /** 人加的待办：td-09。序列 todo_no_seq */
@@ -63,3 +63,8 @@ export const workItemId = (n: number) => `W-${n}`
 /** 比物：一次比对 cmp-12（序列 compare_no_seq）；比对标准 std-3（序列 compare_standard_no_seq），自带的是 std-same-item */
 export const comparisonId = (n: number) => `cmp-${n}`
 export const compareStandardId = (n: number) => `std-${n}`
+
+/** 固化流程：RT-3（序列 routine_no_seq）；一版：RT-3-v2；一版的第几轮试跑（运行 id）：RT-3-v2-t1 */
+export const routineId = (n: number) => `RT-${n}`
+export const routineVersionId = (routineIdValue: string, version: number) => `${routineIdValue}-v${version}`
+export const routineTestSessionId = (versionIdValue: string, round: number) => `${versionIdValue}-t${round}`

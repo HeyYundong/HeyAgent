@@ -3,6 +3,7 @@
 import { z } from "zod"
 
 import { sessionDesktopSnapshotSchema } from "./desktop.js"
+import { routineSnapshotSchema } from "./routine.js"
 import {
   checkpointKindSchema,
   httpSpecSchema,
@@ -136,6 +137,8 @@ export const sessionSnapshotSchema = z.object({
     .optional(),
   /** 任务选了「桌面」工具时才有：允许的桌面（含给 agent 看的说明）、是否允许看画面 */
   desktop: sessionDesktopSnapshotSchema.optional(),
+  /** 固化（docs/dev/solidify.md 6.2）：这次运行先跑的那一版脚本；固化试跑冻的是要试的那一版 */
+  routine: routineSnapshotSchema.optional(),
 })
 export type SessionSnapshot = z.infer<typeof sessionSnapshotSchema>
 

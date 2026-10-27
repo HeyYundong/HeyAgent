@@ -15,7 +15,10 @@ import {
   fmtDateTime,
   manualSessionId,
   recognizeCheckpoints,
+  routineTestSessionId,
   type BuiltinToolId,
+  type RoutineSnapshot,
+  type SessionRoutineState,
   type SessionSnapshot,
   type SnapshotTool,
 } from "@heyagent/shared"
@@ -62,6 +65,8 @@ export async function buildSnapshot(
     runAttachments: (typeof t.files.$inferSelect)[]
     /** 派活触发的：哪张派活单、参数、谁派的 */
     dispatch?: SessionSnapshot["dispatch"]
+    /** 固化试跑：冻这一版（不看任务的开关）；原来那次运行的附件也给它读（只读，不挪到试跑上） */
+    routineTest?: { versionId: string; attachments: SessionSnapshot["attachments"] }
   }
 ): Promise<SessionSnapshot> {
   const [task] = await db.select().from(t.tasks).where(eq(t.tasks.id, taskId))
@@ -196,6 +201,10 @@ export async function buildSnapshot(
       size: file.size,
     })
   )
+  for (const file of extra.routineTest?.attachments ?? [])
+    if (!attachments.some((each) => each.id === file.id)) attachments.push(file)
+
+  const routine = await routineForSnapshot(db, task, extra.routineTest?.versionId)
 
   // 选了技能却没选「读取技能」、带了附件却没选「读附件」，agent 就只看得到目录读不到内容：这两个跟着自动带上。
   // 选了「浏览器」「桌面」也带上「读附件」：在网页里下载的、从桌面取回的文件（例如导出的 Excel）要能读。
@@ -285,7 +294,43 @@ export async function buildSnapshot(
     ...(dispatchTargets ? { dispatchTargets } : {}),
     ...(browser ? { browser } : {}),
     ...(desktop ? { desktop } : {}),
+    ...(routine ? { routine } : {}),
   }
+}
+
+/**
+ * 这次运行先跑的固化流程（docs/dev/solidify.md 6.2）：固化试跑冻要试的那一版（status = test）；
+ * 普通运行只在任务开着「先跑流程」、流程没停用、有启用的版本时冻那一版
+ */
+async function routineForSnapshot(
+  db: Db | Tx,
+  task: typeof t.tasks.$inferSelect,
+  testVersionId: string | undefined
+): Promise<RoutineSnapshot | undefined> {
+  const pick = (version: typeof t.routineVersions.$inferSelect, status: RoutineSnapshot["status"], routineId: string): RoutineSnapshot => ({
+    id: routineId,
+    versionId: version.id,
+    version: version.version,
+    name: version.name,
+    status,
+    code: version.code,
+    inputSchema: version.inputSchema,
+    outputSchema: version.outputSchema,
+    commits: version.commits,
+  })
+  if (testVersionId) {
+    const [version] = await db.select().from(t.routineVersions).where(eq(t.routineVersions.id, testVersionId))
+    if (!version) throw new EngineError("NOT_FOUND", `找不到固化流程的版本 ${testVersionId}`)
+    return pick(version, "test", version.routineId)
+  }
+  if (task.routineMode !== "first") return undefined
+  const [routine] = await db.select().from(t.routines).where(eq(t.routines.taskId, task.id))
+  if (!routine || routine.status === "paused" || routine.activeVersion === null) return undefined
+  const [version] = await db
+    .select()
+    .from(t.routineVersions)
+    .where(and(eq(t.routineVersions.routineId, routine.id), eq(t.routineVersions.version, routine.activeVersion)))
+  return version ? pick(version, routine.status, routine.id) : undefined
 }
 
 /** 被派来的运行：谁派的（一句话，第一条消息和「运行开始」事件用） */
@@ -381,6 +426,16 @@ export interface StartSessionOptions {
   parentSessionId?: string | null
   /** 运行算谁开的（sessions.created_by_id）；不填用 actorId。人派的单 = 派的那个人 */
   createdById?: string | null
+  /**
+   * 固化试跑（docs/dev/solidify.md 5.6）：kind = routine_test，编号 RT-<n>-v<版本>-t<轮>，冻要试的那一版，
+   * 用原来那次运行的输入（sessions.routine.input）；原来那次运行的附件只读地给它，不挪过来。不要求复核模型
+   */
+  routineTest?: {
+    versionId: string
+    round: number
+    input: Record<string, unknown>
+    attachments: SessionSnapshot["attachments"]
+  }
 }
 
 /**
@@ -428,8 +483,8 @@ export async function startSessionInTx(
     (file) => !(file.taskId === task.id && !file.sessionId)
   )
 
-  // 复核模型（run-outcome 第 5 节）：运行结束一定要复核，任务没选、也没有默认复核模型的不开始
-  if (!task.reviewModelId && (await tx.select({ modelId: t.modelDefaults.modelId }).from(t.modelDefaults).where(eq(t.modelDefaults.role, "review"))).length === 0)
+  // 复核模型（run-outcome 第 5 节）：运行结束一定要复核，任务没选、也没有默认复核模型的不开始（固化试跑不复核）
+  if (!input.routineTest && !task.reviewModelId && (await tx.select({ modelId: t.modelDefaults.modelId }).from(t.modelDefaults).where(eq(t.modelDefaults.role, "review"))).length === 0)
     throw new EngineError("BAD_REQUEST", "任务没设复核模型，先在任务里选一个")
 
   const now = new Date()
@@ -438,12 +493,31 @@ export async function startSessionInTx(
     note: input.note,
     runAttachments,
     dispatch: input.dispatch,
+    ...(input.routineTest ? { routineTest: { versionId: input.routineTest.versionId, attachments: input.routineTest.attachments } } : {}),
   })
+  const routineTest = input.routineTest
+  // 固化试跑：脚本状态在开始时就写好（输入要存下来；每次继续都从头跑，见 docs/dev/solidify.md 5.6）
+  const testState: SessionRoutineState | undefined =
+    routineTest && snapshot.routine
+      ? {
+          routineId: snapshot.routine.id,
+          versionId: snapshot.routine.versionId,
+          version: snapshot.routine.version,
+          mode: "test",
+          state: "running",
+          startedAt: now.toISOString(),
+          steps: 0,
+          commits: [],
+          input: routineTest.input,
+        }
+      : undefined
   let sessionId: string | undefined
   for (let attempt = 0; attempt < 20 && !sessionId; attempt++) {
     try {
       sessionId = await tx.transaction(async (sp) => {
-        const id = await nextSessionId(sp, input.taskId, input.source, now, attempt)
+        const id = routineTest
+          ? routineTestSessionId(routineTest.versionId, routineTest.round)
+          : await nextSessionId(sp, input.taskId, input.source, now, attempt)
         await sp.insert(t.sessions).values({
           id,
           taskId: input.taskId,
@@ -456,6 +530,7 @@ export async function startSessionInTx(
           createdById: input.createdById ?? input.actorId ?? null,
           parentSessionId: input.parentSessionId ?? null,
           workItemId: input.dispatch?.itemId ?? null,
+          ...(routineTest ? { kind: "routine_test" as const, routine: testState ?? null } : {}),
         })
         return id
       })
@@ -508,8 +583,10 @@ export async function startSessionInTx(
   const dispatch = snapshot.dispatch
   await appendEvent(tx, sessionId, {
     kind: "plan",
-    title: "运行开始",
-    detail: dispatch
+    title: routineTest ? "固化试跑开始" : "运行开始",
+    detail: routineTest
+      ? `固化流程 ${routineTest.versionId} 第 ${routineTest.round} 轮试跑：只跑脚本、不叫 agent，走到第一次提交前停`
+      : dispatch
       ? `${sourceLabel.dispatch}：${dispatch.itemId}，${dispatch.from ? `来自 ${dispatch.from.sessionId}` : dispatch.fromUser ? `${dispatch.fromUser.name}手动派的` : "来源不明"}`
       : [
           sourceLabel[input.source],

@@ -36,9 +36,13 @@ import {
   modelRoleSchema,
   providerStatusSchema,
   riskSchema,
+  routineModeSchema,
+  routineStatusSchema,
+  routineVersionStatusSchema,
   runEventKindSchema,
   runOutcomeBySchema,
   runStatusSchema,
+  sessionKindSchema,
   skillStatusSchema,
   toolSourceSchema,
   workItemStatusSchema,
@@ -46,14 +50,17 @@ import {
   type AssistantChange,
   type DesktopKind,
   type DesktopVmState,
+  type EventTrace,
   type AssistantProposalStatus,
   type HttpSpec,
   type HumanDetail,
   type ImportPlan,
   type ImportReadStep,
   type ImportResult,
+  type RoutineTestReport,
   type RuleCompileResult,
   type SessionDigest,
+  type SessionRoutineState,
   type SessionSnapshot,
   type TaskDispatch,
   type TaskStep,
@@ -162,6 +169,11 @@ export const compareConfidenceEnum = pgEnum("compare_confidence", values(compare
 export const compareViaEnum = pgEnum("compare_via", values(compareViaSchema.options))
 export const workItemStatusEnum = pgEnum("work_item_status", values(workItemStatusSchema.options))
 export const workViaEnum = pgEnum("work_via", values(workViaSchema.options))
+// 固化（docs/dev/solidify.md）
+export const routineStatusEnum = pgEnum("routine_status", values(routineStatusSchema.options))
+export const routineVersionStatusEnum = pgEnum("routine_version_status", values(routineVersionStatusSchema.options))
+export const routineModeEnum = pgEnum("routine_mode", values(routineModeSchema.options))
+export const sessionKindEnum = pgEnum("session_kind", values(sessionKindSchema.options))
 
 // ---------- 新 id 用的序列（规则见 shared/ids.ts） ----------
 
@@ -177,6 +189,7 @@ export const importNoSeq = pgSequence("import_no_seq", { startWith: 1 })
 export const compareNoSeq = pgSequence("compare_no_seq", { startWith: 1 })
 export const compareStandardNoSeq = pgSequence("compare_standard_no_seq", { startWith: 1 })
 export const workItemNoSeq = pgSequence("work_item_no_seq", { startWith: 1 })
+export const routineNoSeq = pgSequence("routine_no_seq", { startWith: 1 })
 
 // ---------- 账号（better-auth 的 4 张表，字段名照 better-auth 1.7.10 + admin 插件的要求） ----------
 
@@ -533,6 +546,8 @@ export const tasks = pgTable(
     dispatch: jsonb("dispatch").$type<StoredTaskDispatch>(),
     /** 定时到点时上一次还没跑完（执行中 / 验收中）就跳过这次 */
     cronSkipIfRunning: boolean("cron_skip_if_running").notNull().default(true),
+    /** 固化流程的开关（docs/dev/solidify.md 6.1）：off = 不用；first = 先跑流程。第一次启用固化流程时自动打开 */
+    routineMode: routineModeEnum("routine_mode").notNull().default("off"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -661,6 +676,10 @@ export const sessions = pgTable(
     digest: jsonb("digest").$type<SessionDigest>(),
     /** 派活触发的运行：哪张派活单（parent_session_id 同时写派活的那次运行） */
     workItemId: text("work_item_id").references((): AnyPgColumn => workItems.id, { onDelete: "set null" }),
+    /** 运行的种类（docs/dev/solidify.md 5.6）：run = 普通运行；routine_test = 固化试跑（不进会话列表、不算统计） */
+    kind: sessionKindEnum("kind").notNull().default("run"),
+    /** 跑过固化流程的运行、固化试跑：脚本跑到哪了、停在哪、为什么（shared/routine.ts 的 sessionRoutineStateSchema） */
+    routine: jsonb("routine").$type<SessionRoutineState>(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -711,6 +730,8 @@ export const sessionEvents = pgTable(
     ms: integer("ms"),
     tokensIn: integer("tokens_in"),
     tokensOut: integer("tokens_out"),
+    /** 固化的录制信息（docs/dev/solidify.md 3.2）：浏览器动作录下的定位代码、前后网址；脚本做的步骤记第几次调用 */
+    trace: jsonb("trace").$type<EventTrace>(),
   },
   (t) => [primaryKey({ columns: [t.sessionId, t.seq] })]
 )
@@ -1079,6 +1100,8 @@ export const humanItems = pgTable(
     ruleId: text("rule_id").references(() => rules.id, { onDelete: "set null" }),
     memoryId: text("memory_id").references(() => memories.id, { onDelete: "set null" }),
     skillId: text("skill_id").references(() => skills.id, { onDelete: "set null" }),
+    /** 审核固化流程：哪一版（docs/dev/solidify.md 5.7） */
+    routineVersionId: text("routine_version_id").references((): AnyPgColumn => routineVersions.id, { onDelete: "set null" }),
     /** 越小越急 */
     urgency: integer("urgency").notNull().default(4),
     /** 处理时要看的几段话和按钮文案（原型 humanDetails） */
@@ -1531,4 +1554,77 @@ export const assistantProposals = pgTable(
     decidedAt: ts("decided_at"),
   },
   (t) => [index("assistant_proposals_chat_idx").on(t.chatId, t.status)]
+)
+
+// ---------- 固化（docs/dev/solidify.md） ----------
+
+/** 固化流程：第一期一个任务一个。脚本内容按版本存在 routine_versions */
+export const routines = pgTable(
+  "routines",
+  {
+    /** RT-<n>，序列 routine_no_seq */
+    id: text("id").primaryKey(),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    status: routineStatusEnum("status").notNull().default("trial"),
+    /** 启用的那一版；还没启用过 = 空 */
+    activeVersion: integer("active_version"),
+    /** 连着几次脚本直接办成（试用期满 ROUTINE_TRIAL_RUNS 次转正式；交给 agent 一次清零） */
+    directStreak: integer("direct_streak").notNull().default(0),
+    /** 连着几次交给 agent（满 ROUTINE_PAUSE_AFTER_FALLBACKS 次自动停用；直接办成一次清零） */
+    fallbackStreak: integer("fallback_streak").notNull().default(0),
+    /** 停用的原因（人停的写谁停的，自动停的写连续几次跑不通） */
+    pausedReason: text("paused_reason"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex("routines_task_id_idx").on(t.taskId)]
+)
+
+/** 一版脚本：固化员写的、试跑报告、审核结果。id = RT-<n>-v<版本> */
+export const routineVersions = pgTable(
+  "routine_versions",
+  {
+    id: text("id").primaryKey(),
+    routineId: text("routine_id")
+      .notNull()
+      .references(() => routines.id, { onDelete: "cascade" }),
+    version: integer("version").notNull(),
+    status: routineVersionStatusEnum("status").notNull().default("drafting"),
+    name: text("name").notNull().default(""),
+    /** 给人看的步骤说明，一步一行 */
+    description: text("description").notNull().default(""),
+    /** 脚本（ES module，export default async function run(input)） */
+    code: text("code").notNull().default(""),
+    inputSchema: jsonb("input_schema").$type<Record<string, unknown>>().notNull().default({}),
+    outputSchema: jsonb("output_schema").$type<Record<string, unknown>>().notNull().default({}),
+    /** 哪几步会真的改东西（ha.commit 的说明） */
+    commits: text("commits").array().notNull().default(sql`'{}'::text[]`),
+    assumptions: text("assumptions").array().notNull().default(sql`'{}'::text[]`),
+    /** 没成功的原因：不适合固化、程序检查没过、试跑几轮都没过、模型出错 */
+    failReason: text("fail_reason"),
+    /** 从哪次运行固化来的（修的版本：agent 接手办成的那次） */
+    sourceSessionId: text("source_session_id").references(() => sessions.id, { onDelete: "set null" }),
+    /** 修的版本：改的是哪一版 */
+    baseVersion: integer("base_version"),
+    /** 写到第几轮了（写一次算一轮，试跑不过再改一次 +1，最多 ROUTINE_MAX_ROUNDS） */
+    round: integer("round").notNull().default(0),
+    /** 点「固化成流程」时选了不试跑（会自动存草稿的网站，第 14 节问题 4）：写好、程序检查过了直接交给人审核 */
+    skipTest: boolean("skip_test").notNull().default(false),
+    testReport: jsonb("test_report").$type<RoutineTestReport>(),
+    /** 写这一版用的模型和花费（几轮合计） */
+    modelId: text("model_id"),
+    tokensIn: bigint("tokens_in", { mode: "number" }).notNull().default(0),
+    tokensOut: bigint("tokens_out", { mode: "number" }).notNull().default(0),
+    costUsd: numeric("cost_usd", { precision: 12, scale: 6, mode: "number" }).notNull().default(0),
+    rejectReason: text("reject_reason"),
+    /** 谁点的「固化成流程」 */
+    createdById: text("created_by_id").references(() => users.id, { onDelete: "set null" }),
+    approvedById: text("approved_by_id").references(() => users.id, { onDelete: "set null" }),
+    approvedAt: ts("approved_at"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex("routine_versions_routine_version_idx").on(t.routineId, t.version)]
 )

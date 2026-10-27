@@ -39,6 +39,8 @@ export const QUEUES = {
   workNotify: "work.notify",
   /** 系统开的桌面：让一台虚拟机往目标状态走一步（建、开、关、重置、做成模板、删）；singletonKey = 桌面 id，同一台同时只有一个操作 */
   desktopVm: "desktop.vm",
+  /** 固化（docs/dev/solidify.md 5.6）：一版脚本往下走一步（写 / 改脚本、看试跑结果、交给人审核）；参数是版本 id，singletonKey = 版本 id */
+  routineCompile: "routine.compile",
 } as const
 
 export const SCHEDULE_TZ = "Asia/Shanghai"

@@ -5,6 +5,7 @@
 // - 数据库里为空的字段在接口里直接省略（对应原型的可选字段 ?:），不会出现 null。
 import { z } from "zod"
 
+import { eventTraceSchema, sessionKindSchema, sessionRoutineStateSchema } from "./routine.js"
 import { ruleCompileViewSchema } from "./rules.js"
 
 /** ISO 8601 时间（UTC）。接口返回的时间都是这个格式 */
@@ -96,7 +97,8 @@ export const modelProviderSchema = z.object({
 export type ModelProvider = z.infer<typeof modelProviderSchema>
 
 /** embed = 图库的 embedding 模型（以图搜图、比对、按描述找图）；assistant = 右下角助手（可选，不配时用 plan）；review = 新任务默认用的复核模型（任务还没选复核模型时也用它） */
-export const modelRoleSchema = z.enum(["run", "plan", "verify", "embed", "assistant", "review"])
+/** solidify = 写固化流程（docs/dev/solidify.md，可选，不配时用 plan） */
+export const modelRoleSchema = z.enum(["run", "plan", "verify", "embed", "assistant", "review", "solidify"])
 export type ModelRole = z.infer<typeof modelRoleSchema>
 
 /** 默认用哪个模型：执行任务 / 规划拆解 / 三方验收 / 图库的 embedding（没配时没有）/ 右下角助手（没配时没有，助手用 plan） */
@@ -107,6 +109,7 @@ export const modelDefaultsSchema = z.object({
   embed: z.string().optional(),
   assistant: z.string().optional(),
   review: z.string().optional(),
+  solidify: z.string().optional(),
 })
 export type ModelDefaults = z.infer<typeof modelDefaultsSchema>
 
@@ -499,6 +502,8 @@ export const runEventSchema = z.object({
   ms: z.number().int().optional(),
   tokensIn: z.number().int().optional(),
   tokensOut: z.number().int().optional(),
+  /** 固化（docs/dev/solidify.md 3.2）：浏览器动作录下的定位代码、前后网址；脚本做的步骤是第几次调用 */
+  trace: eventTraceSchema.optional(),
 })
 export type RunEvent = z.infer<typeof runEventSchema>
 
@@ -628,6 +633,10 @@ export const sessionSummarySchema = z.object({
   pausedMs: z.number().int(),
   /** 用过的 Chrome 配置 id（浏览器页「最近用它的运行」），从小到大 */
   browserIds: z.array(z.string()),
+  /** 运行的种类（docs/dev/solidify.md）：普通运行没有这一项（= run）；固化试跑 = routine_test */
+  kind: sessionKindSchema.optional(),
+  /** 跑过固化流程的运行、固化试跑：脚本跑到哪、停在哪、为什么 */
+  routine: sessionRoutineStateSchema.optional(),
 })
 export type SessionSummary = z.infer<typeof sessionSummarySchema>
 
@@ -640,7 +649,8 @@ export type SessionRun = z.infer<typeof sessionRunSchema>
 
 // ---------- 待办：要人办的事 ----------
 
-export const humanItemKindSchema = z.enum(["approval", "verify", "login", "memory", "skill"])
+/** routine = 审核固化流程（docs/dev/solidify.md 5.7）：在等人处理里审核，用 routine.review 处理 */
+export const humanItemKindSchema = z.enum(["approval", "verify", "login", "memory", "skill", "routine"])
 export type HumanItemKind = z.infer<typeof humanItemKindSchema>
 
 const pairSchema = z.tuple([z.string(), z.string()])
@@ -705,6 +715,8 @@ export const humanDetailSchema = z.object({
     .optional(),
   /** M3：验收争议附的验收报告。三种处理：算通过（approve）/ 算失败（reject）/ 补充说明后继续（done），也可以用 engine.resolveVerifyDispute */
   verification: verificationSchema.optional(),
+  /** 审核固化流程：哪一版（内容用 routine.version 取） */
+  routine: z.object({ routineId: z.string(), versionId: z.string(), version: z.number().int() }).optional(),
 })
 export type HumanDetail = z.infer<typeof humanDetailSchema>
 

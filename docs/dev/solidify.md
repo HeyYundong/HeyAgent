@@ -1,6 +1,6 @@
 # 固化：办成过一次的事，下次照脚本做（技术架构，2026-10-27）
 
-> **状态：草案，等用户看。** 第 14 节是要用户定的几件事，每件都写了建议。
+> **状态：用户 2026-10-27 确认（「开动吧」），第 14 节全部按建议，开工做第一期。** 第一期怎么分工、各包的约定见第 15 节。
 > 来由：2026-10-27 用户看了 Pomerado（github.com/Pomerado/pomerado，「把网站变成 MCP 工具」），说现在用 DeepSeek，很多地方觉得可以自动持久化，但现在还不行，要一个在 HeyAgent 里怎么实现的技术架构。这也是 `browser-speed.md`「不做」里留下的第二阶段（让脚本做重复的事）。
 > 文中写「现在」的，都读 origin/main（8a68ba3）的代码确认过。
 
@@ -107,7 +107,7 @@
                                                                                   验证码检测、过程记录）
 ```
 
-- `ToolBridge` 是新加的（`engine/routine/bridge.ts`）。一次运行一个，绑这次运行的 `ToolGateway`。请求是 `{ id, tool, input }`，回复是 `{ id, ok, text, data?, error?, stop? }`。
+- `ToolBridge` 是新加的（`routine/runtime/bridge.ts`）。一次运行一个，绑这次运行的 `ToolGateway`。协议见 15.2 第 4 条。
 - 一次只处理一个调用，和引擎处理模型的调用一样按顺序。每次调用前看一眼运行是不是被取消了（同 `callBatch` 的 `stillRunning`），取消了就杀掉沙箱。
 - 调用 id 记成 `<运行号>-r<序号>`，过程记录里和 agent 的调用分得开。
 - 上限：一次运行最多 1000 次工具调用、默认 10 分钟，防死循环。10 分钟要小于 `runtime.maxRunMs`。
@@ -365,7 +365,7 @@ for (const [i, item] of rows.entries()) {
 | `ToolOutcome` | 加 `data`（结构化结果）、`code`（录下的定位代码） |
 | 队列 | `routine.compile`：固化和修都走它。试跑的运行照常走 `session.run` |
 | 接口（tRPC `routine.*`） | `compile({ sessionId })`、`get({ taskId })`、`versions({ routineId })`、`review({ versionId, approve, reason? })`、`setMode({ taskId, mode })`、`pause` / `resume`、`restore({ version })` |
-| 代码 | `engine/routine/`：`bridge.ts` 工具桥、`run.ts` 跑脚本和交接、`compile.ts` 固化员、`checks.ts` 程序检查、`test-run.ts` 试跑。`browser/extract.ts`：`extract`、`wait_any`。`sandbox/sdk/`：`heyagent.mjs` 和 `heyagent.d.ts`，构建时放进沙箱根文件系统 |
+| 代码 | `apps/server/src/routine/`：`service.ts` 读和开关、`compile.ts` 固化员、`material.ts` 材料、`checks.ts` 程序检查、`test-run.ts` 试跑、`review.ts` 审核；`routine/runtime/`：`bridge.ts` 工具桥、`run.ts` 跑脚本、`handoff.ts` 交接的话、`stats.ts` 试用和停用。`browser/extract.ts`：`extract`、`wait_any`。SDK：`apps/server/sandbox-sdk/heyagent/`（`index.js`、`index.d.ts`、`launch.js`），跑脚本时拷进沙箱的代码目录，不用重建镜像 |
 
 试跑的运行（`kind = routine_test`）：
 
@@ -388,7 +388,7 @@ for (const [i, item] of rows.entries()) {
   - 「⋯」里加「固化成流程」，只有办成的运行有。
 - **等人处理**：新卡片「审核固化流程」（5.7）。脚本和 diff 用 `CodeBlock`，试跑的每一步用 `Trace`。
 - **模型页**：默认模型多一个「固化」。
-- **会话列表**：试跑的运行标「固化试跑」。
+- **会话列表**：试跑的运行不进会话列表、不算统计；从审核卡、版本记录点进去看。
 
 ## 10. P3：直接调网站的接口
 
@@ -468,9 +468,223 @@ P1 验收：
 
 ## 14. 要你定的
 
+> 2026-10-27 用户回「开动吧」：下面 6 条都按建议。
+
 1. **自动固化**：P1 只做手动；P2 加任务开关「办成后自动固化」，被派的任务和定时任务默认开，别的默认关。建议：照这样。
 2. **试用期的提交要不要人批准**：建议不要。P1 里一要审批脚本就得停、交给 agent，试用期就等于没试。改成提交前截图，加上每次通知负责人。
 3. **固化用什么模型**：建议新加「固化」角色，没设时用「规划」的默认模型。固化次数少，可以选比执行模型强的。
 4. **试跑会做提交前的步骤**：会真的填表、选东西，只是不点提交，有的网站会自动存草稿。建议照做；任务上加一个「固化时不试跑」的开关，给这种网站用。
 5. **脚本跑通的运行还复核吗**：建议复核。你定过每次运行都复核；复核只调一次模型，几乎不花钱，能发现「脚本跑完了但结果不对」。
 6. **先用在哪**：建议先挑 1～2 个被派的任务（有参数、有结果、跑得多），再加速度基准的三个场景。
+
+问题 4 的「不试跑」第一期做成「固化成流程」弹窗里的勾选（存在这一版的 `skip_test` 上）；第二期自动固化时再加任务上的默认值。
+
+## 15. 第一期怎么做（分工和约定，2026-10-27）
+
+监工先写好共用的部分（分支 `worktree-solidify-design`），三个开发包照着写，各在自己的 worktree 和私有库里。监工审核、合并、做验收。
+
+### 15.1 已经写好的（不要改约定，要改先说）
+
+| 文件 | 内容 |
+|---|---|
+| `packages/shared/src/routine.ts` | 状态：固化流程 trial / active / paused；一版 drafting → testing → review / failed，审核后 approved / rejected。开关 `routineModeSchema`（off / first）、运行种类 `sessionKindSchema`（run / routine_test）、录制信息 `eventTraceSchema`、快照里的那一版 `routineSnapshotSchema`、运行上的脚本状态 `sessionRoutineStateSchema`（含停下的原因 `routineStopKindSchema`）、试跑报告、接口的输入输出、脚本的输入 `routineInputOf(snapshot)` |
+| `packages/shared` 其余 | `humanItemKindSchema` 加 `routine`（前缀 `ro-`）；`modelRoleSchema` 加 `solidify`（可选，没配用 plan）；`HumanDetail.routine`；`snapshot.routine`；运行摘要加 `kind`、`routine`，过程加 `trace`；id：`RT-<n>`、`RT-<n>-v<版本>`、试跑的运行 `RT-<n>-v<版本>-t<轮>`；`live.ts` 加两张表 |
+| `apps/server/drizzle/0031_routines.sql` | 表 `routines`（一个任务一个）、`routine_versions`（含 `skip_test`）；`tasks.routine_mode`、`sessions.kind`、`sessions.routine`、`session_events.trace`、`human_items.routine_version_id`；序列 `routine_no_seq`；两张新表的推送触发器 |
+| `apps/server/src/engine/sessions.ts` | 开始运行时冻 `snapshot.routine`：任务开着 first、流程没停用、有启用的版本才冻。`StartSessionOptions.routineTest` 开固化试跑：定 id、kind、`sessions.routine` 的初始状态和输入；原来那次运行的附件只读给它，不挪过来；不要求复核模型 |
+| `apps/server/src/routine/` | `service.ts`（读：`getTaskRoutine`、`getRoutineVersion`；写：`setRoutineMode`、`setRoutinePaused`）；`jobs.ts`（队列 `routine.compile` 和 `sendRoutineCompile`）；`compile.ts`、`review.ts`（空函数，B 包写） |
+| `apps/server/src/trpc/routine-router.ts` | `routine.get / version / compile / review / setMode / setPaused / restore` |
+| `apps/server/src/data/loaders.ts` | `sessions.get` 带上 `kind`、`routine` 和每条过程的 `trace` |
+
+脚本的输入（`ha.input`）只有一种算法：`routineInputOf(snapshot)` = 派活参数原样 + `$attachments`（这次运行能读的附件：id、名字、类型）+ `$note`（附加说明）。固化员写 `inputSchema`、跑脚本前校验、试跑取原来那次运行的输入，都用它。
+
+### 15.2 A 包：运行时（录、工具桥、SDK、先跑脚本、交给 agent）
+
+只改这些文件：
+
+- `browser/mcp.ts`、`browser/tools.ts`、新 `browser/extract.ts`；
+- `engine/gateway.ts`、`engine/records.ts`、`engine/loop.ts`；
+- `engine/tools/builtin.ts`（`ToolOutcome` 类型）、`engine/tools/http.ts`（JSON 回 `data`）、`engine/prompt.ts`（浏览器那段加两个新工具的用法）；
+- `sandbox/runner.ts`（挂工具桥目录）；
+- 新 `routine/runtime/`、新 `apps/server/sandbox-sdk/heyagent/`、`apps/server/package.json` 的 `files`（加 `sandbox-sdk`）；
+- 各自的测试。
+
+1. **录**（第 3 节）：
+   - MCP 改 `--codegen typescript`。
+   - `runMcp` 把 `### Ran Playwright code` 段从给模型的输出里拿掉，放进 `ToolOutcome.code`。
+   - 动作前后的网址（`instance.currentPage()?.url()`）、跳转后的标题放进 `ToolOutcome.trace`。
+   - 网关落过程记录时写 `session_events.trace`，代码先过 `redactSecrets`。
+   - 出错的动作没有代码就不记；批里每一步照旧各一条。
+2. **两个新工具**（4.4、4.5）：用编排器自己的 Playwright，只读，不能放进 batch。
+   - `browser.extract({ list?, fields, limit? })`：
+     - `list` 是每一行的定位，不给 = 整页一行；
+     - `fields` 是 `{ 字段名: 定位 | { target, attr } }`，行内相对定位，`attr` 取属性（如 href、value）；
+     - `limit` 默认 50、最多 500；
+     - 返回给模型的是一张小表（文字里最多 50 行），`data` 是 `{ rows, total }`；一行也没有不算出错。
+   - `browser.wait_any({ outcomes: { 名字: 定位 }, timeout? })`：
+     - 等页面上出现其中一个（看得见的），返回名字（`data: { matched }`）；
+     - `定位` 也可以写 `url=片段`，表示网址包含这一段；
+     - 默认 10 秒、最多 60 秒；超时算出错，出错文字带页面概况。
+   - 定位的写法和 MCP 的 `target` 一样认两种：
+     - 录下来的 JS 写法：`getByRole('button', { name: '查询' }).nth(1)`、`getByText('暂无数据')`、`getByLabel(…)`、`locator('css')`，以及 `.first()`、`.last()`、`.nth(n)`、`.filter({ hasText })` 链式；
+     - 选择器字符串：`role=button[name="查询"]`、`text=…`、CSS。
+     - JS 写法自己解析成 Playwright 的调用链：只认白名单里的方法，参数只认字面量。不认识的当选择器字符串。
+3. **`ToolOutcome.data`**：结构化结果，SDK 优先给它。`extract`、`wait_any` 必有；HTTP 工具返回 JSON 时给解析后的对象。模型那边照旧看 `output`。
+4. **工具桥和 SDK**（4.1–4.4、4.6）：
+   - **SDK 放哪**：`apps/server/sandbox-sdk/heyagent/`（`package.json`、`index.js`、`index.d.ts`、`launch.js`），普通 ESM，没有依赖。
+     - 跑脚本时把它拷进沙箱代码目录的 `node_modules/heyagent/`，不用重建镜像；脚本写在 `routine.mjs`。
+     - `launch.js` 读输入，调 `export default async function run(input)`，结束时报 `done`。
+   - **沙箱**：socket 目录只读挂到 `/tmp/.tools`（`SandboxRunSpec` 加一项），环境变量 `HEYAGENT_BRIDGE` 写 socket 路径；不挂出网代理。
+     - 测试用不带 bwrap 的「直接跑 node」runner（开发机没有 bwrap），路径同样从 `HEYAGENT_BRIDGE` 读。
+   - **协议**：一行一个 JSON。
+     - 请求 `{ id, op, … }`。`op` 是：`tool`（`tool`、`input`）、`commit`（`label`）、`verified`（`note`）、`log`（`text`）、`fail`（`kind: input | page`、`reason`）、`now`、`done`（`ok`、`error?`）。
+     - 回复 `{ id, ok, text?, data?, error?, code? }`，`code` 是 `step_error`、`denied`、`stop`。
+   - **SDK 的函数**按 4.4 的表：
+     - `ha.browser.navigate / click / type / fillForm / select / press / pressSequentially / hover / check / uncheck / drag / upload / tabs / waitFor / handleDialog / waitAny / extract`；
+     - `ha.file.read / save`、`ha.checkpoint.mark`、`ha.work.report`、`ha.tool(id, input)`；
+     - `ha.commit`、`ha.verified`、`ha.fail`、`ha.finish`、`ha.log`、`ha.now`、`ha.input`。
+     - 出错抛 `StepError` / `Denied`；停下抛 `RoutineStop`，脚本接住了也没用：停下以后的调用一律回 stop。
+     - `index.d.ts` 写清每个函数的参数，固化员的提示词直接读它。
+   - **`ToolBridge`**：
+     - 一次处理一个调用；每次调之前看运行还在不在跑（同 `callBatch`）。
+     - 调用 id 是 `<运行号>-r<序号>`。`gateway.call()` 多一个选项 `routineStep`：过程记录写进 `trace.routineStep`；要审批时的那条写「脚本的第 n 步 … 要人审批，没做，交给 agent」。
+     - 上限：1000 次调用、默认 10 分钟（`runtime` 里可配，要小于 `maxRunMs`）。
+     - 结果按 4.6 的表处理：要审批 → 停（`approval`，不发起审批）；要挂起 → 停（`suspend`，把挂起计划交回引擎）；拦下 → `denied`；出错 → `step_error`；`run.finish` → 记下结果，之后一律 stop。
+   - **试用**（`snapshot.routine.status = trial`）：每个 `ha.commit` 先截图存证（`gateway.screenshot()`），记一条过程「提交前截图：…」。
+   - **试跑**（`kind = routine_test`）：
+     - `ha.commit` → 停（`test_commit`），停下时截图；
+     - `work.report`、`run.finish`、`checkpoint.mark` 不真调，记进 `sessions.routine.recorded`；
+     - 不是浏览器、不是 `file.*`、风险也不是 read 的工具 → 停在它前面（`test_blocked`）。
+5. **引擎**（6.3、6.4，`engine/loop.ts` 的 `runSession`）：
+   - 开始钩子只在 `stepCount = 0` 而且 `sessions.routine` 为空时跑；试跑不跑开始钩子。
+   - **普通运行**：快照里有 `routine`、`sessions.routine` 为空，就跑脚本（`routine/runtime/run.ts`）。
+     - 先按 `inputSchema` 校验 `routineInputOf(snapshot)`，不合格 → 交给 agent（`bad_input`）。
+     - `ha.finish` 报办成 → 走 `agentSaysDone`（三方验收照常，验收反问就进 agent 循环）；报没办成 → `finishRun`。
+     - `ha.fail("input")` → 直接按没办成收尾，不交 agent；取消 → stopped。
+     - 别的停下 → 追加交接的话，进 agent 循环。交接的话写在 `routine/runtime/handoff.ts`，格式见 6.4：每步 ✓ / ✗、会改东西的步骤做没做、核对没有、现在的页面概况。
+     - 要挂起的：交接的话和挂起在同一个事务里写（`suspendWithResults`），继续后进 agent 循环。
+     - 进程中途被杀（继续时 `sessions.routine.state` 还是 running）→ 记 `interrupted`，交接的话写「不确定第 n 步做没做」，进 agent 循环。
+   - **固化试跑**（`kind = routine_test`）：
+     - 每次进来都从头跑脚本（试跑只做提交前的事，重跑没关系）。
+     - 跑完把运行结束（`done`，结果留空、不复核、不通知），写一条「固化试跑结束」过程，然后 `sendRoutineCompile(db, tx, { versionId })`，交给 B 包往下走。
+     - 遇到登录页、验证码照常挂起等人。
+   - `sessions.routine` 每次调用后更新（步数、停下的地方、提交和核对）；结束时写 `endedAt`、`ms`、`state`。
+6. **试用、正式、停用**（6.5、6.6，`routine/runtime/stats.ts` 的 `settleRoutineRun`）：在结果定了以后调（`finishRun` 复核完、`failSession`）。
+   - 脚本报了结果，而且办成 → `directStreak + 1`、`fallbackStreak = 0`；试用满 3 次转正式，记审计、通知负责人。
+   - 交给 agent → `fallbackStreak + 1`、`directStreak = 0`；满 3 次自动停用，`pausedReason` 写清楚，通知负责人。
+   - 别的情况不动。
+   - 试用期每次运行结束都通知负责人结果，办成也发。
+7. **测试**：
+   - 工具桥协议（假网关）；SDK 直接用 node 跑（不带 bwrap）。
+   - `runSession` 的几条路（假模型）：
+     - 跑通时模型一次都没调；
+     - 跑不通交给 agent，第一条交接的话对；
+     - 要挂起；
+     - `ha.fail("input")`；
+     - 试跑停在提交前，`work.report` 没生效；
+     - 进程中途被杀。
+   - 试用转正式；连续 3 次停用。
+   - 浏览器测试（`scripts/browser-test.sh`）：录下代码和网址；`extract` / `wait_any`；用真 Chrome 在本地测试站点上跑通一个脚本。
+
+### 15.3 B 包：固化（固化员、程序检查、试跑、审核）
+
+只改这些文件：
+
+- `routine/compile.ts`、`routine/review.ts`；新 `routine/material.ts`、`routine/prompt.ts`、`routine/checks.ts`、`routine/test-run.ts`；
+- `engine/worker-runtime.ts`（注册 `routine.compile`）；
+- `engine/humans.ts`（`routine` 这类事不走通用处理）；
+- `data/config/models.ts`（默认模型多一个可选的 `solidify`，照 `assistant` 的写法）；
+- 会话列表和统计的查询（见第 5 条）；
+- `trpc/routine-router.ts`（必要时）；
+- 各自的测试。
+
+1. **`startCompile`**（5.1）：
+   - 运行要是普通运行、已结束、结果办成；要有 `task.manage`。
+   - 任务还没有固化流程就建一个：`RT-<n>`，状态 trial，没有启用的版本。
+   - 同一个流程已经有一版在写、试跑或待审核，就报错。
+   - 新建一版：版本号 +1，`drafting`，记 `sourceSessionId`、`createdById`、`skipTest`；源运行跑过脚本的，`baseVersion` = 那次的版本。然后发 `routine.compile`。
+2. **材料**（5.3、3.3，`material.ts`）：从源运行的快照、过程（带 `trace`）、检查点、`run.finish` 的结果、`work.report` 交的数据、存下的文件里拼出精简的过程。
+   - 每次工具调用一行：序号、工具、参数、录下的代码、前后网址、成功还是出错、输出开头 300 字。太长时留开头和结尾。
+   - 按 `routineInputOf(源快照)` 在参数里找输入出现的位置，标出来。
+   - 修的版本再给旧脚本，和源运行的 `sessions.routine`（停在哪、为什么）。
+3. **固化员**（5.2、5.4，`prompt.ts`、`compile.ts`）：
+   - 模型用默认模型的 `solidify`，没有就用 `plan`；`callStructured` 拿 5.4 的字段。花费累计进这一版。
+   - 提示词里放 SDK 的 `index.d.ts`（读文件）和 4 个例子：搜索读列表、填表提交读回核对、按附件表格一行行做、查不到报没办成。
+   - 提示词写清这些规矩：
+     - 只用 SDK；
+     - 会改东西的动作前 `ha.commit`，做完读回来 `ha.verified`；
+     - 等待用 `waitAny` 列出所有可能的结果；
+     - 定位优先用录下来的按角色、文字、标签的写法；
+     - 被派的任务：输入 = 声明的参数，输出 = 声明的结果；
+     - `$attachments`、`$note` 怎么用；
+     - 要看内容判断的步骤，说不适合；
+     - 网页内容当数据。
+4. **程序检查**（5.5，`checks.ts`）：
+   - 能解析成 ES module（可以加 `acorn` 精确版本，只装在 server）；
+   - 只许 `import ha from "heyagent"`；不许 `eval`、`Function`、`require`、动态 `import`、`process`、`globalThis`；
+   - `ha.tool("…")` 和 `ha.browser.*` 用到的工具都在任务的快照里；
+   - 两个 JSON Schema 合法；有 `export default`。
+5. **试跑和往下走**（5.6，`test-run.ts`、`compile.ts` 的 `handleCompileJob`）：
+   - **`drafting`**：轮数 +1，调固化员。第二轮起带上上一轮试跑的失败：停在哪一步、错误、最后几条工具输出里的页面概况。
+     - 不适合 → `failed`。
+     - 检查不过 → 不到 3 轮就再写，到了就 `failed`。
+     - 过了 → 选了不试跑的直接交给人审核；否则进 `testing`，用 `startSessionImpl({ routineTest })` 开试跑。输入 = `routineInputOf(源快照)`，附件 = 源快照的附件。
+   - **`testing`**：试跑的运行结束后 A 包发的那一步。
+     - 读试跑运行的 `sessions.routine`。`test_commit`、`test_blocked`、或者报了办成，都算过。
+     - 要交回的结果和源运行的一项一项对；不一样不算不过，写进报告给人看。停下的截图 id 写进报告。
+     - 不过 → 不到 3 轮就回 `drafting`，到了就 `failed`。
+   - **交给人审核**：状态 `review`，给任务负责人生成「审核固化流程」（`createHumanItem`，带 `routineVersionId`、`detail.routine`，主按钮「启用」，次按钮「不用」），通知负责人。`failed` 也通知负责人，原因写清楚。
+   - **会话列表、统计不算试跑**：下面这些都只看 `kind = run`（`sessions.get` 按 id 取照常能看试跑）：
+     - 所有面向人的会话列表、计数、成功率；
+     - 「今天花了」；
+     - 定时「上一次还没跑完就跳过」的判断；
+     - 任务卡片上的最近运行。
+6. **审核**（5.7、第 7 节，`review.ts`）：只有待审核的能审；要有 `task.manage`。
+   - 启用 → 这一版 `approved`，`routines.active_version` 指向它，状态回 trial、两个计数清零；任务开关是 off 的，打开成 first。
+   - 不用 → `rejected`，记理由。
+   - 两种都把那件要人办的事处理掉（resolved）。
+   - `restore`：回到以前 approved 过的某一版，同样回试用期。
+   - 通用的 `resolveHumanItem` 遇到 `routine` 报错，像记忆、技能那样由专门的接口处理。
+7. **测试**：
+   - 材料：输入标注、截断；
+   - 程序检查：各种不许的写法；
+   - 状态机（假固化员 + 假试跑结果）：一次过、改一次过、3 轮不过、不适合、不试跑；
+   - 审核和回旧版本的效果；
+   - 会话列表不出现试跑。
+
+### 15.4 C 包：界面
+
+只改 `apps/web/src`。要用的 fixture 可以写 `apps/server/src/seed/routine-fixture.ts`，加 `package.json` 里的 `dev:routine-fixture`。严格照 `docs/ui-rules.md`：只用预设组件，例外先报。页面要简单：区块标题下不放说明，说明放「?」。
+
+1. **任务详情**：新区块「固化流程」，有固化流程才显示（`routine.get`）。
+   - 状态 `Badge`（试用 / 正式 / 停用）、第几版；
+   - 「先跑流程」`Switch`（`routine.setMode`）；
+   - 最近 N 次的成绩一行：脚本直接办成 x · 交给 agent y · 平均 a 秒，agent 平均 b 秒；
+   - 停用的原因；
+   - 正在写、试跑、待审核的那一版一行，待审核的链到那件事；
+   - 「⋯」里：
+     - 看脚本：`Dialog`，里面是步骤说明、输入和交回、假设、`CodeBlock` 脚本；
+     - 版本记录：每版状态，approved 过的能「回到这一版」；
+     - 停用 / 重新启用：停用用 `AlertDialog` 确认。
+2. **运行详情**：
+   - 跑过脚本的运行，头部加一行（第 9 节）：「按固化流程第 3 版跑：14 步 · 9 秒 · 没调执行模型」，或「固化流程停在第 5 步（原因），agent 接着做完」。
+   - 固化试跑写「固化试跑：第 n 轮 · 停在提交前」之类。
+   - 过程里 `trace.routineStep` 有值的，加 `Badge`「流程」。
+   - 「⋯」里加「固化成流程」：已结束、办成的普通运行才有，负责人和主管能点。
+     - 点了弹一个小 `Dialog`：一句话说明 + `Checkbox`「不试跑（填表就会自动存草稿的网站选这个）」+ 确定。
+     - 成功后 toast「开始固化：写好、试跑完会在『等人处理』里叫你审核」。
+3. **审核卡**：`pages/sessions/human-item.tsx` 遇到 `kind = routine`，用专门的内容（`routine.version`）：
+   - 步骤说明；
+   - 要的输入和交回：从两个 JSON Schema 的字段名、说明取；
+   - 试跑结果：最后一轮的每一步、停在哪、要交回的结果和原来那次对比、停下时的截图；
+   - 假设；
+   - 脚本：`Collapsible` + `CodeBlock`；修的版本和旧版本对比；
+   - 「启用」→ `routine.review(approve)`；「不用」→ 写理由 → `routine.review(reject)`。
+4. **模型页**：默认设置多一个「固化」，可选。「?」里写：把办成过的运行写成脚本用；没选就用规划的模型。
+
+### 15.5 大家都要守的
+
+- 平台通用，代码里不写业务，`conventions.md` 第 0 节的检查要过。注释和界面文案用中文，注释写「为什么」。
+- 不 commit、不 push、不切分支。只改分给自己的文件，要改别的先说。
+- 自己起的服务做完关掉。不要 `pkill -f`（会杀掉 8080 的 worker），按 PID 关。
+- 用自己的私有库：worktree 里的 `.env` 已经指好，测试库名以 `_test` 结尾。
+- 结束时汇报：做了什么、怎么验证的（命令和关键输出）、和这份说明不一致的地方、没解决的问题。没验证过的不要说成做完了。

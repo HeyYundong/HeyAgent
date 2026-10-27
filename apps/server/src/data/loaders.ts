@@ -312,6 +312,8 @@ export async function listSessions(db: Db, filter: SessionFilter = {}): Promise<
       doneDetail: opt(summaries.doneDetail.get(row.id)),
       pausedMs: summaries.pausedMs.get(row.id) ?? 0,
       browserIds: summaries.browserIds(row.id),
+      kind: row.kind === "run" ? undefined : row.kind,
+      routine: opt(row.routine),
     })
   })
 }
@@ -338,6 +340,7 @@ export async function loadSession(db: Db, id: string): Promise<SessionRun | unde
         ms: opt(event.ms),
         tokensIn: opt(event.tokensIn),
         tokensOut: opt(event.tokensOut),
+        trace: opt(event.trace),
       })
     ),
   }

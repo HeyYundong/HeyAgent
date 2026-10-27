@@ -113,6 +113,7 @@ export const humanItemKindLabel: Record<HumanItemKind, string> = {
   login: "登录",
   memory: "记忆审核",
   skill: "技能修改",
+  routine: "审核固化流程",
 }
 
 export type LoopStage = "task_start" | "model" | "pre_tool" | "tool" | "post_tool" | "task_end"
@@ -133,8 +134,8 @@ export const providerKindLabel: Record<ModelProviderKind, string> = { ollama: "O
 export const providerStatusLabel: Record<ProviderStatus, string> = { ok: "正常", error: "连不上", unconfigured: "未配置" }
 
 /** 各角色的默认模型（原型 models/data.ts 的 ROLES） */
-/** 必须配的三个聊天模型角色；图库的 embedding 模型（embed）、助手（assistant，可选）、复核（review，新任务默认用的复核模型）单独选，见模型页「默认设置」 */
-export const modelRoles: { id: Exclude<ModelRole, "embed" | "assistant" | "review">; label: string; hint: string }[] = [
+/** 必须配的三个聊天模型角色；图库的 embedding 模型（embed）、助手（assistant，可选）、复核（review，新任务默认用的复核模型）、固化（solidify，可选，没配用规划）单独选，见模型页「默认设置」 */
+export const modelRoles: { id: Exclude<ModelRole, "embed" | "assistant" | "review" | "solidify">; label: string; hint: string }[] = [
   { id: "run", label: "执行任务", hint: "每一步干活、调工具都用它，任务没写步骤时也由它自己探索步骤，花费主要在这里。" },
   { id: "plan", label: "规划", hint: "保存规则时把那句话翻译成程序能执行的结构；长对话压缩上下文时写摘要。" },
   { id: "verify", label: "三方验收", hint: "检查执行 agent 是不是真的做完了检查点。" },
