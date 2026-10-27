@@ -129,6 +129,7 @@ const QUEUE_SETUP: { name: string; policy: "standard" | "stately" }[] = [
   { name: QUEUES.workSweep, policy: "standard" },
   { name: QUEUES.workNotify, policy: "standard" },
   { name: QUEUES.desktopVm, policy: "stately" },
+  { name: QUEUES.routineCompile, policy: "stately" },
 ]
 
 export async function ensureQueues(boss: PgBoss) {

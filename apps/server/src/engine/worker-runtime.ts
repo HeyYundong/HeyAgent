@@ -254,9 +254,7 @@ export async function startEngineWorker(
   // 派活：单最终结束时叫醒等 work.done:<单号> 的运行（第二期）
   await boss.work<{ itemId: string }>(QUEUES.workNotify, polling, async ([job]) => job && (await onWorkNotify(db, job.data)))
   await boss.schedule(QUEUES.workSweep, "* * * * *", {}, { tz: SCHEDULE_TZ })
-  // 固化（docs/dev/solidify.md 5.6）：一版脚本往下走一步。同一版排着的只留一个（stately + singletonKey = 版本 id）。
-  // queue.ts 的 QUEUE_SETUP 里还没有这个队列，这里建（已经有了不报错）；worker 起来以后 API 那边发任务才不会撞上「队列不存在」
-  await boss.createQueue(QUEUES.routineCompile, { policy: "stately", retryLimit: 2, retryDelay: 10 })
+  // 固化（docs/dev/solidify.md 5.6）：一版脚本往下走一步。同一版排着的只留一个（stately + singletonKey = 版本 id，队列在 QUEUE_SETUP 里建）
   await boss.work<{ versionId: string }>(QUEUES.routineCompile, { ...polling, localConcurrency: 2 }, async ([job]) => {
     if (job) await handleCompileJob(db, job.data)
   })
