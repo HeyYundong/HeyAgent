@@ -42,8 +42,10 @@ function baseArgs(cdpEndpoint: string, outputDir: string) {
     // 动作类工具的返回不带快照（0.0.83 只给一个 agent 读不到的 .yml 链接），要看页面就显式调 browser_snapshot
     "--snapshot-mode",
     "none",
+    // 每个动作对应的 Playwright 代码（### Ran Playwright code，快照 ref 换成稳定定位）：录下来给固化用（docs/dev/solidify.md 3.1），
+    // BrowserTools 从给模型的输出里拿掉，存进过程记录
     "--codegen",
-    "none",
+    "typescript",
     // 网页自己注册的工具不收（不受我们的网关管）
     "--no-webmcp",
     // 按坐标操作的工具一律列出来（工具清单进程里只列一次、全局缓存），没开「允许看画面」的任务在网关里过滤掉

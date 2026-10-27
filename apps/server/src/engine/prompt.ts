@@ -150,6 +150,12 @@ export function buildSystemPrompt(
         toolNames.has("browser.batch")
           ? `- 同一页面上能预见的几步（填表、点按钮、关弹窗、翻页）用 ${toolNames.get("browser.batch")} 一次做完：哪一步出错就停，输出里有每步结果和页面快照，不用再单独看。跳转以后旧的 ref 失效：跨页面的步骤用选择器。填表单优先用 browser_fill_form（一次填多个输入框、下拉、勾选）。`
           : "",
+        toolNames.has("browser.extract")
+          ? `- 读表格、列表用 ${toolNames.get("browser.extract")}：list 写每一行的定位（getByRole('row')），fields 写行里每个字段的定位（getByRole('cell').nth(2)），一次拿到整张表，比读快照省事。`
+          : "",
+        toolNames.has("browser.wait_any")
+          ? `- 点了按钮要等结果时用 ${toolNames.get("browser.wait_any")}，把可能的结果都列出来（结果出来了、「暂无数据」、报错提示），它返回出现的是哪个；不用做完再快照看。`
+          : "",
         "- 动作被弹窗挡住时，弹窗里有「我知道了」「关闭」这类无害的按钮，系统会点掉它再做一次；别的弹窗（按钮是「接受」「同意」这类）要你自己判断怎么处理。",
         allowVision
           ? "- 允许看画面：browser_look 截当前画面发给你，截图里的坐标可以直接用于 browser_mouse_click_xy 等坐标工具。快照解决不了时才用（找菜单、确认操作结果、canvas 画出来的页面），别每步都看（每次多一张图的费用）。别的截图照旧只存档、不发给你。"

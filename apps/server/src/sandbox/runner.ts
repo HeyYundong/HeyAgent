@@ -19,6 +19,9 @@ export const SANDBOX_HOME = "/home/sandbox"
 export const SANDBOX_CODE_DIR = "/tmp/.code"
 export const SANDBOX_PROXY_DIR = "/tmp/.proxy"
 export const PROXY_SOCKET_NAME = "proxy.sock"
+/** 固化脚本的工具桥（docs/dev/solidify.md 4.1） */
+export const SANDBOX_TOOLS_DIR = "/tmp/.tools"
+export const TOOLS_SOCKET_NAME = "tools.sock"
 const PROXY_PORT = 3128
 
 export interface SandboxRunSpec {
@@ -35,6 +38,15 @@ export interface SandboxRunSpec {
   codeDir?: string
   /** 出网代理的 socket 所在目录（只读挂到 /tmp/.proxy）；不给 = 不能联网 */
   proxyDir?: string
+  /**
+   * 固化脚本的工具桥 socket 所在目录（只读挂到 /tmp/.tools，docs/dev/solidify.md 4.1）；环境变量 HEYAGENT_BRIDGE 写 socket 的路径。
+   * 脚本只能通过它调工具（跑脚本时不给 proxyDir，不能上网）
+   */
+  toolsDir?: string
+  /** /workspace 只读挂（固化脚本：读附件、写结果走 file.* 工具，过程记录里看得见） */
+  workspaceReadonly?: boolean
+  /** 停下（运行被取消、脚本已经停了还不退出、worker 要退出）：整组杀掉，结果按被杀算 */
+  signal?: AbortSignal
   /** 只读挂到 /workspace 下的目录：{ host, name }，name 例如 attachments */
   readonlyDirs: { host: string; name: string }[]
   config: SandboxConfig
@@ -106,6 +118,7 @@ export function buildSandboxArgs(spec: SandboxRunSpec): string[] {
   }
   if (spec.language === "node")
     env.NODE_OPTIONS = `--max-old-space-size=${Math.max(64, Math.floor(config.memoryBytes / 1024 / 1024))}`
+  if (spec.toolsDir) env.HEYAGENT_BRIDGE = `${SANDBOX_TOOLS_DIR}/${TOOLS_SOCKET_NAME}`
   // 不加 --disable-userns（要写 /proc/sys/user/max_user_namespaces，Podman 里 /proc/sys 只读）和 --hostname（Podman 里设不了）：实测都起不来
   const args = ["--unshare-all", "--unshare-user", "--die-with-parent", "--new-session", "--cap-drop", "ALL", "--clearenv"]
   for (const [key, value] of Object.entries(env)) args.push("--setenv", key, value)
@@ -113,12 +126,13 @@ export function buildSandboxArgs(spec: SandboxRunSpec): string[] {
     "--ro-bind", config.rootfs, "/",
     "--dev", "/dev",
     "--size", String(config.tmpBytes), "--tmpfs", "/tmp",
-    "--bind", spec.workspaceDir, SANDBOX_WORKSPACE
+    spec.workspaceReadonly ? "--ro-bind" : "--bind", spec.workspaceDir, SANDBOX_WORKSPACE
   )
   for (const dir of spec.readonlyDirs) args.push("--ro-bind", dir.host, `${SANDBOX_WORKSPACE}/${dir.name}`)
   args.push("--bind", spec.homeDir, SANDBOX_HOME)
   if (spec.codeDir) args.push("--ro-bind", spec.codeDir, SANDBOX_CODE_DIR)
   if (spec.proxyDir) args.push("--ro-bind", spec.proxyDir, SANDBOX_PROXY_DIR)
+  if (spec.toolsDir) args.push("--ro-bind", spec.toolsDir, SANDBOX_TOOLS_DIR)
   args.push("--chdir", SANDBOX_WORKSPACE)
 
   const virtual = spec.language === "node" ? config.nodeVirtualBytes : config.memoryBytes
@@ -229,10 +243,17 @@ function spawnSandbox(spec: SandboxRunSpec): Promise<SandboxRunResult> {
       // 万一 close 一直不来（管道被沙箱里的孙进程拿着），5 秒后照样收尾
       setTimeout(() => finish(137), 5000).unref()
     }, spec.timeoutSec * 1000)
+    const onAbort = () => {
+      killGroup()
+      setTimeout(() => finish(137), 5000).unref()
+    }
+    // 已经停了的在下面 finish 定义好以后再杀
+    spec.signal?.addEventListener("abort", onAbort, { once: true })
     const finish = (exitCode: number) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
+      spec.signal?.removeEventListener("abort", onAbort)
       resolve({
         exitCode: timedOut ? 137 : exitCode,
         timedOut,
@@ -255,6 +276,7 @@ function spawnSandbox(spec: SandboxRunSpec): Promise<SandboxRunResult> {
       // 程序没读完 stdin 就退出了：不算错
     })
     child.stdin.end(spec.stdin ?? "")
+    if (spec.signal?.aborted) onAbort()
   })
 }
 

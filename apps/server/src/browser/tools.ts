@@ -7,7 +7,9 @@
 //   一律屏蔽 browser_run_code_unsafe，browser_evaluate 要任务里打开「允许执行脚本」才给；
 //   按坐标操作的工具（browser_mouse_click_xy 等）和 browser.look（截当前画面发给模型）要打开「允许看画面」才给；
 // - 剪贴板工具 browser.copy_image / clipboard_read / clipboard_paste（browser/clipboard.ts），在线表格、文档大块读写数据、贴图用；
-// - browser.batch：连着做几步（docs/dev/browser-speed.md A），定义在这里，在工具网关里展开（每一步走一次普通调用）。
+// - browser.batch：连着做几步（docs/dev/browser-speed.md A），定义在这里，在工具网关里展开（每一步走一次普通调用）；
+// - browser.extract / browser.wait_any：按定位读页面、等几种结果里的一个（docs/dev/solidify.md 4.5，browser/extract.ts），只读；
+// - 录（docs/dev/solidify.md 3.1）：MCP 输出里的 ### Ran Playwright code 从给模型的输出里拿掉，连同动作前后的网址放进 ToolOutcome，网关存进过程记录。
 // 每次调用：调之前查导航参数（白名单、账号租约）→ 交给 MCP（被弹窗挡住时认得出的无害关闭按钮点掉、再做一次）→ 调完后兜底扫一遍页面、
 // 取走被拦下的导航、跳转后在后台截图存档、检测验证码和登录页 → 末尾附上页面概况（标题网址、弹窗、文件选择框，page-brief.ts）。验证码先自己试着过（设置里的开关，captcha.ts），
 // 过不了的和登录页（存了密码的先自动登录）截图、生成「登录」类要人办的事、session 等人处理，Chrome 保留着。
@@ -45,12 +47,29 @@ import { judgePage, parseVisionAnswer, providerCaptchaNote, VISION_PROMPT, type 
 import { autoLogin, loadAccountPassword, loginModelId, type AutoLoginCaptcha } from "./auto-login.js"
 import { CAPTCHA_MAX_TRIES, solveCaptcha, type CaptchaResult, type CaptchaTry } from "./captcha.js"
 import { ClipboardTools, imageSize } from "./clipboard.js"
+import {
+  EXTRACT_DEFAULT_ROWS,
+  EXTRACT_MAX_ROWS,
+  extractRows,
+  formatExtract,
+  WAIT_ANY_DEFAULT_SECONDS,
+  WAIT_ANY_MAX_SECONDS,
+  waitAnyOutcome,
+  type ExtractInput,
+} from "./extract.js"
 import { ProfileFullError, type BlockedNavigation, type BrowserInstance } from "./instance.js"
 import { accountForHost, busyProfileIds } from "./leases.js"
 import { getBrowserManager } from "./manager.js"
 import { BLOCKED_MCP_TOOLS, EVALUATE_TOOL, listBrowserMcpTools, VISION_MCP_TOOLS } from "./mcp.js"
 import { blockedKind, DISMISS_ATTR, explainError, formatBrief, modalGuidance, overlayText, readPageBrief, stripAnsi, stripPageSections } from "./page-brief.js"
 import { phaseTimer, recordBrowserTiming } from "./timing.js"
+
+/** 一次 MCP 动作录下的：代码、做之前的网址（callMcp 收尾时再读做之后的网址、标题） */
+interface Recorded {
+  instance?: BrowserInstance
+  urlBefore?: string
+  code?: string
+}
 
 export interface BrowserToolEntry {
   id: string
@@ -75,6 +94,8 @@ type HumanHit = Omit<Hit, "verdict"> & { verdict: Exclude<Verdict, { kind: "none
 const FILL_CAPTCHA_TOOL = "browser.fill_captcha"
 const LOOK_TOOL = "browser.look"
 export const BATCH_TOOL = "browser.batch"
+export const EXTRACT_TOOL = "browser.extract"
+export const WAIT_ANY_TOOL = "browser.wait_any"
 /** 批里一次最多几步 */
 export const BATCH_MAX_STEPS = 20
 /** 批做完附的快照默认多深 */
@@ -97,7 +118,7 @@ const READ_ONLY_TOOLS = new Set(["browser_snapshot", "browser_find", "browser_co
 /** 点元素的动作：被弹窗挡住时（Playwright 的 intercepts pointer events，或超时且认出了弹窗）先试着关掉弹窗再做一次 */
 const POINTER_TOOLS = new Set(["browser_click", "browser_hover", "browser_type", "browser_fill_form", "browser_select_option", "browser_check", "browser_uncheck", "browser_drag", "browser_press_sequentially"])
 /** 不能放进 browser.batch 的：batch 自己、指定 Chrome、只读的（看页面的放最后由 snapshot 参数做） */
-const NOT_BATCHABLE = new Set([BATCH_TOOL, "browser.use", LOOK_TOOL, "browser.clipboard_read", ...[...READ_ONLY_TOOLS].map((name) => browserToolIdOf(name))])
+const NOT_BATCHABLE = new Set([BATCH_TOOL, "browser.use", LOOK_TOOL, EXTRACT_TOOL, WAIT_ANY_TOOL, "browser.clipboard_read", ...[...READ_ONLY_TOOLS].map((name) => browserToolIdOf(name))])
 
 function browserToolIdOf(mcpName: string) {
   return `browser.${mcpName.replace(/^browser_/, "")}`
@@ -112,6 +133,21 @@ export function batchToolId(tool: string) {
 export const batchable = (toolId: string) => toolId.startsWith("browser.") && !NOT_BATCHABLE.has(toolId)
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** MCP 输出里的 ### Ran Playwright code 段（--codegen typescript：```js 代码框） */
+const CODE_SECTION = /(^|\n)### Ran Playwright code\n```[a-z]*\n([\s\S]*?)\n```[ \t]*(?=\n|$)/
+
+/** 把录下的 Playwright 代码从输出里拿出来（给模型的输出和关着 codegen 时一样，不多花 token） */
+export function takeCode(output: string): { output: string; code?: string } {
+  const match = CODE_SECTION.exec(output)
+  if (!match) return { output }
+  const rest = (output.slice(0, match.index) + output.slice(match.index + match[0].length)).trim()
+  return { output: rest || "（没有返回内容）", code: match[2]!.trim() || undefined }
+}
+
+/** 定位：JS 写法或选择器字符串（docs/dev/solidify.md 15.2 第 2 条） */
+const TARGET_HELP =
+  "定位的写法和动作的 target 一样：选择器字符串（role=button[name=\"查询\"]、text=暂无数据、CSS），或者 Playwright 的写法（getByRole('row').nth(1)、getByText('暂无数据')、getByLabel('单号')、locator('css')，可以接 .first() .last() .nth(n) .filter({ hasText })）。不能用快照 ref（e12）"
 const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg"])
 const PROXY_ERROR = /ERR_(SOCKS_CONNECTION_FAILED|PROXY_CONNECTION_FAILED|TUNNEL_CONNECTION_FAILED|SOCKS_CONNECTION_HOST_UNREACHABLE|PROXY_AUTH_UNSUPPORTED)/
 
@@ -304,6 +340,7 @@ export class BrowserTools {
         validator: z.object({}).passthrough(),
         execute: () => this.look(),
       })
+    entries.push(...this.readEntries())
     for (const tool of this.mcpTools) {
       if (BLOCKED_MCP_TOOLS.has(tool.name)) continue
       if (tool.name === EVALUATE_TOOL && !browser?.allowEvaluate) continue
@@ -373,6 +410,137 @@ export class BrowserTools {
       execute: async () => fail("browser.batch 要由工具网关展开"),
     })
     return entries
+  }
+
+  /** browser.extract、browser.wait_any：编排器自己的 Playwright 读页面，只读，不能放进 batch */
+  private readEntries(): BrowserToolEntry[] {
+    const target = { type: "string", minLength: 1 }
+    const field = {
+      anyOf: [
+        { ...target, description: "字段的定位（相对这一行）" },
+        {
+          type: "object",
+          properties: { target: { ...target, description: "字段的定位（相对这一行）" }, attr: { type: "string", minLength: 1, description: "取属性而不是文字，例如 href、value、src" } },
+          required: ["target"],
+          additionalProperties: false,
+        },
+      ],
+    }
+    const fieldSchema = z.union([z.string().min(1), z.object({ target: z.string().min(1), attr: z.string().min(1).optional() })])
+    return [
+      {
+        id: EXTRACT_TOOL,
+        def: {
+          id: EXTRACT_TOOL,
+          name: "浏览器：读列表",
+          summary: "按定位读页面上的字，一行一个对象（读表格、列表比看快照省事）",
+          description: `按定位读页面上的字，返回一张小表（结构化的行也给脚本用）。list 是每一行的定位（例如 getByRole('row')、css=.item），fields 是行里每个字段的定位（相对这一行，例如 getByRole('cell').nth(2)），{ target, attr } 取属性（href、value）；不给 list 就是整页一行。limit 默认 ${EXTRACT_DEFAULT_ROWS}、最多 ${EXTRACT_MAX_ROWS} 行；文字里最多列 50 行。一行也没有不算出错。${TARGET_HELP}。只读，不改页面。`,
+          source: "builtin",
+          risk: "read",
+        },
+        jsonSchema: {
+          type: "object",
+          properties: {
+            list: { ...target, description: "每一行的定位；不给 = 整页一行" },
+            fields: { type: "object", minProperties: 1, maxProperties: 30, additionalProperties: field, description: "字段名 → 定位（相对这一行），或 { target, attr }" },
+            limit: { type: "integer", minimum: 1, maximum: EXTRACT_MAX_ROWS, description: `最多读几行，默认 ${EXTRACT_DEFAULT_ROWS}` },
+          },
+          required: ["fields"],
+          additionalProperties: false,
+        },
+        validator: z.object({
+          list: z.string().min(1).optional(),
+          fields: z
+            .record(z.string().min(1).max(60), fieldSchema)
+            .refine((value) => Object.keys(value).length >= 1 && Object.keys(value).length <= 30, "fields 要有 1～30 个字段"),
+          limit: z.number().int().min(1).max(EXTRACT_MAX_ROWS).optional(),
+        }),
+        execute: (input) => this.extract(input as ExtractInput),
+      },
+      {
+        id: WAIT_ANY_TOOL,
+        def: {
+          id: WAIT_ANY_TOOL,
+          name: "浏览器：等结果",
+          summary: "等页面上出现几种结果里的一个（结果页、「暂无数据」、报错提示），返回是哪个",
+          description: `等页面上出现 outcomes 里的其中一个（看得见的），返回它的名字；同时出现时取前面的。把可能的结果都列出来（成功的、「暂无数据」、报错提示），不要只等成功的那个。定位写 url=片段 表示网址里包含这一段。timeout 单位是秒，默认 ${WAIT_ANY_DEFAULT_SECONDS}、最多 ${WAIT_ANY_MAX_SECONDS}；等不到算出错。${TARGET_HELP}。只读，不改页面。`,
+          source: "builtin",
+          risk: "read",
+        },
+        jsonSchema: {
+          type: "object",
+          properties: {
+            outcomes: { type: "object", minProperties: 1, maxProperties: 10, additionalProperties: { ...target }, description: "结果名 → 定位，例如 { \"found\": \"getByRole('row').nth(1)\", \"empty\": \"getByText('暂无数据')\" }" },
+            timeout: { type: "number", minimum: 0.5, maximum: WAIT_ANY_MAX_SECONDS, description: `最多等几秒，默认 ${WAIT_ANY_DEFAULT_SECONDS}` },
+          },
+          required: ["outcomes"],
+          additionalProperties: false,
+        },
+        validator: z.object({
+          outcomes: z
+            .record(z.string().min(1).max(60), z.string().min(1))
+            .refine((value) => Object.keys(value).length >= 1 && Object.keys(value).length <= 10, "outcomes 要有 1～10 种结果"),
+          timeout: z.number().min(0.5).max(WAIT_ANY_MAX_SECONDS).optional(),
+        }),
+        execute: (input) => this.waitAny(input as { outcomes: Record<string, string>; timeout?: number }),
+      },
+    ]
+  }
+
+  /** 读页面的工具要的页面：开着 Chrome、打开了网页、没有网页弹框挡着 */
+  private async readablePage(): Promise<{ instance: BrowserInstance; page: NonNullable<ReturnType<BrowserInstance["currentPage"]>> } | ToolOutcome> {
+    const ready = await this.ensure()
+    if (!("id" in ready)) return ready
+    const instance = ready
+    instance.touch()
+    const page = instance.currentPage()
+    if (!page || page.url() === "about:blank") return fail("还没打开网页")
+    if (instance.dialogs.has(page)) return fail("页面上开着网页弹框，先用 browser_handle_dialog 处理")
+    return { instance, page }
+  }
+
+  private async extract(input: ExtractInput): Promise<ToolOutcome> {
+    const ready = await this.readablePage()
+    if (!("page" in ready)) return ready
+    const { instance, page } = ready
+    instance.viewer.announce(browserActionLabel("browser_extract", {}))
+    try {
+      const result = await extractRows(page, input)
+      await this.record("browser_extract", false, page.url())
+      return { output: formatExtract(input, result), data: result, trace: { urlAfter: page.url() } }
+    } catch (error) {
+      await this.record("browser_extract", true, page.url())
+      return { ...fail(`读不了：${stripAnsi((error as Error).message).split("\n")[0]}`), trace: { urlAfter: page.url() } }
+    }
+  }
+
+  private async waitAny(input: { outcomes: Record<string, string>; timeout?: number }): Promise<ToolOutcome> {
+    const ready = await this.readablePage()
+    if (!("page" in ready)) return ready
+    const { instance } = ready
+    const seconds = Math.min(WAIT_ANY_MAX_SECONDS, input.timeout ?? WAIT_ANY_DEFAULT_SECONDS)
+    instance.viewer.announce(browserActionLabel("browser_wait_any", {}))
+    const urlBefore = instance.currentPage()?.url()
+    let result: Awaited<ReturnType<typeof waitAnyOutcome>>
+    try {
+      result = await waitAnyOutcome(() => instance.currentPage(), input.outcomes, seconds * 1000, (page) => instance.dialogs.has(page))
+    } catch (error) {
+      return { ...fail(stripAnsi((error as Error).message)), trace: urlBefore ? { urlBefore } : {} }
+    }
+    const page = instance.currentPage()
+    const urlAfter = page?.url()
+    const brief = page ? formatBrief(await readPageBrief(page, { dialogOpen: instance.dialogs.has(page) })) : []
+    const trace = { ...(urlBefore ? { urlBefore } : {}), ...(urlAfter ? { urlAfter } : {}) }
+    if (!result.matched) {
+      const names = Object.keys(input.outcomes).map((name) => `「${name}」`).join("、")
+      return { ...fail([`等了 ${seconds} 秒，页面上没出现${names}里的任何一个。`, ...brief].join("\n")), trace }
+    }
+    const title = urlAfter !== urlBefore && page ? await page.title().catch(() => "") : ""
+    return {
+      output: [`等到了「${result.matched}」（${(result.ms / 1000).toFixed(1)} 秒）。`, ...brief].join("\n"),
+      data: { matched: result.matched },
+      trace: { ...trace, ...(title ? { title } : {}) },
+    }
   }
 
   /** browser.batch 开始 / 结束：中间的步骤不读页面概况 */
@@ -557,11 +725,27 @@ export class BrowserTools {
   /** MCP 的工具：分段计时（docs/dev/browser-speed.md D），网关记下来 */
   private async callMcp(name: string, input: Record<string, unknown>): Promise<ToolOutcome> {
     const timer = phaseTimer()
-    const outcome = await this.runMcp(name, input, timer)
-    return { ...outcome, timings: timer.phases }
+    const recorded: Recorded = {}
+    const outcome = await this.runMcp(name, input, timer, recorded)
+    return { ...outcome, ...(await this.traceOf(recorded)), timings: timer.phases }
   }
 
-  private async runMcp(name: string, input: Record<string, unknown>, timer: ReturnType<typeof phaseTimer>): Promise<ToolOutcome> {
+  /** 录下的代码、动作前后的网址、跳转后的标题（读不到就不记；标题限时 1 秒） */
+  private async traceOf(recorded: Recorded): Promise<Pick<ToolOutcome, "code" | "trace">> {
+    if (!recorded.instance) return {}
+    const page = recorded.instance.currentPage()
+    const urlAfter = page?.url()
+    const moved = urlAfter !== undefined && urlAfter !== recorded.urlBefore
+    const title = moved && page ? await Promise.race([page.title().catch(() => ""), sleep(1000).then(() => "")]) : ""
+    const trace = {
+      ...(recorded.urlBefore ? { urlBefore: recorded.urlBefore } : {}),
+      ...(urlAfter ? { urlAfter } : {}),
+      ...(title ? { title } : {}),
+    }
+    return { ...(recorded.code ? { code: recorded.code } : {}), ...(Object.keys(trace).length ? { trace } : {}) }
+  }
+
+  private async runMcp(name: string, input: Record<string, unknown>, timer: ReturnType<typeof phaseTimer>, recorded: Recorded): Promise<ToolOutcome> {
     // 白名单不用等 Chrome 起来就能查
     const target = this.navigationUrl(name, input)
     if (target) {
@@ -603,10 +787,15 @@ export class BrowserTools {
     const before = new Set(listImages(instance.workDir))
     const mcp = await instance.ensureMcp()
     instance.viewer.announce(browserActionLabel(name, input))
+    recorded.instance = instance
+    recorded.urlBefore = instance.currentPage()?.url()
+    // 录下的 Playwright 代码：从给模型的输出里拿掉（被弹窗挡住重试的，留最后一次的）
     const run = () =>
       timer.time("mcp", async () => {
         const outcome = await executeMcpTool(this.connection(instance, mcp.client), name, args)
-        return outcome.isError ? { ...outcome, output: stripAnsi(outcome.output) } : outcome
+        const taken = takeCode(outcome.output)
+        recorded.code = taken.code
+        return { ...outcome, output: outcome.isError ? stripAnsi(taken.output) : taken.output }
       })
     let result = await run()
     // 被弹窗挡住：认得出无害的关闭按钮就点掉、再做一次；认不出就写清楚是哪个弹窗挡着

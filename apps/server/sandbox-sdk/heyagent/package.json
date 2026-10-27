@@ -1,0 +1,16 @@
+{
+  "name": "heyagent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "固化脚本的 SDK（docs/dev/solidify.md 4.4）：脚本在沙箱里只能通过它调工具，每次调用经工具桥走 HeyAgent 的工具网关。没有依赖",
+  "type": "module",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./launch.js": "./launch.js"
+  }
+}

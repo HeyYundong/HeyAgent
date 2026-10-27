@@ -39,6 +39,7 @@ import { runCode, spaceReadPath } from "../../sandbox/code-run.js"
 import { runtime } from "../runtime.js"
 import {
   buildWorkbook,
+  findSheet,
   isPlainSheet,
   isSheetFile,
   loadBook,
@@ -47,6 +48,7 @@ import {
   SheetError,
   XLS_MIME,
   XLSX_MIME,
+  type ParsedBook,
 } from "../../files/sheets.js"
 import {
   createHumanItem,
@@ -94,9 +96,42 @@ export interface ToolOutcome {
   keepFull?: true
   /** 浏览器动作的分段用时（毫秒，docs/dev/browser-speed.md D）：网关记下来（browser/timing.ts），不交给模型 */
   timings?: Record<string, number>
+  /**
+   * 结构化结果（docs/dev/solidify.md 4.4）：browser.extract 的行、browser.wait_any 等到的是哪个、HTTP 工具返回的 JSON、
+   * file.read 读表格的行。固化脚本（SDK）优先拿它；模型那边照旧只看 output
+   */
+  data?: unknown
+  /** 录下的 Playwright 代码（MCP 输出的 ### Ran Playwright code，已从 output 里拿掉）：网关隐藏密钥后存进过程记录的 trace */
+  code?: string
+  /** 浏览器动作前后的网址、跳转后的标题（docs/dev/solidify.md 3.2）：网关存进过程记录的 trace */
+  trace?: { urlBefore?: string; urlAfter?: string; title?: string }
 }
 
 const fail = (output: string): ToolOutcome => ({ output, isError: true })
+
+/**
+ * file.read 读表格时的结构化结果（固化脚本按附件表格一行行做，docs/dev/solidify.md 4.4）：第一行当表头，
+ * 从 startRow（表里的行号，默认表头下一行）起读 rows 行（默认 200、最多 500），一行一个对象；total 是表头以下一共几行
+ */
+function sheetData(book: ParsedBook, input: { sheet?: string | number; startRow?: number; rows?: number }) {
+  const sheet = input.sheet === undefined ? book.sheets[0] : findSheet(book, input.sheet)
+  if (!sheet || sheet.empty) return { sheet: sheet?.name ?? "", header: [], rows: [], total: 0 }
+  const columns: number[] = []
+  for (let c = sheet.firstCol; c <= sheet.lastCol; c++) columns.push(c)
+  const seen = new Map<string, number>()
+  const header = columns.map((c) => {
+    const base = (sheet.cells[sheet.firstRow]?.[c] ?? "").trim() || `列${c + 1}`
+    const count = (seen.get(base) ?? 0) + 1
+    seen.set(base, count)
+    return count > 1 ? `${base}_${count}` : base
+  })
+  const from = Math.max(sheet.firstRow + 1, (input.startRow ?? sheet.firstRow + 2) - 1)
+  const end = Math.min(sheet.lastRow, from + Math.min(500, input.rows ?? 200) - 1)
+  const rows: Record<string, string>[] = []
+  for (let r = from; r <= end; r++)
+    rows.push(Object.fromEntries(columns.map((c, index) => [header[index]!, sheet.cells[r]?.[c] ?? ""])))
+  return { sheet: sheet.name, header, rows, total: sheet.lastRow - sheet.firstRow }
+}
 
 /** 这次运行的空间（快照里的附件 + 只属于这次运行的文件） */
 const spaceOf = (ctx: ToolContext) =>
@@ -761,6 +796,7 @@ const handlers: {
           output: tableParams
             ? rangeText(book, row.name, input, TEXT_READ_LIMIT)
             : overviewText(book, row.name, TEXT_READ_LIMIT),
+          data: sheetData(book, input),
         }
       } catch (error) {
         if (error instanceof SheetError) return fail(error.message)

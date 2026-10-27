@@ -4,6 +4,7 @@ import { ENDED_RUN_STATUSES, isRunEnded, runOutcomeLabel, type FireEventResult, 
 
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
+import { endRoutineTestInTx } from "../routine/runtime/test-end.js"
 import { settleWorkItemInTx } from "./dispatch/settle.js"
 import { failedOutcome } from "./outcome.js"
 import type { Tx } from "./queue.js"
@@ -77,6 +78,8 @@ export async function cancelSessionInTx(db: Db, tx: Tx, input: CancelSessionInpu
   })
   // 被派的运行：派活单跟着记「没办成」，人取消的不自动重试（人在派活页点「不办了」时单已经先改成不办了，这里不动它）
   await settleWorkItemInTx(db, tx, input.sessionId, { status: "failed", error: reason, retryable: false, failKind: "cancelled_run" })
+  // 固化试跑被取消：脚本状态记停下（取消），交给固化往下走（docs/dev/solidify.md 5.6；不经过 runSession 也要发）
+  await endRoutineTestInTx(db, tx, input.sessionId, { kind: "cancelled", reason })
   return { sessionId: input.sessionId }
 }
 

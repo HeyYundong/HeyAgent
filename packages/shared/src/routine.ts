@@ -108,6 +108,8 @@ export const routineStopKindSchema = z.enum([
   "interrupted",
   /** 输入不符合 inputSchema */
   "bad_input",
+  /** 运行本身出错、被标失败（引擎出错、执行模型解析不了……）：脚本没跑完。固化试跑据此判这一轮没过 */
+  "run_failed",
   /** 试跑：走到第一个 ha.commit，停在它前面（试跑通过的正常结局之一） */
   "test_commit",
   /** 试跑：下一步是会对外发送、改东西的非浏览器工具，停在它前面 */
@@ -128,6 +130,7 @@ export const routineStopKindLabel: Record<RoutineStopKind, string> = {
   sandbox: "沙箱没起来",
   interrupted: "中断了",
   bad_input: "输入不对",
+  run_failed: "运行出错",
   test_commit: "试跑停在提交前",
   test_blocked: "试跑停在对外发送前",
 }
@@ -179,6 +182,8 @@ export const sessionRoutineStateSchema = z.object({
   recorded: routineRecordedSchema.optional(),
   /** ha.log 记的几句话（最多 50 条） */
   logs: z.array(z.string()).optional(),
+  /** 固化试跑停下、跑完时截的图（试跑报告「停下时的截图」用）；普通运行没有 */
+  screenshotFileId: z.string().optional(),
 })
 export type SessionRoutineState = z.infer<typeof sessionRoutineStateSchema>
 

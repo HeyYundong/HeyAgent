@@ -527,7 +527,9 @@ export async function executeHttpTool(
       `HTTP ${res.status}${truncated ? `（返回超过 ${runtime.httpMaxBytes} 字节，后面的截掉了）` : ""}\n${text}`,
       all
     )
-    return { output, isError: res.status >= 400, secrets: all }
+    // 返回的是 JSON：解析过的对象放进 data（固化脚本的 ha.tool 优先拿它，docs/dev/solidify.md 4.4）；截断了的不完整，不给
+    const data = truncated ? undefined : jsonData(text, all)
+    return { output, isError: res.status >= 400, secrets: all, ...(data !== undefined ? { data } : {}) }
   } catch (error) {
     const message =
       error instanceof MissingSecretError || error instanceof BodyError
@@ -540,6 +542,17 @@ export async function executeHttpTool(
       isError: true,
       secrets: [...used],
     }
+  }
+}
+
+/** 返回体是 JSON 就解析（先把密钥原文换成 [已隐藏]，和 output 一样不带密钥）；不是 JSON 返回 undefined */
+function jsonData(text: string, secrets: string[]): unknown {
+  const trimmed = text.trim()
+  if (!trimmed || !"{[".includes(trimmed[0]!)) return undefined
+  try {
+    return JSON.parse(redactSecrets(trimmed, secrets)) as unknown
+  } catch {
+    return undefined
   }
 }
 
