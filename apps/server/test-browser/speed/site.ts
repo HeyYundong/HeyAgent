@@ -1,7 +1,12 @@
 // 浏览器提速的基准站点（docs/dev/browser-speed.md）：三个贴近日常工作的场景，服务器端记下 agent 做的结果、自己判对错。
 // A 照着资料录表单（8 个商品，有公告弹窗、保存成功弹窗挡着）；
 // B 搜索后汇总（查 6 家供应商的电话和评分，页面上有一张加载很慢的图）；
-// C 复制图片粘进文档（A–F 每个字母搜图、复制、粘进对应的格，像 R-1-2 把字母图放进金山文档）。
+// C 复制图片粘进文档（A–F 每个字母搜图、复制、粘进对应的格，像 R-1-2 把字母图放进金山文档）；
+// D 采购需求配商品（要看内容判断）；
+// E 和 B 一样查几项交汇总，但列表是前端翻页、由 JSON 接口加载（docs/dev/solidify.md 19.11、第 21 节）：
+//   /e/list 给登录 cookie（HttpOnly），页面脚本调 /e/api/items?page=n&size=8（要 cookie）一页页加载；
+//   库存列由只认 token 的 /e/api/stock 加载（页面脚本把 token 放进 Authorization，不带 cookie），看固化员给不给 HTTP 工具建议；
+// F 和 E 同一个站点，但还要查库存：库存只有 token 接口给，browser.fetch 调不了，脚本得照页面翻页读，固化员应该建议建 HTTP 工具。
 import { createServer, type IncomingMessage, type Server } from "node:http"
 import type { AddressInfo } from "node:net"
 
@@ -80,7 +85,27 @@ export function needsOf(round: number) {
   return [0, 1, 2, 3].map((k) => ({ id: `R${k + 1}`, ...NEEDS[(round * 4 + k) % NEEDS.length]! }))
 }
 
-export type SpeedScenario = "A" | "B" | "C" | "D"
+/** E：40 个商品，每样有标准款、加大款两种（名字只差一个词，分在不同的页上），每页 8 个，共 5 页 */
+const E_BASES = ["不锈钢保温杯", "硅胶折叠水壶", "竹纤维毛巾", "LED 感应夜灯", "陶瓷咖啡杯", "登山背包", "记忆棉枕头", "太阳能庭院灯", "玻璃储物罐", "帆布收纳箱", "木质砧板", "电动牙刷头", "无线鼠标", "笔记本支架", "桌面风扇", "瑜伽垫", "折叠雨伞", "落地晾衣架", "保鲜盒套装", "不粘煎锅"]
+export const E_ITEMS = Array.from({ length: 40 }, (_, i) => {
+  const base = i % 20
+  const large = i >= 20
+  return {
+    code: `E-${String(i + 1).padStart(3, "0")}`,
+    name: `${E_BASES[base]}（${large ? "加大款" : "标准款"}）`,
+    price: (12 + base * 3.7 + (large ? 6.5 : 0)).toFixed(2),
+    supplier: SUPPLIERS[(i * 5) % SUPPLIERS.length]!.name,
+    stock: 100 + ((i * 37) % 500),
+  }
+})
+export const E_PAGE_SIZE = 8
+/** 要查的 6 个（分在第 1、2、3、4、4、5 页；另一款都在别的页上） */
+export const E_TARGETS = ["E-003", "E-012", "E-018", "E-025", "E-031", "E-040"]
+/** 页面脚本放进 Authorization 的 token（只认它，不认 cookie） */
+const E_TOKEN = "bench-stock-token-7f3a91"
+const E_SESSION = "bench-session-e"
+
+export type SpeedScenario = "A" | "B" | "C" | "D" | "E" | "F"
 
 export interface SpeedResults {
   /** A：每个编号最后一次提交的内容 */
@@ -95,6 +120,8 @@ export interface SpeedResults {
   needsRound: number
   orders: Map<string, string>
   orderSubmits: number
+  /** E：两个接口各被调了几次（看脚本是不是改用接口） */
+  eHits: { list: number; items: number; stock: number; unauthorized: number }
 }
 
 export interface SpeedSite {
@@ -157,7 +184,7 @@ const productForm = () => `<h1>新建商品</h1>
 <p><a href="/a/list">已录入的商品</a></p>`
 
 export async function startSpeedSite(): Promise<SpeedSite> {
-  const results: SpeedResults = { products: new Map(), productSubmits: 0, pasted: new Map(), pasteCount: 0, needsRound: 0, orders: new Map(), orderSubmits: 0 }
+  const results: SpeedResults = { products: new Map(), productSubmits: 0, pasted: new Map(), pasteCount: 0, needsRound: 0, orders: new Map(), orderSubmits: 0, eHits: { list: 0, items: 0, stock: 0, unauthorized: 0 } }
   const images = new Map<string, Buffer>()
   for (const letter of LETTERS)
     for (const image of letterImages(letter)) {
@@ -362,6 +389,82 @@ document.querySelectorAll('.cell').forEach((cell) => cell.addEventListener('past
         )
       )
     }
+    // ---------- E 前端翻页的列表（JSON 接口）+ 只认 token 的库存接口 ----------
+    if (path === "/e/list") {
+      results.eHits.list++
+      return send(
+        200,
+        page(
+          "商品列表 - 采购系统",
+          `<h1>商品列表</h1><p id="pager">加载中…</p>
+<table><thead><tr><th>编号</th><th>名称</th><th>单价（元）</th><th>供应商</th><th>库存</th></tr></thead><tbody id="rows"></tbody></table>
+<p><button id="prev" type="button">上一页</button> <button id="next" type="button">下一页</button></p>
+<p><a href="/e/report">提交汇总</a></p>
+<script>
+localStorage.setItem('stockToken', '${E_TOKEN}')
+let current = 1
+let pages = 1
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c])
+async function load(n) {
+  document.getElementById('pager').textContent = '加载中…'
+  const res = await fetch('/e/api/items?page=' + n + '&size=${E_PAGE_SIZE}', { headers: { accept: 'application/json', 'x-requested-with': 'XMLHttpRequest' } })
+  const body = await res.json()
+  if (body.code !== 0) { document.getElementById('pager').textContent = body.message || '加载失败'; return }
+  current = body.data.page
+  pages = Math.ceil(body.data.total / body.data.size)
+  document.getElementById('rows').innerHTML = body.data.list.map((x) => '<tr><td>' + esc(x.code) + '</td><td>' + esc(x.name) + '</td><td>' + esc(x.price) + '</td><td>' + esc(x.supplier) + '</td><td data-stock="' + esc(x.code) + '">…</td></tr>').join('')
+  document.getElementById('pager').textContent = '第 ' + current + ' / ' + pages + ' 页，共 ' + body.data.total + ' 个'
+  document.getElementById('prev').disabled = current <= 1
+  document.getElementById('next').disabled = current >= pages
+  const codes = body.data.list.map((x) => x.code).join(',')
+  const stock = await fetch('/e/api/stock?codes=' + encodeURIComponent(codes), { headers: { authorization: 'Bearer ' + localStorage.getItem('stockToken'), accept: 'application/json' }, credentials: 'omit' }).then((r) => r.json())
+  for (const each of stock.data || []) { const cell = document.querySelector('[data-stock="' + each.code + '"]'); if (cell) cell.textContent = each.stock }
+}
+document.getElementById('prev').onclick = () => load(current - 1)
+document.getElementById('next').onclick = () => load(current + 1)
+load(1)
+</script>`
+        ),
+        { "set-cookie": `esid=${E_SESSION}; Path=/; HttpOnly; SameSite=Lax` }
+      )
+    }
+    if (path === "/e/api/items") {
+      const json = (status: number, body: unknown) => send(status, JSON.stringify(body), { "content-type": "application/json; charset=utf-8" })
+      if (cookieOf(req, "esid") !== E_SESSION) {
+        results.eHits.unauthorized++
+        return json(401, { code: 401, message: "没有登录，请先打开商品列表页" })
+      }
+      results.eHits.items++
+      const size = Math.min(50, Math.max(1, Number(url.searchParams.get("size")) || E_PAGE_SIZE))
+      const n = Math.max(1, Number(url.searchParams.get("page")) || 1)
+      const list = E_ITEMS.slice((n - 1) * size, n * size).map(({ code, name, price, supplier }) => ({ code, name, price, supplier }))
+      // 像真的接口一样慢一点
+      setTimeout(() => json(200, { code: 0, data: { list, page: n, size, total: E_ITEMS.length } }), 150)
+      return
+    }
+    if (path === "/e/api/stock") {
+      const json = (status: number, body: unknown) => send(status, JSON.stringify(body), { "content-type": "application/json; charset=utf-8" })
+      if (req.headers.authorization !== `Bearer ${E_TOKEN}`) {
+        results.eHits.unauthorized++
+        return json(401, { code: 401, message: "token 无效" })
+      }
+      results.eHits.stock++
+      const codes = (url.searchParams.get("codes") ?? "").split(",").filter(Boolean)
+      return json(200, { code: 0, data: E_ITEMS.filter((each) => codes.includes(each.code)).map(({ code, stock }) => ({ code, stock })) })
+    }
+    if (path === "/e/report") {
+      if (req.method === "POST") {
+        void readForm(req).then((form) => {
+          results.report = form.get("lines") ?? ""
+          send(200, page("已提交", "<p>汇总已提交，谢谢。</p>"))
+        })
+        return
+      }
+      return send(
+        200,
+        page("提交汇总", `<h1>提交汇总</h1><form method="post" action="/e/report"><label>汇总（每行一个商品：名称,单价,供应商） <textarea name="lines" rows="8" cols="60"></textarea></label><button type="submit">提交</button></form>`)
+      )
+    }
     return send(200, page("基准站点", `<p>${HOST}</p>`))
   })
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
@@ -379,6 +482,7 @@ document.querySelectorAll('.cell').forEach((cell) => cell.addEventListener('past
       results.needsRound++
       results.orders.clear()
       results.orderSubmits = 0
+      results.eHits = { list: 0, items: 0, stock: 0, unauthorized: 0 }
     },
     close: () => new Promise((resolve) => server.close(() => resolve())),
   }
@@ -414,6 +518,26 @@ export function score(scenario: SpeedScenario, results: SpeedResults): { correct
     }
     if (results.productSubmits > PRODUCTS.length) notes.push(`提交了 ${results.productSubmits} 次（多了 ${results.productSubmits - PRODUCTS.length} 次）`)
     return { correct, total: PRODUCTS.length, notes }
+  }
+  if (scenario === "E" || scenario === "F") {
+    // 名称里的空格、全角半角括号不计较；F 还要有一栏正好是库存
+    const norm = (text: string) => text.replace(/\s/g, "").replace(/，/g, ",").replace(/（/g, "(").replace(/）/g, ")")
+    const lines = (results.report ?? "").split(/\r?\n/).map(norm)
+    let correct = 0
+    for (const code of E_TARGETS) {
+      const each = E_ITEMS.find((item) => item.code === code)!
+      const ok = lines.some(
+        (line) =>
+          line.includes(norm(each.name)) &&
+          line.includes(each.price) &&
+          line.includes(norm(each.supplier)) &&
+          (scenario === "E" || line.split(",").includes(String(each.stock)))
+      )
+      if (ok) correct++
+      else notes.push(`${each.name}：没有对的一行`)
+    }
+    if (results.report === undefined) notes.push("没提交汇总")
+    return { correct, total: E_TARGETS.length, notes }
   }
   if (scenario === "B") {
     const lines = (results.report ?? "").split(/\r?\n/).map((line) => line.replace(/\s/g, "").replace(/，/g, ","))

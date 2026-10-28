@@ -4,18 +4,20 @@
 // 3. 审核启用，再按同一个任务跑 ROUTINE_REPEAT 遍：先跑脚本，不调执行模型（只有复核那一次）。
 // 每一步一行 JSON 追加进 SPEED_OUT：总时间、模型调用次数、花费、做对几项、脚本直接办成还是交给了 agent。
 // 用法：scripts/speed-bench.sh <标签> [场景] [遍数]，环境变量 SPEED_FILE=routine 选这个文件（见 vitest.speed.config.ts）
-import { appendFileSync } from "node:fs"
+import { appendFileSync, writeFileSync } from "node:fs"
 
 import { and, eq } from "drizzle-orm"
 import { afterAll, beforeAll, describe, it } from "vitest"
 
 import * as t from "../../src/db/schema.js"
 import { configureEngine } from "../../src/engine/runtime.js"
+import { readFileData } from "../../src/files/service.js"
 import { encrypt, mask } from "../../src/lib/crypto.js"
+import { buildMaterial } from "../../src/routine/material.js"
 import { createTask, eventsOf, sessionRow, setupEngine, waitStatus, type EngineTestContext } from "../../test/engine-helpers.js"
 import { login, mutate } from "../../test/helpers.js"
 import { createProfile } from "../fixtures.js"
-import { LETTERS, PRODUCTS, score, startSpeedSite, SUPPLIERS, TARGET_SUPPLIERS, type SpeedScenario, type SpeedSite } from "./site.js"
+import { E_ITEMS, E_TARGETS, LETTERS, PRODUCTS, score, startSpeedSite, SUPPLIERS, TARGET_SUPPLIERS, type SpeedScenario, type SpeedSite } from "./site.js"
 
 const MODEL = process.env.SPEED_MODEL ?? "openrouter/deepseek/deepseek-v4.1-flash-1017"
 /** 写脚本的模型（模型页「固化」）：默认用比执行模型强一些的 */
@@ -41,6 +43,10 @@ function goalOf(scenario: SpeedScenario) {
     return `把 ${site.url("/a/products")} 上列的 ${PRODUCTS.length} 个商品逐个录入 ERP：在 ${site.url("/a/new")} 填好编号、名称、单价、起订量、类目、含税，每个商品提交一次（不要重复提交）。${PRODUCTS.length} 个都录完后结束。`
   if (scenario === "D")
     return `${site.url("/d/requests")} 上有几条采购需求。每条需求在商品目录 ${site.url("/d/catalog")} 里挑一个最符合的商品，到 ${site.url("/d/order")} 下单：选需求编号和商品，点提交，每条需求只提交一次。所有需求都下单后结束。`
+  if (scenario === "E")
+    return `在采购系统的商品列表 ${site.url("/e/list")} 查下面 ${E_TARGETS.length} 个商品的单价和供应商（每样商品都有标准款和加大款，要看准）：${E_TARGETS.map((code) => E_ITEMS.find((each) => each.code === code)!.name).join("、")}。列表一页只显示 8 个，要翻页。查完后到 ${site.url("/e/report")} 提交汇总，每行一个商品，格式「名称,单价,供应商」，名称照列表写全（带款式）。`
+  if (scenario === "F")
+    return `在采购系统的商品列表 ${site.url("/e/list")} 查下面 ${E_TARGETS.length} 个商品的单价、供应商和库存（每样商品都有标准款和加大款，要看准）：${E_TARGETS.map((code) => E_ITEMS.find((each) => each.code === code)!.name).join("、")}。列表一页只显示 8 个，要翻页。查完后到 ${site.url("/e/report")} 提交汇总，每行一个商品，格式「名称,单价,供应商,库存」，名称照列表写全（带款式）。`
   if (scenario === "B")
     return `在供应商搜索 ${site.url("/b/search")} 查下面 ${TARGET_SUPPLIERS.length} 家供应商的电话和评分（注意有名字相近的别家，要看准全名）：${TARGET_SUPPLIERS.map((id) => SUPPLIERS.find((each) => each.id === id)!.name).join("、")}。查完后到 ${site.url("/b/report")} 提交汇总，每行一家，格式「名称,电话,评分」，名称写全名。`
   return `在线文档 ${site.url("/c/doc")} 是一张字母图片表，按 ${LETTERS.join("、")} 每行放一张图：图片到 ${site.url("/c/search?q=letter+A")} 这样的网址搜（把 A 换成对应字母），选「大写字母 X」那张（X 是这一行的字母），复制图片，贴进文档里这个字母那一行的图片格。${LETTERS.length} 行都贴好、没有贴错的后结束。`
@@ -96,6 +102,28 @@ afterAll(async () => {
   await site?.close()
 })
 
+/** 存到 SPEED_OUT 旁边的文件（E：记下的接口、脚本），跑完测试库会被下一次清空 */
+const dump = (suffix: string, content: string) => {
+  if (!OUT) return undefined
+  const path = OUT.replace(/\.jsonl$/, `-${suffix}`)
+  writeFileSync(path, content)
+  return path
+}
+
+/** 这次运行记下的接口（network/requests.jsonl）：存一份，返回行数和摘要 */
+async function networkLogOf(sessionId: string) {
+  const [row] = await ctx.db.select().from(t.files).where(and(eq(t.files.sessionId, sessionId), eq(t.files.kind, "network")))
+  if (!row) return null
+  const text = (await readFileData(row)).toString("utf8")
+  const lines = text.split("\n").filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>)
+  return {
+    file: dump(`${sessionId}-requests.jsonl`, text),
+    path: row.path ?? row.name,
+    lines: lines.length,
+    requests: lines.filter((line) => !line.end).map((line) => `${line.seq} ${line.method} ${String(line.url).replace(/^https?:\/\/[^/]+/, "")} → ${line.status} cookie=${(line.auth as { cookie?: boolean } | undefined)?.cookie} auth=${JSON.stringify((line.auth as { headers?: string[] } | undefined)?.headers ?? [])}`),
+  }
+}
+
 const write = (record: Record<string, unknown>) => {
   console.log(JSON.stringify(record))
   if (OUT) appendFileSync(OUT, `${JSON.stringify(record)}\n`)
@@ -123,6 +151,8 @@ async function runOnce(scenario: SpeedScenario, taskId: string) {
   const think = events.filter((event) => event.kind === "think")
   const tools = events.filter((event) => event.kind === "tool")
   const graded = score(scenario, site.results)
+  const byTool: Record<string, number> = {}
+  for (const event of tools) byTool[event.toolId ?? "?"] = (byTool[event.toolId ?? "?"] ?? 0) + 1
   return {
     sessionId,
     status,
@@ -137,6 +167,8 @@ async function runOnce(scenario: SpeedScenario, taskId: string) {
     correct: graded.correct,
     total: graded.total,
     notes: graded.notes,
+    byTool,
+    ...(scenario === "E" || scenario === "F" ? { eHits: { ...site.results.eHits }, network: await networkLogOf(sessionId) } : {}),
   }
 }
 
@@ -153,7 +185,7 @@ async function waitVersion(versionId: string) {
 
 async function runScenario(scenario: SpeedScenario) {
   const taskId = await createTask(ctx.db, { modelId: MODEL, title: `固化基准 ${scenario}`, goal: goalOf(scenario), toolIds: TOOLS, ownerId: "u-wang", reviewModelId: MODEL })
-  await ctx.db.update(t.tasks).set({ browserProfileIds: [profileId], allowBrowserVision: scenario === "C" }).where(eq(t.tasks.id, taskId))
+  await ctx.db.update(t.tasks).set({ browserProfileIds: [profileId], allowBrowserVision: scenario === "C", allowBrowserFetch: scenario === "E" || scenario === "F" }).where(eq(t.tasks.id, taskId))
 
   // 1. agent 办成一次
   let source: Awaited<ReturnType<typeof runOnce>> | undefined
@@ -196,6 +228,16 @@ async function runScenario(scenario: SpeedScenario) {
     modelId: version.modelId,
     tests: tests.map((each) => ({ id: each.id, state: each.routine?.state, stoppedAt: each.routine?.stoppedAt ?? null })),
     report: version.testReport,
+    httpSuggestions: version.httpSuggestions,
+    usesFetch: version.code.includes("ha.browser.fetch"),
+    codeFile: dump(`${scenario}-v${version.version}.js`, version.code),
+    // 固化员拿到的材料（看「网页调过的接口」一节在不在、写了什么）：测试的文件存在容器里，跑完就没了，这里存一份
+    materialFile: dump(
+      `${scenario}-v${version.version}-material.md`,
+      await buildMaterial(ctx.db, { sourceSessionId: source.sessionId, routineId: version.routineId })
+        .then((material) => `networkSeqs: ${JSON.stringify(material.networkSeqs ?? null)}\n\n${material.text}`)
+        .catch((err: unknown) => `材料没建出来：${String(err)}`)
+    ),
   })
   if (version.status !== "review") return
 
