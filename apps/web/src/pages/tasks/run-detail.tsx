@@ -2,6 +2,8 @@
 // 右上角「空间文件」（run-space.tsx）弹窗按来源、名字筛这次运行的全部文件。
 // M3：过程里标出规则命中、agent 写下步骤（plan.set）、上下文压缩；验收逐条显示结论和理由；agent 的步骤可以「存为任务步骤」（tasks.saveStepsFromSession）。
 // 派活：meta 前面写怎么开始的（派活触发写清哪张单、谁派的）；被派来的加「派来的活」，派过活的加「派出去的活」（docs/dev/dispatch.md 9.4 节）。
+// 子 agent（docs/dev/sub-agents.md 11.1，run-subagents.tsx）：拆过的父运行在「结果」后加「子 agent」区块、花费写「含子 agent」；
+// 子运行 meta 写「第 2 个子 agent · 父运行 R-12-3」，检查点的位置换成「子目标」，不显示改结果、总结、固化（结果是子 agent 自报的，不复核）。
 // 运行代码（code.run）的步骤单独显示：语言、代码、退出码、stdout / stderr（格式见 docs/dev/session-space.md 3.2）；解析不了就退回通用的输入 / 输出。
 // 不带页面级布局和返回链接，放进任何 768px 宽的抽屉都能用（任务页、Session 页的抽屉都直接放它）。
 // 传进来的 run 是 sessions.list 的摘要（不带过程）：标题、检查点、验收先显示；过程按 id 另取（sessions.get），取到前是骨架屏。
@@ -10,7 +12,7 @@ import { useQuery } from "@tanstack/react-query"
 import { BrainIcon, ChevronRightIcon, CircleAlertIcon, CodeIcon, ListOrderedIcon, ScaleIcon, CircleCheckIcon, CircleStopIcon, EllipsisIcon, FlagIcon, FoldVerticalIcon, ListTreeIcon, PauseIcon, PlayIcon, SaveIcon, ScanSearchIcon, SearchXIcon, SendIcon, ShieldIcon, TriangleAlertIcon, UserIcon, WorkflowIcon, WrenchIcon, type LucideIcon } from "lucide-react"
 
 import { OutcomeBadge } from "@/components/shell/outcome-badge"
-import { DetailPanel, DetailSection, EmptyState } from "@/components/shell/simple-page"
+import { DetailPanel, DetailSection, EmptyState, HelpTip } from "@/components/shell/simple-page"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
@@ -22,7 +24,7 @@ import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Spinner } from "@/components/ui/spinner"
 import { Trace, TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigger, TraceDescription, TraceIcon, TraceLine, TraceTitle } from "@/components/ui/trace"
-import { can, eventTimeText, fmtDateTime, isReviewing, isRunEnded, outcomeOf, outcomeReasonOf, WORK_DISPATCH_TOOL_ID } from "@heyagent/shared"
+import { can, eventTimeText, fmtDateTime, isReviewing, isRunEnded, outcomeOf, outcomeReasonOf, SUB_SOURCE_LABEL, WORK_DISPATCH_TOOL_ID } from "@heyagent/shared"
 import type { RunEvent, RunEventKind, SessionSummary, TaskDef, Verification } from "@heyagent/shared"
 
 import { CodeView } from "@/components/files"
@@ -35,7 +37,7 @@ import { trpc } from "@/lib/trpc"
 import { ParamsTable, WorkItemBadge, WorkPriorityBadge, shortName, timeText, workFromText, workLink } from "./work-parts"
 
 import { VerificationReport } from "./verification"
-import { CheckpointList, Elapsed, RunStatusBadge, StepList, WaitingAlert, checkpointSummary, focusedCheckpoint, money } from "./parts"
+import { CheckpointList, Elapsed, RunStatusBadge, StepList, WaitingAlert, checkpointSummary, focusedCheckpoint } from "./parts"
 import { HumanItemPanel } from "@/pages/sessions/human-item"
 
 import { CancelRunDialog, eventOf, FireEventButton, isActive, ResumeButton } from "./run-actions"
@@ -46,6 +48,7 @@ import { RunDigestSection } from "./run-digest"
 import { RunMemorySection } from "./run-memory"
 import { RunOutcomeSection } from "./run-outcome"
 import { canSolidify, isRoutineTest, RoutineRunLine, SolidifyDialog } from "./run-routine"
+import { costText, isQueuedSubRun, isSubRun, SubagentsSection, SubGoalSection, SubRunSource } from "./run-subagents"
 import { CODE_RUN_TOOL_ID, fetchCallOf, groupScriptEvents, isErrorStep, judgeOf, parseToolsSummary, TOOLS_MARK } from "./run-script"
 
 const EVENT_ICON: Record<RunEventKind, LucideIcon> = { plan: ListTreeIcon, think: BrainIcon, tool: WrenchIcon, checkpoint: FlagIcon, rule: ShieldIcon, wait: PauseIcon, resume: PlayIcon, human: UserIcon, verify: ScanSearchIcon, done: CircleCheckIcon, error: TriangleAlertIcon }
@@ -76,17 +79,19 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionSummary }
   const waitingEvent = run.status === "waiting" ? eventOf(run.waiting?.trigger) : undefined
   // 固化试跑：不复核、不算结果，不显示结果、总结这些；办成的普通运行能「固化成流程」
   const test = isRoutineTest(run)
+  // 子运行：结果是子 agent 自报的（不复核），没有改结果、总结、固化
+  const sub = isSubRun(run)
   const solidify = canManage && canSolidify(run)
   return (
     <DetailPanel
       title={`${run.id} · ${task.title}`}
-      badges={<><RunStatusBadge status={run.status} />{ended && !test && <OutcomeBadge outcome={outcomeOf(run)} reason={outcomeReasonOf(run)} reviewing={isReviewing(run)} />}{run.status === "running" && <span className="text-xs text-muted-foreground"><Elapsed since={run.startedAt} /></span>}</>}
-      meta={<><RunMeta run={run} rest={`模型 ${modelName(run.modelId)} · 输入 ${num(run.tokensIn)} / 输出 ${num(run.tokensOut)} token · 花费 ${money(run.costUsd)} · 开始 ${fmtDateTime(run.startedAt)} · ${run.endedAt ? `结束 ${fmtDateTime(run.endedAt)}` : "还没结束"}`} /><RoutineRunLine run={run} /></>}
+      badges={<><RunStatusBadge status={run.status} />{ended && !test && <OutcomeBadge outcome={outcomeOf(run)} reason={outcomeReasonOf(run)} reviewing={isReviewing(run)} />}{ended && sub && <HelpTip>子 agent 自报，没复核：结果是子 agent 报的加上硬规则，父运行复核时会一起看。</HelpTip>}{run.status === "running" && <span className="text-xs text-muted-foreground"><Elapsed since={run.startedAt} /></span>}</>}
+      meta={<><RunMeta run={run} rest={`模型 ${modelName(run.modelId)} · 输入 ${num(run.tokensIn)} / 输出 ${num(run.tokensOut)} token · ${costText(run)} · 开始 ${fmtDateTime(run.startedAt)} · ${run.endedAt ? `结束 ${fmtDateTime(run.endedAt)}` : "还没结束"}`} /><RoutineRunLine run={run} /></>}
       actions={<>
         <RunSpaceButton run={run} />
         <RunBrowserButton run={run} />
         <RunDesktopButton run={run} />
-        {run.status === "waiting" && can(user, "session.resume", { taskOwnerId: task.ownerId }) && <ResumeButton run={run} size="sm" />}
+        {run.status === "waiting" && !isQueuedSubRun(run) && can(user, "session.resume", { taskOwnerId: task.ownerId }) && <ResumeButton run={run} size="sm" />}
         {/* 在等事件的，主管可以手动触发这个事件（和外部系统推来一样） */}
         {waitingEvent && user.isAdmin && <FireEventButton event={waitingEvent} size="sm" />}
         {isActive(run) && canManage && (
@@ -115,15 +120,20 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionSummary }
           {error.detail && <AlertDescription>{error.detail}</AlertDescription>}
         </Alert>
       )}
-      {ended && !test && <RunOutcomeSection run={run} canEdit={canManage} />}
+      {ended && !test && <RunOutcomeSection run={run} canEdit={canManage && !sub} />}
+      <SubagentsSection run={run} />
       {run.workItemId && <DispatchedIn run={run} itemId={run.workItemId} />}
-      {task.toolIds.includes(WORK_DISPATCH_TOOL_ID) && <DispatchedOut run={run} events={events} />}
-      <DetailSection title={`检查点 · ${checkpointSummary(run.checkpoints)}`}>
-        <CheckpointList run={run} focused={detail.data && focusedCheckpoint(detail.data)} />
-      </DetailSection>
+      {!sub && task.toolIds.includes(WORK_DISPATCH_TOOL_ID) && <DispatchedOut run={run} events={events} />}
+      {sub ? (
+        <SubGoalSection goal={detail.data?.subGoal} loading={detail.isPending} />
+      ) : (
+        <DetailSection title={`检查点 · ${checkpointSummary(run.checkpoints)}`}>
+          <CheckpointList run={run} focused={detail.data && focusedCheckpoint(detail.data)} />
+        </DetailSection>
+      )}
       <RunMemorySection use={detail.data?.memoryUse} status={run.status} />
       {run.verification && <VerificationSection run={run} verification={run.verification} />}
-      {ended && !test && <RunDigestSection task={task} run={run} canEdit={canManage} />}
+      {ended && !test && !sub && <RunDigestSection task={task} run={run} canEdit={canManage} />}
       {run.exploredSteps && run.exploredSteps.length > 0 && (
         <AgentSteps task={task} run={run} steps={run.exploredSteps} events={events} canSave={canManage} />
       )}
@@ -528,13 +538,22 @@ function VerificationSection({ run, verification }: { run: SessionSummary; verif
 
 // ---------- 派活 ----------
 
-const SOURCE_TEXT: Record<string, string> = { manual: "手动触发", cron: "定时触发", todo: "人加的待办触发", event: "外部事件触发", dispatch: "派活触发" }
+const SOURCE_TEXT: Record<string, string> = { manual: "手动触发", cron: "定时触发", todo: "人加的待办触发", event: "外部事件触发", dispatch: "派活触发", sub: SUB_SOURCE_LABEL }
 
 /** meta 一行：怎么开始的（派活触发写清是哪张单、谁派的，两个都是链接）+ 原来的模型、token、花费、时间 */
 function RunMeta({ run, rest }: { run: SessionSummary; rest: string }) {
   const staffName = useStaffName()
   const item = useQuery(trpc.work.get.queryOptions({ id: run.workItemId ?? "" }, { enabled: Boolean(run.workItemId) })).data
   const source = run.source && SOURCE_TEXT[run.source]
+  // 子运行：第几个、父运行（链接）。被派的运行也有 parentSessionId，照下面写「派活触发」
+  if (isSubRun(run)) {
+    return (
+      <span className="inline-flex flex-wrap items-center gap-x-1">
+        <SubRunSource run={run} />
+        <span>· {rest}</span>
+      </span>
+    )
+  }
   if (!run.workItemId) return <>{source ? `${source} · ` : ""}{rest}</>
   return (
     <span className="inline-flex flex-wrap items-center gap-x-1">

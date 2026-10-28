@@ -6,6 +6,7 @@
 // 新任务和以前没选的旧任务都先填上默认复核模型；选了「交给三方验收」的规则时，验收通过的不再复核。
 // 固化（docs/dev/solidify.md 17.1）：「用哪些」里放「办成后自动固化」（跟默认 / 开 / 关，存 autoSolidify：null / true / false）和「固化时不试跑」（routineSkipTest），说明在 label 的「?」里。
 // 自动挑选记忆（docs/dev/memory-retrieval.md 6.1 节）：「用哪些 → 记忆」下面一个开关 + 开着时「最多几条」；没设 embedding 模型时提醒开着也不会挑。
+// 子 agent（docs/dev/sub-agents.md 11.3）：选了内置工具「拆给子 agent」才出现「子 agent 用的模型」（subagentModelId，空 = 和执行模型一样，整体替换要带上）；只允许 1 个 Chrome 时浏览器那里提醒一句。
 // 派活（docs/dev/dispatch.md 9.1 节）：「被派活」一组（参数、名额、谁能派活给它，第二期加自动重试，组件在 dispatch-fields.tsx，导入向导也用）；定时那里「上一次还没跑完就跳过」；选了内置工具「派活」时写能派给谁。
 import * as React from "react"
 import { Controller, useFieldArray, useForm, useWatch, type Control, type UseFormRegister } from "react-hook-form"
@@ -23,6 +24,7 @@ import {
   modelFamily,
   recognizeCheckpoints,
   sameFamily,
+  SUBAGENT_START_TOOL_ID,
   WORK_DISPATCH_TOOL_ID,
   type TaskDef,
   type TaskInput,
@@ -152,7 +154,8 @@ export function StepEditor({ index, control, register, error, checkpointError, o
 }
 
 /** 选了「浏览器」工具才出现：允许用哪些 Chrome 配置、网址白名单、是否允许执行脚本、看画面、直接调网站接口（导入时改任务没有这三项：hideEvaluate） */
-export function BrowserFields({ control, domainText, domainError, onDomainText, hideEvaluate = false }: { control: Control<TaskInput>; domainText: string; domainError?: string; onDomainText: (text: string) => void; hideEvaluate?: boolean }) {
+/** subagents：任务也选了「拆给子 agent」，只允许 1 个 Chrome 时提醒用浏览器的子 agent 会一个一个做（docs/dev/sub-agents.md 6.3） */
+export function BrowserFields({ control, domainText, domainError, onDomainText, hideEvaluate = false, subagents = false }: { control: Control<TaskInput>; domainText: string; domainError?: string; onDomainText: (text: string) => void; hideEvaluate?: boolean; subagents?: boolean }) {
   const profiles = useBrowsersQuery().data ?? []
   const options = profiles.map((profile) => ({ value: profile.id, label: profile.name, hint: profile.description }))
   return (
@@ -165,7 +168,8 @@ export function BrowserFields({ control, domainText, domainError, onDomainText, 
           name="browserProfileIds"
           render={({ field }) => (
             <MultiPick id="task-browserProfileIds" label="Chrome 配置" options={options} value={field.value ?? []} onChange={field.onChange}
-              description={profiles.length ? "不选 = 全部都能用，agent 按每个配置的说明自己选。只允许一个时自动用它。" : "还没有 Chrome 配置：先去「浏览器」页新建。"} />
+              description={profiles.length ? "不选 = 全部都能用，agent 按每个配置的说明自己选。只允许一个时自动用它。" : "还没有 Chrome 配置：先去「浏览器」页新建。"}
+              notes={subagents && ((field.value ?? []).length === 1 || (!field.value?.length && profiles.length === 1)) ? ["只允许 1 个 Chrome：用浏览器的子 agent 会一个一个做。"] : undefined} />
           )}
         />
         <Field data-invalid={!!domainError}>
@@ -430,6 +434,7 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
     : undefined
   const usesBrowser = (toolIds ?? []).includes(BROWSER_TOOL_ID)
   const usesDesktop = (toolIds ?? []).includes(DESKTOP_TOOL_ID)
+  const usesSubagents = (toolIds ?? []).includes(SUBAGENT_START_TOOL_ID)
   const options = usePickOptions({ memoryIds: memoryIds ?? [], skillIds: skillIds ?? [] }, task?.ruleIds ?? [])
   const rules = useRulesQuery().data ?? []
   // 选着的规则里没生效 / 改过还没确认的：写清楚运行时会怎样
@@ -479,6 +484,8 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
       steps: values.steps.map((step) => ({ ...step, checkpoint: step.checkpoint?.trim() || undefined })),
       // 空 = 用默认验收模型
       verifyModelId: values.verifyModelId || undefined,
+      // 空 = 和执行模型一样
+      subagentModelId: values.subagentModelId || undefined,
       schedule: values.schedule ? { cron: values.schedule.cron.trim(), text: cronText(values.schedule.cron) ?? values.schedule.cron.trim() } : null,
       // 不能被派活时，「谁能派活给它」留着也没用，一起清掉
       dispatchFrom: values.dispatch ? values.dispatchFrom : [],
@@ -582,7 +589,7 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
                     ) : pick
                   })}
                   {usesBrowser && (
-                    <BrowserFields control={form.control} domainText={domainText} domainError={errors.allowedDomains?.message} onDomainText={(text) => {
+                    <BrowserFields control={form.control} subagents={usesSubagents} domainText={domainText} domainError={errors.allowedDomains?.message} onDomainText={(text) => {
                       setDomainText(text)
                       form.clearErrors("allowedDomains")
                     }} />
@@ -600,6 +607,21 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
                     />
                     <FieldDescription>默认是「模型」页设置的执行模型。</FieldDescription>
                   </Field>
+                  {usesSubagents && (
+                    <Field data-invalid={!!errors.subagentModelId} className="sm:col-span-2">
+                      <FieldLabel htmlFor="task-subagentModel">子 agent 用的模型</FieldLabel>
+                      <Controller
+                        control={form.control}
+                        name="subagentModelId"
+                        render={({ field }) => (
+                          <ModelCombobox id="task-subagentModel" className="w-full sm:w-1/2" models={models} value={field.value ?? ""} onValueChange={field.onChange} clearable aria-invalid={!!errors.subagentModelId}
+                            placeholder={effectiveModel ? `和执行模型一样：${modelName(effectiveModel)}` : "和执行模型一样"} />
+                        )}
+                      />
+                      <FieldDescription>拆出去的子 agent 用这个模型；可以选便宜些的，父 agent 用执行模型来拆、核对和汇总。不选就和执行模型一样。</FieldDescription>
+                      <FieldError errors={[errors.subagentModelId]} />
+                    </Field>
+                  )}
                   {canAssign && (
                     <Field className="sm:col-span-2">
                       <FieldLabel htmlFor="task-owner">负责人</FieldLabel>

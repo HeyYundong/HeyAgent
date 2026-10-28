@@ -9,7 +9,7 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/h
 import { Item, ItemActions, ItemContent, ItemTitle } from "@/components/ui/item"
 import { Progress } from "@/components/ui/progress"
 import { Spinner } from "@/components/ui/spinner"
-import { fmtShort, isRunEnded, nextRunText as sharedNextRunText, runStatusLabel } from "@heyagent/shared"
+import { fmtShort, isRunEnded, isSubagentQueueEvent, isSubagentWaitEvent, nextRunText as sharedNextRunText, runStatusLabel } from "@heyagent/shared"
 import type { RunCheckpoint, RunStatus, SessionRun, SessionSummary, TaskDef } from "@heyagent/shared"
 
 import { useRunNow } from "@/lib/data"
@@ -179,16 +179,27 @@ export interface TasksState {
   runsOf: (taskId: string) => SessionSummary[]
 }
 
-/** 运行挂起时的醒目提示：在等什么、什么时候继续 */
+/** 运行挂起时的醒目提示：在等什么、什么时候继续。等子 agent 的（waiting.what =「等子 agent：还有 2 个没结束」）、排队的子运行另写一句 */
 export function WaitingAlert({ run, link }: { run: SessionSummary; link?: string }) {
   const now = useRunNow()(run)
   if (now.label !== "在等") return null
+  const trigger = run.waiting?.trigger
+  const event = trigger && "event" in trigger ? trigger.event : undefined
+  const forSubagents = isSubagentWaitEvent(event)
+  const queued = isSubagentQueueEvent(event)
+  // 「子 agent：还有 2 个没结束」前面不再加「在等：」，免得两个冒号
+  const title = forSubagents ? `在等${now.text}` : queued ? "在排队：等别的子 agent 让出名额" : `在等：${now.text}`
+  const after = forSubagents
+    ? "子 agent 结束后系统自动叫醒，结果一起交给这次运行，前面的上下文都还在。"
+    : queued
+      ? "这次运行同时能跑的子 agent 有上限（「设置 → 子 agent」），前面的做完、名额空出来会自动开始。"
+      : `${now.when ? `什么时候继续：${now.when}。` : ""}等到了继续同一个 session，前面的上下文都还在。`
   return (
     <Alert>
       <HourglassIcon />
-      <AlertTitle>{link ? "最近一次运行" : "session 已挂起，"}在等：{now.text}</AlertTitle>
+      <AlertTitle>{link ? "最近一次运行" : "session 已挂起，"}{title}</AlertTitle>
       <AlertDescription>
-        {now.when ? `什么时候继续：${now.when}。` : ""}等到了继续同一个 session，前面的上下文都还在。
+        {after}
         {link && <a href={link} className="ml-1 font-medium text-foreground underline underline-offset-4">看这次运行 →</a>}
       </AlertDescription>
     </Alert>
