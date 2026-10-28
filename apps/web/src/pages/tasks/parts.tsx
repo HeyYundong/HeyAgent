@@ -179,7 +179,11 @@ export interface TasksState {
   runsOf: (taskId: string) => SessionSummary[]
 }
 
-/** 运行挂起时的醒目提示：在等什么、什么时候继续。等子 agent 的（waiting.what =「等子 agent：还有 2 个没结束」）、排队的子运行另写一句 */
+/**
+ * 运行挂起时的醒目提示：在等什么、什么时候继续。等子 agent 的、排队的子运行另写一句。
+ * 后端的 waiting.what：父运行等子 agent 是「子 agent（还有 2 个没结束）」，排队的子运行是「排队（等前面的子 agent 做完）」，
+ * 拼成「在等子 agent（还有 2 个没结束）」「在排队（等前面的子 agent 做完）」，不出现两个冒号（会话列表那列拼成「在等：子 agent（…）」）
+ */
 export function WaitingAlert({ run, link }: { run: SessionSummary; link?: string }) {
   const now = useRunNow()(run)
   if (now.label !== "在等") return null
@@ -187,12 +191,11 @@ export function WaitingAlert({ run, link }: { run: SessionSummary; link?: string
   const event = trigger && "event" in trigger ? trigger.event : undefined
   const forSubagents = isSubagentWaitEvent(event)
   const queued = isSubagentQueueEvent(event)
-  // 「子 agent：还有 2 个没结束」前面不再加「在等：」，免得两个冒号
-  const title = forSubagents ? `在等${now.text}` : queued ? "在排队：等别的子 agent 让出名额" : `在等：${now.text}`
+  const title = forSubagents ? `在等${now.text}` : queued ? `在${now.text}` : `在等：${now.text}`
   const after = forSubagents
     ? "子 agent 结束后系统自动叫醒，结果一起交给这次运行，前面的上下文都还在。"
     : queued
-      ? "这次运行同时能跑的子 agent 有上限（「设置 → 子 agent」），前面的做完、名额空出来会自动开始。"
+      ? "子 agent 同时跑的个数有上限（每次运行、全系统各有一个上限，见「设置 → 子 agent」），前面的做完、名额空出来会自动开始。"
       : `${now.when ? `什么时候继续：${now.when}。` : ""}等到了继续同一个 session，前面的上下文都还在。`
   return (
     <Alert>

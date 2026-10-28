@@ -18,7 +18,7 @@ import * as t from "../db/schema.js"
 import { appendEvent } from "../engine/records.js"
 import { buildSnapshot } from "../engine/sessions.js"
 import { SUBAGENT_QUEUED_WHAT } from "../engine/subagents/start.js"
-import { builtinSnapshotTool } from "../engine/tools/builtin-defs.js"
+import { builtinSnapshotTool, syncBuiltinTools } from "../engine/tools/builtin-defs.js"
 import { saveFile } from "../files/service.js"
 
 const nextNo = async (db: Db, seq: string) => Number((await db.execute<{ n: string }>(sql`select nextval(${seq}) as n`)).rows[0]!.n)
@@ -43,8 +43,9 @@ export async function insertSubagentFixtures(db: Db): Promise<{ taskId: string; 
     reviewModelId: modelId,
     subagentModelId: modelId,
   })
-  const [tool] = await db.select({ id: t.tools.id }).from(t.tools).where(eq(t.tools.id, "subagent.start"))
-  if (tool) await db.insert(t.taskTools).values({ taskId, refId: tool.id, position: 0 })
+  // 内置工具的行是 API / worker 启动时写的；空库先灌数据、还没起过服务时没有，这里补上，任务才选得上「拆给子 agent」
+  await syncBuiltinTools(db)
+  await db.insert(t.taskTools).values({ taskId, refId: "subagent.start", position: 0 })
 
   const parentSnapshot = await buildSnapshot(db, taskId, { source: "manual", runAttachments: [] })
   const parentId = manualSessionId(taskId, 1)

@@ -1,6 +1,8 @@
 // 实时推送：live.onChange 推 { table, id }，前端按表让相关查询失效、重新拉。
 // 这张表列出每张库表变了以后要重新拉哪些查询（tRPC 的路由路径）。表名就是数据库里的表名。
 
+import { parseSubSessionId } from "./ids.js"
+
 export const LIVE_CHANNEL = "heyagent_changes"
 
 export const liveQueriesByTable: Record<string, string[]> = {
@@ -96,8 +98,9 @@ export function liveTargets(change: { table: string; id: string | null }): { pat
   const list = queriesForTable(change.table)
   if (list === null) return null
   const narrow = change.id === null ? [] : (liveQueriesById[change.table] ?? [])
-  return {
-    paths: list.filter((path) => !narrow.includes(path)),
-    byId: narrow.filter((path) => list.includes(path)).map((path) => ({ path, id: change.id! })),
-  }
+  const byId = narrow.filter((path) => list.includes(path)).map((path) => ({ path, id: change.id! }))
+  // 子运行（R-12-3.2）变了：父运行摘要上的 subagents（几个结束、花费合计）跟着变，父运行详情（sessions.get）也失效（docs/dev/sub-agents.md 11.1）
+  const sub = change.table === "sessions" && change.id !== null ? parseSubSessionId(change.id) : null
+  if (sub && narrow.includes("sessions.get")) byId.push({ path: "sessions.get", id: sub.parentSessionId })
+  return { paths: list.filter((path) => !narrow.includes(path)), byId }
 }

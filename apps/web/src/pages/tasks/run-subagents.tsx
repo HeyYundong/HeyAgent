@@ -65,8 +65,8 @@ const SECTION_HELP = "这次运行拆出去的子 agent，每个是一次单独�
 export function SubagentsSection({ run }: { run: SessionSummary }) {
   const stats = run.subagents
   const active = Boolean(stats && stats.ended < stats.total)
-  // 子运行变了不会推到 sessions.subagents：还有没结束的就每 5 秒取一次
-  const list = useQuery(trpc.sessions.subagents.queryOptions({ parentId: run.id }, { enabled: Boolean(stats?.total), refetchInterval: active ? 5000 : false }))
+  // 子运行变了，实时推送让 sessions.subagents 失效（shared live.ts 的 sessions 一行），不用轮询
+  const list = useQuery(trpc.sessions.subagents.queryOptions({ parentId: run.id }, { enabled: Boolean(stats?.total) }))
   if (!stats?.total) return null
   return (
     <DetailSection

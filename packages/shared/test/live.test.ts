@@ -12,6 +12,14 @@ describe("实时推送要重新拉的查询", () => {
     })
   })
 
+  it("子运行变了：父运行详情也失效（摘要上的 subagents 跟着变）", () => {
+    expect(liveTargets({ table: "sessions", id: "R-12-3.2" })?.byId).toEqual([
+      { path: "sessions.get", id: "R-12-3.2" },
+      { path: "sessions.get", id: "R-12-3" },
+    ])
+    expect(liveTargets({ table: "session_events", id: "R-12-3.2" })?.byId).toEqual([{ path: "sessions.get", id: "R-12-3.2" }])
+  })
+
   it("checkpoint_records 推的是检查点 id，对不上 session：运行详情全部失效；没有 id 的也是", () => {
     expect(liveTargets({ table: "checkpoint_records", id: "42" })).toEqual({ paths: ["sessions.list", "sessions.page", "sessions.get"], byId: [] })
     expect(liveTargets({ table: "session_events", id: null })).toEqual({ paths: ["sessions.list", "sessions.page", "sessions.get"], byId: [] })

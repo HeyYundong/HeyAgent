@@ -316,7 +316,7 @@
 
 | mode | 现在已经满足 | 还没满足 |
 |---|---|---|
-| `all`（默认） | 这次运行拆出去的全部结束了 → 直接返回全部结果，不挂起 | 挂起，等事件 `subagent.all:<父>`，`what` = 「等子 agent：还有 2 个没结束」 |
+| `all`（默认） | 这次运行拆出去的全部结束了 → 直接返回全部结果，不挂起 | 挂起，等事件 `subagent.all:<父>`，`what` = 「子 agent（还有 2 个没结束）」 |
 | `any` | 有结束了、还没交给过父的 → 直接返回这些 | 挂起，等 `subagent.any:<父>` |
 | `none` | 返回现状：每个子 agent 的状态，已经结束的带结果 | 不挂起 |
 
@@ -484,7 +484,7 @@ ALTER TABLE "tasks" ADD COLUMN "subagent_model_id" text;
   - 数据：`sessions.subagents({ parentId })`；区块标题的「3 / 4 结束」、花费合计用父运行摘要上的 `subagents`（`ended` / `total`、`costUsd`）。
 - 有在跑的子 agent 时，区块标题旁一个 `Progress`（结束的个数 / 总数）。
 - meta 一行的花费改成「花费 $0.42（含子 agent $0.31）」。
-- 父运行在等子 agent 时，现有的等待提示（`WaitingAlert`）写「等子 agent：还有 2 个没结束」；不显示「手动触发事件」按钮（`subagent.` 开头的事件不给手动触发）。
+- 父运行在等子 agent 时，现有的等待提示（`WaitingAlert`）写「在等子 agent（还有 2 个没结束）」，排队的子运行写「在排队（等前面的子 agent 做完）」；不显示「手动触发事件」按钮（`subagent.` 开头的事件不给手动触发）。
 
 **子运行**：
 
@@ -601,7 +601,7 @@ ALTER TABLE "tasks" ADD COLUMN "subagent_model_id" text;
 | 新 `pages/tasks/run-subagents.tsx` | 父运行的「子 agent」区块（11.1，`trpc.sessions.subagents`）、子运行的「子目标」区块（`run.subGoal`） |
 | `pages/tasks/run-detail.tsx` | 挂上两个区块；子运行的 meta（`GitForkIcon`、第几个、父运行链接）、父运行花费写「含子 agent」；`SOURCE_TEXT` 加 `sub`；子运行不显示检查点 |
 | `pages/tasks/run-actions.tsx`、`run-outcome.tsx`、`run-digest.tsx`、`run-routine.tsx` | 子运行不显示「改结果」「总结」「固化成流程」；`subagent.` 开头的等待不显示「手动触发事件」 |
-| `pages/tasks/parts.tsx` | `WaitingAlert` 写「等子 agent：还有 N 个没结束」（用摘要的 `waiting.what` 即可，确认一下文案） |
+| `pages/tasks/parts.tsx` | `WaitingAlert` 写「在等子 agent（还有 N 个没结束）」「在排队（等前面的子 agent 做完）」（拼摘要的 `waiting.what`，不出现两个冒号） |
 | `pages/sessions/list.tsx` | 父运行那一行的「子 agent N」`Badge`、花费合计；`SOURCE_LABEL` 加 `sub` |
 | `pages/tasks/task-dialog.tsx` | 选了「拆给子 agent」才出现「子 agent 用的模型」（`ModelCombobox`，表单默认值已经带上 `subagentModelId`）、只有 1 个 Chrome 的提示（11.3） |
 | 新 `pages/settings/subagent-section.tsx`、`pages/settings/index.tsx` | 「子 agent」一组（11.4，照 `dispatch-section.tsx`，`trpc.settings.updateSubagent`） |
@@ -721,3 +721,12 @@ ALTER TABLE "tasks" ADD COLUMN "subagent_model_id" text;
 **验证**：`apps/server/test/sub-agents.test.ts`（17 个，假模型，第 13 节各组：拆、名额、等、结果、失败、花费、别处、演示数据、清扫）；`test-browser/sub-agents.test.ts`（真 Chrome：只允许 1 个 Chrome、拆 2 个用浏览器的子 agent，一个在用、一个等待浏览器并占名额，空出来接着做，父只叫醒一次）。
 
 **没做 / 没测到的**：`code.run` 里读 `subs/<n>/` 只靠保留目录的现成挂载逻辑，没写沙箱测试；「花费超过 X」规则按合计只改了取数，没有单独的规则测试；三方验收的输入和复核共用 `loadEvidence`，只测了复核。
+
+## 20. 集成记录（约定 + 后端 + 网页合在一起，2026-10-28）
+
+三个分支合并没有冲突。合完改的：
+
+1. **等待提示的文案**：网页 `WaitingAlert` 照后端的 `waiting.what` 拼，父运行等子 agent 写「session 已挂起，在等子 agent（还有 N 个没结束）」，排队的子运行写「session 已挂起，在排队（等前面的子 agent 做完）」（原来是网页自己写的「在排队：等别的子 agent 让出名额」），都只有括号、没有两个冒号；会话列表那列是「在等：子 agent（还有 N 个没结束）」。排队的说明改成「子 agent 同时跑的个数有上限（每次运行、全系统各有一个上限……）」，因为也可能是全系统的名额满了。第 11.1、14.3 节和使用手册 5.15 同步。
+2. **去掉轮询**：`run-subagents.tsx` 里每 5 秒重取 `sessions.subagents` 去掉，靠实时推送（后端在 `live.ts` 的 `sessions` 一行加的失效）。
+3. **父运行的摘要跟着子运行变**：只失效 `sessions.subagents` 时，区块标题「3 / 4 结束 · 花费」、进度条和 meta 的「含子 agent」取的是父运行的 `sessions.get`（按 id 失效，推来的是子运行的 id），子 agent 结束了父运行详情不跟着变。shared `liveTargets` 加一条：`sessions` 表推来的 id 是子运行编号（`parseSubSessionId`）时，父运行的 `sessions.get` 也失效；加了测试。用演示数据在开着的页面上改子运行的状态和花费，区块和标题都跟着变了。
+4. **演示数据**：`dev:subagent-fixture` 在空库上先灌数据、还没起过服务时，`tools` 表里没有内置工具，任务没选上「拆给子 agent」（编辑弹窗看不到「子 agent 用的模型」）。现在先 `syncBuiltinTools` 再选上（同 `routine-fixture`）。
