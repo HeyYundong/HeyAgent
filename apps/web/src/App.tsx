@@ -28,6 +28,7 @@ const PAGES: Record<PageId, React.LazyExoticComponent<() => React.ReactNode>> = 
   compare: lazy(() => import("@/pages/compare")),
   memory: lazy(() => import("@/pages/memory")),
   skills: lazy(() => import("@/pages/skills")),
+  routines: lazy(() => import("@/pages/routines")),
   rules: lazy(() => import("@/pages/rules")),
   tools: lazy(() => import("@/pages/tools")),
   browsers: lazy(() => import("@/pages/browsers")),

@@ -10,6 +10,7 @@ export type PageId =
   | "compare"
   | "memory"
   | "skills"
+  | "routines"
   | "rules"
   | "tools"
   | "browsers"
@@ -20,7 +21,7 @@ export type PageId =
   | "imports"
   | "learn"
 
-const PAGES: PageId[] = ["tasks", "sessions", "gallery", "compare", "memory", "skills", "rules", "tools", "browsers", "desktops", "models", "users", "settings", "imports", "learn"]
+const PAGES: PageId[] = ["tasks", "sessions", "gallery", "compare", "memory", "skills", "routines", "rules", "tools", "browsers", "desktops", "models", "users", "settings", "imports", "learn"]
 
 /** 旧地址兼容 */
 const ALIASES: Record<string, PageId> = {

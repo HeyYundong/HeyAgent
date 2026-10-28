@@ -11,9 +11,9 @@ import { AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDial
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
-import { can, findById, riskLabel, tasksUsing } from "@heyagent/shared"
+import { can, findById, isRoutineToolId, riskLabel, tasksUsing, toolSourceLabel } from "@heyagent/shared"
 
-import { useRulesQuery, useTasksQuery, useToolName, useToolsQuery } from "@/lib/data"
+import { useRoutineLibraryQuery, useRulesQuery, useTasksQuery, useToolName, useToolsQuery } from "@/lib/data"
 import { toastWithUndo, useAction } from "@/lib/mutations"
 import { href, setParams, useRoute } from "@/lib/router"
 import { trpc } from "@/lib/trpc"
@@ -36,6 +36,7 @@ export default function RulesPage() {
   const list = rulesQuery.data ?? []
   const tasks = tasksQuery.data ?? []
   const tools = toolsQuery.data?.tools ?? []
+  const library = useRoutineLibraryQuery().data ?? []
   const [dialog, setDialog] = React.useState<"new" | "edit" | null>(null)
   const [blocked, setBlocked] = React.useState(false)
 
@@ -173,11 +174,14 @@ export default function RulesPage() {
                           <ul className="flex flex-col gap-2">
                             {selected.toolIds.map((id) => {
                               const tool = findById(tools, id)
+                              // 库流程链到流程页（工具页不列它）
+                              const routine = isRoutineToolId(id) ? library.find((entry) => entry.toolId === id) : undefined
                               return (
                                 <li key={id} className="flex flex-wrap items-center gap-2">
-                                  <a href={href("tools", { id })} className={LINK}>
+                                  <a href={routine ? href("routines", { id: routine.routineId }) : isRoutineToolId(id) ? href("routines") : href("tools", { id })} className={LINK}>
                                     {toolName(id)}
                                   </a>
+                                  {isRoutineToolId(id) && <Badge variant="secondary">{toolSourceLabel.routine}</Badge>}
                                   {tool && <Badge variant="outline">{riskLabel[tool.risk]}</Badge>}
                                   {tool && <span className="text-muted-foreground">{tool.summary}</span>}
                                 </li>

@@ -11,14 +11,16 @@ import { Button } from "@/components/ui/button"
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "@/components/ui/item"
 import { Spinner } from "@/components/ui/spinner"
 import { Switch } from "@/components/ui/switch"
-import { alwaysOnToolIds, BROWSER_TOOL_ID, DESKTOP_TOOL_ID, findById, sameShanghaiDay, toolIdsOfTask, WORK_DISPATCH_TOOL_ID, type SessionSummary, type TaskDef } from "@heyagent/shared"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { alwaysOnToolIds, BROWSER_TOOL_ID, DESKTOP_TOOL_ID, findById, isRoutineToolId, sameShanghaiDay, toolIdsOfTask, WORK_DISPATCH_TOOL_ID, type SessionSummary, type TaskDef } from "@heyagent/shared"
 
-import { useBrowsersQuery, useDesktopsQuery, useMemoriesQuery, useModels, useRulesQuery, useSkillsQuery, useTasksQuery, useToolName, useToolsQuery } from "@/lib/data"
+import { useBrowsersQuery, useDesktopsQuery, useMemoriesQuery, useModels, useRoutineLibraryQuery, useRulesQuery, useSkillsQuery, useTasksQuery, useToolName, useToolsQuery } from "@/lib/data"
 import { useAction } from "@/lib/mutations"
 import { href, setParams, useRoute, type PageId } from "@/lib/router"
 import { trpc } from "@/lib/trpc"
 
 import { compileOf, ruleSelectable, ruleVerifies } from "@/pages/rules/compile"
+import { unavailableReason, useLibraryDetails } from "@/pages/routines/parts"
 
 import { StepList, type TasksState } from "./parts"
 import { CancelRunDialog, isActive, ResumeButton, RunWithFilesDialog, TaskAttachments, useStartRun } from "./run-actions"
@@ -196,12 +198,45 @@ function UsedConfig({ task }: { task: TaskDef }) {
       <ConfigLine label="复核">{reviewText(task, named(rules, task.ruleIds).some(ruleVerifies), modelName, defaults.review)}</ConfigLine>
       <LinkBadges label="记忆" page="memory" items={task.memoryIds.flatMap((id) => findById(memories, id) ?? []).map((m) => ({ id: m.id, name: clip(m.content) }))} />
       <LinkBadges label="技能" page="skills" items={named(skills, task.skillIds)} />
-      <LinkBadges label="工具" page="tools" items={toolIdsOfTask(task, alwaysOn).map((id) => ({ id, name: alwaysOn.includes(id) ? `${toolName(id)} · 自带` : toolName(id) }))} />
+      <LinkBadges label="工具" page="tools" items={toolIdsOfTask(task, alwaysOn).filter((id) => !isRoutineToolId(id)).map((id) => ({ id, name: alwaysOn.includes(id) ? `${toolName(id)} · 自带` : toolName(id) }))} />
+      <RoutineBadges task={task} />
       <LinkBadges label="规则" page="rules" items={named(rules, task.ruleIds).map((rule) => ({ id: rule.id, name: ruleSelectable(rule) ? (compileOf(rule).outdated ? `${rule.name} · 按旧版本` : rule.name) : `${rule.name} · 未生效，不执行` }))} />
       {task.toolIds.includes(BROWSER_TOOL_ID) && <BrowserConfig task={task} />}
       {task.toolIds.includes(DESKTOP_TOOL_ID) && <DesktopConfig task={task} />}
     </div>
   </DetailSection>
+  )
+}
+
+/** 选了的库流程（docs/dev/routine-library.md 9.2）：每个一个徽章，点了去流程页；停用、撤下、缺工具或开关（新的运行用不了）的用 ghost，悬停看原因 */
+function RoutineBadges({ task }: { task: TaskDef }) {
+  const toolName = useToolName()
+  const library = useRoutineLibraryQuery().data
+  const chosen = task.toolIds.filter(isRoutineToolId)
+  const entries = chosen.map((toolId) => ({ toolId, entry: library?.find((each) => each.toolId === toolId) }))
+  const details = useLibraryDetails(entries.flatMap(({ entry }) => (entry ? [entry.routineId] : [])))
+  return (
+    <div className="flex flex-col gap-1.5 sm:flex-row sm:items-start sm:gap-4">
+      <span className="w-12 shrink-0 text-muted-foreground">流程</span>
+      <div className="flex flex-wrap gap-1.5">
+        {chosen.length === 0 && <span className="text-muted-foreground">没选</span>}
+        {entries.map(({ toolId, entry }) => {
+          const name = entry?.title ?? toolName(toolId)
+          const to = entry ? href("routines", { id: entry.routineId }) : href("routines")
+          // 流程库还没取到（或取不到）时不判断，照常显示
+          const reason = library ? unavailableReason(entry, entry && details.get(entry.routineId), task, toolName) : undefined
+          if (!reason) return <Badge key={toolId} variant="outline" render={<a href={to} />}>{name}</Badge>
+          return (
+            <Tooltip key={toolId}>
+              <TooltipTrigger render={<Badge variant="ghost" render={<a href={to} />} />}>
+                {name} · {entry?.status === "paused" ? "停用" : entry?.status === "withdrawn" ? "撤下" : "用不了"}
+              </TooltipTrigger>
+              <TooltipContent>{reason}</TooltipContent>
+            </Tooltip>
+          )
+        })}
+      </div>
+    </div>
   )
 }
 
