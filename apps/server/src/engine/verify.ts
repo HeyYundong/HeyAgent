@@ -21,6 +21,7 @@ import { isTextMime, readFileData } from "../files/service.js"
 import { isPlainSheet, isSheetFile, loadBook, overviewText } from "../files/sheets.js"
 import type { FinishDecision, RunContext } from "./hooks.js"
 import { askHumanInTx, notifyAssignee } from "./humans.js"
+import { reviewLog, type ReviewLogOptions } from "./log-text.js"
 import { callStructured, resolveModel } from "./model.js"
 import { appendEvent } from "./records.js"
 import { loadEngineSettings } from "./settings.js"
@@ -119,7 +120,13 @@ export const statusText: Record<string, string> = {
 export async function loadEvidence(
   ctx: Pick<RunContext, "db" | "session">,
   vision: boolean,
-  limits: { artifacts?: number; events?: number; images?: number } = {}
+  limits: {
+    artifacts?: number
+    events?: number
+    images?: number
+    /** 给了就覆盖整次运行（轻量复核用）：最近 recent 条详细、更早的压成一行，见 log-text.ts 的 reviewLog；events 不再起作用 */
+    fullLog?: ReviewLogOptions
+  } = {}
 ) {
   const files = await ctx.db
     .select()
@@ -157,26 +164,38 @@ export async function loadEvidence(
     )
   }
   // 过程记录（系统记的，不是 agent 自己说的）：调了哪些工具、结果如何，规则命中和人的处理
-  const events = await ctx.db
-    .select()
-    .from(t.sessionEvents)
-    .where(
-      and(
-        eq(t.sessionEvents.sessionId, ctx.session.id),
-        inArray(t.sessionEvents.kind, ["tool", "rule", "human"])
+  const kinds = inArray(t.sessionEvents.kind, ["tool", "rule", "human"])
+  // 轻量复核：整次运行（最近几条详细、更早的压成一行）
+  const logInfo = limits.fullLog
+    ? reviewLog(
+        await ctx.db
+          .select()
+          .from(t.sessionEvents)
+          .where(and(eq(t.sessionEvents.sessionId, ctx.session.id), kinds))
+          .orderBy(asc(t.sessionEvents.seq)),
+        limits.fullLog
       )
-    )
-    .orderBy(desc(t.sessionEvents.seq))
-    .limit(limits.events ?? 60)
+    : undefined
+  // 三方验收：最近 events 条
+  const events = logInfo
+    ? []
+    : await ctx.db
+        .select()
+        .from(t.sessionEvents)
+        .where(and(eq(t.sessionEvents.sessionId, ctx.session.id), kinds))
+        .orderBy(desc(t.sessionEvents.seq))
+        .limit(limits.events ?? 60)
   const clip = (value: string | null, max: number) =>
     !value ? "" : value.length > max ? `${value.slice(0, max)}…` : value
-  const log = events
-    .reverse()
-    .map((event) =>
-      event.kind === "tool"
-        ? `- 调用 ${event.title}（${event.toolId ?? ""}）：参数 ${clip(event.input, 300)} → 结果 ${clip(event.output, 300)}`
-        : `- ${event.kind === "rule" ? "规则" : "人"}：${event.title}${event.detail ? `（${clip(event.detail, 200)}）` : ""}`
-    )
+  const log =
+    logInfo?.lines ??
+    events
+      .reverse()
+      .map((event) =>
+        event.kind === "tool"
+          ? `- 调用 ${event.title}（${event.toolId ?? ""}）：参数 ${clip(event.input, 300)} → 结果 ${clip(event.output, 300)}`
+          : `- ${event.kind === "rule" ? "规则" : "人"}：${event.title}${event.detail ? `（${clip(event.detail, 200)}）` : ""}`
+      )
   const images: { name: string; mime: string; base64: string }[] = []
   if (vision) {
     for (const file of files
@@ -191,7 +210,7 @@ export async function loadEvidence(
         })
     }
   }
-  return { artifacts, images, log }
+  return { artifacts, images, log, ...(logInfo ? { logInfo } : {}) }
 }
 
 /** 验收要用哪个模型：任务快照里的，或者现在的默认验收模型 */
