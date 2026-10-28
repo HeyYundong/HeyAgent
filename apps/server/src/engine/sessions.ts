@@ -26,6 +26,7 @@ import {
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
 import { listTaskAttachments } from "../files/service.js"
+import { freezeLibraryRoutines } from "../routine/library/snapshot.js"
 import { QUEUES, runJobOptions, sendInTx, type Tx } from "./queue.js"
 import { appendEvent, appendMessage, writeAudit } from "./records.js"
 import {
@@ -146,7 +147,7 @@ export async function buildSnapshot(
       risk: tool.risk,
       serverId: tool.serverId ?? undefined,
       http: tool.http ?? undefined,
-      // 流程库（docs/dev/routine-library.md 6.2）：库流程的工具。发布的那一版连同它调的库流程冻进 snapshot.libraryRoutines（A 包）
+      // 流程库（docs/dev/routine-library.md 6.2）：库流程的工具。发布的那一版连同它调的库流程冻进 snapshot.libraryRoutines（下面 freezeLibraryRoutines）
       routineId: tool.routineId ?? undefined,
     })
   }
@@ -231,6 +232,14 @@ export async function buildSnapshot(
   if (has("code.run") || has("file.save")) spaceImplied.push("file.edit", "file.delete")
   for (const id of spaceImplied) if (!has(id)) tools.push(builtinSnapshotTool(id))
 
+  // 流程库（docs/dev/routine-library.md 6.2）：任务选了的库流程取发布的那一版，连同它们调的（传递）冻进来；用不了的带原因。
+  // 固化试跑也冻（试跑的脚本可能调库流程）。要的工具按快照里最后的工具算（自动带上的也算）
+  const libraryRoutines = await freezeLibraryRoutines(db, {
+    toolIds: [...new Set([...toolRows.map(({ tool }) => tool.id), ...tools.map((tool) => tool.id)])],
+    allowBrowserFetch: task.allowBrowserFetch,
+    allowBrowserVision: task.allowBrowserVision,
+  })
+
   // 派活（选了「派活」工具的）：哪些任务允许它派活、各要什么参数，按库里现在的配置算好冻进快照
   let dispatchTargets: SessionSnapshot["dispatchTargets"]
   if (tools.some((tool) => tool.id === WORK_DISPATCH_TOOL_ID)) {
@@ -298,6 +307,7 @@ export async function buildSnapshot(
     ...(browser ? { browser } : {}),
     ...(desktop ? { desktop } : {}),
     ...(routine ? { routine } : {}),
+    ...(libraryRoutines.length ? { libraryRoutines } : {}),
     // 自动挑选记忆（docs/dev/memory-retrieval.md 5.1）：这里不调模型（在调用方的事务里），worker 进这次运行时再挑；固化试跑不挑
     ...(task.autoMemory && !extra.routineTest ? { autoMemory: { status: "pending" as const, limit: task.autoMemoryLimit } } : {}),
   }
