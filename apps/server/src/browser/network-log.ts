@@ -112,6 +112,8 @@ export class NetworkLog {
   /** browser.fetch 自己发的（方法 + 网址）：对上的那一个不记 */
   private readonly own: { method: string; url: string }[] = []
   private loaded = false
+  /** 拿到返回头、还没收完的请求：UNFINISHED_RECORD_MS 以后照拿到的记；网关关闭时等不到那时候，recordResponded 马上记 */
+  private readonly responded = new Set<() => Promise<void>>()
 
   constructor(deps: NetworkLogDeps) {
     this.deps = deps
@@ -175,6 +177,14 @@ export class NetworkLog {
     const waiting = () =>
       [...this.inflight.values()].some((each) => Date.now() - each.at < INFLIGHT_STALE_MS && !(each.respondedAt && Date.now() - each.respondedAt > RESPONDED_WAIT_MS))
     while (waiting() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+
+  /**
+   * 关闭前（网关关闭、Chrome 关掉）：拿到返回头、还没收完的请求马上照拿到的记，不等 UNFINISHED_RECORD_MS。
+   * 不然运行在那之前结束，Chrome 关了，这些请求就丢了（网页用 fetch 却不读返回体时 Chrome 一直不报收完）
+   */
+  async recordResponded() {
+    await Promise.all([...this.responded].map((record) => record()))
   }
 
   /** 有新行就整份覆盖写一次（按顺序写，不会两次写交错） */
@@ -287,15 +297,18 @@ export class NetworkLog {
       const flight = this.inflight.get(e.requestId)
       if (flight) flight.respondedAt = Date.now()
       const respondedAt = e.timestamp
-      setTimeout(() => {
+      const record = async () => {
+        this.responded.delete(record)
         if (sent.get(e.requestId) !== item) return
         sent.delete(e.requestId)
         const cookie = cookies.get(e.requestId) ?? false
         cookies.delete(e.requestId)
-        void this.finish(session, mainFrameId, item, { cookie, endedAt: respondedAt ?? item.timestamp })
+        await this.finish(session, mainFrameId, item, { cookie, endedAt: respondedAt ?? item.timestamp })
           .catch(() => {})
           .finally(() => this.inflight.delete(e.requestId))
-      }, UNFINISHED_RECORD_MS).unref?.()
+      }
+      this.responded.add(record)
+      setTimeout(() => void record(), UNFINISHED_RECORD_MS).unref?.()
     })
     session.on("Network.loadingFinished", (event) => {
       const e = event as { requestId: string; timestamp: number }

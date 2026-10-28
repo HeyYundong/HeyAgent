@@ -666,7 +666,7 @@ curl -s -X POST http://localhost:3100/api/events \
 |---|---|---|
 | `platforms.create` 输入 / `Platform` 输出 | `domains: string[]` | 平台域名（含子域名）。输入按 `domainSchema` 规整：去协议、路径、端口、开头的 `*.`，转小写（`https://Shop.Example.com/x` → `shop.example.com`），不合法 `BAD_REQUEST`。session 打开这些域名下的网址时，按「这个 Chrome 配置在该平台的账号」申请租约 |
 | 新接口 `platforms.update` | `{ id, name, domains }` | 主管。审计 `platform.update`；推 `platforms` |
-| 任务输入 / `TaskDef` 输出 | `browserProfileIds: string[]`（默认 `[]` = 全部 Chrome 配置）、`allowedDomains: string[]`（默认 `[]` = 不限制，同样规整）、`allowBrowserEvaluate: boolean`（默认 `false`）、`allowBrowserVision: boolean`（默认 `false`，在线表格开发说明 `online-sheets.md`） | 只在任务选了内置工具 `browser` 时起作用。`browserProfileIds` 里的 id 要存在，否则 `BAD_REQUEST`。都冻结进 session 快照（`snapshot.browser = { profiles: [{id,name,description}], allowedDomains, allowEvaluate, allowVision }`） |
+| 任务输入 / `TaskDef` 输出 | `browserProfileIds: string[]`（默认 `[]` = 全部 Chrome 配置）、`allowedDomains: string[]`（默认 `[]` = 不限制，同样规整）、`allowBrowserEvaluate: boolean`（默认 `false`）、`allowBrowserVision: boolean`（默认 `false`，在线表格开发说明 `online-sheets.md`）、`allowBrowserFetch: boolean`（默认 `false`，直接调网站接口，见 20.6） | 只在任务选了内置工具 `browser` 时起作用。`browserProfileIds` 里的 id 要存在，否则 `BAD_REQUEST`。都冻结进 session 快照（`snapshot.browser = { profiles: [{id,name,description}], allowedDomains, allowEvaluate, allowVision, allowFetch }`，老快照没有 `allowFetch` = 关） |
 | 内置工具 | `browser`（来源 `builtin`，「浏览器」） | 由 worker / bootstrap 同步进 `tools` 表，任务的 `toolIds` 里选它 |
 | `settings.get` 输出 | `browser: { maxPerWorker, visionCheck, visionModel, captchaSolve, humanHoldMinutes }` | 默认 4、false、`openrouter/qwen/qwen3.8-flash`、true、30（`visionModel`、`captchaSolve` 2026-10-19 加） |
 | 新接口 `settings.updateBrowser` | `{ maxPerWorker(1-32), visionCheck, visionModel, captchaSolve, humanHoldMinutes(1-1440) }` | 主管。`visionModel` 换了才查：要是库里能看图的聊天模型（同 `compare.models` 的列表），否则 `BAD_REQUEST`。审计 `settings.browser.update`；worker 每次用到时重新读 |
@@ -1666,6 +1666,96 @@ curl -X POST http://<host>:8080/api/work-items/W-57/cancel -H "Authorization: Be
 | `browser.wait_any`「等结果」 | `{ outcomes: { 名字: 定位 }, timeout?（秒，默认 10，最多 60） }` | 等到的名字（`data: { matched }`）；定位可以写 `url=片段`；超时是出错，文字带页面概况 |
 
 定位认两种写法：录下来的 JS 写法（`getByRole('button', { name: '查询' }).nth(1)` 等，只认白名单方法和字面量参数）和选择器字符串（`role=…`、`text=…`、CSS）。另外：HTTP 工具返回 JSON 时 `ToolOutcome.data` 是解析后的对象；`file.read` 读表格时 `data` 是 `{ sheet, header, rows, total }`。
+
+### 20.6 直接调网站的接口（第三期第一批，开发说明第 19 节，迁移 0034）
+
+契约 `packages/shared/src/site-api.ts`（工具、jsonl 的格式、打码）和 `routine.ts`（`trace.network`、HTTP 工具建议）。代码：`browser/site-api.ts`（能不能调、打码、`shape`、在隔离环境里发请求）、`browser/network-log.ts`（记接口）、`browser/tools.ts`（工具）、`routine/runtime/bridge.ts`（commit 规矩、重放）。
+
+**开关**：任务字段 `allowBrowserFetch`（`tasks.create / update / list`、助手的 `create_task / update_task`，默认 `false`；`tasks.update` 是整份替换，要带上），表 `tasks.allow_browser_fetch`。开始运行时冻进 `snapshot.browser.allowFetch`。关着时没有 `browser.fetch`，也不记接口。
+
+**工具 `browser.fetch`**「浏览器：调网站接口」（模型看到 `browser_fetch`，风险 `external`，不能放进 `browser.batch`；agent 和固化脚本 `ha.browser.fetch(args)` 都能用）：
+
+- 输入（`browserFetchInputSchema`）：
+
+  | 字段 | 类型 | 说明 |
+  |---|---|---|
+  | `url` | string | 必填，完整的 http(s) 网址（不认相对路径） |
+  | `method` | `GET` `HEAD` `POST` `PUT` `PATCH` `DELETE` | 默认 `GET`；`GET`、`HEAD` 是只读的，别的算会改东西（`isWriteMethod`） |
+  | `headers` | `Record<string, string>` | 不许设 Cookie、Cookie2、Authorization、Host、Origin、Referer、Content-Length、Connection、`Proxy-*`、`Sec-*`（`fetchHeaderForbidden`），设了输入校验不过 |
+  | `body` | string / 对象 / 数组 | 对象、数组按 JSON 发，没写 content-type 时补 `application/json`；`GET`、`HEAD` 不能带；最多 5 MB |
+  | `as` | `auto` `json` `text` | 默认 `auto`：content-type 带 `json` 的解析成 JSON；`json` 解析不了算出错 |
+  | `csrf` | `{ header, from: "meta" \| "cookie", name }` | 工具在页面里读出 token 填进这个请求头；值不经过模型、脚本，不进过程记录和重放日志。读不到算出错 |
+
+- 能调哪些（`fetchTargetAllowed`）：要有当前标签页而且是 http(s) 页面；没设白名单只能调同源的（协议、主机、端口都一样）；设了白名单，目标和页面的主机要落在同一条里。另外照 `browser.navigate` 过 `checkNavigation`（白名单 + 平台域名的账号租约，满了照样挂起等）。`redirect: "manual"`，接口要跳转算出错。超时 30 秒，返回体最多 5 MB。
+- 输出（给模型的文字）：第一行固定格式，界面靠它显示状态码：
+
+  ```text
+  GET https://shop.example.com/api/items?page=2 → 200 application/json（17.9 KB，184 毫秒）
+  ```
+
+  - 下面空一行是返回体：JSON 排好版，文本原样，按 `SITE_SECRET_KEYS` 打码（字段名去掉 `_` `-`、不分大小写后正好是 `password`、`token`、`apikey`、`sessionid`、`csrf` 这些的，值换成 `••••`；`nextPageToken` 这类不打），最多 20 万字（`FETCH_OUTPUT_MAX_CHARS`）。网关照常只给模型开头 8000 字，全文存进 `tool-outputs/`。
+  - 401、403 多一行「多半登录过期了，先用 browser.navigate 打开网站的页面看看要不要登录。」；HEAD 写「（HEAD 没有返回体）」；不是文字的返回只给大小；空的写「（返回体是空的）」。
+  - 4xx、5xx 不算出错。出错（`isError`，脚本里是 `StepError`）的第一行是 `GET 网址 → 出错：原因`：接口要跳转（多半登录过期）、超时、返回体太大、连不上或被跨域规则拦下、CSRF 读不到。在这之前就被拦下的（没有页面、不是完整网址、白名单外、不让调、页面上开着网页弹框）只有一行原因。
+- 给脚本的 `data`（`browserFetchDataSchema`）：`{ status, ok, contentType, bytes, json?, text? }`。`ok` = 2xx；`json` 是解析出来的（打过码），`text` 是不是 JSON 的文字；不是文字的两样都没有。
+- 过程记录：`trace.urlBefore` 是发请求的页面，`trace.network` 见下，不写 `trace.code`。
+- 固化脚本（`mode = run / test`）里，会改东西的 `browser.fetch` 前面要有自己的 `ha.commit`（从上一个会改东西的 fetch 以来新走过一个），不然不做、脚本停下（`script_error`）。试跑走到 `ha.commit` 就停，所以试跑不会真发会改东西的请求。agent 的脚本（`mode = agent`）不要求。
+- 重放日志：`reply` 序列化后超过 256 KB 的只记 `{ ok, text 开头, dataOmitted: true }`；接着跑到这一步时，只读的真做一次，会改东西的停下（`interrupted`）交给 agent。
+- 程序检查：固化脚本用了 `ha.browser.fetch`，源快照要 `browser.allowFetch` 开着，不然不过。
+
+**记接口：`network/requests.jsonl`**
+
+- 这次运行的文件，`files.kind = "network"`，名字 `requests.jsonl`，空间里的路径 `network/requests.jsonl`。`network/` 和 `attachments/ downloads/ screenshots/ tool-outputs/ clipboard/` 一样是只读的保留目录（`RESERVED_SPACE_DIRS`），agent 存文件不能用它开头。运行详情的「空间文件」、`file.list` / `file.read` 照常列出、读取。
+- 记哪些：XHR、Fetch；目标按上面同一条规矩能调的；`GET`、`HEAD` 只记返回 JSON 的（content-type 带 `json`，或 `text/plain` 但解析得了），别的方法都记；`browser.fetch` 自己发的不记；跟着跳转的只记最后一跳。只读的请求没拿到返回（取消、连不上）不记，会改东西的照记（`status: 0` + `error`）。拿到返回头 5 秒还没收完的照拿到的记。
+- 上限：一次运行 500 个请求、文件 2 MB；同一个方法 + 网址（含参数）最多 3 次；请求体记开头 2 KB、返回体记开头 20 KB。
+- 写文件：行先攒在内存里，每次浏览器工具调用结束（最多等 0.8 秒让这一步的请求收完）、网关关闭时有新行就整份覆盖写（同一行 `files`）。网关关闭、Chrome 关掉前，拿到返回头还没收完的请求不等 5 秒，马上照拿到的记。进程重启后读已有的文件接着编号。
+- 一行一个 JSON（`networkLogLineSchema`）。一个请求（`networkRequestLineSchema`）：
+
+  | 字段 | 说明 |
+  |---|---|
+  | `seq` | 这次运行里第几个，从 1 开始，请求收完时编；文件里按收完的先后排 |
+  | `at` | 发出的时间（ISO，带毫秒） |
+  | `type` | `xhr` / `fetch` |
+  | `method` `url` | 方法、完整网址（查询参数打码） |
+  | `page` | 发请求时页面的网址（可选） |
+  | `headers` | 网页设的请求头名字（小写、排好序，去掉浏览器自己加的），值不记 |
+  | `auth` | `{ cookie: 带没带 cookie, headers: 像认证的请求头名字 }`（`authorization`、`x-api-key`、名字含 `token` / `auth` 的；含 `csrf` / `xsrf` 的不算） |
+  | `csrf` | 可选：请求头里有 csrf 类的、认出了值来自页面的 meta 或 cookie 时 `{ header, from, name }`，照抄给 `browser.fetch` |
+  | `requestType` `requestBody` `requestOmitted` | 请求体的 content-type、开头 2 KB（打码）、后面没记的字节数 |
+  | `status` | 状态码；没拿到返回是 0，原因在 `error` |
+  | `responseType` `bytes` | 返回的 content-type、字节数 |
+  | `shape` | 返回 JSON 的字段结构，像 TypeScript：`{ code: number, data: { list: [{ id: number, … }], total: number } }`（数组看第一项，最多 6 层、每层 40 个键） |
+  | `responseBody` `responseOmitted` | 返回体开头 20 KB（打码）、后面没记的字节数 |
+  | `ms` | 从发出到收完的毫秒数 |
+
+  到了上限，最后一行是 `{ "end": true, "skipped": n, "reason": "…" }`（`networkLogEndLineSchema`），之后不再记。
+
+- 和过程对上：浏览器工具（含 `browser.fetch`）调用期间收完的请求，过程记录写 `trace.network = { first, last }`（seq 范围，`EventTrace.network`）。两次调用之间收完的不进任何一步。
+
+**HTTP 工具建议**
+
+- 固化员看到用 token 认证、`browser.fetch` 调不了的接口时，建议主管建 HTTP 工具。存在 `routine_versions.http_suggestions`（jsonb，默认 `[]`），最多 5 条（`HTTP_TOOL_SUGGESTIONS_MAX`）。不自动建。
+- `routine.version` 的输出多 `httpToolSuggestions: HttpToolSuggestion[]`：
+
+  ```ts
+  {
+    name: string        // 工具名
+    summary: string     // 给模型看的一句话
+    reason: string      // 为什么建议
+    http: {
+      method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
+      url: string       // 网址模板：{参数} 由模型填，{{密钥名}} 是密钥
+      headers?: Record<string, string>
+      body?: string
+      params: { name: string; type: "string"; required: boolean; description?: string }[]
+    }
+    secrets: string[]       // 要准备的密钥名（模板里的 {{名字}}）
+    requestSeqs: number[]   // 依据：network/requests.jsonl 里的 seq
+  }
+  ```
+
+  `http` 和工具页 HTTP 工具的配置同一个形状，可以照着建。
+- `routine.get` 的 `versions[]` 每版多 `httpToolSuggestions: number`（条数）。
+- 规整（`routine/compile.ts`）：固化员漏写或写坏当空数组，不算没过；请求头数组变对象、空的 body 去掉；参数按模板对齐；密钥名按工具页的写法规整、`secrets` 以模板为准，规整不了的整条去掉；网址不是 http(s) 的、带明文密钥或 `••••` 的去掉；同一个方法 + 网址只留一条；`requestSeqs` 只留记录里有的，一个都不剩的去掉（材料里没有记下的接口时一条都不要）。
 
 ## 21. 记忆按内容自动挑选（2026-10-28）
 

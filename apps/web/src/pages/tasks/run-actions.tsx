@@ -3,7 +3,7 @@
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
 import { CircleStopIcon, PlayIcon, ZapIcon } from "lucide-react"
-import { isRunEnded, type FireEventResult, type SessionSummary, type TaskDef, type Trigger, type UploadedFile } from "@heyagent/shared"
+import { isRunEnded, reservedEventPrefix, type FireEventResult, type SessionSummary, type TaskDef, type Trigger, type UploadedFile } from "@heyagent/shared"
 
 import { FileList, UploadButton } from "@/components/files"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
@@ -68,8 +68,10 @@ export function useFireEvent(event: string) {
   })
 }
 
+/** 运行在等系统内部的事件（派出去的单结束、浏览器 / 桌面空出来、子 agent 办完）时不显示：这些由系统自己叫醒，后端对手动触发一律报错 */
 export function FireEventButton({ event, size = "default" }: { event: string; size?: "sm" | "default" }) {
   const fire = useFireEvent(event)
+  if (reservedEventPrefix(event)) return null
   return (
     <Button variant="outline" size={size} disabled={fire.isPending} onClick={() => fire.mutate({ event })}>
       {fire.isPending ? <Spinner data-icon="inline-start" /> : <ZapIcon data-icon="inline-start" />}手动触发事件

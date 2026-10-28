@@ -254,6 +254,25 @@ describe("记接口（假 CDP 连接）", () => {
     expect(got[1]!.csrf).toBeUndefined()
   })
 
+  it("拿到返回头、还没收完的：关闭前 recordResponded 马上照拿到的记，不等 5 秒；已经收完的不重记", async () => {
+    const { log, session } = await setup()
+    request(session, { url: "https://shop.example.com/api/done", body: "{}" })
+    // 网页用 fetch 却不读返回体：只有返回头，没有 loadingFinished
+    session.emit("Network.requestWillBeSent", { requestId: "r-open", type: "Fetch", timestamp: 100, wallTime: Date.now() / 1000, request: { url: "https://shop.example.com/api/unread", method: "GET", headers: {} } })
+    session.emit("Network.responseReceived", { requestId: "r-open", timestamp: 100.2, response: { status: 200, headers: { "Content-Type": "application/json" } } })
+    await log.drain(1000)
+    expect((lines(log) as NetworkRequestLine[]).map((line) => line.url)).toEqual(["https://shop.example.com/api/done"])
+    await log.recordResponded()
+    const got = lines(log) as NetworkRequestLine[]
+    expect(got.map((line) => [line.seq, line.url])).toEqual([
+      [1, "https://shop.example.com/api/done"],
+      [2, "https://shop.example.com/api/unread"],
+    ])
+    expect(got[1]).toMatchObject({ status: 200, responseType: "application/json" })
+    await log.recordResponded()
+    expect(lines(log)).toHaveLength(2)
+  })
+
   it("设了白名单：和页面落在同一条里的子域名也记", async () => {
     const { log, session } = await setup(undefined, ["example.com"])
     request(session, { url: "https://api.example.com/v1/items", body: "[]" })
