@@ -792,37 +792,45 @@ ALTER TABLE "tasks" ADD COLUMN "subagent_model_id" text;
 
 `scripts/or-usage.sh` 开始 $2.4198、结束 $2.5435，这一节一共 **$0.124**（预算 $1）。每次运行合计 $0.002–0.025；S3 那个查不存在页面的子 agent 最贵（21–24 次模型调用，$0.007）。
 
-### 21.3 发现的问题（产品代码，只记下，没改）
+### 21.3 发现的问题（产品代码；2026-10-29 在 b3eaeca 修了第 1–5 条和第 6 条的 reason 提示）
 
-1. **父 agent 把交出去的活又自己做一遍**（每次都有）。
+1. **父 agent 把交出去的活又自己做一遍**（每次都有）。**已修（b3eaeca）**：4.3 节那一节改成「拆完先做不在子目标里的事（没有就直接 subagent_wait），交出去的不要自己再做一遍」「收到结果后看各个子 agent 交回的依据、文件有没有互相矛盾、和目标对不对得上，不要逐个重做；有矛盾或缺的只查那一处，或补拆」，另一条单写「报没办成、交回的东西缺了的照常处理」；叫醒消息、`subagent_wait` 的结果最后一句（`results.ts` 的 `SUBAGENT_RESULTS_TAIL`）和工具说明同样改。测试断言这几句（`test/sub-agents.test.ts`）。还没用真模型重跑 S1、S2 看父的模型调用次数。
    - 现象：S1 三次，父在 `subagent_start` 之后、`subagent_wait` 之前都自己跑了一次 `code.run`，把 3 个文件的统计全算了一遍（和子 agent 做的一样）；S2 第 2 次、S3 两次，父醒来后又开 Chrome 把每家的页面重新打开读一遍（醒来到报结果 S2 第 2 次 39 秒、S3 第 2 次 113 秒、S3 第 1 次 28 秒，分别占总用时 44%、51%、8%）；S2 第 3 次逐张读了子 agent 的截图。结果都对，但拆的意义少了一大半，钱也多花。
    - 原因：提示词三处在鼓励它：4.3 节那一节的「拆完先做你自己能做的，再用 subagent_wait 等；收到结果后自己核对、汇总」，叫醒消息最后「要交给人的结论，自己核对一下关键的数据和文件」。DeepSeek 把「自己能做的」理解成「把同样的事也做一遍」，把「核对」理解成「重新做一遍」。
    - 建议：改成「拆完先做不在子目标里的事（没有就直接 subagent_wait），不要把交给子 agent 的事自己再做一遍」；「收到结果后看每个子 agent 的依据和文件是不是对得上、有没有矛盾；有矛盾或缺依据的再自己查那一处，不要逐个重做」。叫醒消息最后一句同样改。改完用 S1、S2 再跑一遍看父的模型调用次数。
 
-2. **Chrome 启动失败后，子 agent 被钉在那个 Chrome 上，另一个空了也不用**（S3 第 1 次，白等约 2.5 分钟）。
+2. **Chrome 启动失败后，子 agent 被钉在那个 Chrome 上，另一个空了也不用**（S3 第 1 次，白等约 2.5 分钟）。**已修（b3eaeca）**：第一次挑的 Chrome 一次都没起来（`acquireForSession` 抛错，排队等 worker 空位时、登记后记下的分配也清掉）就不钉住，下次照第一次那样挑空闲的；Chrome 起来了、后面出错的，打开过、中途断了的，`browser.use` 指定的照旧钉住。测试：`test/browser.test.ts`「Chrome 一次都没起来的不钉住」（两个 Chrome，第一个起失败后被别的运行拿走，下次用第二个、不排队），原来的「自动挑」一例改成用「起来过」的 Chrome 测不换。
    - 现象：1.1、1.2 同一秒起 Chrome，30 秒后都「浏览器起不来：Chrome 启动超时」。1.2 重试拿到 br-t2 做完；1.3（之前在等「任一」Chrome）被叫醒拿走了 br-t1；1.1 重试时「Chrome『测试 Chrome br-t1』正在被别的运行用，已排队等它空出来」，挂起等 br-t1。1.2 在第 130 秒做完放出 br-t2，1.1 照样等 br-t1，直到第 276 秒 1.3 做完才轮到（采样里第 130–276 秒只开着 1 个 Chrome）。
    - 原因：`browser/tools.ts` 的 `startFailed`「登记上了、Chrome 没起来：也算分到了这个 Chrome（下次还用它，不换）」，`assign` 把 `sessions.browser_profile_id` 写成 br-t1；而起失败放出的 br-t1 又被 `wakeProfileWaiters` 给了等「任一」的 1.3。`ensure` 对已经分到的只等它（`busyOutcome(profileId)`）。这是浏览器层原来的规则，不是子 agent 加的，但子 agent 让「同一任务几个运行同时起 Chrome」变成常事，更容易碰到。
    - 建议：Chrome 一次都没真正打开过（还没写回过登录态、这次运行没用过页面）就起失败的，不要钉住：清掉 `assigned` / `browser_profile_id`，下次照第一次分配挑空闲的；或者等「已分到的」那个时，也接受任务允许的别的空闲 Chrome（只要这次运行还没在原来那个上留下登录态、页面）。
 
-3. **几个 Chrome 同时启动容易超时**（S3 第 1 次两个都超时；S4 第 2 次两个都超时，那时机器 1 分钟负载 27→60）。
+3. **几个 Chrome 同时启动容易超时**（S3 第 1 次两个都超时；S4 第 2 次两个都超时，那时机器 1 分钟负载 27→60）。**已修（b3eaeca）**：`chrome.ts` 的 `startChrome` 同一个进程里排队一个一个起（起好或失败才放下一个，排队不算进超时），启动超时自动再起一次（运行没停掉时），超时、退出时杀掉整组进程（以前超时的 Chrome 进程没杀）。所有起 Chrome 的地方（运行、「打开 Chrome」、自动登录）都经过它。测试：`test/chrome-start.test.ts`（假 Chrome 脚本：排队、超时再试、两次都超时报错且进程都杀掉）。
    - 现象：同一 worker 上同一秒起两个 Chrome，30 秒都没起来（`chrome.ts` 的 30 秒启动超时）；单个起的时候 1–2 秒。负载低时（S2 两次、S3 第 2 次、S4 第 1、3 次）没碰到。
    - 原因：推测是机器忙（这台开发机的负载不稳定，CPU 不高、像是磁盘 IO）再加两个 Chrome 同时初始化 profile 目录。子 agent 一拆就是同时起好几个 Chrome，比以前一个运行一个更容易撞上。
    - 建议：`BrowserManager` 里同一 worker 的 Chrome 启动排一下队（一次只起一个，或起完一个隔 1–2 秒）；起失败可以自动再试一次再报给 agent。是不是要做，可以先在 pod 上看看正常负载下会不会碰到。
 
-4. **取消时正在起的 Chrome 不会马上停，过程记录里「已停掉」后面还有工具结果**（S4）。
+4. **取消时正在起的 Chrome 不会马上停，过程记录里「已停掉」后面还有工具结果**（S4）。**已修（b3eaeca）**：普通运行和子运行共用的 `engine/stop-watch.ts`：`runSession` 期间每秒查一次运行状态，变成已结束（人取消、父结束连带停、清扫、`subagent.cancel`）就 abort，正在调的模型、等重试、排队等 worker 空位、正在起的 Chrome 马上停；停掉以后回来的模型回复、工具结果不记、不算钱和步数（网关 `stopped()` 看库里的状态）。测试：`test/sub-agents.test.ts`「停掉父运行」（一个子 agent 的模型等中止、一个不理中止 1.5 秒后回来：前者 3 秒内被中止，两个「已停掉」后面都没有记录、花费 0）、`test/browser.test.ts`「取消运行时正在起的 Chrome 马上停」、`test/chrome-start.test.ts`（排队的、正在起的都马上停，进程杀掉）。关 Chrome 那条「关掉了 Chrome」照旧记（资源收尾）。
    - 现象：S4 第 2 次取消时两个子 agent 正在起 Chrome，等 30 秒起超时才算关掉（「Chrome 都关掉」用了 29.2 秒，另两次 5–6 秒）；两个子运行的过程在「已停掉」之后还记了一条「浏览器：navigate（出错）浏览器起不来：Chrome 启动超时」。S4 第 1 次 1.1 在「已停掉」之后 0.8 秒还「打开了 Chrome」、做完一次 navigate 才关；1.2 正在调的模型照样调完、记了一条「模型决定调用」（$0.002，算进花费）。
    - 原因：停子运行只改状态、作废等待，正在跑的那一步（模型调用、起 Chrome、工具调用）不中断，「在下一个工具调用之前发现状态变了就停」（第 8 节）；起 Chrome 也没有中途取消的口子。
    - 建议：子运行被停掉时给它的循环发中止信号（模型调用已经有 `abortSignal`），起 Chrome 也接这个信号，起到一半就杀掉；或者至少「已停掉」之后的工具结果不再记进过程（或标「停掉以后才结束的」），免得看过程的人以为停了还在干活。影响不大：都是几秒、几厘钱的事。
 
-5. **「子 agent」区块里的用时按分钟取整、还算上排队**（界面，小问题）。
+5. **「子 agent」区块里的用时按分钟取整、还算上排队**（界面，小问题）。**已修（b3eaeca）**：`SubagentRow` 加 `ranAt`（排队那条等待被放行的时间；没排过队的是 `startedAt`，一次没轮到的没有），页面用时 = `endedAt − ranAt`，按秒写（导入页的 `took`：「15 秒」「1 分 20 秒」），没轮到过的写「没开始」。演示数据改成秒级、加了一个排队时被停掉的（第 5 个）。
    - 现象：跑了 15 秒的子 agent 显示「用时 1 分钟」，100 秒的显示「用时 2 分钟」；S4 排队、一次没跑就被停掉的那个也显示「用时 1 分钟」，看不出它没开始过。
    - 原因：`run-subagents.tsx` 用 shared 的 `duration`（按分钟）算 `endedAt − startedAt`，`startedAt` 是拆出来的时间，含排队。
    - 建议：子 agent 一般几十秒，用秒显示（同 `routine-parts.tsx` 的 `durationText`）；没轮到过就被停掉的写「没开始」。
 
-6. **（不是子 agent 的问题，记一下）** 父 agent 报没办成连着 3 次漏了 `reason`、被 `run.finish` 拒（S3 第 2 次，多花 3 次模型调用、22 秒）；子 agent 偶尔先调一次 `work_report` 不带 `data` 被拒（S3 第 1 次 1.2）。都是模型自己的错，工具的提示说清楚了，第 4 次改对了。
+6. **（不是子 agent 的问题，记一下）** 父 agent 报没办成连着 3 次漏了 `reason`、被 `run.finish` 拒（S3 第 2 次，多花 3 次模型调用、22 秒）；子 agent 偶尔先调一次 `work_report` 不带 `data` 被拒（S3 第 1 次 1.2）。都是模型自己的错，工具的提示说清楚了，第 4 次改对了。**reason 的提示已改（b3eaeca）**：存档里三次都只传了 outcome、summary、evidence（原因写进了 summary），原来的回话「要写 reason」没说是单独的参数。现在回「没有记下：缺参数 reason。outcome = not_achieved 时，除了 summary、evidence，还要单独传 reason 这个参数（和 summary、evidence 并列的一个字段，只写在 summary 里不算）……加上 reason 再调一次」（`builtin.ts` 的 `runFinishReasonMissing`），schema 不变。`work_report` 不带 data 的回话（「data 要给：要交回的字段，例如 {"件数": 3}」）已经说清，没改。
 
 ### 21.4 基准自己的问题（已改）
 
 1. **外网抖一下整个运行就出错**（S2 第 1 次）：测试的 `engine-helpers` 把模型重试间隔设成 10 毫秒（`modelRetryBaseMs: 10`），3 次重试在 16 秒内全撞上 OpenRouter 断连（「Client network socket disconnected before secure TLS connection was established」），父运行出错，一个子 agent 都没拆。基准里改成和正式环境一样的 2 秒起翻倍（`configureEngine({ modelRetryBaseMs: 2000 })`）。正式环境本来就是 2 秒起，不受影响。
 2. 平均值正好在 .xx5 上时两种舍入都算对（见 21.1）。
 3. S4 原来在第一个 Chrome 开起来就取消，改成等两个子 agent 都开着 Chrome 再取消（等不到 3 分钟就退回一个），更像「跑到一半」。
+
+### 21.5 修 21.3 时跑的浏览器测试（2026-10-29）
+
+`scripts/browser-test.sh` 全部：`sub-agents`、`routine`、`routine-e2e`、`library`、`browser-speed`、`clipboard`、`autologin`、`viewer`、`script-tools`、`proxy`、`downloads`、`locale` 都过。有 4 个在集成分支 35b98dc 上本来就不过（换回原来的代码单独跑过，结果一样），和这次改动无关，没修：
+
+- `engine.test.ts`「账号租约」：任务只有一个 Chrome 配置，B 挂起等的是 Chrome（一个 Chrome 配置同一时间只给一个运行用），不是账号租约，`waiting` 是 0 不是 1。这一个失败后 A 一直占着 Chrome，同一个文件后面的全部超时；去掉它单独跑，其余 12 个都过。
+- `vault.test.ts` 两个：直接用 `acquireForSession` 在同一个 Chrome 配置上开两个运行，登记时抛「正在被别的运行用」。
+- `site-api.test.ts`「navigate 后读 30 页」：断言 `browser.fetch` 的过程记录没有 `trace.network`，现在有（`{ first: 4, last: 4 }`）。

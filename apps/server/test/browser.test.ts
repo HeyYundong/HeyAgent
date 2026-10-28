@@ -8,7 +8,7 @@ import WebSocket from "ws"
 import { ANY_PROFILE_EVENT, leaseEventName, profileEventName, SETTING_KEYS } from "@heyagent/shared"
 
 import { adaptSchema, browserToolId } from "../src/browser/tools.js"
-import { BrowserUnavailableError, chromeArgs } from "../src/browser/chrome.js"
+import { BrowserUnavailableError, ChromeStartAbortedError, chromeArgs } from "../src/browser/chrome.js"
 import { judgePage, parseVisionAnswer, probeLooksLoggedIn, type PageFacts } from "../src/browser/detect.js"
 import { gostConfig } from "../src/browser/gost.js"
 import type { GostPool } from "../src/browser/gost.js"
@@ -21,9 +21,10 @@ import { listBrowserMcpTools } from "../src/browser/mcp.js"
 import { attachBrowserViewRelay } from "../src/browser/view-relay.js"
 import { casWrite, loadVault, mergeStates, writeBackMerged, type StorageState, type StoredCookie } from "../src/browser/vault.js"
 import * as t from "../src/db/schema.js"
+import { cancelSessionImpl } from "../src/engine/control.js"
 import { buildSnapshot } from "../src/engine/sessions.js"
 import { suspendInTx } from "../src/engine/waits.js"
-import { call, createTask, Script, sessionRow, setupEngine, step, text, useScript, waitStatus, eventsOf, type EngineTestContext } from "./engine-helpers.js"
+import { call, createTask, Script, sessionRow, setupEngine, step, text, useScript, waitFor, waitStatus, eventsOf, type EngineTestContext } from "./engine-helpers.js"
 import { login, mutate, query, TEST_REVIEW_MODEL } from "./helpers.js"
 
 const cookie = (name: string, value: string, extra: Partial<StoredCookie> = {}): StoredCookie => ({
@@ -480,6 +481,48 @@ describe("每个 Chrome 同一时间只给一个运行用", () => {
 
     await ctx.db.update(t.sessions).set({ status: "failed" }).where(eq(t.sessions.taskId, holderTask))
     await ctx.db.delete(t.browserWorkers).where(eq(t.browserWorkers.id, workerId))
+  })
+
+  it("取消运行时正在起的 Chrome 马上停：起 Chrome 收到中止信号，不等启动超时；「已取消」后面没有工具结果", async () => {
+    // 21.3 第 4 条：以前要等 30 秒启动超时，停掉以后还记一条「浏览器起不来」
+    await ctx.db.insert(t.browserProfiles).values({ id: "br-stop-1", name: "停一" })
+    let startSignal: AbortSignal | undefined
+    let abortedAt = 0
+    const start = vi.spyOn(BrowserInstance.prototype, "start").mockImplementation(async (signal?: AbortSignal) => {
+      startSignal = signal
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, 30_000)
+        signal?.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(timer)
+            abortedAt = Date.now()
+            reject(new ChromeStartAbortedError())
+          },
+          { once: true }
+        )
+      })
+    })
+    try {
+      useScript("test/stop-chrome", new Script([step([call("browser.navigate", { url: "https://example.com/" })]), step([text("结束")])]))
+      const taskId = await createTask(ctx.db, { modelId: "test/stop-chrome", toolIds: ["browser"] })
+      await ctx.db.update(t.tasks).set({ browserProfileIds: ["br-stop-1"], allowedDomains: [] }).where(eq(t.tasks.id, taskId))
+      const id = (await mutate(ctx.app, "engine.runNow", wang, { taskId })).data.sessionId as string
+      await waitFor(async () => startSignal, { what: "开始起 Chrome", timeout: 60_000 })
+      const cancelledAt = Date.now()
+      await cancelSessionImpl(ctx.db, { sessionId: id, actorId: "u-wang", actorName: "王悦" })
+      await waitFor(async () => abortedAt, { what: "起 Chrome 被中止", timeout: 5000 })
+      expect(abortedAt - cancelledAt).toBeLessThan(3000)
+      await waitFor(async () => !getBrowserManager()!.forSession(id), { what: "Chrome 登记关掉" })
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      const events = await eventsOf(ctx.db, id)
+      const cancelled = events.findIndex((event) => event.title === "已取消")
+      expect(cancelled).toBeGreaterThan(-1)
+      expect(events.slice(cancelled + 1).map((event) => event.title)).toEqual([])
+      expect(events.some((event) => event.toolId === "browser.navigate")).toBe(false)
+    } finally {
+      start.mockRestore()
+    }
   })
 
   it("Chrome 一次都没起来的不钉住：第一个起失败、被别的运行拿走，下次用另一个空闲的（不排队等它）", async () => {
