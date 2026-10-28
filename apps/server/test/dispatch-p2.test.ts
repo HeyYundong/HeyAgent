@@ -616,7 +616,11 @@ describe("work.report：报结果", () => {
     expect(row.result).toMatchObject({ summary: "办不成：14 个候选都不是同一个东西", data: { 候选数: 14 } })
     expect(row.log.map((entry) => entry.kind)).toEqual(["created", "run_started", "reported", "run_ended"])
     expect((await sessionRow(ctx.db, row.sessionId!))!).toMatchObject({ status: "done", outcome: "not_achieved", outcomeBy: "agent", outcomeReason: "agent 判断办不成：14 个候选都不是同一个东西" })
-    const notes = await ctx.db.select().from(t.notifications).where(eq(t.notifications.sessionId, row.sessionId!))
+    // 通知在单结算的事务提交以后才写：等它出现（负载高时测试会先看到单变了）
+    const notes = await waitFor(async () => {
+      const rows = await ctx.db.select().from(t.notifications).where(eq(t.notifications.sessionId, row.sessionId!))
+      return rows.length ? rows : undefined
+    }, { what: "没办成的通知" })
     expect(notes.map((note) => [note.title, note.body])).toEqual([[expect.stringContaining("：没办成"), "agent 判断办不成：14 个候选都不是同一个东西"]])
     const detail = (await query(ctx.app, "work.get", wang, { id })).data
     expect(detail.failKind).toBe("not_done")
@@ -663,7 +667,11 @@ describe("没办成自动重试", () => {
     sessions.add(failed.sessionId!)
     expect(failed).toMatchObject({ failKind: "error", autoRetries: 2, attempts: 3, notBefore: null })
     expect(failed.log.map((entry) => entry.kind)).toEqual(["created", "run_started", "run_ended", "retry_scheduled", "run_started", "run_ended", "retry_scheduled", "run_started", "run_ended"])
-    const notes = await ctx.db.select().from(t.notifications).where(inArray(t.notifications.sessionId, [...sessions]))
+    // 通知在单结算的事务提交以后才写：等它出现
+    const notes = await waitFor(async () => {
+      const rows = await ctx.db.select().from(t.notifications).where(inArray(t.notifications.sessionId, [...sessions]))
+      return rows.length ? rows : undefined
+    }, { what: "重试用完的通知" })
     expect(notes.map((note) => note.body)).toEqual([expect.stringMatching(/^自动重试了 2 次都没办成：模型调用失败/)])
     expect((await notifyJobsOf(id)).length).toBe(1)
 

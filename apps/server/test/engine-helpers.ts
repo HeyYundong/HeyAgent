@@ -265,6 +265,11 @@ export async function createTask(
     enabled?: boolean
     /** 不给 = 不选，运行时用默认复核模型（测试里是 TEST_REVIEWER） */
     reviewModelId?: string
+    /**
+     * 办成后自动固化（docs/dev/solidify.md 17.1）。测试里默认关（false）：不然被派的、定时的任务每次办成都排一次固化、
+     * 给负责人发通知，和测的东西无关；测自动固化的传 null（按默认）或 true
+     */
+    autoSolidify?: boolean | null
   }
 ) {
   const id = `T-${++taskCounter}`
@@ -279,6 +284,7 @@ export async function createTask(
     scheduleCron: input.scheduleCron ?? null,
     scheduleText: input.scheduleCron ? `cron ${input.scheduleCron}` : null,
     reviewModelId: input.reviewModelId ?? null,
+    autoSolidify: input.autoSolidify === undefined ? false : input.autoSolidify,
   })
   for (const [position, toolId] of (input.toolIds ?? []).entries())
     await db.insert(t.taskTools).values({ taskId: id, refId: toolId, position })

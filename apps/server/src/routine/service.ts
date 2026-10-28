@@ -28,6 +28,7 @@ export async function getTaskRoutine(db: Db, taskId: string): Promise<RoutineSum
       status: t.routineVersions.status,
       name: t.routineVersions.name,
       sourceSessionId: t.routineVersions.sourceSessionId,
+      auto: t.routineVersions.auto,
       createdAt: t.routineVersions.createdAt,
     })
     .from(t.routineVersions)

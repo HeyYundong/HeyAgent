@@ -146,6 +146,9 @@ function columns(input: TaskInput, modelId: string, verifyModelId: string | null
     // 派活：参数声明和名额（已经按 shared 的 taskDispatchSchema 校验过：参数名不重复）；null = 不能被派活
     dispatch: input.dispatch ?? null,
     cronSkipIfRunning: input.cronSkipIfRunning,
+    // 固化（docs/dev/solidify.md 17.1）：null = 按默认（被派的、定时的开）
+    autoSolidify: input.autoSolidify ?? null,
+    routineSkipTest: input.routineSkipTest,
   }
 }
 
@@ -184,7 +187,15 @@ export async function insertTask(tx: Tx, actor: Actor, input: TaskInput, options
   const id = taskId(await nextNo(tx, "task_no_seq"))
   await tx.insert(t.tasks).values({ id, ownerId, ...columns(input, modelId, verifyModelId, reviewModelId) })
   await writeLinks(tx, id, { ...input, toolIds, dispatchFrom })
-  await audit(tx, actor.id, "task.create", "tasks", id, { title: input.title, ownerId, modelId, ...options.audit })
+  await audit(tx, actor.id, "task.create", "tasks", id, {
+    title: input.title,
+    ownerId,
+    modelId,
+    // 固化的两个设置不是默认的才记
+    ...(input.autoSolidify !== null && input.autoSolidify !== undefined ? { autoSolidify: input.autoSolidify } : {}),
+    ...(input.routineSkipTest ? { routineSkipTest: true } : {}),
+    ...options.audit,
+  })
   return id
 }
 
