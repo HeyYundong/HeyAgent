@@ -15,14 +15,16 @@ import { encrypt, mask } from "../../src/lib/crypto.js"
 import { createTask, eventsOf, sessionRow, setupEngine, waitStatus, type EngineTestContext } from "../../test/engine-helpers.js"
 import { login, mutate } from "../../test/helpers.js"
 import { createProfile } from "../fixtures.js"
-import { LETTERS, PRODUCTS, score, startSpeedSite, SUPPLIERS, TARGET_SUPPLIERS, type SpeedSite } from "./site.js"
+import { LETTERS, PRODUCTS, score, startSpeedSite, SUPPLIERS, TARGET_SUPPLIERS, type SpeedScenario, type SpeedSite } from "./site.js"
 
 const MODEL = process.env.SPEED_MODEL ?? "openrouter/deepseek/deepseek-v4.1-flash-1017"
 /** 写脚本的模型（模型页「固化」）：默认用比执行模型强一些的 */
 const SOLIDIFY_MODEL = process.env.ROUTINE_SOLIDIFY_MODEL ?? "openrouter/deepseek/deepseek-v4-pro"
 const LABEL = process.env.SPEED_LABEL ?? "routine"
-const SCENARIOS = (process.env.SPEED_SCENARIOS ?? "A,B,C").split(",").filter(Boolean) as ("A" | "B" | "C")[]
+const SCENARIOS = (process.env.SPEED_SCENARIOS ?? "A,B,C").split(",").filter(Boolean) as SpeedScenario[]
 const REPEAT = Number(process.env.SPEED_REPEAT ?? 3)
+/** 任务的工具（逗号分隔）。加上 code.run：agent 可能自己写循环脚本，固化员照它写（docs/dev/solidify.md 18.1） */
+const TOOLS = (process.env.SPEED_TOOLS ?? "browser,run.finish").split(",").filter(Boolean)
 /** agent 第一遍没做对时最多再试几遍（固化要从办成的运行来） */
 const AGENT_TRIES = Number(process.env.ROUTINE_AGENT_TRIES ?? 2)
 const OUT = process.env.SPEED_OUT
@@ -34,9 +36,11 @@ let site: SpeedSite
 let wang: string
 let profileId: string
 
-function goalOf(scenario: "A" | "B" | "C") {
+function goalOf(scenario: SpeedScenario) {
   if (scenario === "A")
     return `把 ${site.url("/a/products")} 上列的 ${PRODUCTS.length} 个商品逐个录入 ERP：在 ${site.url("/a/new")} 填好编号、名称、单价、起订量、类目、含税，每个商品提交一次（不要重复提交）。${PRODUCTS.length} 个都录完后结束。`
+  if (scenario === "D")
+    return `${site.url("/d/requests")} 上有几条采购需求。每条需求在商品目录 ${site.url("/d/catalog")} 里挑一个最符合的商品，到 ${site.url("/d/order")} 下单：选需求编号和商品，点提交，每条需求只提交一次。所有需求都下单后结束。`
   if (scenario === "B")
     return `在供应商搜索 ${site.url("/b/search")} 查下面 ${TARGET_SUPPLIERS.length} 家供应商的电话和评分（注意有名字相近的别家，要看准全名）：${TARGET_SUPPLIERS.map((id) => SUPPLIERS.find((each) => each.id === id)!.name).join("、")}。查完后到 ${site.url("/b/report")} 提交汇总，每行一家，格式「名称,电话,评分」，名称写全名。`
   return `在线文档 ${site.url("/c/doc")} 是一张字母图片表，按 ${LETTERS.join("、")} 每行放一张图：图片到 ${site.url("/c/search?q=letter+A")} 这样的网址搜（把 A 换成对应字母），选「大写字母 X」那张（X 是这一行的字母），复制图片，贴进文档里这个字母那一行的图片格。${LETTERS.length} 行都贴好、没有贴错的后结束。`
@@ -96,7 +100,7 @@ const write = (record: Record<string, unknown>) => {
 }
 
 /** 跑一遍任务（agent 或脚本），等到结束、复核完 */
-async function runOnce(scenario: "A" | "B" | "C", taskId: string) {
+async function runOnce(scenario: SpeedScenario, taskId: string) {
   site.reset()
   const res = await mutate(ctx.app, "engine.runNow", wang, { taskId })
   if (!res.data) throw new Error(JSON.stringify(res.error))
@@ -125,6 +129,8 @@ async function runOnce(scenario: "A" | "B" | "C", taskId: string) {
     wallSec: Math.round((end - row.startedAt.getTime()) / 100) / 10,
     modelCalls: think.length,
     toolCalls: tools.length,
+    codeRuns: tools.filter((event) => event.toolId === "code.run").length,
+    scriptSteps: tools.filter((event) => event.trace?.scriptStep).length,
     costUsd: row.costUsd,
     correct: graded.correct,
     total: graded.total,
@@ -143,8 +149,8 @@ async function waitVersion(versionId: string) {
   }
 }
 
-async function runScenario(scenario: "A" | "B" | "C") {
-  const taskId = await createTask(ctx.db, { modelId: MODEL, title: `固化基准 ${scenario}`, goal: goalOf(scenario), toolIds: ["browser", "run.finish"], ownerId: "u-wang", reviewModelId: MODEL })
+async function runScenario(scenario: SpeedScenario) {
+  const taskId = await createTask(ctx.db, { modelId: MODEL, title: `固化基准 ${scenario}`, goal: goalOf(scenario), toolIds: TOOLS, ownerId: "u-wang", reviewModelId: MODEL })
   await ctx.db.update(t.tasks).set({ browserProfileIds: [profileId], allowBrowserVision: scenario === "C" }).where(eq(t.tasks.id, taskId))
 
   // 1. agent 办成一次

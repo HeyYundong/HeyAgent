@@ -49,6 +49,39 @@ function letterImages(letter: string) {
   return alts.map((alt, variant) => ({ id: `${letter}${variant}`, alt, width: 120 + index * 10 + variant, height: 90 + variant * 4, correct: variant === 2 }))
 }
 
+/** D：采购需求配商品，要看内容判断（docs/dev/solidify.md 18.2 的判断题）。目录 10 个商品 */
+export const CATALOG = [
+  { code: "D-01", name: "不锈钢保温杯 500ml", note: "双层真空，保温 12 小时，适合通勤" },
+  { code: "D-02", name: "儿童保温杯 350ml", note: "带硅胶防摔套，只有 220 克，户外用" },
+  { code: "D-03", name: "陶瓷咖啡杯", note: "可以放进洗碗机和微波炉" },
+  { code: "D-04", name: "双层玻璃咖啡杯", note: "透明，看得见咖啡，只能手洗" },
+  { code: "D-05", name: "记忆棉 U 型枕", note: "托住脖子，午休、坐车用" },
+  { code: "D-06", name: "荞麦壳枕头", note: "偏硬、透气，夜里睡觉用" },
+  { code: "D-07", name: "太阳能庭院灯", note: "白天晒太阳充电，天黑自动亮，不用接电线" },
+  { code: "D-08", name: "LED 落地灯", note: "插电，放在地上，亮度可调，适合看书" },
+  { code: "D-09", name: "折叠硅胶水壶 600ml", note: "不用时压扁，不保温" },
+  { code: "D-10", name: "运动水壶 1.5L", note: "大容量，塑料，不保温" },
+]
+/** 需求池：每次 reset 换一组 4 条（脚本不能把上次的答案写死）；want 是该选的商品 */
+const NEEDS = [
+  { text: "周末带孩子去露营，想给孩子带热水，杯子要轻、摔了不坏", want: "D-02" },
+  { text: "公司午休趴在桌上睡，脖子疼，想买个午休用的", want: "D-05" },
+  { text: "院子里晚上太黑，想装个灯，但不想拉电线", want: "D-07" },
+  { text: "新买了洗碗机，想换一批能直接放进去洗的咖啡杯", want: "D-03" },
+  { text: "冬天上班路上想喝热茶，要能装 500 毫升左右", want: "D-01" },
+  { text: "去健身房一次要喝很多水，想要个装得多的水壶", want: "D-10" },
+  { text: "出差行李箱空间小，想带个不用时能压扁的水壶", want: "D-09" },
+  { text: "在卧室沙发边看书，想要个放地上的灯", want: "D-08" },
+  { text: "睡觉喜欢硬一点、透气的枕头", want: "D-06" },
+  { text: "办公室喝咖啡，想要透明的杯子能看到拉花，手洗没关系", want: "D-04" },
+]
+/** 第 round 组的 4 条需求（编号 R1–R4） */
+export function needsOf(round: number) {
+  return [0, 1, 2, 3].map((k) => ({ id: `R${k + 1}`, ...NEEDS[(round * 4 + k) % NEEDS.length]! }))
+}
+
+export type SpeedScenario = "A" | "B" | "C" | "D"
+
 export interface SpeedResults {
   /** A：每个编号最后一次提交的内容 */
   products: Map<string, Record<string, string>>
@@ -58,6 +91,10 @@ export interface SpeedResults {
   /** C：每行最后贴进去的图（尺寸） */
   pasted: Map<string, { width: number; height: number }>
   pasteCount: number
+  /** D：现在是第几组需求（每次 reset 换下一组）、每条需求最后下单的商品 */
+  needsRound: number
+  orders: Map<string, string>
+  orderSubmits: number
 }
 
 export interface SpeedSite {
@@ -119,7 +156,7 @@ const productForm = () => `<h1>新建商品</h1>
 </form>`
 
 export async function startSpeedSite(): Promise<SpeedSite> {
-  const results: SpeedResults = { products: new Map(), productSubmits: 0, pasted: new Map(), pasteCount: 0 }
+  const results: SpeedResults = { products: new Map(), productSubmits: 0, pasted: new Map(), pasteCount: 0, needsRound: 0, orders: new Map(), orderSubmits: 0 }
   const images = new Map<string, Buffer>()
   for (const letter of LETTERS)
     for (const image of letterImages(letter)) {
@@ -268,6 +305,51 @@ document.querySelectorAll('.cell').forEach((cell) => cell.addEventListener('past
       })
       return
     }
+    // ---------- D 需求配商品（要看内容判断） ----------
+    if (path === "/d/requests")
+      return send(
+        200,
+        page(
+          "采购需求",
+          `<h1>采购需求（共 4 条）</h1><table><tr><th>编号</th><th>需求</th></tr>${needsOf(results.needsRound)
+            .map((need) => `<tr><td>${need.id}</td><td>${need.text}</td></tr>`)
+            .join("")}</table>`
+        )
+      )
+    if (path === "/d/catalog")
+      return send(
+        200,
+        page(
+          "商品目录",
+          `<h1>商品目录</h1><table><tr><th>编号</th><th>名称</th><th>说明</th></tr>${CATALOG.map((each) => `<tr><td>${each.code}</td><td>${each.name}</td><td>${each.note}</td></tr>`).join("")}</table>`
+        )
+      )
+    if (path === "/d/order") {
+      if (req.method === "POST") {
+        void readForm(req).then((form) => {
+          const need = form.get("need") ?? ""
+          results.orderSubmits++
+          results.orders.set(need, form.get("product") ?? "")
+          send(303, "", { location: `/d/order?saved=${encodeURIComponent(need)}` })
+        })
+        return
+      }
+      const saved = url.searchParams.get("saved")
+      const done = saved ? `<p role="status">已下单：${saved} → ${results.orders.get(saved) ?? ""}</p>` : ""
+      return send(
+        200,
+        page(
+          "下单",
+          `<h1>下单</h1>${done}<form method="post" action="/d/order">
+<label>需求编号 <select name="need"><option value="">请选择</option>${needsOf(results.needsRound)
+            .map((need) => `<option value="${need.id}">${need.id}</option>`)
+            .join("")}</select></label>
+<label>商品 <select name="product"><option value="">请选择</option>${CATALOG.map((each) => `<option value="${each.code}">${each.code} ${each.name}</option>`).join("")}</select></label>
+<button type="submit">提交</button>
+</form>`
+        )
+      )
+    }
     return send(200, page("基准站点", `<p>${HOST}</p>`))
   })
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
@@ -282,14 +364,28 @@ document.querySelectorAll('.cell').forEach((cell) => cell.addEventListener('past
       results.report = undefined
       results.pasted.clear()
       results.pasteCount = 0
+      results.needsRound++
+      results.orders.clear()
+      results.orderSubmits = 0
     },
     close: () => new Promise((resolve) => server.close(() => resolve())),
   }
 }
 
 /** 判分：做对了几项 / 一共几项 */
-export function score(scenario: "A" | "B" | "C", results: SpeedResults): { correct: number; total: number; notes: string[] } {
+export function score(scenario: SpeedScenario, results: SpeedResults): { correct: number; total: number; notes: string[] } {
   const notes: string[] = []
+  if (scenario === "D") {
+    const needs = needsOf(results.needsRound)
+    let correct = 0
+    for (const need of needs) {
+      const got = results.orders.get(need.id)
+      if (got === need.want) correct++
+      else notes.push(`${need.id}「${need.text}」：${got ? `选了 ${got}，应是 ${need.want}` : "没下单"}`)
+    }
+    if (results.orderSubmits > needs.length) notes.push(`提交了 ${results.orderSubmits} 次（多了 ${results.orderSubmits - needs.length} 次）`)
+    return { correct, total: needs.length, notes }
+  }
   if (scenario === "A") {
     let correct = 0
     for (const each of PRODUCTS) {
