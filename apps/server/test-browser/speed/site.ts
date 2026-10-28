@@ -45,6 +45,42 @@ export const SUPPLIERS = [
 /** 要查的 6 家（任务里给的是全名） */
 export const TARGET_SUPPLIERS = ["s1", "s3", "s5", "s7", "s9", "s11"]
 
+/**
+ * 加大的 B（docs/dev/sub-agents.md 21.7）：再加 12 家要查的、各带一家名字相近的别家（照上面的样子），一共查 18 家。
+ * 只有打开了（`useExtraSuppliers(true)`）才搜得到，原来 6 家的场景搜出来的和以前一样；详情页一直能开。
+ * 单独放一张表：E 场景按 SUPPLIERS 的长度取供应商，不能动 SUPPLIERS。
+ */
+export const EXTRA_SUPPLIERS = [
+  { id: "s13", name: "宁波市青禾塑料制品有限公司", contact: "冯涛", phone: "0574-87652210", rating: "4.5", city: "宁波" },
+  { id: "s14", name: "宁波市青和塑料制品厂", contact: "曹颖", phone: "0574-87658843", rating: "3.6", city: "宁波" },
+  { id: "s15", name: "温州市启明鞋业有限公司", contact: "彭飞", phone: "0577-86613027", rating: "4.2", city: "温州" },
+  { id: "s16", name: "温州市启航鞋材店", contact: "董琳", phone: "0577-86619354", rating: "3.9", city: "温州" },
+  { id: "s17", name: "台州市恒远模具有限公司", contact: "袁斌", phone: "0576-88275519", rating: "4.7", city: "台州" },
+  { id: "s18", name: "台州市恒达模具加工厂", contact: "邓洁", phone: "0576-88271186", rating: "4.0", city: "台州" },
+  { id: "s19", name: "东莞市新禾电子科技有限公司", contact: "许亮", phone: "0769-22863341", rating: "4.4", city: "东莞" },
+  { id: "s20", name: "东莞市新和电子配件商行", contact: "傅琴", phone: "0769-22869072", rating: "3.8", city: "东莞" },
+  { id: "s21", name: "佛山市安居家具有限公司", contact: "沈浩", phone: "0757-83306628", rating: "4.6", city: "佛山" },
+  { id: "s22", name: "佛山市安家家具厂", contact: "曾雪", phone: "0757-83302917", rating: "4.1", city: "佛山" },
+  { id: "s23", name: "中山市明亮灯饰有限公司", contact: "吕鹏", phone: "0760-22517764", rating: "4.3", city: "中山" },
+  { id: "s24", name: "中山市明朗灯饰店", contact: "苏敏", phone: "0760-22513380", rating: "3.7", city: "中山" },
+  { id: "s25", name: "苏州市云锦丝绸有限公司", contact: "蒋华", phone: "0512-65281147", rating: "4.8", city: "苏州" },
+  { id: "s26", name: "苏州市云绣丝绸工艺厂", contact: "蔡蕾", phone: "0512-65287795", rating: "4.2", city: "苏州" },
+  { id: "s27", name: "常州市百川工具有限公司", contact: "贾鑫", phone: "0519-86621903", rating: "4.1", city: "常州" },
+  { id: "s28", name: "常州市百通工具商行", contact: "丁宁", phone: "0519-86625586", rating: "3.5", city: "常州" },
+  { id: "s29", name: "青岛市海清食品包装有限公司", contact: "魏东", phone: "0532-85716632", rating: "4.6", city: "青岛" },
+  { id: "s30", name: "青岛市海晴包装材料厂", contact: "薛菲", phone: "0532-85712258", rating: "4.0", city: "青岛" },
+  { id: "s31", name: "临沂市金穗编织有限公司", contact: "叶军", phone: "0539-83127745", rating: "4.3", city: "临沂" },
+  { id: "s32", name: "临沂市金禾编织品店", contact: "阎婷", phone: "0539-83121109", rating: "3.9", city: "临沂" },
+  { id: "s33", name: "厦门市清源茶具有限公司", contact: "余波", phone: "0592-57306614", rating: "4.5", city: "厦门" },
+  { id: "s34", name: "厦门市清泉茶具工艺厂", contact: "潘悦", phone: "0592-57302287", rating: "4.1", city: "厦门" },
+  { id: "s35", name: "汕头市乐童玩具有限公司", contact: "杜刚", phone: "0754-88516093", rating: "4.4", city: "汕头" },
+  { id: "s36", name: "汕头市乐趣玩具厂", contact: "戴雯", phone: "0754-88512471", rating: "3.6", city: "汕头" },
+]
+/** 加大的 B 要查的 18 家：原来 6 家 + 新加的 12 家（单号） */
+export const TARGET_SUPPLIERS_18 = [...TARGET_SUPPLIERS, ...EXTRA_SUPPLIERS.filter((_, i) => i % 2 === 0).map((each) => each.id)]
+const ALL_SUPPLIERS = [...SUPPLIERS, ...EXTRA_SUPPLIERS]
+export const supplierById = (id: string) => ALL_SUPPLIERS.find((each) => each.id === id)
+
 export const LETTERS = ["A", "B", "C", "D", "E", "F"]
 /** 每个字母搜出来的 6 张图：只有一张是「大写字母 X」，其余是干扰图；每张图尺寸不同，贴进文档后按尺寸认是哪张 */
 function letterImages(letter: string) {
@@ -131,6 +167,8 @@ export interface SpeedSite {
   url(path: string): string
   results: SpeedResults
   reset(): void
+  /** 搜索里带不带 EXTRA_SUPPLIERS（加大的 B 打开；reset 不改它） */
+  useExtraSuppliers(on: boolean): void
   close(): Promise<void>
 }
 
@@ -187,6 +225,7 @@ const productForm = () => `<h1>新建商品</h1>
 
 export async function startSpeedSite(): Promise<SpeedSite> {
   const results: SpeedResults = { products: new Map(), productSubmits: 0, reportSubmits: 0, pasted: new Map(), pasteCount: 0, needsRound: 0, orders: new Map(), orderSubmits: 0, eHits: { list: 0, items: 0, stock: 0, unauthorized: 0 } }
+  let extraSuppliers = false
   const images = new Map<string, Buffer>()
   for (const letter of LETTERS)
     for (const image of letterImages(letter)) {
@@ -254,7 +293,7 @@ export async function startSpeedSite(): Promise<SpeedSite> {
     // ---------- B 搜索汇总 ----------
     if (path === "/b/search") {
       const q = (url.searchParams.get("q") ?? "").trim()
-      const hits = q ? SUPPLIERS.filter((each) => each.name.includes(q) || q.includes(each.name)) : []
+      const hits = q ? (extraSuppliers ? ALL_SUPPLIERS : SUPPLIERS).filter((each) => each.name.includes(q) || q.includes(each.name)) : []
       return send(
         200,
         page(
@@ -266,7 +305,7 @@ export async function startSpeedSite(): Promise<SpeedSite> {
       )
     }
     if (path.startsWith("/b/s/")) {
-      const supplier = SUPPLIERS.find((each) => each.id === path.slice(5))
+      const supplier = supplierById(path.slice(5))
       if (!supplier) return send(404, page("没有这家", "<p>没有这家供应商</p>"))
       return send(
         200,
@@ -488,12 +527,15 @@ load(1)
       results.orderSubmits = 0
       results.eHits = { list: 0, items: 0, stock: 0, unauthorized: 0 }
     },
+    useExtraSuppliers(on) {
+      extraSuppliers = on
+    },
     close: () => new Promise((resolve) => server.close(() => resolve())),
   }
 }
 
-/** 判分：做对了几项 / 一共几项 */
-export function score(scenario: SpeedScenario, results: SpeedResults): { correct: number; total: number; notes: string[] } {
+/** 判分：做对了几项 / 一共几项。B 可以给要查的供应商（加大的 B 给 TARGET_SUPPLIERS_18），不给是原来 6 家 */
+export function score(scenario: SpeedScenario, results: SpeedResults, supplierTargets: string[] = TARGET_SUPPLIERS): { correct: number; total: number; notes: string[] } {
   const notes: string[] = []
   if (scenario === "D") {
     const needs = needsOf(results.needsRound)
@@ -546,14 +588,14 @@ export function score(scenario: SpeedScenario, results: SpeedResults): { correct
   if (scenario === "B") {
     const lines = (results.report ?? "").split(/\r?\n/).map((line) => line.replace(/\s/g, "").replace(/，/g, ","))
     let correct = 0
-    for (const id of TARGET_SUPPLIERS) {
-      const each = SUPPLIERS.find((supplier) => supplier.id === id)!
+    for (const id of supplierTargets) {
+      const each = supplierById(id)!
       const ok = lines.some((line) => line.includes(each.name) && line.includes(each.phone) && line.includes(each.rating))
       if (ok) correct++
       else notes.push(`${each.name}：没有对的一行`)
     }
     if (results.report === undefined) notes.push("没提交汇总")
-    return { correct, total: TARGET_SUPPLIERS.length, notes }
+    return { correct, total: supplierTargets.length, notes }
   }
   let correct = 0
   for (const letter of LETTERS) {

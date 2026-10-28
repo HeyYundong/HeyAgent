@@ -4,9 +4,10 @@
 // S3 有一个做不到：同 S2，其中一家的页面不存在（404「没有这家供应商」）
 // S4 取消：同 S2（每次运行同时最多 2 个子 agent），子 agent 在用 Chrome 时取消父运行
 // S5 够大的任务：基准站点场景 B（搜 6 家供应商、最后提交汇总表单），任务允许 3 个 Chrome，建议拆 3 组各 2 家；S5seq 同一个任务不拆
+// S5L 加大的 S5（21.7 节）：同样的站点、页面，查 18 家（搜索里多了 12 家要查的和 12 家名字相近的别家），建议拆 3 组各 6 家；S5Lseq 同一个任务不拆
 // 每遍之前 1 分钟负载超过 8 先等（SPEED_MAX_LOAD 换）；场景可以重复写（S5,S5seq,S5,S5seq 交替跑）
 // 每个场景一行 JSON 追加进 SPEED_OUT；过程（子 agent 状态变化、提示词、交回的结果、过程记录）存到旁边的 -<场景>.json。
-// 用法：SPEED_FILE=subagents scripts/speed-bench.sh <标签> [场景，默认 S1,S1seq,S2,S3,S4；另有 S2seq、S5、S5seq，可以重复写]
+// 用法：SPEED_FILE=subagents scripts/speed-bench.sh <标签> [场景，默认 S1,S1seq,S2,S3,S4；另有 S2seq、S5、S5seq、S5L、S5Lseq，可以重复写]
 import {
   appendFileSync,
   readdirSync,
@@ -36,8 +37,9 @@ import { createProfile } from "../fixtures.js"
 import {
   score as siteScore,
   startSpeedSite,
-  SUPPLIERS,
   TARGET_SUPPLIERS,
+  TARGET_SUPPLIERS_18,
+  supplierById,
   type SpeedSite,
 } from "./site.js"
 
@@ -216,19 +218,26 @@ const S2_TARGETS = ["s1", "s3", "s5"]
 const S3_TARGETS = ["s7", "s9", "s99"]
 const MISSING = { id: "s99", name: "宁波市海川电器有限公司" }
 const supplierOf = (id: string) =>
-  SUPPLIERS.find((each) => each.id === id) ?? {
+  supplierById(id) ?? {
     ...MISSING,
     phone: "",
     rating: "",
   }
 
+/** S5 查 6 家，S5L 查 18 家 */
+const s5Targets = (scenario: string) =>
+  scenario.startsWith("S5L") ? TARGET_SUPPLIERS_18 : TARGET_SUPPLIERS
+
 function goalOf(scenario: string) {
-  if (scenario === "S5" || scenario === "S5seq") {
-    const names = TARGET_SUPPLIERS.map((id) => supplierOf(id).name)
+  if (scenario.startsWith("S5")) {
+    const names = s5Targets(scenario).map((id) => supplierOf(id).name)
     const base = `在供应商搜索 ${site.url("/b/search")} 查下面 ${names.length} 家供应商的电话和评分（注意有名字相近的别家，要看准全名）：${names.join("、")}。查完后到 ${site.url("/b/report")} 提交汇总，每行一家，格式「名称,电话,评分」，名称写全名。`
-    if (scenario === "S5seq") return base
-    const groups = [0, 2, 4].map((k) => names.slice(k, k + 2).join("、"))
-    return `${base}建议分成 3 组、每组 2 家（${groups.map((g, i) => `第 ${i + 1} 组：${g}`).join("；")}），各拆一个子 agent 同时查，用 work_report 交回每家的名称、电话、评分；全部交回后你自己去提交汇总。`
+    if (scenario.endsWith("seq")) return base
+    const size = names.length / 3
+    const groups = [0, 1, 2].map((k) =>
+      names.slice(k * size, (k + 1) * size).join("、")
+    )
+    return `${base}建议分成 3 组、每组 ${size} 家（${groups.map((g, i) => `第 ${i + 1} 组：${g}`).join("；")}），各拆一个子 agent 同时查，用 work_report 交回每家的名称、电话、评分；全部交回后你自己去提交汇总。`
   }
   const stat = "个数、合计、平均值（保留两位小数）、最大值、最小值"
   if (scenario === "S1")
@@ -573,7 +582,9 @@ async function familyCostOf(sessionId: string) {
 async function runScenario(scenario: string) {
   const loadWaitSec = await waitLoad()
   site.reset()
-  // 设置：S4 每次运行同时最多 2 个、子 agent 上限 0.3 美元 / 30 步（看设置生效）；其余用默认
+  site.useExtraSuppliers(scenario.startsWith("S5L"))
+  // 设置：S4 每次运行同时最多 2 个、子 agent 上限 0.3 美元 / 30 步（看设置生效）；
+  // S5L 每个子 agent 查 6 家，步数上限放到 120（看实际要多少步，不让默认 60 步截断）；其余用默认
   const settings =
     scenario === "S4"
       ? await setSubagentSettings({
@@ -588,11 +599,11 @@ async function runScenario(scenario: string) {
           maxPerRun: 10,
           maxRunningGlobal: 8,
           maxCostUsd: 1,
-          maxSteps: 60,
+          maxSteps: scenario.startsWith("S5L") ? 120 : 60,
         })
   const browser = !scenario.startsWith("S1")
   const toolIds =
-    scenario === "S2seq" || scenario === "S5seq"
+    browser && scenario.endsWith("seq")
       ? ["browser", "run.finish"]
       : browser
         ? ["browser", "subagent.start", "run.finish"]
@@ -759,7 +770,7 @@ async function runScenario(scenario: string) {
   const end = (finish?.at ?? row.endedAt ?? new Date()).getTime()
   const think = events.filter((event) => event.kind === "think")
   const graded = scenario.startsWith("S5")
-    ? siteScore("B", site.results)
+    ? siteScore("B", site.results, s5Targets(scenario))
     : score(scenario, finishInput.summary ?? "")
   // 提交汇总时 fill_form 的结果（有没有回显实际的值）
   const fillForms = events
