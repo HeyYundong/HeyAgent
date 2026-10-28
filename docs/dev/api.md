@@ -1534,6 +1534,27 @@ claude mcp add --transport http heyagent-compare http://<host>:8080/api/compare/
 - `routine_versions.auto`：运行办成后系统自动固化的（`created_by_id` 为空，审计 `routine.compile` 的 `actorId` 为空、`detail.auto = true`）。`RoutineVersion.auto`、`RoutineSummary.versions[].auto`。审核卡的摘要和通知写「运行办成后自动固化的」，`detail.sections` 多一节「自动固化」；没成功的通知开头写「这一版是运行办成后自动固化的」。
 - 运行结果定了以后（`afterRunSettled`）调 `maybeAutoSolidify`：普通运行、办成、任务的自动固化开着（按任务现在的设置）。没有固化流程或者还没有启用过的版本 → 第一版；有启用的版本：脚本直接办成不固化，`fell_back` 修那一版，流程停用着、这次只有 agent 修启用的那一版，别的不固化。跳过：有一版在写 / 试跑 / 待审核；24 小时内有过 `auto` 的版本；最近一版 rejected / failed 且 `updated_at` 不到 7 天。判断在锁住 `routines` 那一行以后做，并发只建一版；不试跑照任务的 `routineSkipTest`。人点的 `compile` 不受 24 小时、7 天的限制。
 
+### 20.3.2 脚本接着跑、清扫（第二期，`routine/runtime/`、`routine/sweep.ts`，开发说明 17.2、17.3）
+
+- **记日志**：迁移 0032 加了表 `routine_journal`，主键 (`session_id`, `seq`)。普通运行里工具桥收到的每个请求记一行，试跑不记：
+  - 记哪些：tool / commit / verified / log / now，fail、done 不记。
+  - 每行的字段：`input_hash` 是参数的 sha256（键排好序的 JSON）；`reply` 是回给脚本的内容，`run.finish` 那行多一个 `finish`；`stop` 取 approval / suspend / approved；浏览器动作的那行记 `instance_id`。
+  - 工具调用开始前先写一行（`reply` 为空），做完补上。
+- **停下等人**：要挂起（验证码、登录页、等浏览器）、要审批的，不再交给 agent，改成 `sessions.routine.state = suspended`：
+  - 挂起的照常生成要人办的事；
+  - 审批的生成「审批工具调用」：标题、说明写「固化流程「名字」第 k 步」，`session_waits.pending` 的 `calls` 为空、`routineStep = k`；
+  - 等审批期间 Chrome 按「保留多久」保留着。
+- **接着跑**：`state` 是 suspended 或 running（进程被杀）时，从头再跑一遍脚本：
+  - 对得上的请求（op、工具、`input_hash`）回记下的 reply，不真做、不记过程；
+  - 停下的那一步：审批批准 → 带上批准的规则真做；挂起的浏览器动作，或者做到一半被杀的 → 前面没有没核对的 `ha.commit` 就重做，有就交给 agent；挂起的非浏览器工具（session.wait、ask.human）算做完了，回记下的输出。
+  - 对不上、审批被拒绝、要人办的事被点了「处理不了」、Chrome 已经关了（或者换了），都交给 agent：停下的原因是 `replay_mismatch` / `rejected` / `suspend` / `resume_lost`。
+  - `resumes` +1；`replayed` 是跳过的工具调用数；过程里记一条「脚本接着跑：前 n 步按记录跳过，从第 n+1 步接着做」。
+- **统计**：脚本报了办成、三方验收反问、agent 接着做完的，记 `agentAfter = true`。两个计数都不动，最近成绩里也不算直接办成。
+- **清扫**：队列 `routine.sweep`，每 5 分钟一次，处理两种卡住的版本：
+  - 试跑中的版本，这一轮的试跑运行已经结束 → 补发 `routine.compile`；
+  - 写脚本中的版本，30 分钟没动静 → 补发。
+  - pg-boss 里这一版已经有排着、正在做的任务就不发。
+
 ### 20.4 运行时（`routine/runtime/`、`sandbox-sdk/heyagent/`）
 
 - 跑脚本：沙箱（bwrap，不挂出网代理，`/workspace` 只读）里 `node launch.js`，脚本是 `routine.mjs`，SDK 从 `apps/server/sandbox-sdk/heyagent/` 拷进代码目录的 `node_modules/heyagent/`。工具桥的 socket 只读挂到 `/tmp/.tools/tools.sock`（环境变量 `HEYAGENT_BRIDGE`）。上限：1000 次工具调用、10 分钟（压到 `maxRunMs - 1 分钟` 以内）、512 MB，环境变量 `HEYAGENT_ROUTINE_MAX_CALLS` / `HEYAGENT_ROUTINE_MAX_MINUTES` / `HEYAGENT_ROUTINE_MEMORY_MB` 改。
