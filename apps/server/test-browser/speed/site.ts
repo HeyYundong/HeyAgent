@@ -113,6 +113,8 @@ export interface SpeedResults {
   productSubmits: number
   /** B：提交的汇总（最后一次） */
   report?: string
+  /** B：汇总提交了几次（看有没有重复提交，docs/dev/sub-agents.md 第 21 节 S5） */
+  reportSubmits: number
   /** C：每行最后贴进去的图（尺寸） */
   pasted: Map<string, { width: number; height: number }>
   pasteCount: number
@@ -184,7 +186,7 @@ const productForm = () => `<h1>新建商品</h1>
 <p><a href="/a/list">已录入的商品</a></p>`
 
 export async function startSpeedSite(): Promise<SpeedSite> {
-  const results: SpeedResults = { products: new Map(), productSubmits: 0, pasted: new Map(), pasteCount: 0, needsRound: 0, orders: new Map(), orderSubmits: 0, eHits: { list: 0, items: 0, stock: 0, unauthorized: 0 } }
+  const results: SpeedResults = { products: new Map(), productSubmits: 0, reportSubmits: 0, pasted: new Map(), pasteCount: 0, needsRound: 0, orders: new Map(), orderSubmits: 0, eHits: { list: 0, items: 0, stock: 0, unauthorized: 0 } }
   const images = new Map<string, Buffer>()
   for (const letter of LETTERS)
     for (const image of letterImages(letter)) {
@@ -276,6 +278,7 @@ export async function startSpeedSite(): Promise<SpeedSite> {
     }
     if (path === "/b/report") {
       if (req.method === "POST") {
+        results.reportSubmits++
         void readForm(req).then((form) => {
           results.report = form.get("lines") ?? ""
           send(200, page("已提交", "<p>汇总已提交，谢谢。</p>"))
@@ -477,6 +480,7 @@ load(1)
       results.products.clear()
       results.productSubmits = 0
       results.report = undefined
+      results.reportSubmits = 0
       results.pasted.clear()
       results.pasteCount = 0
       results.needsRound++
