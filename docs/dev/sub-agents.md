@@ -834,3 +834,12 @@ ALTER TABLE "tasks" ADD COLUMN "subagent_model_id" text;
 - `engine.test.ts`「账号租约」：任务只有一个 Chrome 配置，B 挂起等的是 Chrome（一个 Chrome 配置同一时间只给一个运行用），不是账号租约，`waiting` 是 0 不是 1。这一个失败后 A 一直占着 Chrome，同一个文件后面的全部超时；去掉它单独跑，其余 12 个都过。
 - `vault.test.ts` 两个：直接用 `acquireForSession` 在同一个 Chrome 配置上开两个运行，登记时抛「正在被别的运行用」。
 - `site-api.test.ts`「navigate 后读 30 页」：断言 `browser.fetch` 的过程记录没有 `trace.network`，现在有（`{ first: 4, last: 4 }`）。
+
+**已修（e017163，合 main 前）**：
+
+- `engine.test.ts`「账号租约」：账号挂在 Chrome 配置上，一个配置同一时间只给一个运行用，两个运行不会同时在同一个账号上开着 Chrome，账号满了只会是别处还占着租约。改成：A 正常打开平台网址拿到租约、结束时释放；再模拟死掉的 worker 上的运行 X 占着租约（没过期）：B 被拦下、挂起「等待浏览器」，`accountStatus` 是 X 在用、1 个排队；释放 X 的租约后叫醒 B 做完，租约都释放了。产品行为没改。另加 `afterEach`：取消没结束的运行、关掉还开着的运行 Chrome，一个用例失败不再连累后面的超时。
+- `vault.test.ts`：合并写回改用同一个配置上能同时开着的两个 Chrome：运行的（A，轮换 sid）和人「打开 Chrome」的（B，加偏好），先后写回合并结果两样都在；同时断言第二个运行登记时被拒（「正在被别的运行用」）。第三个用例原来是被第二个连累的。也加了 `afterEach` 关掉没关的 Chrome。
+- `site-api.test.ts`：查清是页面后台的请求，不是 fetch 自己的（fetch 自己发的本来就不记）：打开页面时网页发出的 `/api/unread` 不读返回体，Chrome 不报收完，要拿到返回头 5 秒后才照拿到的记，而 seq 是记下时编的，这个号就落进了那时正在做的某次 `browser.fetch` 的 `trace.network`（第一次 `fetch` 是在 5 秒前还是后，看机器快慢）。定下「一步的范围只算这一步发出的请求」：`network-log.ts` 的 seq 改在网页发出请求时编（最后没记下的号码空着，文件按 seq 排），一步的范围是这一步发出、已经记下的，加上拿到返回头、看样子会记的（`stepRange`）；前一步发出、这一步里才记下的不算。测试：`test/site-api.test.ts` 新加一例（前一步发出、后一步才记下的不进后一步；长轮询后来回来也不进后面的步骤；文件按 seq 排），浏览器测试照原来的断言，每次 `fetch` 都没有 `trace.network`。
+- 两个负载高时不稳定的单元测试：`imports.test.ts`「模型一直出错」是先写「没读成」再发通知，测试读到状态就马上查通知；改成等通知到（有期限），「读完了」那一例同样改。`sub-agents.test.ts`「清扫」有两处靠时机：worker 每分钟的 `work.sweep` 也调 `sweepSubagents`，会抢着停、抢着叫醒；父运行被叫醒后用的是假模型，马上又结束，「执行中」一闪而过。改成测试期间先停掉每分钟的 `work.sweep`、等排着的做完（有期限），测完排回去；叫醒看等待变成 `fired`（事件叫醒）、子运行标了已交回、父不再是「等待中」。断言没少。各连跑 5 遍都过（1 分钟负载 1.6–2.1）。
+
+修完的检查：全量单元 `npx vitest run` 820 过、1 跳过（原来就跳过的）、0 失败；`scripts/browser-test.sh` 全部 15 个文件 55 个用例 0 失败。
