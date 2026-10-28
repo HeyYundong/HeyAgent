@@ -1462,27 +1462,27 @@ agent 写循环脚本（场景 A 加「运行代码」）：真模型会写，�
 
 `scripts/or-usage.sh` 跑前 $1.4036、跑完 $2.2688，这一节加上记忆、派活的验收一共 **$0.87**（同一把 key 期间若有别人用也算在里面）。固化占大头：E 两次 $0.058、$0.020，F 两次 $0.112、$0.140。照脚本跑一次只剩复核，$0.001–0.004。
 
-### 21.3 发现的问题（产品代码，没改，交监工另派）
+### 21.3 发现的问题（产品代码；第 1–5 条、第 6 条第 1 点 edeb8ce 已修，第 6 条第 2 点先不管）
 
-1. **复核看不到接口读出来的数据，把对的脚本运行判成没办成**（E 第 1 次第 1 遍，`outcome_by = review`）。
+1. **复核看不到接口读出来的数据，把对的脚本运行判成没办成**（E 第 1 次第 1 遍，`outcome_by = review`）。**已修（edeb8ce）**：`describeToolOutput` 把排好版的 JSON 压成一行再截；`browser.fetch`、`browser.extract` 的结果在详细的几条里合计 8000 字平分（每条 300～2000 字），更早压成一行的给两倍（还在总预算里）。
    - 现象：复核说「过程记录只展示了各页接口数据的首条……其余 5 个商品在可见证据中没有源数据可核对」。另外两遍同样的证据判了办成。
    - 原因：`engine/log-text.ts` 的 `describeToolOutput` 把每步结果截到 300 字（`oneLine(clip(output, 300))`）。`browser.fetch` 的输出是排好版的 JSON（每个字段一行），300 字只够第一条记录。页面读的 `extract` 是一行一条的表，同样 300 字能看到好几条。
    - 建议：给复核写过程时，`browser.fetch` 的 JSON 先压成一行（`JSON.stringify(JSON.parse(…))`）再截，并给它和 `extract` 一样多一些字数；或者固化员的规矩里要求 `ha.finish` 的 `evidence` 写出用到的那几条原始数据（现在 E 第 1 版只写了提交的汇总）。
-2. **提交以后的核对写错，3 遍都交给 agent**（E 第 2 版）。
+2. **提交以后的核对写错，3 遍都交给 agent**（E 第 2 版）。**已修（edeb8ce）**：`attr` 是 `textContent` / `innerText` / `text`（不分大小写）时按文字读；工具说明、SDK `index.d.ts`、固化员的 SDK 说明写清 `attr` 是 HTML 属性、读文字不写 `attr`。
    - 现象：`script_error`「Cannot read properties of null (reading 'includes')」，在第 7 步（提交之后的读回核对），3 遍都是。agent 接手办完、6/6，但每遍多花 86–126 秒、23–30 次模型调用；提交已经做了，交接写了「可能已经生效」，agent 最后交的汇总是对的（站点上汇总是覆盖的，没数交了几次）。
    - 原因：脚本用 `ha.browser.extract({ fields: { text: { target: "getByRole('paragraph')", attr: "textContent" } } })`。`attr` 是取 HTML 属性（`getAttribute`），没有叫 `textContent` 的属性，返回 null。试跑停在第一次提交前，碰不到这一步（20.3 说过）。
    - 建议：`browser.extract` 遇到 `attr` 是 `textContent` / `innerText` / `text` 时按文字读（或者直接报错说「取文字不要写 attr」）；程序检查也可以拦这几个值。
-3. **固化员照例子写了 `ha.work.report`，F 第 1 次 3 轮都没写出来**。
+3. **固化员照例子写了 `ha.work.report`，F 第 1 次 3 轮都没写出来**。**已修（edeb8ce）**：任务没有 `work.report` 时例 1、例 5 去掉 `ha.work.report` 那几行和标题里的「被派的任务」，例子前面加一句「这个任务不是被派的……」（`compileExamples`）；没到试跑就没过的每一轮存进 `test_report.drafts`（`{ round, error }`），失败通知、`fail_reason` 按轮列出每一轮的原因，审核卡多一段「前面没过的几轮」，「看脚本」的试跑结果里也列。
    - 现象：最后一轮「程序检查没过：ha.work.report 要用工具 work.report，这个任务里没有这个工具」。任务不是被派的，没有这个工具。前两轮为什么没过没有留下（失败的版本 `test_report` 是空的）。
    - 原因：`routine/prompt.ts` 的 `COMPILE_EXAMPLES` 例 1、例 5 都以 `ha.work.report` 收尾（标了「被派的任务」），不管任务是不是被派的都给。
    - 建议：不是被派的任务，例子里去掉 `ha.work.report` 那几行（或者提示词里明写「这个任务没有 work.report」）；失败的版本把每轮没过的原因存进 `test_report`，便于查。
-4. **agent 能从 `browser.network_request` 看到页面的 token 原文**（F 第 1 次，安全）。
+4. **agent 能从 `browser.network_request` 看到页面的 token 原文**（F 第 1 次，安全）。**已修（edeb8ce）**：两个工具的输出过 `maskNetworkOutput`：「名字: 值」的行名字是 `secretHeaderName` 的（authorization、proxy-authorization、cookie、set-cookie，名字里带 token / secret / key / auth / cookie / session / passw / credential / csrf / xsrf / signature 的；HTTP/2 伪头不算）值换成 `••••`，多个 Set-Cookie 的续行一并去掉；别的行（网址、请求体、返回体）按 `SITE_SECRET_KEYS` 用 `maskText` 打码。请求头按名字里的词认、宁多勿少（不像字段名只认整个名字）：请求头的名字五花八门，值 agent 用不上（`browser.fetch` 本来就不许设），多打了不碍事。
    - 现象：agent 调 `browser.fetch` 读库存拿到 401 后，调了 Playwright MCP 的 `browser.network_request`（`part: "request-headers"`），输出里是 `authorization: Bearer bench-stock-token-7f3a91`。这个值进了模型上下文、过程记录（`session_events.output`），又进了固化员的材料（`x2-e2-F-v1-material.md` 第 71 行）。cookie 这次没出现。
    - 原因：`browser/tools.ts` 把 MCP 的 `browser_network_requests` / `browser_network_request` 当只读工具原样放出来，输出没有打码。这不是这一批新加的，但和 19.9「登录态外泄：请求头只记名字」的说法对不上：记接口那边打了码，这条路没打。
    - 建议：这两个工具的输出按请求头名字打码（`authorization`、`cookie`、`set-cookie`、`x-api-key`、名字里有 token / auth 的，同 19.3 的 `auth.headers` 规则），值换成 `••••`；或者打开「允许直接调网站接口」时不再给这两个工具（`network/requests.jsonl` 已经有了）。
-5. **HTTP 工具建议不知道认证头的格式**：记接口只记请求头名字，固化员只能猜 `Bearer {{…}}` 还是 `{{…}}`，两次猜的不一样。建议 `auth` 里多记认证头值的第一个词（`Bearer`、`Basic`、`Token` 这类方案名，不是密钥），材料里写出来。
+5. **HTTP 工具建议不知道认证头的格式**（**已修（edeb8ce）**：`auth.schemes` 记方案名，材料「认证」写「authorization（值是「Bearer <密钥>」）」或「值就是密钥本身」，规矩第 24 条照着写）：记接口只记请求头名字，固化员只能猜 `Bearer {{…}}` 还是 `{{…}}`，两次猜的不一样。建议 `auth` 里多记认证头值的第一个词（`Bearer`、`Basic`、`Token` 这类方案名，不是密钥），材料里写出来。
 6. **小的**：
-   - `browser.fetch` 对 401 的提示固定写「多半登录过期了」，这次是 token 接口（`browser.fetch` 本来就调不了），提示把 agent 往「登录」上带。可以看记录里这个主机有没有 token 认证的接口，有就提一句「这个接口可能要 token，browser.fetch 调不了」。
+   - **已修（edeb8ce，`fetchAuthHint`，见 19 节 401、403 那条）**`browser.fetch` 对 401 的提示固定写「多半登录过期了」，这次是 token 接口（`browser.fetch` 本来就调不了），提示把 agent 往「登录」上带。可以看记录里这个主机有没有 token 认证的接口，有就提一句「这个接口可能要 token，browser.fetch 调不了」。
    - F 第 2 次固化用了 997 秒（2 轮），比第 20 节的 2–7 分钟长得多；试跑要一页页翻（23 步）。机器负载 2–5，不是负载的原因。
 
 ### 21.4 基准自己的改动
