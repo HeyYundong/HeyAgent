@@ -2,6 +2,8 @@
 // - 一个正式的固化流程（RT-<n>），任务开着「先跑流程」；5 个版本：启用过的旧版、没成功（不适合固化）、正在用的、不用（写了理由）、待审核（修的版本，带两轮试跑报告和停下时的截图）；
 // - 运行：agent 办成的普通运行（固化的原料，能点「固化成流程」）、3 次脚本直接办成、1 次脚本停在第 2 步交给 agent 办完、2 次固化试跑（一次出错、一次停在提交前）；
 //   第二期（17.2、17.3）：1 次脚本停在登录页等人处理（suspended，运行在等人）、1 次等人处理后接着跑完（resumes / replayed）、1 次脚本跑完验收反问 agent 接着做（agentAfter）；
+//   第二期第二批（18.1、18.2）：1 次 agent 自己用 code.run（tools）写循环脚本（两段脚本：一段逐个打开商品页读详情、有一步出错；一段停在要人审批的那步），
+//   1 次脚本直接办成、中间有两次判断（ha.judge）；
 // - 待审核的第 5 版是运行办成后系统自动固化的（auto，17.1）；
 // - 一件「审核固化流程」（kind = routine）给任务负责人。
 // 运行只插页面要的几列（没有快照和消息，不能「继续」）。重复跑会先删掉上一次插的（按 note 标记和这个任务的固化流程），再重新插。
@@ -212,6 +214,8 @@ export async function insertRoutineFixtures(db: Db): Promise<{ routineId: string
   const suspendedRun = runId() // 刚才：脚本第 1 步打开榜单是登录页，停下等人登录，登录好接着跑（17.2）
   const resumedRun = runId() // 一天半前：脚本第 1 步遇到登录页，人登录后按记录跳过 1 步、接着跑完
   const agentAfterRun = runId() // 4 天前：脚本跑完报了办成，三方验收反问，agent 接着做完（17.3）
+  const agentScriptRun = runId() // 今天中午：agent 自己写循环脚本（code.run 带 tools，18.1）
+  const judgeRun = runId() // 两天半前：脚本直接办成，中间判断了两次（ha.judge，18.2）
   const testRuns = [routineTestSessionId(vid(5), 1), routineTestSessionId(vid(5), 2)]
   const testRunV3 = routineTestSessionId(vid(3), 1)
 
@@ -438,6 +442,137 @@ export async function insertRoutineFixtures(db: Db): Promise<{ routineId: string
     ])
   }
 
+  // 今天中午：agent 读完榜单，写了一段 node 脚本（code.run 带 tools）逐个打开 3 个候选的详情页读描述；第 3 个页面读不到，脚本接住了。
+  // 第二段脚本要存 2 个文件，第 2 个碰到「存文件要审批」的规则停下，agent 单独调用存完
+  {
+    const startMin = 90
+    const date = dateOf(startMin)
+    const products = [
+      { name: "桌面理线盒", url: "https://shop.example.com/item/10231" },
+      { name: "可折叠硅胶收纳篮", url: "https://shop.example.com/item/10457" },
+      { name: "磁吸厨房挂钩", url: "https://shop.example.com/item/10892" },
+    ]
+    const callA = "call_6f2d0c9a1e"
+    const callB = "call_b81e47d203"
+    const loop = `import ha from "heyagent"
+
+const items = ${JSON.stringify(products.map((p) => p.url))}
+const out = []
+for (const url of items) {
+  await ha.browser.navigate({ url })
+  try {
+    const { rows } = await ha.browser.extract({ list: "main", fields: { 描述: "getByTestId('desc')", 材质: "getByText(/材质/)" }, limit: 1 })
+    out.push({ url, ...rows[0] })
+  } catch (error) {
+    ha.log(\`读不到 \${url}：\${error.message}\`)
+    out.push({ url, 描述: "" })
+  }
+}
+console.log(JSON.stringify(out, null, 2))
+`
+    const loopSteps: EventSpec[] = products.flatMap((product, index) => {
+      const at = 40 + index * 4
+      const step = index * 2 + 1
+      const failed = index === 2
+      return [
+        { at, kind: "tool", title: "打开网页", toolId: "browser.navigate", input: { url: product.url }, output: `### Page\n- URL: ${product.url}\n- Title: ${product.name}`, ms: 1_600, trace: { scriptStep: step, scriptCallId: callA, urlAfter: product.url, title: product.name } },
+        failed
+          ? { at: at + 2, kind: "tool", title: "读取列表（出错）", toolId: "browser.extract", input: { list: "main", limit: 1 }, output: "出错：找不到 getByTestId('desc')：这个商品页没有描述区", ms: 5_000, trace: { scriptStep: step + 1, scriptCallId: callA } }
+          : { at: at + 2, kind: "tool", title: "读取列表", toolId: "browser.extract", input: { list: "main", limit: 1 }, output: `| 描述 | 材质 |\n|---|---|\n| ${product.name}，免打孔安装 | ABS |`, ms: 500, trace: { scriptStep: step + 1, scriptCallId: callA } },
+      ] satisfies EventSpec[]
+    })
+    const save = `import ha from "heyagent"
+
+const details = ${JSON.stringify(products.map((p) => ({ url: p.url })))}
+await ha.file.save({ name: "候选详情.json", content: JSON.stringify(details, null, 2) })
+await ha.file.save({ name: "新品日报 ${date}.md", content: "# 家居新品日报\\n…" })
+`
+    sessions.push({ ...base(agentScriptRun, startMin, 150), outcome: "achieved", outcomeBy: "review", outcomeReason: "日报里 5 个商品都有名字、价格和链接，3 个候选补了描述。", tokensIn: 86_000, tokensOut: 5_300, costUsd: 0.0318, stepCount: 9 })
+    events.set(agentScriptRun, [
+      { at: 1, kind: "plan", title: "按任务步骤开始", detail: "4 个步骤", tokensIn: 5_800, tokensOut: 260 },
+      { at: 9, kind: "tool", title: "打开家居类新品榜", toolId: "browser.navigate", input: { url: RANK_URL }, output: "### Page\n- Title: 家居 · 新品榜", ms: 2_100, tokensIn: 7_200, tokensOut: 120 },
+      { at: 20, kind: "tool", title: "读前 20 个新品", toolId: "browser.extract", input: { list: "getByRole('row')", limit: 20 }, output: "20 行", ms: 600, tokensIn: 11_000, tokensOut: 400 },
+      { at: 36, kind: "think", title: "要逐个打开 3 个候选读描述：写一段脚本循环做", detail: "先手动看过一个商品页，描述在 `data-testid=desc` 里；3 个页面结构一样，用 code.run（tools）一次做完。", tokensIn: 14_000, tokensOut: 900 },
+      ...loopSteps,
+      {
+        at: 54,
+        kind: "tool",
+        title: "运行代码",
+        toolId: "code.run",
+        input: { language: "node", code: loop, tools: true, timeout: 120 },
+        output: [
+          "退出码 0 · 用时 13.4 秒",
+          "--- stdout ---",
+          JSON.stringify(products.map((p, i) => ({ url: p.url, 描述: i === 2 ? "" : `${p.name}，免打孔安装` })), null, 2),
+          "--- stderr ---",
+          `[ha.log] 读不到 ${products[2]!.url}：找不到 getByTestId('desc')：这个商品页没有描述区`,
+          "脚本调了 6 次工具：browser.navigate 3 次；browser.extract 3 次，出错 1 次",
+        ].join("\n"),
+        ms: 13_400,
+        tokensIn: 16_500,
+        tokensOut: 1_200,
+      },
+      { at: 80, kind: "tool", title: "存文件", toolId: "file.save", input: { name: "候选详情.json" }, output: "已保存：候选详情.json（0.6 KB）", ms: 110, trace: { scriptStep: 1, scriptCallId: callB } },
+      { at: 81, kind: "rule", title: "命中规则「存日报要审批」", detail: "要存「新品日报」开头的文件，规则要求先交给人审批；脚本里不发起审批，停在这一步之前。" },
+      {
+        at: 82,
+        kind: "tool",
+        title: "运行代码（出错）",
+        toolId: "code.run",
+        input: { language: "node", code: save, tools: true, timeout: 60 },
+        output: ["退出码 1 · 用时 1.8 秒", "--- stderr ---", "Error: 第 2 步要人审批，没做：单独调用它（file.save）", "脚本调了 1 次工具：file.save 1 次；停在第 2 步：规则「存日报要审批」要人审批，没做：单独调用它"].join("\n"),
+        ms: 1_800,
+        tokensIn: 19_000,
+        tokensOut: 700,
+      },
+      { at: 100, kind: "tool", title: `存下日报「新品日报 ${date}.md」`, toolId: "file.save", input: { name: `新品日报 ${date}.md` }, output: `已保存：新品日报 ${date}.md（1.4 KB）`, ms: 110, tokensIn: 20_500, tokensOut: 1_100 },
+      { at: 120, kind: "tool", title: "报告办成了", toolId: "run.finish", input: { outcome: "achieved" }, output: "已收到，交给复核", ms: 20, tokensIn: 22_000, tokensOut: 300 },
+      { at: 140, kind: "verify", title: "AI 复核：办成", detail: "日报里 5 个商品都有名字、价格和链接，3 个候选补了描述。" },
+      { at: 141, kind: "done", title: "办成了", detail: `读了 20 个新品，挑了 5 个写进「新品日报 ${date}.md」，3 个候选补了描述（第 3 个商品页没有描述区）。` },
+    ])
+  }
+
+  // 两天半前：脚本直接办成，读完榜单后判断了两次「算不算家居收纳类」（ha.judge 用执行模型，花费记在运行上，不算 agent 在想）
+  {
+    const startMin = 2 * DAY + 12 * 60
+    const date = dateOf(startMin)
+    const all = routineSteps("新品榜", date)
+    const judges: EventSpec[] = [
+      { at: 0, kind: "plan", title: "流程判断：「桌面理线盒」算不算家居收纳类？ → 算（理线盒放在桌面上收电线，属于桌面收纳）", detail: "选项：算、不算", tokensIn: 820, tokensOut: 60, ms: 1_300 },
+      { at: 0, kind: "plan", title: "流程判断：「车载香薰（出风口款）」算不算家居收纳类？ → 不算（是车用香薰，不是家里用的，也不是收纳）", detail: "选项：算、不算", tokensIn: 790, tokensOut: 70, ms: 1_200 },
+    ]
+    // 前 4 步（打开、点标签、等列表、读列表）→ 两次判断 → 后面几步，桥的调用序号顺延
+    const merged = [...all.slice(0, 4), ...judges, ...all.slice(4)]
+    let second = 2
+    const steps = merged.map((step, index) => {
+      second += Math.max(1, Math.round((step.ms ?? 0) / 1000))
+      return { ...step, at: second, trace: { ...step.trace, routineStep: index + 1 } }
+    })
+    const seconds = steps.at(-1)!.at + 2
+    sessions.push({
+      ...base(judgeRun, startMin, seconds + 4),
+      outcome: "achieved",
+      outcomeBy: "review",
+      outcomeReason: "脚本报了办成；日报里 5 个商品都有名字、价格和链接。",
+      tokensIn: 1_610,
+      tokensOut: 130,
+      costUsd: 0.0009,
+      routine: routineState(3, startMin, seconds, {
+        state: "finished",
+        steps: steps.length,
+        commits: [{ step: 8, label: "保存日报", verified: `空间里有「新品日报 ${date}.md」` }],
+        input: {},
+        logs: ["判断了 2 次，挑出 5 个新品"],
+      }),
+    })
+    events.set(judgeRun, [
+      { at: 1, kind: "plan", title: "先跑固化流程「读家居新品榜、写日报」第 3 版", detail: "不调执行模型；脚本跑不通时交给 agent 接着做" },
+      ...steps,
+      { at: seconds + 2, kind: "verify", title: "AI 复核：办成", detail: "日报里 5 个商品都有名字、价格和链接。" },
+      { at: seconds + 3, kind: "done", title: "办成了", detail: `读了 20 个新品，判断了 2 个拿不准的，挑了 5 个写进「新品日报 ${date}.md」。` },
+    ])
+  }
+
   // 固化试跑：第 3 版 1 轮（通过）；第 5 版两轮：第 1 轮还按旧标签点、出错；第 2 轮停在提交前
   const testState = (version: number, startMin: number, seconds: number, rest: Partial<SessionRoutineState> & Pick<SessionRoutineState, "state" | "steps">): SessionRoutineState => ({
     ...routineState(version, startMin, seconds, rest),
@@ -630,5 +765,5 @@ export async function insertRoutineFixtures(db: Db): Promise<{ routineId: string
     createdAt: minutesAgo(180),
   })
 
-  return { routineId: routine, reviewVersionId: vid(5), itemId, runIds: [agentRunA, agentRunB, ...directRuns, fallbackRun, freshRun, suspendedRun, resumedRun, agentAfterRun], testRunIds: [testRunV3, ...testRuns] }
+  return { routineId: routine, reviewVersionId: vid(5), itemId, runIds: [agentRunA, agentRunB, ...directRuns, fallbackRun, freshRun, suspendedRun, resumedRun, agentAfterRun, agentScriptRun, judgeRun], testRunIds: [testRunV3, ...testRuns] }
 }
