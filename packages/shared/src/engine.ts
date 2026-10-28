@@ -376,6 +376,12 @@ export const builtinToolInputs = {
       .max(600)
       .optional()
       .describe("最多跑几秒，默认 60，最多 600；到时间整组进程被杀掉"),
+    tools: z
+      .boolean()
+      .optional()
+      .describe(
+        "true = 脚本里能调这次运行的工具（只认 node）：import ha from \"heyagent\"，用 ha.browser.click(...)、ha.tool(id, input) 这些，每一步照样过规则、白名单、审批、记录；不能上网。要重复做很多次同样的操作时用"
+      ),
   }),
   "work.dispatch": z.object({
     task: z.string().min(1).describe("派给哪个任务：任务 id，见系统提示里「可以派活给」"),

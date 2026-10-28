@@ -55,6 +55,9 @@ export const eventTraceSchema = z.object({
   title: z.string().optional(),
   /** 固化脚本做的：工具桥的第几次调用（从 1 开始）；agent 做的没有 */
   routineStep: z.number().int().positive().optional(),
+  /** agent 用 code.run（tools）写的脚本做的（第 18.1 节）：脚本里第几次调用、哪一次 code.run（模型的工具调用 id） */
+  scriptStep: z.number().int().positive().optional(),
+  scriptCallId: z.string().optional(),
 })
 export type EventTrace = z.infer<typeof eventTraceSchema>
 
