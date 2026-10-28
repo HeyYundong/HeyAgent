@@ -403,6 +403,20 @@ export const taskSchema = z.object({
       /** 第二期：没办成自动重试几次、隔多久（分钟）；不写 = 不重试 / 默认间隔（同 taskDispatchSchema） */
       retries: z.number().int().optional(),
       retryDelayMinutes: z.number().int().optional(),
+      /** 第三期（同 taskDispatchSchema，这里不能引 dispatch.ts）：外部系统能派活、收到事件就派一张、每天花费上限 */
+      allowApi: z.boolean().optional(),
+      events: z
+        .array(
+          z.object({
+            event: z.string(),
+            params: z.record(z.string(), z.string()).optional(),
+            keyPath: z.string().optional(),
+            priority: z.enum(["high", "normal", "low"]).optional(),
+            delayMinutes: z.number().int().optional(),
+          })
+        )
+        .optional(),
+      dailyBudgetUsd: z.number().nullable().optional(),
     })
     .optional(),
   /** 派活：谁能派活给这个任务（任务 id） */

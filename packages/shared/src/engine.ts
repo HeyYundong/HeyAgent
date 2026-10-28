@@ -3,6 +3,7 @@
 import { z } from "zod"
 
 import { sessionDesktopSnapshotSchema } from "./desktop.js"
+import { workDelayMinutesSchema, workPrioritySchema } from "./dispatch.js"
 import { routineSnapshotSchema } from "./routine.js"
 import {
   checkpointKindSchema,
@@ -108,6 +109,10 @@ export const sessionSnapshotSchema = z.object({
       from: z.object({ taskId: z.string(), taskTitle: z.string(), sessionId: z.string() }).optional(),
       /** 人在派活页派的：谁（第一条消息里写「某某手动派的」） */
       fromUser: z.object({ id: z.string(), name: z.string() }).optional(),
+      /** 第三期：外部系统用 API 密钥派的（第一条消息写「外部系统（API 密钥「名字」）派来的」）；密钥删了 keyName 写「已删除的密钥」 */
+      fromApi: z.object({ keyName: z.string() }).optional(),
+      /** 第三期：外部事件派的：事件名（第一条消息写「外部事件「名字」派来的」） */
+      fromEvent: z.object({ event: z.string() }).optional(),
       /** run-outcome 6.1：被派任务声明的要交回的结果（开始运行时冻进来）；必填的没用 work.report 交，结果记没办成。加这个字段之前开始的运行没有 = 不要求 */
       results: z.array(z.object({ name: z.string(), description: z.string(), required: z.boolean() })).optional(),
     })
@@ -396,6 +401,9 @@ export const builtinToolInputs = {
             .optional()
             .describe("去重键：对方任务没有标「去重」的参数时必填，同一件事每次都填同一个值"),
           note: z.string().max(1000).optional(),
+          // 第三期：优先级、过多久再办（一般不用填）
+          priority: workPrioritySchema.optional().describe("优先级：high 先办、low 后办，不填 = normal。只影响对方任务自己的排队"),
+          delayMinutes: workDelayMinutesSchema.optional().describe("过多少分钟再办（例如等对方准备好），不填 = 马上排队"),
         })
       )
       .min(1)
@@ -504,6 +512,10 @@ export const fireEventInputSchema = z.object({
 export const fireEventResultSchema = z.object({
   resumedSessionIds: z.array(z.string()),
   firedTodoIds: z.array(z.string()),
+  /** 派活第三期：按任务上的「收到事件就派一张」派出的单（existing = 同一件事已经有单了，没新建） */
+  dispatched: z.array(z.object({ taskId: z.string(), itemId: z.string(), existing: z.boolean() })),
+  /** 派活第三期：配了这个事件、但这次没派成的（事件数据缺字段、撞了上限等），reason 给人看 */
+  dispatchRejected: z.array(z.object({ taskId: z.string(), reason: z.string() })),
 })
 export type FireEventResult = z.infer<typeof fireEventResultSchema>
 

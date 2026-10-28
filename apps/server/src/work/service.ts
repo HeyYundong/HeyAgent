@@ -2,6 +2,7 @@
 // 监工写好的读取部分；派活、领单、结束回写、清扫、重办、不办了、改参数由包 A 写（engine/dispatch/ 和这里）。
 import {
   TIME_ZONE,
+  workPriorityOf,
   type RunOutcome,
   type TaskDispatch,
   type WorkItem,
@@ -57,7 +58,7 @@ export async function occupiedSlots(db: DbOrTx, taskId: string): Promise<number>
 /** 行 → 接口形状。taskTitle 等关联字段由调用方一次查好传进来 */
 function toWorkItem(
   row: WorkItemRow,
-  extra: { taskTitles: Map<string, string>; sessionStatus: Map<string, WorkItem["sessionStatus"]>; queuePosition: Map<string, number> }
+  extra: { taskTitles: Map<string, string>; sessionStatus: Map<string, WorkItem["sessionStatus"]>; queuePosition: Map<string, number>; apiKeyNames: Map<string, string> }
 ): WorkItem {
   return {
     id: row.id,
@@ -72,10 +73,14 @@ function toWorkItem(
     sessionStatus: row.status === "running" && row.sessionId ? (extra.sessionStatus.get(row.sessionId) ?? null) : null,
     attempts: row.attempts,
     via: row.via,
+    priority: workPriorityOf(row.priority),
     fromTaskId: row.fromTaskId,
     fromTaskTitle: row.fromTaskId ? (extra.taskTitles.get(row.fromTaskId) ?? row.fromTaskId) : null,
     fromSessionId: row.fromSessionId,
     fromUserId: row.fromUserId,
+    apiKeyId: row.apiKeyId,
+    apiKeyName: row.apiKeyId ? (extra.apiKeyNames.get(row.apiKeyId) ?? null) : null,
+    fromEvent: row.fromEvent,
     depth: row.depth,
     result: row.result ?? null,
     error: row.error,
@@ -98,7 +103,8 @@ async function enrich(db: DbOrTx, rows: WorkItemRow[]) {
   const taskIds = [...new Set(rows.flatMap((row) => [row.taskId, row.fromTaskId].filter((id): id is string => Boolean(id))))]
   const sessionIds = rows.filter((row) => row.status === "running" && row.sessionId).map((row) => row.sessionId!)
   const queuedTasks = [...new Set(rows.filter((row) => row.status === "queued").map((row) => row.taskId))]
-  const [tasks, sessions, queued] = await Promise.all([
+  const apiKeyIds = [...new Set(rows.flatMap((row) => (row.apiKeyId ? [row.apiKeyId] : [])))]
+  const [tasks, sessions, queued, apiKeys] = await Promise.all([
     taskIds.length ? db.select({ id: t.tasks.id, title: t.tasks.title }).from(t.tasks).where(inArray(t.tasks.id, taskIds)) : [],
     sessionIds.length ? db.select({ id: t.sessions.id, status: t.sessions.status }).from(t.sessions).where(inArray(t.sessions.id, sessionIds)) : [],
     queuedTasks.length
@@ -106,9 +112,11 @@ async function enrich(db: DbOrTx, rows: WorkItemRow[]) {
           .select({ id: t.workItems.id, taskId: t.workItems.taskId })
           .from(t.workItems)
           // 排队等自动重试的（not_before 在将来）不算名次：到点才领
+          // TODO（第三期，包 A）：名次按领单的顺序算：priority desc, created_at, id（和 pump.ts 一致）；「过多久再办」没到点的同样不算
           .where(and(eq(t.workItems.status, "queued"), inArray(t.workItems.taskId, queuedTasks), or(isNull(t.workItems.notBefore), lte(t.workItems.notBefore, sql`now()`))))
           .orderBy(asc(t.workItems.createdAt), asc(t.workItems.id))
       : [],
+    apiKeyIds.length ? db.select({ id: t.apiKeys.id, name: t.apiKeys.name }).from(t.apiKeys).where(inArray(t.apiKeys.id, apiKeyIds)) : [],
   ])
   const queuePosition = new Map<string, number>()
   const seen = new Map<string, number>()
@@ -121,6 +129,7 @@ async function enrich(db: DbOrTx, rows: WorkItemRow[]) {
     taskTitles: new Map(tasks.map((row) => [row.id, row.title])),
     sessionStatus: new Map(sessions.map((row) => [row.id, row.status])),
     queuePosition,
+    apiKeyNames: new Map(apiKeys.map((row) => [row.id, row.name])),
   }
 }
 
@@ -255,6 +264,9 @@ export async function workTaskStats(db: DbOrTx, taskId: string): Promise<WorkTas
     maxRunning: task.dispatch?.maxRunning ?? 0,
     doneToday: doneToday?.n ?? 0,
     failed: by.get("failed") ?? 0,
+    // TODO（第三期，包 A）：今天被派来的运行花了多少（dispatchSpentToday），和领单时判断花费上限用同一份
+    spentTodayUsd: 0,
+    dailyBudgetUsd: task.dispatch?.dailyBudgetUsd ?? null,
   }
 }
 
@@ -293,6 +305,9 @@ export async function workQueueStats(db: DbOrTx): Promise<WorkQueueStats[]> {
       running: n("running"),
       occupied: held.length,
       holders: held,
+      // TODO（第三期，包 A）：同 workTaskStats，按任务一次查出今天的花费
+      spentTodayUsd: 0,
+      dailyBudgetUsd: task.dispatch?.dailyBudgetUsd ?? null,
     }
   })
 }
