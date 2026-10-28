@@ -1768,3 +1768,26 @@ curl -X POST http://<host>:8080/api/work-items/W-57/cancel -H "Authorization: Be
 - 记忆的向量存 `memory_embeddings`（`memory_id, model_id` 主键，`content_hash = md5(applies_to || E'\n' || content)`），API 进程的后台循环算（一批 32 条，没活干时每分钟看一次）；失败写 `memories.embed_error` / `embed_tried_at`（推 `memories`）。记忆新建、修改、审核通过、换 embedding 模型后会叫醒它。
 - 系统提示：手选的照旧在「## 记忆（人审核过的，必须遵守）」；自动挑的另起「## 可能相关的记忆（……和这次的事有关就照做，无关的忽略）」，不写相似度。
 - 助手：`create_task` / `update_task` 能设 `autoMemory`、`autoMemoryLimit`（`update_task` 不给就保持原值）；新建任务的卡片上这两项是默认值时不列。
+
+## 22. 子 agent：一次运行拆给几个子 agent 同时做（2026-10-28）
+
+设计、约定见 `docs/dev/sub-agents.md`。代码：`apps/server/src/engine/subagents/`（`start.ts` 开子运行、`agent-tools.ts` 三个工具、`pump.ts` 放行、`notify.ts` 叫醒、`settle.ts` 结束 / 停掉 / 合计花费、`results.ts` 交回的文字、`view.ts` 页面数据、`sweep.ts` 清扫）、`engine/run-ended.ts`（运行结束的统一入口）；约定在 `packages/shared/src/subagents.ts`。迁移 0037。**没有新的 HTTP 接口、权限。**
+
+- **运行的种类**：`sessions.kind` 多 `sub`（子运行），`triggered_by = sub`，`parent_session_id` = 父运行，编号 `<父运行编号>.<n>`（例如 `R-12-3.2`，n 从 1 往上数，补拆的接着数）。按父取子一律带 `kind = 'sub'`（被派的运行也写了 `parent_session_id`）。看子运行的权限同看父运行（同一个任务）。
+- **内置工具**（模型看到的名字）：`subagent_start`「拆给子 agent」（任务里选，进 `tools` 表、规则页能挂规则）；`subagent_wait`「等子 agent」、`subagent_cancel`「停掉子 agent」（选了前者自动带上）。输入见 shared 的 `subagentStartInputSchema` / `subagentWaitInputSchema` / `subagentCancelInputSchema`。只有父运行（`kind = run`）能用；子快照里没有这三个，固化脚本、`code.run` 的脚本里调一律 `step_error`。
+- **tRPC**：
+  - `sessions.subagents({ parentId }) → SubagentRow[]`（按 n）：`{ id, n, title, goal, state, outcome?, outcomeReason?, outcomeBy?, costUsd, startedAt, endedAt?, waitingWhat?, delivered }`。`state`：`queued` 排队（等 `subagent.queue:<父>`）/ `running` 执行中 / `waiting` 挂起等资源（等待浏览器、等待桌面）/ `needs_human` 等人处理 / `ended` 结束（出错、被停掉的 `outcomeReason` 是错误原因）。
+  - `sessions.list` / `sessions.page` / `sessions.get` 的 `SessionSummary` 多：`sub?: { n, title }`（子运行才有，父运行编号是 `parentSessionId`）；`subagents?: { total, queued, running, needsHuman, ended, achieved, costUsd }`（拆过的父运行才有；`running` 含等浏览器、等桌面；`costUsd` 只是子运行的合计，页面显示「父 + 子」要自己加 `costUsd`）。`kind` 按 id 取时可能是 `sub`。
+  - `sessions.get` 的 `SessionRun` 多 `subGoal?`（子运行才有）：`{ n, title, goal, input, results: [{ name, value? }], files: [{ id, name, mime, size, url }] }`（交了的字段带 `value`；文件是拆的时候给它读的，只读）。
+  - `sessions.list`（不按 id 取）、`sessions.page`、看板、助手的 `list_sessions`、定时「上一次没跑完就跳过」都不含子运行；会话页「今天花了」含子运行。
+  - `settings.get` 多 `subagent: { maxParallel, maxPerRun, maxRunningGlobal, maxCostUsd, maxSteps }`；`settings.updateSubagent(同上)`（只有主管；审计 `settings.subagent.update`；提交后发一次 `subagent.pump`）。
+  - `tasks.list` 的 `TaskDef` 多 `subagentModelId?`；`tasks.create` / `tasks.update` 输入多 `subagentModelId?`（**整体替换：不带会清空**；要存在、是聊天模型）。
+  - `sessions.setOutcome`（改结果）、`taskMemory.summarize`（总结）、`routine.compile`（固化）对子运行回 `BAD_REQUEST`；拆过子 agent 的父运行也不能固化（「这次运行拆了子 agent，子 agent 做的那部分录不到，不能固化」）。
+  - `engine.resumeNow`：排队的子运行回 `BAD_REQUEST`「排队中：等前面的子 agent 做完，名额空出来会自动开始」；在等子 agent 的父运行照常放行。`engine.cancel` 子运行照常（父运行收到「某某取消了」）；取消父运行时没结束的子运行跟着停。
+- **挂起时的 `waiting.what`**：父运行等子 agent 写「子 agent（还有 N 个没结束）」（会话列表拼成「在等：子 agent（还有 N 个没结束）」）；排队的子运行写「排队（等前面的子 agent 做完）」。
+- **队列**：`subagent.pump`（stately，`singletonKey = "all"`：全系统一个，按名额放行排队的子运行，父运行已经结束的排队子运行跟着取消）；`subagent.notify`（stately，`singletonKey` = 父运行编号：子运行结束后看要不要叫醒父运行）。清扫并在每分钟的 `work.sweep` 里（父已结束的子运行停掉、漏了的叫醒补发、有排队的发 pump）。
+- **事件名**：`subagent.queue:<父>`（排队）、`subagent.all:<父>` / `subagent.any:<父>`（父运行等）；外部事件接口和控制台不能发 `subagent.` 开头的（第 7 节）。
+- **空间文件**：父运行的空间（`engine.sessionFiles`、`file.list`）多只读目录 `subs/<n>/`，是第 n 个子 agent 空间里的文件（路径照它在子空间里的），来源「子 agent」；`subs/` 是保留目录，agent 不能往里写。子 agent 拿到的父运行文件（拆的时候给的 `fileIds`）在它空间的 `attachments/<原路径>`，只读。
+- **审计**：开出子运行 `session.subagent.start`（target 父运行，detail `{ ids }`）、停掉子运行 `session.subagent.stop`（target 子运行，detail `{ reason }`），都记系统（`actorId` 为空）。
+- **实时推送**：`sessions` 表变了多失效 `sessions.subagents`。
+- **演示数据**：`pnpm --filter @heyagent/server dev:subagent-fixture`（加 `--test` 进测试库）：一个父运行在等子 agent，拆了 4 个（2 个办成、1 个没办成、1 个排队）。

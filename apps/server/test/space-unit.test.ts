@@ -145,6 +145,18 @@ describe("空间里的路径（2.3）", () => {
     expect(entries[7]).toMatchObject({ scope: "session", source: "agent", writable: true })
     expect(entries[2]).toMatchObject({ source: "download", writable: false })
   })
+
+  it("别的运行的产物（子 agent 拿到的父运行文件）放 attachments/<原路径>，只读，不和自己的路径撞（docs/dev/sub-agents.md 5.3）", () => {
+    const rows = [
+      row({ kind: "artifact", name: "a.csv", path: "out/a.csv", sessionId: "S-parent" }),
+      row({ kind: "artifact", name: "a.csv", path: "out/a.csv" }),
+    ]
+    const entries = assignSpacePaths(rows, "S-1")
+    expect(entries.map((entry) => [entry.path, entry.source, entry.writable])).toEqual([
+      ["attachments/out/a.csv", "attachment", false],
+      ["out/a.csv", "agent", true],
+    ])
+  })
 })
 
 describe("file.edit 的替换", () => {
@@ -368,7 +380,7 @@ describe("workspace 的同步和对比", () => {
     expect(reads).toBe(3)
     expect(await readFile(join(dirs.workspace, "state/progress.json"), "utf8")).toBe('{"done":1}')
     expect(await readFile(join(dirs.ro, "attachments/报价.xlsx"), "utf8")).toBe("xlsx")
-    expect(prepared.readonlyDirs.map((dir) => dir.name)).toEqual(["attachments", "downloads", "screenshots", "tool-outputs", "clipboard", "network"])
+    expect(prepared.readonlyDirs.map((dir) => dir.name)).toEqual(["attachments", "downloads", "screenshots", "tool-outputs", "clipboard", "network", "subs"])
     expect([...prepared.before.keys()].sort()).toEqual(["scripts/a.py", "state/progress.json"])
 
     // 模拟代码跑了一次：改一个、touch 一个、删一个、新建几个、建符号链接、在 node_modules 里装包
@@ -401,7 +413,7 @@ describe("workspace 的同步和对比", () => {
     expect(reads).toBe(1) // 只有 state 变了；附件没变不重写
     const left = readdirSync(dirs.workspace).sort()
     // 空目录留着（scripts/ 里的文件被删了，目录还在）
-    expect(left).toEqual(["attachments", "clipboard", "d", "downloads", "network", "node_modules", "out", "screenshots", "scripts", "state", "tool-outputs"])
+    expect(left).toEqual(["attachments", "clipboard", "d", "downloads", "network", "node_modules", "out", "screenshots", "scripts", "state", "subs", "tool-outputs"])
     expect(existsSync(join(dirs.workspace, "out/result.csv"))).toBe(false)
     expect(existsSync(join(dirs.workspace, "out/link"))).toBe(false)
     expect(existsSync(join(dirs.workspace, "scripts/a.py"))).toBe(false)

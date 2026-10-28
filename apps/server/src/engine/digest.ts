@@ -154,6 +154,8 @@ export async function digestSession(
     .from(t.sessions)
     .where(eq(t.sessions.id, sessionId))
   if (!session) throw new EngineError("NOT_FOUND", `找不到运行 ${sessionId}`)
+  // 子运行（docs/dev/sub-agents.md 9.1）：只做了父运行的一部分，在父运行上总结
+  if (session.kind === "sub") throw new EngineError("BAD_REQUEST", "子 agent 的运行不能总结，在父运行上总结")
   if (!isRunEnded(session.status))
     throw new EngineError(
       "BAD_REQUEST",

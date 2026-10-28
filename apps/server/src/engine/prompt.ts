@@ -8,6 +8,7 @@ import {
   riskLabel,
   RUN_FINISH_TOOL_ID,
   RUN_NOT_DONE_TOOL_ID,
+  SUBAGENT_START_TOOL_ID,
   WORK_DISPATCH_TOOL_ID,
   WORK_LIST_TOOL_ID,
   WORK_REPORT_TOOL_ID,
@@ -39,9 +40,60 @@ export function scriptToolsLines(run: string): string[] {
   ]
 }
 
+/** 系统提示要的、快照里没有的数（docs/dev/sub-agents.md 4.3：选了「拆给子 agent」的父运行写名额；一次运行里不变） */
+export interface PromptExtra {
+  subagent?: { maxParallel: number; maxPerRun: number }
+}
+
+/**
+ * 父运行「拆给子 agent」一节（docs/dev/sub-agents.md 4.3）：什么时候拆、Chrome 个数、名额、怎么等。
+ * 只写通用的判断标准，具体业务里该怎么拆由主管写进技能或步骤
+ */
+export function subagentSection(snapshot: SessionSnapshot, toolNames: Map<string, string>, limits: { maxParallel: number; maxPerRun: number }): string {
+  const name = (id: string, fallback: string) => toolNames.get(id) ?? fallback
+  const start = name(SUBAGENT_START_TOOL_ID, "subagent_start")
+  const wait = name("subagent.wait", "subagent_wait")
+  const cancel = name("subagent.cancel", "subagent_cancel")
+  const chromes = snapshot.browser?.profiles.length ?? 0
+  const browserLine = snapshot.browser
+    ? chromes === 1
+      ? "- 用浏览器的子 agent 每个要一个 Chrome：本任务只允许 1 个 Chrome，所以用浏览器的子 agent 只能一个一个做（你自己开着浏览器时它们还要等你用完）。要在浏览器里做的几件事拆开不会更快，除非每件都还有很多不用浏览器的活。"
+      : chromes === 0
+        ? "- 用浏览器的子 agent 每个要一个 Chrome：现在没有可用的 Chrome 配置，不要把要用浏览器的事拆出去。"
+        : `- 用浏览器的子 agent 每个要一个 Chrome：本任务允许 ${chromes} 个 Chrome，所以同时最多 ${chromes} 个子 agent 能用浏览器，多的会等。你自己开着浏览器时还要再少一个。`
+    : ""
+  return [
+    "## 拆给子 agent",
+    `用 ${start} 把几件互相独立的事交给子 agent 同时做，每个子 agent 是一次单独的运行，做完把结果交回给你。`,
+    "- 适合拆：几件事互不依赖、每件都要好几步（例如在几个网站各查一遍、几份文件各自整理、对一批对象各做同样的一件事），每件能单独说清目标和交回什么。",
+    "- 不要拆：步骤有先后、后一步要用前一步的结果；一两步就能做完；要在同一个页面、同一个登录里连着操作。",
+    browserLine,
+    "- 写子目标：子 agent 看不到你的对话、你读过的网页和文件，只看到你写的目标、输入和给它的文件；写清做到什么算完、交回什么（字段写在 results 里，文件让它存到空间里）。",
+    `- 这次运行同时最多 ${limits.maxParallel} 个子 agent 在跑，一共最多拆 ${limits.maxPerRun} 个。`,
+    `- 拆完先做你自己能做的，再用 ${wait} 等；收到结果后自己核对、汇总。子 agent 写的文件在你空间的 subs/<n>/ 下（只读）。没办成的看原因：补一个写得更具体的子 agent、自己做，或者如实报没办成。不要把子 agent 没做到的说成做到了。`,
+    `- 子 agent 还没结束时不能报结果：先等完，或者用 ${cancel} 停掉不要的。有人让你提前继续时，子 agent 可能还没结束：先用 ${wait}（mode: none）看现状再决定。`,
+  ]
+    .filter(Boolean)
+    .join("\n")
+}
+
+/** 子运行「你是子 agent」一节（docs/dev/sub-agents.md 5.2）：所有子 agent 都一样（兄弟之间能命中前缀缓存） */
+export function subAgentRoleSection(toolNames: Map<string, string>): string {
+  const report = toolNames.get("work.report") ?? "work_report"
+  const finish = toolNames.get(RUN_FINISH_TOOL_ID) ?? "run_finish"
+  return [
+    "## 你是子 agent",
+    "这次运行是父运行拆出来的，只做第一条消息里的子目标，做完就结束，不要去做父任务的别的部分。",
+    `- 要交回的字段用 ${report} 交；要交回的文件存进你的空间，在 ${finish} 的 summary 里写明路径，父 agent 能读到。`,
+    `- 要等几小时、几天的事（等回复、等审核）不要等：调用 ${finish} 报没办成，写清在等什么，父 agent 会决定。`,
+    "- 遇到验证码、登录页照常交给人处理；规则要求的审批照常等人。",
+  ].join("\n")
+}
+
 export function buildSystemPrompt(
   snapshot: SessionSnapshot,
-  toolNames: Map<string, string>
+  toolNames: Map<string, string>,
+  extra: PromptExtra = {}
 ): string {
   const { task } = snapshot
   const sections: string[] = []
@@ -53,9 +105,13 @@ export function buildSystemPrompt(
     ].join("\n")
   )
 
+  // 子运行（docs/dev/sub-agents.md 5.2）：父任务的目标只当背景，子目标在第一条消息里；不写步骤
   sections.push(
-    `## 任务\n${task.title}\n\n## 目标（做到什么算完成）\n${task.goal}`
+    snapshot.sub
+      ? `## 任务\n${task.title}\n\n## 父任务的目标（背景，你只做第一条消息里的子目标）\n${task.goal}`
+      : `## 任务\n${task.title}\n\n## 目标（做到什么算完成）\n${task.goal}`
   )
+  if (snapshot.sub) sections.push(subAgentRoleSection(toolNames))
 
   // 「报结果」（run.finish）每个任务都自带；2026-10-20 以前开始的运行快照里没有，提示词照旧（「报没完成」那套）
   const finishName = snapshot.tools.some((tool) => tool.id === RUN_FINISH_TOOL_ID) ? (toolNames.get(RUN_FINISH_TOOL_ID) ?? "run_finish") : undefined
@@ -80,7 +136,9 @@ export function buildSystemPrompt(
     )
   }
 
-  if (task.steps.length) {
+  if (snapshot.sub) {
+    // 子运行没有步骤（子快照里清空了），也不写「自己规划」那句：子目标在第一条消息里
+  } else if (task.steps.length) {
     const lines = task.steps.map(
       (step, index) =>
         `${index + 1}. ${step.text}${step.wait ? "（这一步允许挂起等待）" : ""}${step.checkpoint ? `\n   检查点：${step.checkpoint}` : ""}`
@@ -165,6 +223,8 @@ export function buildSystemPrompt(
         : `## 可以派活给\n现在没有任务允许你派活（要对方任务的负责人在「谁能派活给它」里加上这个任务），不要调 ${name}。`
     )
   }
+
+  if (extra.subagent && snapshot.tools.some((tool) => tool.id === SUBAGENT_START_TOOL_ID)) sections.push(subagentSection(snapshot, toolNames, extra.subagent))
 
   if (snapshot.browser) {
     const { profiles, allowedDomains, allowEvaluate, allowVision } = snapshot.browser
@@ -256,7 +316,7 @@ export function buildSystemPrompt(
         "## 空间文件",
         "这次运行有一个自己的文件空间（只属于这次运行，负责人在界面里能看能下载），按路径找文件：",
         "- agent 写的文件在你给的路径，例如 result.csv、state/progress.json、scripts/clean.py。同一路径再存就是覆盖（文件 id 不变，不留旧版本）。",
-        "- 别的来源只读，放在固定目录：attachments/ 附件、downloads/ 浏览器下载、screenshots/ 截图、tool-outputs/ 太长的工具输出全文、clipboard/ 剪贴板工具存的、network/ 记下的网页请求。写文件的路径不能用这几个目录开头。",
+        `- 别的来源只读，放在固定目录：attachments/ 附件、downloads/ 浏览器下载、screenshots/ 截图、tool-outputs/ 太长的工具输出全文、clipboard/ 剪贴板工具存的、network/ 记下的网页请求${has(SUBAGENT_START_TOOL_ID) ? "、subs/<n>/ 第 n 个子 agent 的文件" : ""}。写文件的路径不能用这几个目录开头。`,
         [
           `- ${name("file.list")} 列出全部（路径、id、来源、大小）`,
           has("file.read") ? `${name("file.read")} 按路径或 id 读` : "",
@@ -298,9 +358,11 @@ export function buildSystemPrompt(
       "## 怎么工作",
       "- 开始干活前先用 plan.set 写下你打算怎么做（几步）；做法变了就再调一次。",
       "- 每一步先想清楚再调工具；能并行的工具调用可以一次提出多个。",
-      snapshot.desktop
-        ? "- 要等外部的事或等一段时间，用 session.wait；要人批准、回答，用 ask.human；要人在桌面上动手的，用桌面那一节说的 desktop_ask_human。不要假装已经等到或已经拿到批准。"
-        : "- 要等外部的事或等一段时间，用 session.wait；要人批准、回答或去登录，用 ask.human。不要假装已经等到或已经拿到批准。",
+      snapshot.sub
+        ? "- 要人批准、回答，用 ask.human；不要等很久的事（上面「你是子 agent」那一节）。不要假装已经拿到批准。"
+        : snapshot.desktop
+          ? "- 要等外部的事或等一段时间，用 session.wait；要人批准、回答，用 ask.human；要人在桌面上动手的，用桌面那一节说的 desktop_ask_human。不要假装已经等到或已经拿到批准。"
+          : "- 要等外部的事或等一段时间，用 session.wait；要人批准、回答或去登录，用 ask.human。不要假装已经等到或已经拿到批准。",
       has("file.save")
         ? `- 要交付的表格、文档用 ${name("file.save")} 存成文件，最后在总结里写明路径。`
         : "- 要交付的表格、文档用 file.save 存成文件。",

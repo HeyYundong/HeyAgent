@@ -12,6 +12,7 @@ import type { ModelMessage, ToolResultPart } from "ai"
 import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm"
 import {
   RUN_FINISH_TOOL_ID,
+  SUBAGENT_START_TOOL_ID,
   routineInputOf,
   routineStopKindLabel,
   runOutcomeLabel,
@@ -55,8 +56,12 @@ import { runtime } from "./runtime.js"
 import { maskSecretFields } from "./secrets.js"
 import { loadEngineSettings } from "./settings.js"
 import type { SessionRow, ToolOutcome } from "./tools/builtin.js"
+import { readSubagentSettings } from "../data/config/settings.js"
 import { recheckWorkDoneAfterSuspend } from "./dispatch/notify.js"
-import { settleWorkItemInTx } from "./dispatch/settle.js"
+import { afterRunEndedInTx } from "./run-ended.js"
+import { recheckSubagentWaitAfterSuspend } from "./subagents/notify.js"
+import { openChildrenText } from "./subagents/results.js"
+import { familyCost, openChildrenOf, patchSubResultInTx, stopChildrenInTx } from "./subagents/settle.js"
 import {
   claimText,
   combineReview,
@@ -190,8 +195,8 @@ async function failSession(
       title: "运行失败",
       detail: reason,
     })
-    // 被派的运行：派活单跟着记「没办成」（原因同运行的），或者排队等自动重试
-    const settled = await settleWorkItemInTx(db, tx, session.id, {
+    // 被派的运行：派活单跟着记「没办成」（原因同运行的），或者排队等自动重试；子运行叫醒父运行、父运行停掉子运行（run-ended.ts）
+    const settled = await afterRunEndedInTx(db, tx, session.id, {
       status: "failed",
       error: reason.slice(0, 2000),
       retryable: options.retryable,
@@ -203,8 +208,8 @@ async function failSession(
   })
   if (!failed) return
   // 先通知负责人，再记固化流程的统计、看要不要自动固化（afterRunSettled）：失败的消息不该等这些。
-  // 固化试跑不通知负责人（固化没成功时由固化那边通知）；还会自动重试的这次不通知
-  if (session.kind !== "routine_test" && failed.settled?.kind !== "retry" && snapshot) {
+  // 固化试跑不通知负责人（固化没成功时由固化那边通知）；还会自动重试的这次不通知；子运行不通知（结果交给父 agent，docs/dev/sub-agents.md 9.1）
+  if (session.kind !== "routine_test" && session.kind !== "sub" && failed.settled?.kind !== "retry" && snapshot) {
     const retried = failed.settled?.kind === "failed" ? failed.settled.autoRetries : 0
     await notifyUsers(db, {
       userIds: [snapshot.task.ownerId],
@@ -231,11 +236,18 @@ async function finishRun(
   db: Db,
   session: SessionRow,
   snapshot: SessionSnapshot,
-  input: { text: string; claim?: AgentClaim; messages?: ModelMessage[] }
+  input: {
+    text: string
+    claim?: AgentClaim
+    messages?: ModelMessage[]
+    /** 结果已经定了（子运行到了花费 / 步数上限，docs/dev/sub-agents.md 6.4）：不看硬规则、不复核；title 是结束事件的标题 */
+    forced?: Judged & { title: string }
+  }
 ): Promise<RunOutcome> {
   const report = claimText(input.claim, input.text)
   // 被派的单上写的总结：run.finish 的 summary，或者最后那段文字
   const summary = input.claim?.summary || input.text
+  const isSub = session.kind === "sub"
   const finished = await db.transaction(async (tx) => {
     for (const message of input.messages ?? []) await appendMessage(tx, session.id, message)
     const facts = await outcomeFactsInTx(tx, session.id, snapshot, input.claim)
@@ -243,7 +255,13 @@ async function finishRun(
     // 要不要复核（5.1）：硬规则还没定论（agent 说办成了、没有三方验收）就一定复核；没有复核模型的直接记没办成
     let reviewModelId: string | undefined
     let result: Judged | undefined
-    if (verdict.final) result = finalByRules(verdict)
+    if (input.forced) result = { outcome: input.forced.outcome, by: input.forced.by, reason: input.forced.reason, ...(input.forced.failKind ? { failKind: input.forced.failKind } : {}) }
+    else if (verdict.final) result = finalByRules(verdict)
+    else if (isSub)
+      // 子运行不复核（docs/dev/sub-agents.md 9.1）：run.finish 报的 + 硬规则就是定论；只回文字、提醒过还不报的记没办成
+      result = input.claim
+        ? { outcome: verdict.outcome, by: verdict.by, reason: verdict.reason }
+        : { outcome: "not_achieved", by: "rule", reason: "子 agent 没调用 run_finish 报结果", failKind: "not_done" }
     else {
       reviewModelId = await reviewModelFor(tx, snapshot)
       if (!reviewModelId) result = noReviewModel()
@@ -267,13 +285,21 @@ async function finishRun(
     if (updated.length === 0) throw new RollbackSignal()
     await appendEvent(tx, session.id, {
       kind: "done",
-      title: finishTitle(facts, result),
+      title: input.forced?.title ?? finishTitle(facts, result),
       detail: [report.trim(), result ? `结果：${runOutcomeLabel[result.outcome]}${result.reason ? `（${result.reason}）` : ""}` : ""].filter(Boolean).join("\n\n") || null,
     })
-    // 被派的运行：有结果的现在就结算派活单（办成 → 办完；没办成 → 没办成，不重试）；要复核的等复核完
+    // 子运行交回给父的总结、依据（docs/dev/sub-agents.md 7.3），在叫醒父运行之前写好
+    if (isSub)
+      await patchSubResultInTx(tx, session.id, {
+        summary: summary.trim().slice(0, 8000),
+        ...(input.claim?.evidence?.trim() ? { evidence: input.claim.evidence.trim().slice(0, 8000) } : {}),
+      })
+    // 被派的运行：有结果的现在就结算派活单（办成 → 办完；没办成 → 没办成，不重试）；要复核的等复核完。
+    // 子运行叫醒父运行；父运行还有没结束的子运行就停掉（要复核的也现在停：运行已经结束了）
     const settled = result
-      ? await settleWorkItemInTx(db, tx, session.id, { status: "done", outcome: result.outcome, outcomeReason: result.reason, summary, ...(result.failKind ? { failKind: result.failKind } : {}) })
+      ? await afterRunEndedInTx(db, tx, session.id, { status: "done", outcome: result.outcome, outcomeReason: result.reason, summary, ...(result.failKind ? { failKind: result.failKind } : {}) })
       : undefined
+    if (!result) await stopChildrenInTx(db, tx, session.id, `父运行 ${session.id} 已经结束（报了结果），跟着停了`)
     return { result, reviewModelId, settled }
   }).catch((error) => {
     if (error instanceof RollbackSignal) return undefined
@@ -362,13 +388,15 @@ async function reviewAfterFinish(
       detail: review.error ? `复核模型 ${review.modelId} 出错：${review.error}` : `${review.reason}${review.screenshot ? "\n（带了最后一张截图）" : ""}`,
       ...(review.error ? {} : { tokensIn: review.tokensIn, tokensOut: review.tokensOut, output: `复核模型 ${review.modelId}，花费 ${review.costUsd.toFixed(6)} 美元` }),
     })
-    await settleWorkItemInTx(db, tx, session.id, { status: "done", outcome: final.outcome, outcomeReason: final.reason, summary: input.summary, ...(final.failKind ? { failKind: final.failKind } : {}) })
+    await afterRunEndedInTx(db, tx, session.id, { status: "done", outcome: final.outcome, outcomeReason: final.reason, summary: input.summary, ...(final.failKind ? { failKind: final.failKind } : {}) })
   })
   return final
 }
 
 /** 按最终结果通知负责人：没办成和失败一样通知（被派的也发：单没办成、不会重试）；办成不推送，被派的办成不发 */
 async function notifyFinished(db: Db, session: SessionRow, snapshot: SessionSnapshot, final: Judged, summary: string) {
+  // 子运行不通知负责人：结果交给父 agent（docs/dev/sub-agents.md 9.1）
+  if (session.kind === "sub") return
   const link = sessionLink(session.taskId, session.id)
   const base = { userIds: [snapshot.task.ownerId], link, taskId: session.taskId, sessionId: session.id }
   if (final.outcome === "not_achieved") {
@@ -410,13 +438,15 @@ async function hitLimit(
   session: SessionRow,
   snapshot: SessionSnapshot,
   kind: "cost" | "steps",
-  limit: number
+  limit: number,
+  /** 花了多少（父运行是「父 + 子 agent」合计，docs/dev/sub-agents.md 6.4） */
+  spent = Number(session.costUsd)
 ) {
   const title =
     kind === "cost" ? "花费到了上限，要不要继续" : "步数到了上限，要不要继续"
   const summary =
     kind === "cost"
-      ? `运行 ${session.id} 已经花了 ${Number(session.costUsd).toFixed(4)} 美元，到了上限 ${limit} 美元。同意就再给一份额度继续，不同意就结束这次运行。`
+      ? `运行 ${session.id} 已经花了 ${spent.toFixed(4)} 美元${spent > Number(session.costUsd) ? "（含子 agent）" : ""}，到了上限 ${limit} 美元。同意就再给一份额度继续，不同意就结束这次运行。`
       : `运行 ${session.id} 已经调了 ${session.stepCount} 次模型，到了上限 ${limit} 步。同意就再给一份额度继续，不同意就结束这次运行。`
   const result = await db
     .transaction(async (tx) => {
@@ -501,6 +531,8 @@ async function suspendWithResults(
     }
     // 等派活单的结果（work.done:<单号>）：挂起提交以后再查一次，单在这期间结束了就补发叫醒
     if (plan.kind === "wait") await recheckWorkDoneAfterSuspend(db, plan.input.event)
+    // 等子 agent（subagent.all: / subagent.any:）：同样补查一次（docs/dev/sub-agents.md 7.1）
+    if (plan.kind === "wait") await recheckSubagentWaitAfterSuspend(db, plan.input.event)
     return true
   } catch (error) {
     if (error instanceof RollbackSignal) return false
@@ -644,7 +676,9 @@ export async function runSession(
         return "failed"
       }
     gateway = await ToolGateway.create(db, first, snapshot)
-    const system = buildSystemPrompt(snapshot, gateway.names())
+    // 父运行（选了「拆给子 agent」）：花费按「父 + 子」合计，系统提示写名额（docs/dev/sub-agents.md 4.3、6.4）
+    const hasSubagents = first.kind === "run" && snapshot.tools.some((tool) => tool.id === SUBAGENT_START_TOOL_ID)
+    const system = buildSystemPrompt(snapshot, gateway.names(), hasSubagents ? { subagent: await readSubagentSettings(db) } : {})
     const tools = gateway.toolSet()
     const screenshot = () => gateway!.screenshot()
     // 开始钩子只跑一次：脚本跑完 stepCount 还是 0，要看 sessions.routine；试跑不跑
@@ -1059,15 +1093,31 @@ export async function runSession(
       }
 
       const costLimit = session.costLimitUsd ?? settings.maxCostUsd
-      if (Number(session.costUsd) >= costLimit) {
-        await hitLimit(db, session, snapshot, "cost", costLimit)
-        return "suspended"
-      }
       // 设置里的最多步数是 0 = 不限；人同意继续后单独调高过的 session 用自己的上限
       const stepLimit = session.maxSteps ?? settings.maxSteps
-      if (stepLimit > 0 && session.stepCount >= stepLimit) {
-        await hitLimit(db, session, snapshot, "steps", stepLimit)
-        return "suspended"
+      if (session.kind === "sub") {
+        // 子运行（docs/dev/sub-agents.md 6.4）：到了上限不问人，直接收尾记没办成，结果交给父 agent
+        const overCost = Number(session.costUsd) >= costLimit
+        if (overCost || (stepLimit > 0 && session.stepCount >= stepLimit)) {
+          const reason = overCost
+            ? `子 agent 的花费到了上限 ${costLimit} 美元（父 agent 可以拆得更细，或者自己接着做）`
+            : `子 agent 的步数到了上限 ${stepLimit} 步（父 agent 可以拆得更细，或者自己接着做）`
+          await closeGateway()
+          return finishRun(db, session, snapshot, {
+            text: reason,
+            forced: { outcome: "not_achieved", by: "rule", reason, failKind: "not_done", title: `${overCost ? "花费" : "步数"}到了子 agent 的上限，结果记没办成` },
+          })
+        }
+      } else {
+        const spent = hasSubagents ? await familyCost(db, sessionId) : Number(session.costUsd)
+        if (spent >= costLimit) {
+          await hitLimit(db, session, snapshot, "cost", costLimit, spent)
+          return "suspended"
+        }
+        if (stepLimit > 0 && session.stepCount >= stepLimit) {
+          await hitLimit(db, session, snapshot, "steps", stepLimit)
+          return "suspended"
+        }
       }
 
       // 调模型前的规则（M3：花费超过 X）
@@ -1147,6 +1197,24 @@ export async function runSession(
 
       // 只回文字：没报结果的先提醒一次（3.2，标记存在 rule_state，挂起再继续也只提醒一次）；再回文字就按「说做完了、没报结果」收尾
       if (result.toolCalls.length === 0) {
+        // 父运行还有子 agent 没结束（docs/dev/sub-agents.md 第 8 节）：提醒一次；再只回文字就先停掉子 agent，再照常收尾
+        const open = hasSubagents ? await openChildrenOf(db, sessionId) : []
+        if (open.length) {
+          const current = (await loadSession(db, sessionId))!
+          if (!current.ruleState?.subagentNudged) {
+            await db
+              .update(t.sessions)
+              .set({ ruleState: sql`jsonb_set(${t.sessions.ruleState}, '{subagentNudged}', 'true'::jsonb)` })
+              .where(eq(t.sessions.id, sessionId))
+            const message: ModelMessage = { role: "user", content: openChildrenText(open) }
+            await appendMessage(db, sessionId, message)
+            messages = [...messages, message]
+            await appendEvent(db, sessionId, { kind: "plan", title: `agent 只回了文字，还有 ${open.length} 个子 agent 没结束，提醒它先等或者停掉` })
+            continue
+          }
+          const stopped = await db.transaction((tx) => stopChildrenInTx(db, tx, sessionId, "父 agent 没等子 agent 结束就收尾了，跟着停了"))
+          if (stopped.length) await appendEvent(db, sessionId, { kind: "plan", title: `agent 还是只回文字，停掉没结束的 ${stopped.length} 个子 agent 再收尾`, detail: stopped.join("、") })
+        }
         if (finishName) {
           const current = (await loadSession(db, sessionId))!
           if (!current.ruleState?.finishNudged) {

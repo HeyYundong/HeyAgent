@@ -109,6 +109,8 @@ export interface SessionRuleState {
   warned?: boolean
   /** run-outcome 3.2：agent 只回文字、没调 run.finish，已经提醒过一次（再回文字就按没报结果收尾） */
   finishNudged?: boolean
+  /** 子 agent（docs/dev/sub-agents.md 第 8 节）：父 agent 还有子 agent 没结束就只回文字，已经提醒过一次（再只回文字就先停掉子 agent 再收尾） */
+  subagentNudged?: boolean
 }
 
 /** 库里的派活配置：run-outcome 以前存的没有 results */

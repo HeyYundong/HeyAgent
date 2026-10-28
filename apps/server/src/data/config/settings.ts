@@ -22,6 +22,7 @@ import { z } from "zod"
 
 import * as t from "../../db/schema.js"
 import { assertCan, audit, badRequest, deleteSecret, findSecret, notFound, putSecret, type DbOrTx, type WriteCtx } from "./common.js"
+import { sendSubagentPump } from "../../engine/subagents/signal.js"
 import { visionModelProblem } from "./models.js"
 
 const channelsSchema = z.array(notifyChannelSchema)
@@ -191,10 +192,10 @@ export async function readSubagentSettings(db: DbOrTx): Promise<SettingsSubagent
   }
 }
 
-/** 改子 agent 的上限。TODO(子 agent 后端)：提交后发 subagent.pump（名额调大了，排队的能放行；signal.ts 的 sendSubagentPump） */
+/** 改子 agent 的上限。提交后发 subagent.pump（名额调大了，排队的能放行；docs/dev/sub-agents.md 6.2）；没发出去也有每分钟的清扫兜底 */
 export async function updateSubagentSettings(ctx: WriteCtx, input: SettingsSubagentInput) {
   assertCan(ctx.actor, "settings.manage", {}, "只有主管能改全局设置")
-  return ctx.db.transaction(async (tx) => {
+  const saved = await ctx.db.transaction(async (tx) => {
     const before = await readSubagentSettings(tx)
     await writeKey(tx, SETTING_KEYS.subagentMaxParallel, input.maxParallel, ctx.actor.id)
     await writeKey(tx, SETTING_KEYS.subagentMaxPerRun, input.maxPerRun, ctx.actor.id)
@@ -204,6 +205,8 @@ export async function updateSubagentSettings(ctx: WriteCtx, input: SettingsSubag
     await audit(tx, ctx.actor.id, "settings.subagent.update", "settings", "subagent", { before, after: input })
     return input
   })
+  await sendSubagentPump(ctx.db).catch((error) => console.warn("[subagent] 改了设置，subagent.pump 没发出去（清扫会补）", error))
+  return saved
 }
 
 /** 右下角助手：一次请求最多几步、最多花多少美元。每次请求开始时重新读，读不到用默认值 */

@@ -6,6 +6,7 @@ import {
   builtinToolInputs,
   fmtDateTime,
   memoryId,
+  SUBAGENT_START_TOOL_ID,
   workDoneEvent,
   runOutcomeLabel,
   type BuiltinToolId,
@@ -58,6 +59,8 @@ import {
 import { listFromAgent, reportFromAgent } from "../dispatch/agent-tools.js"
 import { dispatchFromAgent } from "../dispatch/dispatch.js"
 import { cancelFromAgent, startFromAgent, waitFromAgent } from "../subagents/agent-tools.js"
+import { openChildrenText } from "../subagents/results.js"
+import { openChildrenOf } from "../subagents/settle.js"
 import { isFinalWorkStatus, itemIdOfEvent, workDoneMessage } from "../dispatch/notify.js"
 import { toWorkItems } from "../../work/service.js"
 import { notifyUsers, sessionLink } from "../notify.js"
@@ -143,6 +146,12 @@ function sheetData(book: ParsedBook, input: { sheet?: string | number; startRow?
   for (let r = from; r <= end; r++)
     rows.push(Object.fromEntries(columns.map((c, index) => [header[index]!, sheet.cells[r]?.[c] ?? ""])))
   return { sheet: sheet.name, header, rows, total: sheet.lastRow - sheet.firstRow }
+}
+
+/** sessionId 是不是 parentId 拆出去的子运行（kind = sub） */
+async function isChildSession(db: Db, parentId: string, sessionId: string) {
+  const [row] = await db.select({ parentSessionId: t.sessions.parentSessionId, kind: t.sessions.kind }).from(t.sessions).where(eq(t.sessions.id, sessionId))
+  return row?.kind === "sub" && row.parentSessionId === parentId
 }
 
 /** 这次运行的空间（快照里的附件 + 只属于这次运行的文件） */
@@ -731,7 +740,12 @@ const handlers: {
     return cancelFromAgent(ctx, input)
   },
   // 报结果：只把结果交给引擎，由引擎（loop.ts）收尾：办成的先过「说做完了」的规则（三方验收），再按硬规则、复核定最终结果
-  async "run.finish"(_ctx, input) {
+  async "run.finish"(ctx, input) {
+    // 父运行还有子 agent 没结束（docs/dev/sub-agents.md 第 8 节）：不收尾，先等完或者停掉
+    if (ctx.session.kind === "run" && ctx.snapshot.tools.some((tool) => tool.id === SUBAGENT_START_TOOL_ID)) {
+      const open = await openChildrenOf(ctx.db, ctx.session.id)
+      if (open.length) return fail(openChildrenText(open))
+    }
     const reason = input.reason?.trim()
     if (input.outcome !== "achieved" && !reason)
       return fail(`outcome = ${input.outcome} 时要写 reason：拿到了什么、缺了什么、为什么。补上 reason 再调一次`)
@@ -789,7 +803,9 @@ const handlers: {
       const allowed =
         row &&
         (row.sessionId === ctx.session.id ||
-          ctx.snapshot.attachments.some((file) => file.id === row!.id))
+          ctx.snapshot.attachments.some((file) => file.id === row!.id) ||
+          // 子 agent 写的文件（父运行空间的 subs/<n>/，docs/dev/sub-agents.md 5.3）
+          (row.sessionId !== null && (await isChildSession(ctx.db, ctx.session.id, row.sessionId))))
       if (!row || !allowed) return fail(`这次运行里没有文件 ${input.fileId}`)
     }
     if (isImageMime(row.mime)) {

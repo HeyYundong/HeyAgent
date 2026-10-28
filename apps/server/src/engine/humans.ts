@@ -19,7 +19,8 @@ import type { PendingToolCalls } from "../db/schema.js"
 import { humanItemLink, notifyUsers } from "./notify.js"
 import type { Tx } from "./queue.js"
 import { appendEvent, writeAudit } from "./records.js"
-import { settleWorkItemInTx } from "./dispatch/settle.js"
+import { afterRunEndedInTx } from "./run-ended.js"
+import { familyCost } from "./subagents/settle.js"
 import { failedOutcome, judgeByRules, outcomeFactsInTx, type Judged } from "./outcome.js"
 import { EngineError } from "./sessions.js"
 import { loadEngineSettings } from "./settings.js"
@@ -252,7 +253,7 @@ export async function resolveHumanItemImpl(
         .set({ status: "failed", endedAt: new Date(), error, ...failedOutcome(error, "human") })
         .where(eq(t.sessions.id, item.sessionId))
       // 被派的运行：派活单跟着记「没办成」，人选了不继续的不自动重试
-      await settleWorkItemInTx(db, tx, item.sessionId, { status: "failed", error, retryable: false, failKind: "cancelled_run" })
+      await afterRunEndedInTx(db, tx, item.sessionId, { status: "failed", error, retryable: false, failKind: "cancelled_run" })
       return { endedSessionId: item.sessionId }
     }
     let sessionPatch: Partial<typeof t.sessions.$inferInsert> | undefined
@@ -263,9 +264,10 @@ export async function resolveHumanItemImpl(
         .from(t.sessions)
         .where(eq(t.sessions.id, item.sessionId))
       const settings = await loadEngineSettings(tx)
+      // 花费按「父 + 子 agent」合计（docs/dev/sub-agents.md 6.4；没拆过子 agent 的就是自己的）
       sessionPatch =
         limit === "cost"
-          ? { costLimitUsd: Number(session!.costUsd) + settings.maxCostUsd }
+          ? { costLimitUsd: (await familyCost(tx, item.sessionId)) + settings.maxCostUsd }
           : { maxSteps: settings.maxSteps > 0 ? session!.stepCount + settings.maxSteps : null }
     }
     const message = limit
@@ -433,7 +435,7 @@ export async function resolveVerifyDisputeImpl(
       .returning({ id: t.sessions.id })
     if (done.length === 0) return {}
     // 被派的运行：判通过 = 派活单按结果结算（总结取 agent 最后那段），判失败 = 没办成（人判的，不自动重试）
-    await settleWorkItemInTx(
+    await afterRunEndedInTx(
       db,
       tx,
       sessionId,

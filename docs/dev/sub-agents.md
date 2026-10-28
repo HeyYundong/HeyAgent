@@ -1,6 +1,6 @@
 # 子 agent：一个任务拆开、交给几个子 agent 同时做（设计方案，2026-10-28）
 
-> **状态：约定已写好（2026-10-28）。** 监工 2026-10-28 审过：第 16 节七条按推荐（用户 2026-10-28：设计过的都做完，交给监工定）；第 12 节第 2 条（外部和控制台一律不能发 `subagent.`、`work.done:`、`browser.`、`desktop:` 开头的事件）已经随派活第三期做完。约定代码（类型、表、迁移、工具定义和桩、空模块）在分支上，见第 17 节；按集成分支（1af8ae5：派活第三期、记忆自动挑选、直接调网站接口都合进来了）对过一遍，对不上的地方已经改在正文里，改了什么见第 18 节。下一步按第 14 节派后端、网页两个开发者。
+> **状态：约定已写好（2026-10-28）。** 监工 2026-10-28 审过：第 16 节七条按推荐（用户 2026-10-28：设计过的都做完，交给监工定）；第 12 节第 2 条（外部和控制台一律不能发 `subagent.`、`work.done:`、`browser.`、`desktop:` 开头的事件）已经随派活第三期做完。约定代码（类型、表、迁移、工具定义和桩、空模块）在分支上，见第 17 节；按集成分支（1af8ae5：派活第三期、记忆自动挑选、直接调网站接口都合进来了）对过一遍，对不上的地方已经改在正文里，改了什么见第 18 节。后端已按第 14.2 节实现（2026-10-28，实现记录见第 19 节）。
 > 用户要的：产品定义里写的「高级模型拆解任务并分配给子 agent」。现在一次运行是一个 agent 按顺序做；`docs/v1-plan.md` 1.3 节写了「规划 agent 拆给多个子 agent 并行：v1.1；v1 的数据结构先留好『父 session』字段」。
 > 文中写「现在」的，最早是读分支 `worktree-solidify-design`（0d7652d）的代码确认的，写约定时按 1af8ae5 又对了一遍，后面写了文件和函数名；推测的标「推测」。
 > 名字：本文的「子 agent」是**产品功能**（运行里拆出去的子运行），和 `docs/dev/conventions.md` 第 6 节说的「开发用的子 agent」不是一回事。
@@ -685,3 +685,39 @@ ALTER TABLE "tasks" ADD COLUMN "subagent_model_id" text;
 | 13 | 写约定另开 `sub-agents-p1.md` | 写在本文第 17 节 | 14.1 |
 | 14 | 第 12 节第 2 条要做 | 派活第三期已经做了 | 第 12 节、10.3 |
 | 15 | 设计在流程库之前写的，没提库流程 | 子快照一起抄 `libraryRoutines`，子 agent 没有的工具要用到的标用不了（`subLibraryRoutines`，已实现、有测试）；迁移排在流程库 0036 后面，改成 0037 | 5.1、10.1、第 17 节 |
+
+## 19. 实现记录（后端，2026-10-28）
+
+按第 14.2 节做完，第 16 节七条按推荐；监工另定的「父运行在等子 agent 时点『立即继续』照常放行，系统提示写明可以先 `subagent_wait`（none）看现状」也做了。接口变化见 `docs/dev/api.md` 第 22 节。
+
+**怎么落的**
+
+| 环节 | 落在哪 | 要点 |
+|---|---|---|
+| 拆 | `subagents/agent-tools.ts` 的 `startFromAgent` → `start.ts` 的 `startSubRunsInTx` | 一个事务：`for update` 锁父运行；查 `kind`、快照里有工具、`已拆 + 这次 ≤ maxPerRun`、`fileIds` 父运行能读（自己空间的、快照附件、子运行的文件，`resolveSubFilesInTx`），有一条不过整次拒绝。每个子目标 `deriveSubSnapshot` → `insertSessionInTx`（从 `startSessionInTx` 拆出来的插行 + 撞号 savepoint 重试）→ `writeRunOpeningInTx`（检查点、第一条消息、「运行开始」）→ `suspendInTx` 挂起等 `subagent.queue:<父>`；最后写审计、发 `subagent.pump`。不发 `session.run`、不挪文件、不改记忆的 `lastUsedAt` |
+| 排队放行 | `pump.ts` 的 `pumpSubagents` | `pg_advisory_xact_lock(hashtext('subagent.pump'))`；占名额 = `running` / `verifying` / 挂起等 `browser.` `desktop:`（`subagentSlotSql`）；按最早排队的父运行先、同一个父运行按 n；放行 = `resumeInTx(message "")`；父运行已经结束的排队子运行 `stopSubRunInTx` 取消。发 pump 的地方：拆、子运行结束（`settleSubRunInTx`）、子运行挂起等人处理（`waits.ts`，排除排队和等资源）、`subagent.cancel`、改设置、清扫 |
+| 等 | `waitFromAgent`、`notify.ts` | 锁父运行行后读 `loadSubRunFacts`；`all` / `any` 满足了直接返回、写 `deliveredAt`，不满足挂起等 `subagent.all:` / `subagent.any:`（兜底期限照只等事件的）；挂起提交后 `loop.ts` 的 `suspendWithResults` 调 `recheckSubagentWaitAfterSuspend`。`onSubagentNotify` 同样锁父运行、判条件、`resumeInTx`（消息是 `results.ts` 的文字）、写 `deliveredAt` |
+| 结算 | `run-ended.ts` 的 `afterRunEndedInTx` | 6 个调用（`loop.ts` 的 `failSession` / `finishRun` / `reviewAfterFinish`，`control.ts` 取消，`humans.ts` 上限不继续 / 验收争议）都改调它：派活单结算 → 子运行发 notify + pump → 父运行停掉没结束的子运行。要复核的父运行收尾时结果还空着，`finishRun` 当场另调 `stopChildrenInTx` |
+| 取消 | `settle.ts` 的 `stopSubRunInTx` | 照 `cancelSessionInTx`：状态出错、`failedOutcome(reason, "rule")`、作废等待、取消要人办的事（`resolvedById` 空）、过程「已停掉」、审计 `session.subagent.stop`（系统），再 `settleSubRunInTx`。`subagent.cancel` 原因「父 agent 停掉的：…」，跟着父停「父运行 X 已经结束（…），跟着停了」 |
+| 名额 | 见放行；派活那边 | 被派的运行挂起时 `holdsDispatchSlot`、`occupiesSlotSql` 都按 `DISPATCH_SLOT_EVENT_PREFIXES`（等子 agent 也占派活名额） |
+| 花费 | `familyCost`；`loop.ts`、`humans.ts`、`rules.ts` | 子运行到了 `cost_limit_usd` / `max_steps`（拆的时候写成设置值）直接 `finishRun(forced 没办成, by rule)`，不问人；父运行（选了工具的）每步按合计比上限，`hitLimit` 文字写「（含子 agent）」；同意继续 = 合计 + 默认额度；「花费超过 X」按合计。今天的花费 `kind in (run, sub)`；`dispatchSpentToday` 加「`kind = sub`、父有 `work_item_id`、父今天开始」 |
+| 结果 | `loop.ts` 的 `finishRun`、`outcome.ts` | 子运行不复核：硬规则定论照旧，否则报了 `run.finish` 的按报的（`by agent`），只回文字（提醒过）记没办成「子 agent 没调用 run_finish 报结果」；缺 `sub.results` 的字段按 `sub_result.data` 查（`missingFields`，和派活同一套宽松比对）。收尾事务里写 `sub_result.summary / evidence`。子运行不通知负责人（`notifyFinished`、`failSession`） |
+| 父的收尾 | `builtin.ts` 的 `run.finish`、`loop.ts` | 有没结束的子运行时 `run.finish` 回错误；只回文字先提醒一次（`rule_state.subagentNudged`），再只回文字就 `stopChildrenInTx` 后照常收尾 |
+| 文件 | `files/service.ts` | `listSpace` 带上子运行的文件，路径 `subs/<n>/<它在子空间里的路径>`、来源「子 agent」、只读；`subs` 加进 `RESERVED_SPACE_DIRS`（agent 不能往里写，`code.run` 照只读目录挂进沙箱）；别的运行的 artifact 放 `attachments/<原路径>`；`file.read` 按 id 认子运行的文件 |
+| 复核、验收 | `verify.ts` 的 `loadEvidence` 多 `subagents`（`subagentReviewSection`） | 复核放在「agent 的报告」前，三方验收放在「产出的文件」前；复核系统提示加一条「有子 agent 一节的……」 |
+| 页面数据 | `view.ts`、`data/loaders.ts` | `listSubagents`、`subagentStatsOf`（一次分组查询，只查 `kind = run` 的行）、`subGoalOf`（文件取快照附件）；`sessions` 表推送多失效 `sessions.subagents` |
+| 别处 | | 手动编号按第 12 节第 1 条的 SQL；`latestWaitingSession`（待办叫醒）跳过子运行；子运行不能改结果、总结、固化，拆过的父运行不能固化；演示数据 `dev:subagent-fixture` |
+
+**和设计不一样、或者设计没写的**
+
+1. 挂起的 `what`：父运行等子 agent 写「子 agent（还有 N 个没结束）」，排队写「排队（等前面的子 agent 做完）」（原稿「等子 agent：…」「排队：…」在会话列表会拼出两个冒号；网页按监工的要求拼「等」+ what）。
+2. `none` 给了全文的结束结果也记「已交回」：之后 `any` 只等新的，`all` 里这些只写一行「前面给过」。
+3. 交回文字里「文件」只列子 agent 写的（`artifact`）和浏览器下载的，不列截图、工具输出全文。
+4. `subs/` 成了保留目录：以前 agent 存在 `subs/…` 下的文件不受影响（照旧列出），只是不能再往里新写。
+5. 约定上的加法：`StartSubRunsInput.files?`（调用方查好的文件，免得查两遍）、`SubRunFacts.state?` / `waitingWhat?`、`SessionRuleState.subagentNudged`、`buildSystemPrompt` 第三个参数 `PromptExtra`（名额从设置读，worker 每进一次运行读一次）；`sessions.ts` 导出 `insertSessionInTx` / `writeRunOpeningInTx`，`outcome.ts` 导出 `missingFields`。没改 shared 的约定，只在 `live.ts` 加了一项失效。
+6. 子运行到上限收尾时结束事件的标题是「花费 / 步数到了子 agent 的上限，结果记没办成」。
+7. 人对子运行点「改结果」「总结」：接口回 `BAD_REQUEST`（设计只说页面不显示）。
+
+**验证**：`apps/server/test/sub-agents.test.ts`（17 个，假模型，第 13 节各组：拆、名额、等、结果、失败、花费、别处、演示数据、清扫）；`test-browser/sub-agents.test.ts`（真 Chrome：只允许 1 个 Chrome、拆 2 个用浏览器的子 agent，一个在用、一个等待浏览器并占名额，空出来接着做，父只叫醒一次）。
+
+**没做 / 没测到的**：`code.run` 里读 `subs/<n>/` 只靠保留目录的现成挂载逻辑，没写沙箱测试；「花费超过 X」规则按合计只改了取数，没有单独的规则测试；三方验收的输入和复核共用 `loadEvidence`，只测了复核。

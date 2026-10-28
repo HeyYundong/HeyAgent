@@ -25,6 +25,8 @@ import { reviewLog, type ReviewLogOptions } from "./log-text.js"
 import { callStructured, resolveModel } from "./model.js"
 import { appendEvent } from "./records.js"
 import { loadEngineSettings } from "./settings.js"
+import { subagentReviewSection } from "./subagents/results.js"
+import { loadSubRunFacts } from "./subagents/view.js"
 
 const verdictSchema = z.enum(["pass", "fail", "unsure"])
 
@@ -210,7 +212,9 @@ export async function loadEvidence(
         })
     }
   }
-  return { artifacts, images, log, ...(logInfo ? { logInfo } : {}) }
+  // 拆过子 agent 的父运行：每个子 agent 的子目标、结果、总结、依据、交回的字段（docs/dev/sub-agents.md 9.2）；复核、三方验收都带上
+  const subagents = subagentReviewSection(await loadSubRunFacts(ctx.db, ctx.session.id))
+  return { artifacts, images, log, subagents, ...(logInfo ? { logInfo } : {}) }
 }
 
 /** 验收要用哪个模型：任务快照里的，或者现在的默认验收模型 */
@@ -231,6 +235,8 @@ function buildPrompt(input: {
   artifacts: string[]
   log: string[]
   imageNames: string[]
+  /** 子 agent 一节（拆过才有，docs/dev/sub-agents.md 9.2） */
+  subagents?: string
 }): string {
   const { snapshot } = input.ctx
   const parts: string[] = []
@@ -266,6 +272,7 @@ function buildPrompt(input: {
     parts.push(
       `## 前几轮的验收问答\n${input.notes.map((note) => `- ${note.by === "verifier" ? "验收员" : "执行 agent"}：${note.text.slice(0, 1500)}`).join("\n")}`
     )
+  if (input.subagents) parts.push(input.subagents)
   parts.push(
     input.artifacts.length
       ? `## 证据：产出的文件\n${input.artifacts.join("\n\n")}`
@@ -384,6 +391,7 @@ export async function runVerification(
       artifacts: evidence.artifacts,
       log: evidence.log,
       imageNames: evidence.images.map((image) => image.name),
+      subagents: evidence.subagents,
     })
     const content: UserContent = [
       { type: "text", text: prompt },

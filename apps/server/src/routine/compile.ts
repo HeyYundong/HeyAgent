@@ -105,6 +105,7 @@ export async function compileFromSession(db: Db, input: CompileFromSessionInput)
     .where(eq(t.sessions.id, input.sessionId))
   if (!row) throw notFound("运行", input.sessionId)
   const { session } = row
+  if (session.kind === "sub") throw badRequest("子 agent 的运行不能固化（它只做了父运行的一部分）")
   if (session.kind !== "run") throw badRequest("固化试跑的运行不能再固化")
   if (!isRunEnded(session.status)) throw badRequest("运行还没结束，结束后才能固化")
   if (session.outcome !== "achieved") throw badRequest("只有办成的运行能固化成流程")
@@ -113,6 +114,17 @@ export async function compileFromSession(db: Db, input: CompileFromSessionInput)
 
   try {
     return await db.transaction(async (tx) => {
+      // 拆过子 agent 的运行（docs/dev/sub-agents.md 第 15 节）：录下的过程只有父的，子 agent 做的那部分录不到
+      const [child] = await tx
+        .select({ id: t.sessions.id })
+        .from(t.sessions)
+        .where(and(eq(t.sessions.parentSessionId, session.id), eq(t.sessions.kind, "sub")))
+        .limit(1)
+      if (child) {
+        const message = "这次运行拆了子 agent，子 agent 做的那部分录不到，不能固化"
+        if (input.decide) throw new SkipCompile(message)
+        throw badRequest(message)
+      }
       const lockRoutine = () => tx.select().from(t.routines).where(eq(t.routines.taskId, session.taskId)).for("update")
       let [routine] = await lockRoutine()
       // 这次新建的流程（没有任何版本）；并发时别人先建好的不算

@@ -1,13 +1,13 @@
 // 人对 session 的操作：取消、立即继续；外部事件（webhook 或控制台手动触发）。
 import { and, eq, inArray, notInArray } from "drizzle-orm"
-import { ENDED_RUN_STATUSES, isRunEnded, reservedEventPrefix, reservedEventPurpose, runOutcomeLabel, type FireEventResult, type SetOutcomeInput } from "@heyagent/shared"
+import { ENDED_RUN_STATUSES, isRunEnded, isSubagentQueueEvent, reservedEventPrefix, reservedEventPurpose, runOutcomeLabel, type FireEventResult, type SetOutcomeInput } from "@heyagent/shared"
 
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
 import { endRoutineTestInTx } from "../routine/runtime/test-end.js"
 import { dispatchFromEvent } from "./dispatch/events.js"
-import { settleWorkItemInTx } from "./dispatch/settle.js"
 import { failedOutcome } from "./outcome.js"
+import { afterRunEndedInTx } from "./run-ended.js"
 import type { Tx } from "./queue.js"
 import { appendEvent, writeAudit } from "./records.js"
 import { fireTodo, todosForEvent } from "./schedule.js"
@@ -77,8 +77,9 @@ export async function cancelSessionInTx(db: Db, tx: Tx, input: CancelSessionInpu
     targetId: input.sessionId,
     detail: { reason: input.reason },
   })
-  // 被派的运行：派活单跟着记「没办成」，人取消的不自动重试（人在派活页点「不办了」时单已经先改成不办了，这里不动它）
-  await settleWorkItemInTx(db, tx, input.sessionId, { status: "failed", error: reason, retryable: false, failKind: "cancelled_run" })
+  // 被派的运行：派活单跟着记「没办成」，人取消的不自动重试（人在派活页点「不办了」时单已经先改成不办了，这里不动它）；
+  // 子运行：叫醒在等的父运行、放行排队的；父运行：没结束的子运行跟着停（docs/dev/sub-agents.md 7.4）
+  await afterRunEndedInTx(db, tx, input.sessionId, { status: "failed", error: reason, retryable: false, failKind: "cancelled_run" })
   // 固化试跑被取消：脚本状态记停下（取消），交给固化往下走（docs/dev/solidify.md 5.6；不经过 runSession 也要发）
   await endRoutineTestInTx(db, tx, input.sessionId, { kind: "cancelled", reason })
   return { sessionId: input.sessionId }
@@ -92,11 +93,13 @@ export async function cancelSessionInTx(db: Db, tx: Tx, input: CancelSessionInpu
 export async function setOutcomeImpl(db: Db, input: SetOutcomeInput & { actorId: string; actorName: string }) {
   return db.transaction(async (tx) => {
     const [session] = await tx
-      .select({ id: t.sessions.id, status: t.sessions.status, outcome: t.sessions.outcome, workItemId: t.sessions.workItemId })
+      .select({ id: t.sessions.id, status: t.sessions.status, outcome: t.sessions.outcome, workItemId: t.sessions.workItemId, kind: t.sessions.kind })
       .from(t.sessions)
       .where(eq(t.sessions.id, input.id))
       .for("update")
     if (!session) throw new EngineError("NOT_FOUND", `找不到运行 ${input.id}`)
+    // 子运行（docs/dev/sub-agents.md 9.1）：结果是交给父 agent 的，人改的是父运行的结果
+    if (session.kind === "sub") throw new EngineError("BAD_REQUEST", "子 agent 的结果不能改：它的结果已经交给父运行了，要改就改父运行的结果")
     if (!isRunEnded(session.status)) throw new EngineError("BAD_REQUEST", "这次运行还没结束，结束以后才能改结果")
     const reason = input.reason.trim()
     await tx
@@ -142,6 +145,13 @@ export async function resumeNowImpl(
         ? "这次运行在等人处理，先处理那件事（在会话页打开这次运行，最上面就是）"
         : "这次运行没有在等待"
     )
+  // 排队的子运行（docs/dev/sub-agents.md 第 8 节）：点了会绕过名额，不放行；在等子 agent 的父运行照常放行（醒来自己看现状）
+  const [wait] = await db
+    .select({ event: t.sessionWaits.event })
+    .from(t.sessionWaits)
+    .where(and(eq(t.sessionWaits.sessionId, input.sessionId), eq(t.sessionWaits.status, "waiting")))
+  if (isSubagentQueueEvent(wait?.event))
+    throw new EngineError("BAD_REQUEST", "排队中：等前面的子 agent 做完，名额空出来会自动开始")
   const resumed = await resume(db, {
     sessionId: input.sessionId,
     cause: "resume_now",

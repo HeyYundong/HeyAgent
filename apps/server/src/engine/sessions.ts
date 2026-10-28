@@ -1,5 +1,5 @@
 // 新建一次运行：冻结任务配置（快照）、建检查点、关联附件、写第一条消息、排进 session.run。
-import { and, asc, count, eq, inArray, like, ne, or } from "drizzle-orm"
+import { and, asc, eq, inArray, like, ne, or, sql } from "drizzle-orm"
 import {
   ALWAYS_ON_BUILTIN_TOOLS,
   BROWSER_TOOL_ID,
@@ -20,6 +20,7 @@ import {
   manualSessionId,
   recognizeCheckpoints,
   routineTestSessionId,
+  taskNumber,
   type BuiltinToolId,
   type RoutineSnapshot,
   type SessionRoutineState,
@@ -434,11 +435,68 @@ async function nextSessionId(
     )
     return cronSessionId(taskId, mmdd, last + 1)
   }
+  // 手动（含待办、事件、派活）的编号：取现有 R-<任务号>-<k> 里最大的 k + 1（docs/dev/sub-agents.md 第 12 节第 1 条）。
+  // 不按「这个任务一共几次运行」数：子运行（R-12-3.2）、固化试跑（RT-…）会把编号撑大；定时的 R-<任务号>-<MMDD> 也是一串数字，按 triggered_by 排除
+  const pattern = `^R-${taskNumber(taskId)}-([0-9]+)$`
   const [row] = await tx
-    .select({ n: count() })
+    .select({ k: sql<number | null>`max((regexp_match(${t.sessions.id}, ${pattern}))[1]::int)` })
     .from(t.sessions)
-    .where(eq(t.sessions.taskId, taskId))
-  return manualSessionId(taskId, (row?.n ?? 0) + 1 + attempt)
+    .where(and(eq(t.sessions.taskId, taskId), sql`${t.sessions.triggeredBy} is distinct from 'cron'`))
+  return manualSessionId(taskId, Number(row?.k ?? 0) + 1 + attempt)
+}
+
+/**
+ * 开运行的公共部分之一（docs/dev/sub-agents.md 4.2，startSessionInTx 和子运行 subagents/start.ts 共用）：插一行 sessions，
+ * 编号撞了（并发触发）用 savepoint 重试，不让整个事务重来——派活领单时一个事务里要开好几次运行。返回编号
+ */
+export async function insertSessionInTx(
+  tx: Tx,
+  input: {
+    /** 第 attempt 次（从 0 起）用的编号 */
+    nextId: (sp: Tx, attempt: number) => Promise<string>
+    values: Omit<typeof t.sessions.$inferInsert, "id">
+  }
+): Promise<string> {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    try {
+      return await tx.transaction(async (sp) => {
+        const id = await input.nextId(sp, attempt)
+        await sp.insert(t.sessions).values({ ...input.values, id })
+        return id
+      })
+    } catch (error) {
+      // 主键撞号（并发触发）：savepoint 已经回滚，换下一个号再试
+      if (isSessionIdConflict(error)) continue
+      throw error
+    }
+  }
+  throw new Error("生成 session 编号失败，请稍后重试")
+}
+
+/** 开运行的公共部分之二：检查点、第一条用户消息、「运行开始」事件。发不发 session.run 由调用方定（子运行先排队，不发） */
+export async function writeRunOpeningInTx(
+  tx: Tx,
+  sessionId: string,
+  snapshot: SessionSnapshot,
+  event: { title: string; detail: string; at: Date }
+) {
+  if (snapshot.checkpoints.length) {
+    await tx.insert(t.checkpoints).values(
+      snapshot.checkpoints.map((checkpoint, position) => ({
+        sessionId,
+        position,
+        title: checkpoint.title,
+        kind: checkpoint.kind,
+        target: checkpoint.target ?? null,
+        stepId: checkpoint.stepId ?? null,
+      }))
+    )
+  }
+  await appendMessage(tx, sessionId, {
+    role: "user",
+    content: firstUserMessage(snapshot),
+  })
+  await appendEvent(tx, sessionId, { kind: "plan", title: event.title, detail: event.detail || null, at: event.at })
 }
 
 export interface StartSessionOptions {
@@ -539,49 +597,24 @@ export async function startSessionInTx(
           input: routineTest.input,
         }
       : undefined
-  let sessionId: string | undefined
-  for (let attempt = 0; attempt < 20 && !sessionId; attempt++) {
-    try {
-      sessionId = await tx.transaction(async (sp) => {
-        const id = routineTest
-          ? routineTestSessionId(routineTest.versionId, routineTest.round)
-          : await nextSessionId(sp, input.taskId, input.source, now, attempt)
-        await sp.insert(t.sessions).values({
-          id,
-          taskId: input.taskId,
-          status: "running",
-          modelId: snapshot.modelId,
-          triggeredBy: input.source,
-          startedAt: now,
-          snapshot,
-          note: snapshot.note ?? null,
-          createdById: input.createdById ?? input.actorId ?? null,
-          parentSessionId: input.parentSessionId ?? null,
-          workItemId: input.dispatch?.itemId ?? null,
-          ...(routineTest ? { kind: "routine_test" as const, routine: testState ?? null } : {}),
-        })
-        return id
-      })
-    } catch (error) {
-      // 主键撞号（并发触发）：savepoint 已经回滚，换下一个号再试
-      if (isSessionIdConflict(error)) continue
-      throw error
-    }
-  }
-  if (!sessionId) throw new Error("生成 session 编号失败，请稍后重试")
+  const sessionId = await insertSessionInTx(tx, {
+    nextId: (sp, attempt) =>
+      routineTest ? Promise.resolve(routineTestSessionId(routineTest.versionId, routineTest.round)) : nextSessionId(sp, input.taskId, input.source, now, attempt),
+    values: {
+      taskId: input.taskId,
+      status: "running",
+      modelId: snapshot.modelId,
+      triggeredBy: input.source,
+      startedAt: now,
+      snapshot,
+      note: snapshot.note ?? null,
+      createdById: input.createdById ?? input.actorId ?? null,
+      parentSessionId: input.parentSessionId ?? null,
+      workItemId: input.dispatch?.itemId ?? null,
+      ...(routineTest ? { kind: "routine_test" as const, routine: testState ?? null } : {}),
+    },
+  })
 
-  if (snapshot.checkpoints.length) {
-    await tx.insert(t.checkpoints).values(
-      snapshot.checkpoints.map((checkpoint, position) => ({
-        sessionId: sessionId!,
-        position,
-        title: checkpoint.title,
-        kind: checkpoint.kind,
-        target: checkpoint.target ?? null,
-        stepId: checkpoint.stepId ?? null,
-      }))
-    )
-  }
   if (runAttachments.length) {
     await tx
       .update(t.files)
@@ -604,13 +637,8 @@ export async function startSessionInTx(
         )
       )
   }
-  await appendMessage(tx, sessionId, {
-    role: "user",
-    content: firstUserMessage(snapshot),
-  })
   const dispatch = snapshot.dispatch
-  await appendEvent(tx, sessionId, {
-    kind: "plan",
+  await writeRunOpeningInTx(tx, sessionId, snapshot, {
     title: routineTest ? "固化试跑开始" : "运行开始",
     detail: routineTest
       ? `固化流程 ${routineTest.versionId} 第 ${routineTest.round} 轮试跑：只跑脚本、不叫 agent，走到第一次提交前停`
@@ -662,12 +690,12 @@ function isSessionIdConflict(error: unknown): boolean {
   return false
 }
 
-/** 任务最近一个挂起等待中的 session（待办触发时用） */
+/** 任务最近一个挂起等待中的 session（待办触发时用）。子运行不算（排队的子运行被待办叫醒会绕过名额，docs/dev/sub-agents.md 第 8 节） */
 export async function latestWaitingSession(db: Db | Tx, taskId: string) {
   const rows = await db
     .select({ id: t.sessions.id })
     .from(t.sessions)
-    .where(and(eq(t.sessions.taskId, taskId), eq(t.sessions.status, "waiting")))
+    .where(and(eq(t.sessions.taskId, taskId), eq(t.sessions.status, "waiting"), ne(t.sessions.kind, "sub")))
     .orderBy(asc(t.sessions.startedAt))
   return rows.at(-1)?.id
 }

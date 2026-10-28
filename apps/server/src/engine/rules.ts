@@ -29,6 +29,7 @@ import type {
   RunContext,
 } from "./hooks.js"
 import { askHumanInTx, notifyAssignee } from "./humans.js"
+import { familyCost } from "./subagents/settle.js"
 import { notifyUsers, sessionLink } from "./notify.js"
 import { appendEvent, type DbLike } from "./records.js"
 import { httpUrlOf } from "./tools/http.js"
@@ -241,10 +242,13 @@ export const ruleHook: EngineHook = {
   async beforeStep(ctx): Promise<BeforeStepDecision | void> {
     const { db, session, snapshot } = ctx
     const fired = new Set(session.ruleState?.costFired ?? [])
+    // 花费按「父 + 子 agent」合计（docs/dev/sub-agents.md 6.4）；没有要看的规则就不查
+    let family: number | undefined
     for (const rule of activeRules(snapshot)) {
       const trigger = rule.rule.trigger
       if (trigger.type !== "cost_over" || fired.has(rule.id)) continue
-      const cost = Number(session.costUsd)
+      family ??= await familyCost(db, session.id)
+      const cost = family
       if (cost < trigger.usd) continue
       await markCostFired(db, session.id, rule.id)
       const what = `运行 ${session.id} 已经花了 ${cost.toFixed(4)} 美元，超过了规则里的 ${trigger.usd} 美元。`

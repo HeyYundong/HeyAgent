@@ -216,7 +216,7 @@ export async function listSessionFiles(
 // ---------- Session 空间（docs/dev/session-space.md 第 2 节） ----------
 
 /** 别的来源在空间里的固定目录（只读）；agent 写的文件不能用这几个开头 */
-export const RESERVED_SPACE_DIRS = ["attachments", "downloads", "screenshots", "tool-outputs", "clipboard", "network"] as const
+export const RESERVED_SPACE_DIRS = ["attachments", "downloads", "screenshots", "tool-outputs", "clipboard", "network", "subs"] as const
 const DIR_BY_KIND: Record<string, (typeof RESERVED_SPACE_DIRS)[number]> = {
   attachment: "attachments",
   upload: "attachments",
@@ -263,7 +263,7 @@ export function normalizeSpacePath(raw: string): string {
   }
   if ((RESERVED_SPACE_DIRS as readonly string[]).includes(segments[0]!.toLowerCase()))
     throw new SpacePathError(
-      `${segments[0]}/ 是只读的保留目录（${RESERVED_SPACE_DIRS.map((dir) => `${dir}/`).join(" ")}放附件、下载、截图、工具输出全文、剪贴板和记下的网页请求），换一个路径，例如 out/${segments.slice(1).join("/") || "result.txt"}`
+      `${segments[0]}/ 是只读的保留目录（${RESERVED_SPACE_DIRS.map((dir) => `${dir}/`).join(" ")}放附件、下载、截图、工具输出全文、剪贴板、记下的网页请求和子 agent 的文件），换一个路径，例如 out/${segments.slice(1).join("/") || "result.txt"}`
     )
   return path
 }
@@ -294,13 +294,14 @@ export function withSuffix(path: string, k: number) {
   return `${path.slice(0, slash + 1)}${stem}-${k}${ext}`
 }
 
-export type SpaceSource = "agent" | "attachment" | "download" | "screenshot" | "tool_output"
+export type SpaceSource = "agent" | "attachment" | "download" | "screenshot" | "tool_output" | "sub"
 export const SPACE_SOURCE_LABEL: Record<SpaceSource, string> = {
   agent: "agent 写的",
   attachment: "附件",
   download: "浏览器下载",
   screenshot: "截图",
   tool_output: "工具输出全文",
+  sub: "子 agent",
 }
 
 export interface SpaceEntry {
@@ -316,8 +317,9 @@ const sourceOf = (kind: string): SpaceSource =>
   kind === "artifact" ? "agent" : kind === "download" || kind === "screenshot" || kind === "tool_output" ? kind : "attachment"
 
 /**
- * 算出每个文件在空间里的路径（2.3），结果是确定的：先让 agent 写的、有路径的占住自己的路径，
- * 其余（附件、下载、截图、工具输出全文，以及加路径之前存的产物）按创建时间、id 的顺序放进固定目录，同名加 -2 -3
+ * 算出每个文件在空间里的路径（2.3），结果是确定的：先让这次运行 agent 写的、有路径的占住自己的路径，
+ * 其余（附件、下载、截图、工具输出全文，以及加路径之前存的产物）按创建时间、id 的顺序放进固定目录，同名加 -2 -3。
+ * 别的运行的产物（子 agent 拿到的父运行文件，docs/dev/sub-agents.md 5.3）是只读的附件：放 attachments/<原路径>，不占这次运行的路径
  */
 export function assignSpacePaths(rows: FileRow[], sessionId: string): SpaceEntry[] {
   const sorted = [...rows].sort(
@@ -326,13 +328,13 @@ export function assignSpacePaths(rows: FileRow[], sessionId: string): SpaceEntry
   const taken = new Set<string>()
   const paths = new Map<string, string>()
   for (const row of sorted)
-    if (row.kind === "artifact" && row.path) {
+    if (row.kind === "artifact" && row.path && row.sessionId === sessionId) {
       taken.add(row.path)
       paths.set(row.id, row.path)
     }
   for (const row of sorted) {
     if (paths.has(row.id)) continue
-    const wanted = spacePathOf(row)
+    const wanted = row.kind === "artifact" && row.sessionId !== sessionId ? `attachments/${row.path ?? spaceFileName(row.name)}` : spacePathOf(row)
     let path = wanted
     for (let k = 2; taken.has(path); k++) path = withSuffix(wanted, k)
     taken.add(path)
@@ -342,13 +344,48 @@ export function assignSpacePaths(rows: FileRow[], sessionId: string): SpaceEntry
     row,
     path: paths.get(row.id)!,
     scope: row.sessionId === sessionId ? "session" : "task",
-    source: sourceOf(row.kind),
+    source: row.kind === "artifact" && row.sessionId !== sessionId ? "attachment" : sourceOf(row.kind),
     writable: row.kind === "artifact" && row.sessionId === sessionId,
   }))
 }
 
-/** 这个 session 空间里的全部文件：快照里的任务附件 + 只属于这次运行的文件 */
+/** 子 agent 的文件放在父运行空间的哪个目录下（docs/dev/sub-agents.md 5.3） */
+export const subSpaceDir = (n: number) => `subs/${n}`
+
+/**
+ * 这个 session 空间里的全部文件：快照里的任务附件 + 只属于这次运行的文件；
+ * 拆过子 agent 的父运行再加上每个子 agent 自己空间里的文件，放在只读的 subs/<n>/ 下，路径照它在子空间里的（docs/dev/sub-agents.md 5.3）
+ */
 export async function listSpace(
+  db: DbLike,
+  sessionId: string,
+  snapshotAttachmentIds: string[]
+): Promise<SpaceEntry[]> {
+  const own = await listOwnSpace(db, sessionId, snapshotAttachmentIds)
+  const children = await db
+    .select({ id: t.sessions.id, n: sql<number | null>`(${t.sessions.snapshot}->'sub'->>'n')::int` })
+    .from(t.sessions)
+    .where(and(eq(t.sessions.parentSessionId, sessionId), eq(t.sessions.kind, "sub")))
+  if (!children.length) return own
+  const rows = await db
+    .select()
+    .from(t.files)
+    .where(inArray(t.files.sessionId, children.map((child) => child.id)))
+    .orderBy(asc(t.files.createdAt), asc(t.files.id))
+  const subs: SpaceEntry[] = []
+  for (const child of children) {
+    if (!child.n) continue
+    for (const entry of assignSpacePaths(
+      rows.filter((row) => row.sessionId === child.id),
+      child.id
+    ))
+      subs.push({ ...entry, path: `${subSpaceDir(child.n)}/${entry.path}`, scope: "session", source: "sub", writable: false })
+  }
+  return [...own, ...subs]
+}
+
+/** 只是这个 session 自己的空间（不含子 agent 的 subs/） */
+async function listOwnSpace(
   db: DbLike,
   sessionId: string,
   snapshotAttachmentIds: string[]

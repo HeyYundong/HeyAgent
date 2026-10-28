@@ -61,11 +61,11 @@ export async function pageSessions(db: Db, rawInput: SessionPageInput, actor: { 
       .leftJoin(t.tasks, eq(t.tasks.id, t.sessions.taskId))
       .where(and(...base))
       .groupBy(t.sessions.status),
-    // 今天花了：只算普通运行（试跑不调执行模型，固化员的花费记在版本上）
+    // 今天花了：普通运行和子运行（子 agent 的钱也是这次运行花的，docs/dev/sub-agents.md 6.4）；试跑不调执行模型，固化员的花费记在版本上
     db
       .select({ usd: sql<number>`coalesce(sum(${t.sessions.costUsd}), 0)::float8` })
       .from(t.sessions)
-      .where(and(eq(t.sessions.kind, "run"), sql`${t.sessions.startedAt} >= ${startOfTodayShanghai()}`)),
+      .where(and(inArray(t.sessions.kind, ["run", "sub"]), sql`${t.sessions.startedAt} >= ${startOfTodayShanghai()}`)),
     db
       .select({ achieved: sql<number>`count(*) filter (where ${achievedSql})::int`, notAchieved: sql<number>`count(*) filter (where ${notAchievedSql})::int` })
       .from(t.sessions)

@@ -1,6 +1,7 @@
 // 派活（docs/dev/dispatch-p1.md）：派活单的读取（列表、详情、任务的名额数字）。
 // 监工写好的读取部分；派活、领单、结束回写、清扫、重办、不办了、改参数由包 A 写（engine/dispatch/ 和这里）。
 import {
+  DISPATCH_SLOT_EVENT_PREFIXES,
   TIME_ZONE,
   workPriorityOf,
   type RunOutcome,
@@ -42,8 +43,13 @@ const isoOrNull = (value: Date | null) => (value ? value.toISOString() : null)
  * agent 自己挂起（session.wait）、等人处理不占。领单（包 A）和页面上的数字都用它，口径一致
  */
 export function occupiesSlotSql(): SQL {
+  // 等浏览器、等桌面、等子 agent 的照样占名额（shared 的 DISPATCH_SLOT_EVENT_PREFIXES，和 waits.ts 的 holdsDispatchSlot 同一份；docs/dev/sub-agents.md 第 12 节第 4 条）
+  const held = sql.join(
+    DISPATCH_SLOT_EVENT_PREFIXES.map((prefix) => sql`w.event like ${`${prefix}%`}`),
+    sql` or `
+  )
   return sql`(${t.sessions.status} in ('running', 'verifying') or (${t.sessions.status} = 'waiting' and exists (
-    select 1 from ${t.sessionWaits} w where w.session_id = ${t.sessions.id} and w.status = 'waiting' and (w.event like 'browser.%' or w.event like 'desktop:%')
+    select 1 from ${t.sessionWaits} w where w.session_id = ${t.sessions.id} and w.status = 'waiting' and (${held})
   )))`
 }
 
@@ -65,10 +71,15 @@ export const QUEUE_ORDER = [desc(t.workItems.priority), asc(t.workItems.createdA
  */
 export async function dispatchSpentToday(db: DbOrTx, taskIds: string[]): Promise<Map<string, number>> {
   if (!taskIds.length) return new Map()
+  const today = startOfTodayShanghai()
+  // 被派的运行拆出去的子运行（docs/dev/sub-agents.md 6.4）：没有 work_item_id，按父运行开始的那天算进同一个任务
+  const subOfDispatched = sql`(${t.sessions.kind} = 'sub' and exists (
+    select 1 from ${t.sessions} p where p.id = ${t.sessions.parentSessionId} and p.work_item_id is not null and p.started_at >= ${today}
+  ))`
   const rows = await db
     .select({ taskId: t.sessions.taskId, spent: sql<string>`coalesce(sum(${t.sessions.costUsd}), 0)` })
     .from(t.sessions)
-    .where(and(inArray(t.sessions.taskId, taskIds), isNotNull(t.sessions.workItemId), gte(t.sessions.startedAt, startOfTodayShanghai())))
+    .where(and(inArray(t.sessions.taskId, taskIds), or(and(isNotNull(t.sessions.workItemId), gte(t.sessions.startedAt, today)), subOfDispatched)))
     .groupBy(t.sessions.taskId)
   return new Map(rows.map((row) => [row.taskId, Number(row.spent)]))
 }

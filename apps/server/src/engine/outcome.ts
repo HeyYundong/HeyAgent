@@ -110,13 +110,20 @@ export function missingResults(snapshot: Pick<SessionSnapshot, "dispatch">, item
   const required = (snapshot.dispatch?.results ?? []).filter((result) => result.required)
   if (required.length === 0) return []
   const data = item && reportedIn(item.log, sessionId) ? (item.result?.data ?? {}) : {}
-  // 字段名宽松一点：agent 常在名字后面加单位（「价格（元）」），去掉末尾的括号、空白、大小写再比
+  return missingFields(required.map((result) => result.name), data)
+}
+
+/**
+ * 要交回的字段里没交（或交了空串）的名字。字段名宽松一点：agent 常在名字后面加单位（「价格（元）」），去掉末尾的括号、空白、大小写再比。
+ * 被派运行的必交结果、子运行的 snapshot.sub.results（docs/dev/sub-agents.md 9.1）共用
+ */
+export function missingFields(required: string[], data: Record<string, unknown>): string[] {
   const filled = new Set(
     Object.entries(data)
       .filter(([, value]) => value !== undefined && value !== null && !(typeof value === "string" && value.trim() === ""))
       .map(([name]) => resultKey(name))
   )
-  return required.filter((result) => !filled.has(resultKey(result.name))).map((result) => result.name)
+  return required.filter((name) => !filled.has(resultKey(name)))
 }
 
 /** 比对结果名用：去掉末尾的（…）/ (…)、空白，转小写 */
@@ -129,7 +136,10 @@ const resultKey = (name: string) =>
 
 /** 收尾时的事实（在收尾的事务里读）：被派运行报的「办不成」、检查点、必交的结果、三方验收 */
 export async function outcomeFactsInTx(tx: Tx, sessionId: string, snapshot: SessionSnapshot, claim: AgentClaim | undefined): Promise<OutcomeFacts> {
-  const [row] = await tx.select({ workItemId: t.sessions.workItemId, verification: t.sessions.verification }).from(t.sessions).where(eq(t.sessions.id, sessionId))
+  const [row] = await tx
+    .select({ workItemId: t.sessions.workItemId, verification: t.sessions.verification, subResult: t.sessions.subResult })
+    .from(t.sessions)
+    .where(eq(t.sessions.id, sessionId))
   let item: typeof t.workItems.$inferSelect | undefined
   if (row?.workItemId) {
     const [found] = await tx.select().from(t.workItems).where(eq(t.workItems.id, row.workItemId))
@@ -149,7 +159,9 @@ export async function outcomeFactsInTx(tx: Tx, sessionId: string, snapshot: Sess
   const verification = row?.verification
   const verified =
     verification?.status === "passed" ? { by: verification.resolution?.how === "pass" ? ("human" as const) : ("verify" as const), headline: verification.headline } : undefined
-  return { ...(effective ? { claim: effective } : {}), checkpoints, missingResults: missingResults(snapshot, item, sessionId), ...(verified ? { verified } : {}) }
+  // 子运行（docs/dev/sub-agents.md 9.1）：要交回的字段（snapshot.sub.results，都必填）按 sub_result.data 查
+  const missing = snapshot.sub ? missingFields(snapshot.sub.results, row?.subResult?.data ?? {}) : missingResults(snapshot, item, sessionId)
+  return { ...(effective ? { claim: effective } : {}), checkpoints, missingResults: missing, ...(verified ? { verified } : {}) }
 }
 
 /** agent 报告的文字（结束事件的详情、复核的输入） */

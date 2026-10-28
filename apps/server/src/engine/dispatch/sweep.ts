@@ -15,6 +15,7 @@ import { notifyUsers, sessionLink } from "../notify.js"
 import { appendEvent } from "../records.js"
 import type { Tx } from "../queue.js"
 import { REVIEW_PENDING_TIMEOUT_MS } from "../review.js"
+import { sweepSubagents } from "../subagents/sweep.js"
 import { writeSettled, type SettleOutcome } from "./settle.js"
 import { sendPump } from "./signal.js"
 
@@ -142,5 +143,7 @@ export async function sweepWork(db: Db): Promise<{ settled: string[]; pumped: st
     )
   for (const task of tasks) await sendPump(db, task.id)
   if (settled.length) console.log(`[work] 清扫：补写了 ${settled.length} 张单的结束（${settled.join("、")}）`)
+  // 子 agent 的清扫（docs/dev/sub-agents.md 6.5）：同一个定时，不另开。出错不连累派活的清扫
+  await sweepSubagents(db).catch((error) => console.warn("[subagent] 清扫出错", error))
   return { settled, pumped: tasks.map((task) => task.id) }
 }

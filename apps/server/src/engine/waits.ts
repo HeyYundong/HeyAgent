@@ -5,12 +5,13 @@
 // - 兜底期限：到期只提醒负责人，不自动继续；
 // - 继续时：追加一条「等到了什么」的消息，排进 session.run，同一个 session id 接着跑。
 import { and, eq, inArray, isNull, lte, sql } from "drizzle-orm"
-import { fmtDateTime } from "@heyagent/shared"
+import { fmtDateTime, holdsDispatchSlot, holdsSubagentSlot, isSubagentQueueEvent } from "@heyagent/shared"
 
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
 import { notifyUsers, sessionLink } from "./notify.js"
 import { sendPumpInTx } from "./dispatch/signal.js"
+import { sendSubagentPumpInTx } from "./subagents/signal.js"
 import { QUEUES, runJobOptions, sendInTx, type Tx } from "./queue.js"
 import { appendEvent, appendMessage, writeAudit } from "./records.js"
 
@@ -49,11 +50,15 @@ export async function suspendInTx(
         inArray(t.sessions.status, input.fromStatuses ?? ["running"])
       )
     )
-    .returning({ id: t.sessions.id, taskId: t.sessions.taskId, workItemId: t.sessions.workItemId })
+    .returning({ id: t.sessions.id, taskId: t.sessions.taskId, workItemId: t.sessions.workItemId, kind: t.sessions.kind })
   if (updated.length === 0) return undefined
-  // 被派的运行挂起：agent 自己挂起、等人处理不占名额，空出位子给排队的单；等浏览器、等桌面的照样占名额，不发
-  if (updated[0]!.workItemId && !input.event?.startsWith("browser.") && !input.event?.startsWith("desktop:"))
+  // 被派的运行挂起：agent 自己挂起、等人处理不占名额，空出位子给排队的单；等浏览器、等桌面、等子 agent 的照样占名额，不发
+  // （docs/dev/sub-agents.md 第 12 节第 4 条：shared 的 holdsDispatchSlot，和 work/service.ts 的 occupiesSlotSql 同一份前缀）
+  if (updated[0]!.workItemId && !holdsDispatchSlot(input.event))
     await sendPumpInTx(db, tx, updated[0]!.taskId)
+  // 子运行挂起等人处理（验证码、登录、审批）不占子 agent 名额：空出来放行排队的（6.2）；排队本身、等浏览器 / 桌面的不发
+  if (updated[0]!.kind === "sub" && !holdsSubagentSlot(input.event) && !isSubagentQueueEvent(input.event))
+    await sendSubagentPumpInTx(db, tx)
   const [wait] = await tx
     .insert(t.sessionWaits)
     .values({

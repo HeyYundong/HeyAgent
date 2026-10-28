@@ -19,6 +19,8 @@ import { notifyBudgetOnce } from "./dispatch/budget.js"
 import { onWorkNotify } from "./dispatch/notify.js"
 import { pumpTask } from "./dispatch/pump.js"
 import { sweepWork } from "./dispatch/sweep.js"
+import { onSubagentNotify } from "./subagents/notify.js"
+import { pumpSubagents } from "./subagents/pump.js"
 import { runSession } from "./loop.js"
 import {
   ensureQueues,
@@ -263,6 +265,9 @@ export async function startEngineWorker(
   // 派活：单最终结束时叫醒等 work.done:<单号> 的运行（第二期）
   await boss.work<{ itemId: string }>(QUEUES.workNotify, polling, async ([job]) => job && (await onWorkNotify(db, job.data)))
   await boss.schedule(QUEUES.workSweep, "* * * * *", {}, { tz: SCHEDULE_TZ })
+  // 子 agent（docs/dev/sub-agents.md 6.2、7.2）：按名额放行排队的子运行（全系统一个）；子运行结束后看要不要叫醒父运行。清扫并在 work.sweep 里
+  await boss.work(QUEUES.subagentPump, polling, async () => pumpSubagents(db))
+  await boss.work<{ parentSessionId: string }>(QUEUES.subagentNotify, polling, async ([job]) => job && (await onSubagentNotify(db, job.data)))
   // 固化（docs/dev/solidify.md 5.6）：一版脚本往下走一步。同一版排着的只留一个（stately + singletonKey = 版本 id，队列在 QUEUE_SETUP 里建）
   await boss.work<{ versionId: string }>(QUEUES.routineCompile, { ...polling, localConcurrency: 2 }, async ([job]) => {
     if (job) await handleCompileJob(db, job.data)

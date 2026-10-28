@@ -35,6 +35,8 @@ import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
 import { memoryEmbedInfos } from "../memory/embed.js"
 import { runMemoryUseOf } from "../memory/retrieval.js"
+import { subagentStatsOf, subGoalOf } from "../engine/subagents/view.js"
+import { fileUrl } from "../files/service.js"
 import { parseCompiledText } from "./config/rules.js"
 
 const iso = (value: Date) => value.toISOString()
@@ -258,7 +260,7 @@ export async function listSessions(db: Db, filter: SessionFilter = {}): Promise<
     .orderBy(desc(t.sessions.startedAt))
   if (rows.length === 0) return []
   const checkpointScope = sessionScope(db, t.checkpoints.sessionId, filter)
-  const [summaries, checkpoints, records, waits] = await Promise.all([
+  const [summaries, checkpoints, records, waits, subStats] = await Promise.all([
     eventSummaries(db, filter),
     db.select().from(t.checkpoints).where(checkpointScope).orderBy(asc(t.checkpoints.sessionId), asc(t.checkpoints.position)),
     db
@@ -270,6 +272,11 @@ export async function listSessions(db: Db, filter: SessionFilter = {}): Promise<
       .select()
       .from(t.sessionWaits)
       .where(and(sessionScope(db, t.sessionWaits.sessionId, filter), eq(t.sessionWaits.status, "waiting"))),
+    // 拆过子 agent 的父运行：子 agent 的个数、状态、花费合计（docs/dev/sub-agents.md 10.2），一次分组查询
+    subagentStatsOf(
+      db,
+      rows.filter((row) => row.kind === "run").map((row) => row.id)
+    ),
   ])
 
   const group = <R, K>(list: R[], key: (row: R) => K) => {
@@ -326,6 +333,9 @@ export async function listSessions(db: Db, filter: SessionFilter = {}): Promise<
       browserIds: summaries.browserIds(row.id),
       kind: row.kind === "run" ? undefined : row.kind,
       routine: opt(row.routine),
+      // 子运行：第几个、标题（父运行编号是 parentSessionId）
+      sub: row.kind === "sub" && row.snapshot?.sub ? { n: row.snapshot.sub.n, title: row.snapshot.sub.title } : undefined,
+      subagents: subStats.get(row.id),
     })
   })
 }
@@ -335,11 +345,24 @@ export async function loadSession(db: Db, id: string): Promise<SessionRun | unde
   const [[summary], events, [snapshotRow]] = await Promise.all([
     listSessions(db, { ids: [id] }),
     db.select().from(t.sessionEvents).where(eq(t.sessionEvents.sessionId, id)).orderBy(asc(t.sessionEvents.seq)),
-    db.select({ snapshot: t.sessions.snapshot }).from(t.sessions).where(eq(t.sessions.id, id)),
+    db.select({ snapshot: t.sessions.snapshot, subResult: t.sessions.subResult }).from(t.sessions).where(eq(t.sessions.id, id)),
   ])
   if (!summary) return undefined
+  // 子运行的「子目标」（docs/dev/sub-agents.md 11.1）：给它读的文件从快照的附件里取（只读并进去的，名字、类型、大小都在）
+  const snapshot = snapshotRow?.snapshot
+  const subGoal = snapshot?.sub
+    ? subGoalOf(
+        snapshot,
+        snapshotRow?.subResult ?? null,
+        snapshot.sub.fileIds.flatMap((fileId) => {
+          const file = snapshot.attachments.find((each) => each.id === fileId)
+          return file ? [{ id: file.id, name: file.name, mime: file.mime, size: file.size, url: fileUrl(file.id) }] : []
+        })
+      )
+    : undefined
   return {
     ...summary,
+    ...(subGoal ? { subGoal } : {}),
     // 这次用了哪些记忆（docs/dev/memory-retrieval.md 6.2）：从快照里取；没有快照的演示数据没有
     ...(snapshotRow?.snapshot ? { memoryUse: runMemoryUseOf(snapshotRow.snapshot) } : {}),
     events: events.map((event) =>

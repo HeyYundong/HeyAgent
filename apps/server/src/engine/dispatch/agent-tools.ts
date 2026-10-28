@@ -18,6 +18,7 @@ import * as t from "../../db/schema.js"
 import { toWorkItems } from "../../work/service.js"
 import type { ToolContext, ToolOutcome } from "../tools/builtin.js"
 import { describeItem } from "./dispatch.js"
+import { patchSubResultInTx } from "../subagents/settle.js"
 import { appendLog, reportedIn } from "./settle.js"
 
 const fail = (output: string): ToolOutcome => ({ output, isError: true })
@@ -69,6 +70,8 @@ type ReportInput = z.infer<(typeof builtinToolInputs)["work.report"]>
  */
 export async function reportFromAgent(ctx: ToolContext, input: ReportInput): Promise<ToolOutcome> {
   const { db, session, snapshot } = ctx
+  // 子运行（docs/dev/sub-agents.md 7.3）：写进自己的 sessions.sub_result.data，交给父运行；合并规则同派活
+  if (snapshot.sub) return reportFromSubAgent(ctx, input)
   const itemId = snapshot.dispatch?.itemId
   if (!itemId) return fail("这次运行不是被派来的，没有派活单可以报结果")
   const data: Record<string, WorkReportValue> = Object.fromEntries(Object.entries(input.data ?? {}).map(([name, value]) => [name.trim(), typeof value === "string" ? value.trim() : value] as const).filter(([name]) => name))
@@ -112,5 +115,34 @@ export async function reportFromAgent(ctx: ToolContext, input: ReportInput): Pro
           : `已记在派活单 ${item.id}：这件办不成（${reason}）${line ? `；结果 ${line}` : ""}。这次运行结束后单记「没办成」，不会自动重试。接着照常回复一段总结（为什么办不成、试过哪些办法），不要再调工具。`,
       }
     return { output: `已写到派活单 ${item.id}：${line || "（没有字段）"}${"failKind" in outcome && outcome.failKind === null ? "。之前报的「办不成」已撤回" : ""}。` }
+  })
+}
+
+/**
+ * 子运行的 work.report：字段写进 sessions.sub_result.data（同名字段以后一次为准，最多 WORK_REPORT_MAX_FIELDS 个），父 agent 收到结果时看得到；
+ * 运行结束时按 snapshot.sub.results 查必交的字段交没交（outcome.ts）。子运行没有派活单：「办不成」不在这里记，叫它用 run_finish 报没办成
+ */
+async function reportFromSubAgent(ctx: ToolContext, input: ReportInput): Promise<ToolOutcome> {
+  const { db, session, snapshot } = ctx
+  const data: Record<string, WorkReportValue> = Object.fromEntries(
+    Object.entries(input.data ?? {})
+      .map(([name, value]) => [name.trim(), typeof value === "string" ? value.trim() : value] as const)
+      .filter(([name]) => name)
+  )
+  const finishName = snapshot.tools.some((tool) => tool.id === RUN_FINISH_TOOL_ID) ? "run_finish" : "最后的总结"
+  if (!Object.keys(data).length)
+    return input.outcome === "not_done"
+      ? fail(`你是子 agent，没有派活单：办不成就调用 ${finishName} 报没办成（reason 写为什么办不成、试过哪些办法），父 agent 会决定`)
+      : fail("data 要给：要交回的字段，例如 {\"件数\": 3}")
+  return db.transaction(async (tx) => {
+    const [row] = await tx.select({ subResult: t.sessions.subResult }).from(t.sessions).where(eq(t.sessions.id, session.id)).for("update")
+    const merged = { ...(row?.subResult?.data ?? {}), ...data }
+    if (Object.keys(merged).length > WORK_REPORT_MAX_FIELDS) return fail(`结果最多 ${WORK_REPORT_MAX_FIELDS} 个字段，这次合并以后有 ${Object.keys(merged).length} 个。把不要紧的去掉，或者合成一个字段`)
+    await patchSubResultInTx(tx, session.id, { data })
+    const required = snapshot.sub?.results ?? []
+    const missing = required.filter((name) => !(name in merged))
+    return {
+      output: `已记下交给父 agent 的字段：${workReportLine(merged)}${missing.length ? `。还没交：${missing.join("、")}` : required.length ? "。要交回的字段都交了" : ""}${input.outcome === "not_done" ? `。办不成要调用 ${finishName} 报没办成` : ""}。`,
+    }
   })
 }

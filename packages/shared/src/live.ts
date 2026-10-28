@@ -15,7 +15,8 @@ export const liveQueriesByTable: Record<string, string[]> = {
   task_memory_entries: ["taskMemory.list"],
   // 被派的运行状态变了，派活单的徽章（sessionStatus）和名额数跟着变。
   // sessions.list / sessions.page 只是摘要（不带过程），跑起来常变也不重；sessions.get（带全部过程）只让推来的那个 session 的失效，见 liveQueriesById
-  sessions: ["sessions.list", "sessions.page", "sessions.get", "work.list", "work.get", "work.taskStats", "work.queueStats"],
+  // 子运行（kind = sub）变了，父运行详情的「子 agent」区块（sessions.subagents）跟着变（docs/dev/sub-agents.md 11.1）
+  sessions: ["sessions.list", "sessions.page", "sessions.get", "sessions.subagents", "work.list", "work.get", "work.taskStats", "work.queueStats"],
   session_events: ["sessions.list", "sessions.page", "sessions.get"],
   checkpoints: ["sessions.list", "sessions.page", "sessions.get"],
   checkpoint_records: ["sessions.list", "sessions.page", "sessions.get"],
