@@ -68,6 +68,12 @@ interface Ha {
     waitAny(outcomes: Record<string, Target>, options?: { timeout?: number }): Promise<string>
     /** 按定位读页面上的字：list 是每一行的定位（不给 = 整页一行），fields 是行内每个字段的相对定位，{ target, attr } 取属性（href、value）。limit 默认 50、最多 500；一行也没有不算出错 */
     extract(args: { list?: Target; fields: Record<string, Target | { target: Target; attr: string }>; limit?: number }): Promise<{ rows: Record<string, string>[]; total: number }>
+    /** 复制图片（右键 → 复制图片，工具 browser.copy_image）：写进剪贴板、存成这次运行的文件。target 优先，坐标 x、y 要「允许看画面」 */
+    copyImage(args: { element?: string; target?: Target; x?: number; y?: number }): Promise<{ fileId: string; width: number; height: number }>
+    /** 读剪贴板（browser.clipboard_read）：copy: true 先按一次 Ctrl+C。表格给 table，别的文字给 text，图片给 fileId */
+    clipboardRead(args?: { copy?: boolean }): Promise<{ text?: string; table?: string[][]; fileId?: string }>
+    /** 粘贴（browser.clipboard_paste）：text / table / fileId 三选一，写进剪贴板后在当前焦点处按 Ctrl+V。先 click 到要贴的位置 */
+    clipboardPaste(args: { text?: string; table?: string[][]; fileId?: string }): Promise<unknown>
   }
   file: {
     /** 读附件或文件：参数同 file.read（fileId 或 path；表格给 sheet、startRow、rows）。表格附件读成行 */
@@ -78,7 +84,7 @@ interface Ha {
   checkpoint: { mark(args: { checkpoint: number; status: "done" | "skipped" | "doing"; record?: string; reason?: string }): Promise<unknown> }
   /** 被派的任务：交回结果（名字 → 文字、数字或是 / 否） */
   work: { report(args: { data: Record<string, string | number | boolean> }): Promise<unknown> }
-  /** 任务里的别的工具（HTTP、MCP、比物、图库……）：id 照任务工具清单写 */
+  /** 任务里的别的工具（HTTP、MCP、比物、图库、上面没有包装的浏览器工具 browser.xxx……）：id 照过程记录里的写，参数和 agent 那次调用的一样 */
   tool(id: string, input: Record<string, unknown>): Promise<{ text: string; data?: unknown }>
   /** 标记：下一步会真的改东西（提交、保存、发送）。试跑停在这里；过了这里再出错，交给 agent 时会写「可能已经生效」 */
   commit(label: string): Promise<void>
@@ -231,6 +237,9 @@ const RULES = [
   "12. 脚本里不出现密码、密钥、cookie、验证码：登录由浏览器的自动登录和人工登录处理，脚本假定已经登录。",
   "13. description 一步一行给人看（例如「1. 打开订单列表」「2. 按单号查询」……），哪一步会改东西、哪一步用 judge 判断要写出来。",
   "14. 过程里有 agent 运行中写的脚本（code.run 带 tools，「agent 写的脚本」一节是原文，过程里标「脚本第 n 步」的是它做的）时，可以照它的写法写循环（读表格、一行行做、翻页），但要换成这里的规矩：会改东西的每一步前 ha.commit、做完读回核对 ha.verified，等待用 ha.browser.waitAny 列出所有可能的结果，结束用 ha.finish（agent 的脚本里没有 ha.finish，是 agent 收尾的）。它里面写死的这次的值换成 input，为了调试加的输出不要照搬；跑了好几版的，以最后跑通的那一版为准。",
+  "15. 过程里用过的工具都能在脚本里用：「任务里的工具」一节写了每个工具（组工具是这次用过的子工具）在 SDK 里怎么调。有包装的用包装（ha.browser.copyImage、ha.browser.clipboardPaste……）；没有包装的用 ha.tool(\"工具 id\", 参数)，id 照过程记录里写（例如 \"browser.navigate_back\"），参数和 agent 那次调用的一样，快照 ref 换成定位。不要因为 SDK 没有某个包装就说不适合。",
+  "16. agent 按坐标（x、y）做的操作（browser.mouse_click_xy、按坐标复制图片……），脚本里换成定位（target）：页面布局、窗口大小、内容一变，坐标就不对了。从前后的快照、录下的代码、图片的 alt 文字、元素的文字里找定位（例如 getByRole('img', { name: '大写字母 X' })、locator('img[alt=\"大写字母 X\"]')）；实在找不到定位的，照用坐标，写进 assumptions。",
+  "17. 复制图片再贴到别处：const { fileId } = await ha.browser.copyImage({ element, target }) → ha.browser.click 点到要放的位置（格子、编辑区）→ await ha.commit(\"贴第 n 张图\") → await ha.browser.clipboardPaste({ fileId })，贴完读回来核对（ha.browser.extract 读格子里的 img 或 waitAny 等图出现）再 ha.verified。粘贴会改页面上的内容，前面一定 ha.commit；一行行贴的写成循环，每一行前 commit。",
   "",
   "只输出要求的 JSON。",
 ].join("\n")

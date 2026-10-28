@@ -74,6 +74,10 @@ describe("复制图片的辅助", () => {
   it("解析 MCP browser_evaluate 的输出", () => {
     expect(parseEvaluateResult('### Result\n{\n  "kind": "img",\n  "src": "http://a/b.png"\n}')).toEqual({ kind: "img", src: "http://a/b.png" })
     expect(parseEvaluateResult("### Error\nRef e9 not found")).toBeUndefined()
+    // 按定位找图时，后面录下的代码里有花括号：只看 Result 那一段
+    expect(
+      parseEvaluateResult(`### Result\n{"kind":"img","src":"x"}\n### Ran Playwright code\nawait page.getByRole('img', { name: '大写字母 X' }).evaluate('(element) => {}');`)
+    ).toEqual({ kind: "img", src: "x" })
   })
 
   it("给 MCP 的函数：带上记号和随机串，是一个接 element 的函数", () => {

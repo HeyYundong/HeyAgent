@@ -17,7 +17,7 @@ import { syncBuiltinTools } from "../src/engine/tools/builtin-defs.js"
 import { startEngineWorker } from "../src/engine/worker-runtime.js"
 import { checkRoutine } from "../src/routine/checks.js"
 import { handleCompileJob } from "../src/routine/compile.js"
-import { buildMaterial, clipBlocks, inputMarks, inputValues } from "../src/routine/material.js"
+import { buildMaterial, clipBlocks, inputMarks, inputValues, sdkCallOf, toolsSection } from "../src/routine/material.js"
 import { compileSystemPrompt, sdkDescription, SDK_FALLBACK } from "../src/routine/prompt.js"
 import { bossJobs, createTask, Script, sessionRow, step, text, waitFor } from "./engine-helpers.js"
 import { login, mutate, query, setupApp, type TestApp } from "./helpers.js"
@@ -810,5 +810,89 @@ describe("判断题 ha.judge 和 agent 写的脚本（18.1、18.2）", () => {
     const test = await sessionRow(ctx.db, `${data.versionId}-t1`)
     expect(test).toMatchObject({ kind: "routine_test", status: "running" })
     expect(test!.snapshot!.routine).toMatchObject({ code: JUDGE_CODE })
+  })
+})
+
+describe("剪贴板：复制图片、粘贴（基准 C 里固化员说 SDK 做不了）", () => {
+  /** 基准 C 那样：一张按坐标复制、一张按 ref 复制，点格子，粘贴；另外一次批、一次快照、一次后退 */
+  const pasteEvents = [
+    { kind: "tool" as const, title: "复制图片", toolId: "browser.copy_image", input: JSON.stringify({ element: "大写字母 X", x: 120, y: 340 }), output: "已复制图片（64×64，来源：原图）" },
+    { kind: "tool" as const, title: "复制图片", toolId: "browser.copy_image", input: JSON.stringify({ element: "大写字母 E", target: "e31" }), output: "已复制图片（64×64，来源：原图）" },
+    { kind: "tool" as const, title: "点击", toolId: "browser.click", input: JSON.stringify({ element: "第 1 行图片格", target: "e40" }), output: "点了" },
+    { kind: "tool" as const, title: "粘贴（出错）", toolId: "browser.clipboard_paste", input: JSON.stringify({ fileId: "f-1" }), output: "页面没有焦点" },
+    { kind: "tool" as const, title: "粘贴", toolId: "browser.clipboard_paste", input: JSON.stringify({ fileId: "f-1" }), output: "已把图片写进剪贴板" },
+    { kind: "tool" as const, title: "连着做几步", toolId: "browser.batch", input: "{}", output: "做完了" },
+    { kind: "tool" as const, title: "看页面", toolId: "browser.snapshot", input: "{}", output: "- img" },
+    { kind: "tool" as const, title: "后退", toolId: "browser.navigate_back", input: "{}", output: "退回去了" },
+    { kind: "tool" as const, title: "按坐标点", toolId: "browser.mouse_click_xy", input: JSON.stringify({ element: "格子", x: 1, y: 2 }), output: "点了" },
+  ]
+
+  it("材料：组工具下面列出这次用过的子工具和 SDK 里的调法；按坐标的标出来；非组工具也写调法", async () => {
+    const tools = [
+      { id: "browser", name: "浏览器", risk: "external" as const, summary: "操作网页" },
+      { id: "gallery", name: "图库", risk: "write" as const, summary: "" },
+      { id: "http-erp", name: "ERP 接口", risk: "read" as const, summary: "" },
+      { id: "work.report", name: "交回结果", risk: "write" as const, summary: "" },
+    ]
+    const section = toolsSection(tools, [...pasteEvents, { kind: "tool" as const, title: "报结果", toolId: "work.report", input: "{}", output: "好" }])
+    expect(section).toContain("## 任务里的工具（脚本只能用这些）")
+    expect(section).toContain("没有的用 ha.tool(\"工具 id\", 参数)")
+    expect(section).toContain("- browser.copy_image（2 次，1 次按坐标 x、y：脚本里换成定位 target）→ ha.browser.copyImage(…)")
+    expect(section).toContain("- browser.clipboard_paste（2 次，1 次出错）→ ha.browser.clipboardPaste(…)")
+    expect(section).toContain("- browser.click（1 次）→ ha.browser.click(…)")
+    expect(section).toContain('- browser.navigate_back（1 次）→ ha.tool("browser.navigate_back", { … })')
+    expect(section).toContain("- browser.batch（1 次）→ 脚本里不用：一步一步调")
+    expect(section).toContain("- browser.snapshot（1 次）→ agent 看页面用的，脚本里不用")
+    expect(section).toContain("- browser.mouse_click_xy（1 次，1 次按坐标 x、y：脚本里换成定位 target）")
+    expect(section).toContain("- gallery：图库（风险 write）（一组工具，这次运行没用过）")
+    expect(section).toContain('- http-erp：ERP 接口（风险 read） → ha.tool("http-erp", { … })')
+    expect(section).toContain("- work.report：交回结果（风险 write） → ha.work.report(…)")
+    // 子工具排在组的下面
+    const lines = section.split("\n")
+    expect(lines.findIndex((line) => line.includes("browser.copy_image"))).toBeGreaterThan(lines.findIndex((line) => line.startsWith("- browser：")))
+    expect(sdkCallOf("browser.clipboard_read")).toBe("ha.browser.clipboardRead(…)")
+    expect(sdkCallOf("browser.wait_any")).toBe("ha.browser.waitAny(…)")
+    expect(sdkCallOf("run.finish")).toBe("ha.finish(…)")
+
+    // 从库里拼的材料用的就是这一节
+    const taskId = await dispatchedTask()
+    const source = await sourceRun(taskId)
+    await appendEvents(source, pasteEvents)
+    const [routine] = await ctx.db.insert(t.routines).values({ id: `RT-c-${taskId}`, taskId }).returning()
+    const material = await buildMaterial(ctx.db, { sourceSessionId: source, routineId: routine!.id })
+    expect(material.text).toContain("这次运行用过的子工具（脚本里怎么调）：")
+    expect(material.text).toContain("- browser.copy_image（2 次，1 次按坐标 x、y：脚本里换成定位 target）→ ha.browser.copyImage(…)")
+    expect(material.text).toContain("- browser.navigate（1 次）→ ha.browser.navigate(…)")
+  })
+
+  it("提示词：有包装的用包装、没有的用 ha.tool；坐标换成定位；复制 → 点位置 → commit → 粘贴；SDK 说明里有这三个函数", () => {
+    const system = compileSystemPrompt()
+    for (const each of ["15. 过程里用过的工具都能在脚本里用", "ha.tool(\"工具 id\", 参数)", "16. agent 按坐标（x、y）做的操作", "17. 复制图片再贴到别处", "await ha.commit(\"贴第 n 张图\")"])
+      expect(system).toContain(each)
+    // 读的是真的 index.d.ts：三个函数和 ha.tool 的说明都在
+    for (const each of ["copyImage(args: CopyImageArgs): Promise<CopyImageResult>", "clipboardRead(", "clipboardPaste(", "也包括上面没有包装的浏览器工具（browser.xxx）"]) expect(system).toContain(each)
+    for (const each of ["copyImage(", "clipboardRead(", "clipboardPaste("]) expect(SDK_FALLBACK).toContain(each)
+  })
+
+  it("程序检查：认三个新函数（要任务里有 browser）；ha.tool 调没包装的浏览器工具也认", () => {
+    const wrap = (body: string) => `import ha from "heyagent"\nexport default async function run(input) {\n${body}\n}`
+    const code = wrap(`
+  for (const [i, letter] of ["X", "E"].entries()) {
+    const { fileId } = await ha.browser.copyImage({ element: "大写字母 " + letter, target: "getByRole('img', { name: '大写字母 " + letter + "' })" })
+    await ha.browser.click({ element: "第 " + (i + 1) + " 行图片格", target: "getByRole('cell').nth(" + i + ")" })
+    await ha.commit("贴第 " + (i + 1) + " 张图")
+    await ha.browser.clipboardPaste({ fileId })
+  }
+  const read = await ha.browser.clipboardRead({ copy: true })
+  await ha.tool("browser.navigate_back", {})
+  return ha.finish({ outcome: "achieved", summary: String(read.text), evidence: "x" })`)
+    const ok = checkRoutine({ code, inputSchema: INPUT_SCHEMA, outputSchema: OUTPUT_SCHEMA, toolIds: ["browser", "run.finish"] })
+    expect(ok.problems).toEqual([])
+    expect(ok.usedTools).toEqual(["browser", "browser.navigate_back", "run.finish"])
+    const missing = checkRoutine({ code, inputSchema: INPUT_SCHEMA, outputSchema: OUTPUT_SCHEMA, toolIds: ["run.finish"] }).problems.join("\n")
+    expect(missing).toContain("ha.browser.copyImage（browser.copy_image） 要用工具 browser，这个任务里没有这个工具")
+    expect(missing).toContain("browser.navigate_back，这个任务里没有")
+    // 拼错的还是报，并提示 ha.tool
+    expect(checkRoutine({ code: wrap("await ha.browser.copy_image({})"), inputSchema: INPUT_SCHEMA, outputSchema: OUTPUT_SCHEMA, toolIds: ["browser"] }).problems.join()).toContain('SDK 里没有 ha.browser.copy_image')
   })
 })

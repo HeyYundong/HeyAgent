@@ -11,12 +11,14 @@ import {
   routineStopKindLabel,
   type SessionRoutineState,
   type SessionSnapshot,
+  type SnapshotTool,
   type TaskDispatch,
 } from "@heyagent/shared"
 
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
 import { readFileData } from "../files/service.js"
+import { GROUP_TOOLS, SDK_BROWSER_TOOLS } from "./checks.js"
 
 /** 过程记录最多给多少字（超出时留开头 2/5、结尾 3/5：开头是怎么进的页面，结尾离结果近） */
 export const MATERIAL_LOG_BUDGET = 60_000
@@ -399,6 +401,79 @@ export function compactLog(events: EventRow[], values: { label: string; value: s
   return blocks
 }
 
+// ---------- 任务里的工具：每个写明 SDK 里怎么调 ----------
+
+/** 有包装的非组工具 → SDK 里的写法 */
+const SDK_CALLS: Record<string, string> = {
+  "file.read": "ha.file.read(…)",
+  "file.save": "ha.file.save(…)",
+  "checkpoint.mark": "ha.checkpoint.mark(…)",
+  "work.report": "ha.work.report(…)",
+  "run.finish": "ha.finish(…)",
+}
+/** 工具 id → 有包装的 ha.browser.xxx */
+const BROWSER_WRAPPERS = new Map(Object.entries(SDK_BROWSER_TOOLS).map(([name, toolId]) => [toolId, `ha.browser.${name}(…)`]))
+/** agent 看页面用的，脚本里不用 */
+const LOOK_TOOLS = new Set(["browser.snapshot", "browser.look", "browser.find", "browser.take_screenshot"])
+/** 按坐标操作的（「允许看画面」才有）：脚本里尽量换成定位 */
+const isPointerXy = (toolId: string) => /^browser\.mouse_/.test(toolId)
+
+/** 一个工具在脚本里怎么调 */
+export function sdkCallOf(toolId: string): string {
+  if (toolId === "browser.batch") return "脚本里不用：一步一步调（批里的每一步过程里各有一条）"
+  if (LOOK_TOOLS.has(toolId)) return "agent 看页面用的，脚本里不用：等结果用 ha.browser.waitAny，读字用 ha.browser.extract"
+  return BROWSER_WRAPPERS.get(toolId) ?? SDK_CALLS[toolId] ?? `ha.tool(${JSON.stringify(toolId)}, { … })`
+}
+
+/** 参数里是不是按坐标（x、y）而不是定位（target） */
+function byPoint(input: string | null): boolean {
+  if (!input) return false
+  try {
+    const args = JSON.parse(input) as Record<string, unknown>
+    return typeof args.x === "number" && typeof args.y === "number" && !args.target
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 「任务里的工具」一节：每个工具一行，写明 SDK 里怎么调。组工具（browser、desktop、gallery、compare）在快照里只有组的 id，
+ * 下面再列这次运行实际用过的子工具（过程记录里的 id）：固化员照着找包装或写 ha.tool，不会以为 SDK 做不了
+ */
+export function toolsSection(tools: Pick<SnapshotTool, "id" | "name" | "risk" | "summary">[], events: Pick<EventRow, "kind" | "toolId" | "title" | "input">[]): string {
+  const used = new Map<string, { calls: number; errors: number; byPoint: number }>()
+  for (const event of events) {
+    if (event.kind !== "tool" || !event.toolId) continue
+    const stat = used.get(event.toolId) ?? { calls: 0, errors: 0, byPoint: 0 }
+    stat.calls++
+    if (isToolError(event)) stat.errors++
+    if (byPoint(event.input)) stat.byPoint++
+    used.set(event.toolId, stat)
+  }
+  const lines: string[] = []
+  for (const tool of tools) {
+    const head = `- ${tool.id}：${tool.name}（风险 ${tool.risk}）${tool.summary ? ` ${clip(tool.summary, 120)}` : ""}`
+    if (!GROUP_TOOLS.includes(tool.id)) {
+      lines.push(`${head} → ${sdkCallOf(tool.id)}`)
+      continue
+    }
+    const subs = [...used.entries()].filter(([id]) => id.startsWith(`${tool.id}.`)).sort(([a], [b]) => a.localeCompare(b))
+    lines.push(subs.length ? `${head}\n  这次运行用过的子工具（脚本里怎么调）：` : `${head}（一组工具，这次运行没用过）`)
+    for (const [id, stat] of subs) {
+      const notes = [`${stat.calls} 次`]
+      if (stat.errors) notes.push(`${stat.errors} 次出错`)
+      if (stat.byPoint) notes.push(`${stat.byPoint} 次按坐标 x、y：脚本里换成定位 target`)
+      else if (isPointerXy(id)) notes.push("按坐标：脚本里尽量换成定位（ha.browser.click 等）")
+      lines.push(`  - ${id}（${notes.join("，")}）→ ${sdkCallOf(id)}`)
+    }
+  }
+  return [
+    "## 任务里的工具（脚本只能用这些）",
+    "箭头后面是脚本里的调法：有包装的用包装，没有的用 ha.tool(\"工具 id\", 参数)，参数和过程里 agent 那次调用的一样（快照 ref 换成定位）。",
+    ...lines,
+  ].join("\n")
+}
+
 /** work.report 交的结果：这次运行里每次成功的调用按顺序合并（同名字段以后一次为准，和派活单上的一样） */
 export function reportedData(events: Pick<EventRow, "kind" | "toolId" | "title" | "input">[]): Record<string, string | number | boolean> | undefined {
   let merged: Record<string, string | number | boolean> | undefined
@@ -521,8 +596,7 @@ export async function buildMaterial(
         `要交回的结果（用 ha.work.report 交，outputSchema = 这些字段）：\n${dispatch.results.map((result) => `- ${result.name}${result.required ? "（必交）" : "（可选）"}${result.description ? `：${result.description}` : ""}`).join("\n") || "（没有声明）"}`,
       ].join("\n")
     )
-  const tools = snapshot.tools.map((tool) => `- ${tool.id}：${tool.name}（风险 ${tool.risk}）${tool.summary ? ` ${clip(tool.summary, 120)}` : ""}`)
-  parts.push(`## 任务里的工具（脚本只能用这些）\n${tools.join("\n")}`)
+  parts.push(toolsSection(snapshot.tools, events))
   if (snapshot.browser)
     parts.push(
       `## 浏览器\n能用的 Chrome 配置：${snapshot.browser.profiles.map((profile) => `${profile.id}（${profile.name}）`).join("、") || "（没有）"}\n网址白名单：${snapshot.browser.allowedDomains.join("、") || "（不限）"}`

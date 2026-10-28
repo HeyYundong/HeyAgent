@@ -10,26 +10,33 @@ const FORBIDDEN_NAMES = new Set(["eval", "Function", "require", "process", "glob
 /** 不许访问的属性：(async () => {}).constructor("…") 一样能造出 Function */
 const FORBIDDEN_PROPS = new Set(["constructor", "__proto__"])
 
-/** SDK 的浏览器函数（docs/dev/solidify.md 15.2 第 4 条） */
-export const SDK_BROWSER_FUNCTIONS = [
-  "navigate",
-  "click",
-  "type",
-  "fillForm",
-  "select",
-  "press",
-  "pressSequentially",
-  "hover",
-  "check",
-  "uncheck",
-  "drag",
-  "upload",
-  "tabs",
-  "waitFor",
-  "handleDialog",
-  "waitAny",
-  "extract",
-] as const
+/**
+ * SDK 的浏览器函数 → 它调的工具 id（docs/dev/solidify.md 15.2 第 4 条；剪贴板三个见 sandbox-sdk/heyagent/index.js）。
+ * 都属于「浏览器」这一组：任务里要有 browser。材料（material.ts）按它写「SDK 里怎么调」
+ */
+export const SDK_BROWSER_TOOLS: Readonly<Record<string, string>> = {
+  navigate: "browser.navigate",
+  click: "browser.click",
+  type: "browser.type",
+  fillForm: "browser.fill_form",
+  select: "browser.select_option",
+  press: "browser.press_key",
+  pressSequentially: "browser.press_sequentially",
+  hover: "browser.hover",
+  check: "browser.check",
+  uncheck: "browser.uncheck",
+  drag: "browser.drag",
+  upload: "browser.file_upload",
+  tabs: "browser.tabs",
+  waitFor: "browser.wait_for",
+  handleDialog: "browser.handle_dialog",
+  waitAny: "browser.wait_any",
+  extract: "browser.extract",
+  copyImage: "browser.copy_image",
+  clipboardRead: "browser.clipboard_read",
+  clipboardPaste: "browser.clipboard_paste",
+}
+export const SDK_BROWSER_FUNCTIONS = Object.keys(SDK_BROWSER_TOOLS)
 
 /** ha 上的东西：值是要用到的工具（任务里没有就不过）；null = 不是工具（标记、输入、记一句话） */
 const SDK_TOP: Record<string, string | null> = {
@@ -60,7 +67,7 @@ const SDK_NESTED: Record<string, Record<string, string>> = {
 }
 
 /** 展开成一组的内置工具（快照里只有组的 id，例如 browser；调用时是 browser.click、gallery.search） */
-const GROUP_TOOLS = ["browser", "desktop", "gallery", "compare"]
+export const GROUP_TOOLS = ["browser", "desktop", "gallery", "compare"]
 
 export interface RoutineCheckInput {
   code: string
@@ -265,11 +272,13 @@ export function checkRoutine(input: RoutineCheckInput): RoutineCheckResult {
             problems.push(`${at(node)}：ha.browser 要接具体的函数，例如 ha.browser.click(…)`)
             return
           }
-          if (!(SDK_BROWSER_FUNCTIONS as readonly string[]).includes(sub)) {
-            problems.push(`${at(node)}：SDK 里没有 ha.browser.${sub}（有的是：${SDK_BROWSER_FUNCTIONS.join("、")}）`)
+          const toolId = Object.hasOwn(SDK_BROWSER_TOOLS, sub) ? SDK_BROWSER_TOOLS[sub] : undefined
+          if (!toolId) {
+            problems.push(`${at(node)}：SDK 里没有 ha.browser.${sub}（有的是：${SDK_BROWSER_FUNCTIONS.join("、")}；别的浏览器工具用 ha.tool("browser.xxx", { … })）`)
             return
           }
-          need("browser", `ha.browser.${sub}`)
+          // 浏览器工具在快照里只有组的 id：要求任务里有 browser
+          need("browser", `ha.browser.${sub}（${toolId}）`)
         }
         if (top in SDK_NESTED) {
           const toolId = sub ? SDK_NESTED[top]![sub] : undefined

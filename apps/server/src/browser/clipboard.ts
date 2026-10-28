@@ -109,7 +109,10 @@ const PICK_AT_POINT = `function (x, y, id) {
 /** MCP browser_evaluate 的输出：「### Result」后面是返回值的 JSON */
 export function parseEvaluateResult(output: string): unknown {
   const at = output.indexOf("### Result")
-  const rest = at >= 0 ? output.slice(at + "### Result".length) : output
+  let rest = at >= 0 ? output.slice(at + "### Result".length) : output
+  // 只看「### Result」这一段：后面的「### Ran Playwright code」里有定位代码（target 写 getByRole('img', { name: … }) 时带花括号）
+  const next = rest.indexOf("\n### ")
+  if (next >= 0) rest = rest.slice(0, next)
   const start = rest.indexOf("{")
   const end = rest.lastIndexOf("}")
   if (start < 0 || end < start) return undefined
@@ -530,6 +533,8 @@ export class ClipboardTools {
       )
       return {
         output: `已复制图片（${width}×${height}，来源：${source}），剪贴板里现在是这张图；文件 id：${row.id}。点到要放的位置后调 browser_clipboard_paste 粘贴（fileId 填 ${row.id}）。`,
+        // 固化脚本（ha.browser.copyImage）拿这个：粘贴时用 fileId，不用从文字里抠
+        data: { fileId: row.id, width, height },
       }
     } finally {
       await found?.locator.evaluate(`(el) => el.removeAttribute(${JSON.stringify(PICK_ATTR)})`).catch(() => {})
@@ -557,6 +562,8 @@ export class ClipboardTools {
     const offset = input.offset ?? 0
     const lines: string[] = []
     const titles: string[] = []
+    // 固化脚本（ha.browser.clipboardRead）拿的结构化结果：完整内容，不分段（分段是为了模型的输出上限）
+    const data: { text?: string; table?: string[][]; fileId?: string } = {}
     if (content.image) {
       const converted = await toPng(content.image.data).catch(() => undefined)
       const row = await saveFile(this.deps.db, {
@@ -566,6 +573,7 @@ export class ClipboardTools {
         kind: "clipboard",
         sessionId: this.deps.session.id,
       })
+      data.fileId = row.id
       const size = converted ? `${converted.width}×${converted.height}` : sizeText(row.size)
       lines.push(`剪贴板里有一张图片（${size}），已存为这次运行的文件 ${row.id}：可以用 file.read 看，或用 browser_clipboard_paste（fileId）贴到别处。`)
       titles.push(`图片 ${size}`)
@@ -575,6 +583,8 @@ export class ClipboardTools {
       const limit = Math.min(READ_LIMIT, runtime.toolOutputMaxChars - 600)
       const rows = parseTsv(text)
       const table = looksLikeTable(text, rows)
+      if (table) data.table = rows
+      else data.text = text
       if (table) {
         const part = tablePage(rows, offset, limit)
         titles.push(`表格 ${part.total} 行 × ${part.cols} 列`)
@@ -609,7 +619,7 @@ export class ClipboardTools {
       titles.push("空的")
     }
     await this.event(`读了剪贴板：${titles.join("、")}`, input.copy ? "先按了 Ctrl+C" : undefined)
-    return { output: lines.join("\n") }
+    return { output: lines.join("\n"), data }
   }
 
   /** 太长的剪贴板内容整份存成文件（file.read 能读） */

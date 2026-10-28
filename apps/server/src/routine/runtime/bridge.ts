@@ -202,6 +202,19 @@ export function stepLabel(toolId: string, input: unknown): string {
   const args = (input && typeof input === "object" ? input : {}) as Record<string, unknown>
   const short = toolId.replace(/^browser\./, "")
   const text = (value: unknown) => (typeof value === "string" ? value.trim() : "")
+  const clipped = (value: string) => (value.length > 40 ? `${value.slice(0, 39)}…` : value)
+  // 剪贴板的三个工具：短名看不懂，写成人话；粘贴的内容不写进来（同上，不取要填的内容），只写是什么、多少
+  if (toolId === "browser.copy_image") {
+    const what = text(args.element) || text(args.target) || (typeof args.x === "number" && typeof args.y === "number" ? `坐标 (${args.x}, ${args.y})` : "")
+    return what ? `复制图片「${clipped(what)}」` : "复制图片"
+  }
+  if (toolId === "browser.clipboard_read") return args.copy === true ? "复制并读剪贴板" : "读剪贴板"
+  if (toolId === "browser.clipboard_paste") {
+    if (typeof args.fileId === "string") return "粘贴图片"
+    if (Array.isArray(args.table)) return `粘贴表格（${args.table.length} 行）`
+    if (typeof args.text === "string") return `粘贴文字（${args.text.length} 字）`
+    return "粘贴"
+  }
   let detail = text(args.element) || text(args.startElement)
   if (Array.isArray(args.fields))
     detail = args.fields
@@ -211,7 +224,7 @@ export function stepLabel(toolId: string, input: unknown): string {
   else if (args.fields && typeof args.fields === "object") detail = Object.keys(args.fields).join("、")
   if (args.outcomes && typeof args.outcomes === "object") detail = Object.keys(args.outcomes).join(" / ")
   detail ||= text(args.key) || text(args.url) || text(args.target) || text(args.path) || text(args.fileId)
-  if (detail.length > 40) detail = `${detail.slice(0, 39)}…`
+  detail = clipped(detail)
   return detail ? `${short}「${detail}」` : short
 }
 

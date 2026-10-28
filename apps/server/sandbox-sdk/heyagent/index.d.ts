@@ -92,6 +92,35 @@ export interface JudgeResult {
   reason: string
 }
 
+export interface CopyImageArgs {
+  /** 给人看的图片描述（「大写字母 X 的图」），过程记录里显示；不写就用 target */
+  element?: string
+  /** 图片（或包着图片的元素）的定位，例如 getByRole('img', { name: '大写字母 X' })（按 alt 文字）、locator('img[alt="大写字母 X"]') */
+  target?: Target
+  /**
+   * 不给 target 时：图片上一点的坐标（视口 CSS 像素）。要任务打开「允许看画面」才认；页面布局一变坐标就不对，
+   * 脚本里尽量写 target（过程里 agent 按坐标复制的，看它旁边的快照、alt 文字换成定位）
+   */
+  x?: number
+  y?: number
+}
+
+export interface CopyImageResult {
+  /** 复制下来的图（PNG）存成的这次运行的文件 id：粘贴时 clipboardPaste({ fileId }) */
+  fileId: string
+  width: number
+  height: number
+}
+
+export interface ClipboardContent {
+  /** 剪贴板里是文字（不像表格）：完整的文字 */
+  text?: string
+  /** 剪贴板里是表格（从表格软件、在线表格复制的，有制表符、多行）：一行一个数组，一格一个字符串；第一行就是复制区域的第一行 */
+  table?: string[][]
+  /** 剪贴板里有图片：存成了这次运行的文件，这是它的 id */
+  fileId?: string
+}
+
 export interface ToolResult {
   /** 工具返回的文字 */
   text: string
@@ -153,6 +182,22 @@ export interface Heyagent {
     waitAny<K extends string>(outcomes: Record<K, Target>, options?: { timeout?: number }): Promise<K>
     /** 按定位读页面上的字（只读）。一行也没有不算出错：rows 是空数组 */
     extract(args: ExtractArgs): Promise<ExtractResult>
+    /**
+     * 复制图片，相当于在图片上「右键 → 复制图片」（工具 browser.copy_image）：取原图（拿不到就截元素），转成 PNG 写进剪贴板，
+     * 同时存成这次运行的文件。target 和坐标 x、y 二选一，优先写 target。之后 click 到要放的位置，再 clipboardPaste({ fileId })
+     */
+    copyImage(args: CopyImageArgs): Promise<CopyImageResult>
+    /**
+     * 读剪贴板（工具 browser.clipboard_read）：copy: true 先在当前焦点处按一次 Ctrl+C（先选中要复制的区域）。
+     * 返回完整内容：表格给 table，别的文字给 text，图片存成文件给 fileId；剪贴板是空的返回 {}
+     */
+    clipboardRead(args?: { copy?: boolean }): Promise<ClipboardContent>
+    /**
+     * 粘贴（工具 browser.clipboard_paste）：把内容写进剪贴板，在当前焦点处按 Ctrl+V。三选一：text 文字；table 表格（一行一个数组，编成表格软件认的格式）；
+     * fileId 这次运行里的图片文件（copyImage 返回的、附件）。不替你点位置：先 click 到要贴的格子 / 编辑区。
+     * 粘贴会改页面上的内容：前面先 ha.commit
+     */
+    clipboardPaste(args: { text: string } | { table: string[][] } | { fileId: string }): Promise<string>
   }
 
   file: {
@@ -175,7 +220,11 @@ export interface Heyagent {
     report(args: { data?: Record<string, string | number | boolean>; outcome?: "done" | "not_done"; reason?: string }): Promise<string>
   }
 
-  /** 任务里的任何别的工具（HTTP、MCP、比物、图库……），id 写工具 id */
+  /**
+   * 任务里的任何别的工具：HTTP、MCP、比物、图库，也包括上面没有包装的浏览器工具（browser.xxx）。
+   * id 照过程记录里写的工具 id（例如 "browser.navigate_back"、"gallery.search"），input 和 agent 那次调用的参数一样（快照 ref 换成定位）。
+   * 返回 { text, data }：data 是结构化结果（HTTP 工具返回的 JSON 等），没有是 undefined
+   */
   tool(id: string, input: Record<string, unknown>): Promise<ToolResult>
 
   /**
