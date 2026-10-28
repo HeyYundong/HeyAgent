@@ -2,16 +2,17 @@
 // 沙箱换成「直接跑 node」的 runner（开发机没有 bwrap），SDK 和脚本照样走工具桥 → 工具网关。
 // - 跑通：执行模型一次都没调，照常复核、记办成；
 // - 跑不通：交给 agent，第一条交接的话对，agent 接着做完；
-// - 要挂起：交接的话和挂起一起落库，继续后 agent 接着做；
+// - 要挂起：照常挂起、不交 agent，等到了按日志接着跑完（docs/dev/solidify.md 17.2）；
 // - ha.fail("input")：直接记没办成，不叫模型；输入不符合 inputSchema：交给 agent；
 // - 固化试跑：只跑脚本，停在第一个 ha.commit 前，work.report 没生效，运行结束后发 routine.compile；
-// - 进程中途被杀：继续时按中断交给 agent；
-// - 试用满 3 次转正式；连续 3 次交给 agent 自动停用。
+// - 接着跑：进程中途被杀（提交前重做、提交后交给 agent）、对不上、浏览器没了、审批批准 / 拒绝、验收反问后 agent 接着做；
+// - 试用满 3 次转正式；连续 3 次交给 agent 自动停用；清扫补发 routine.compile。
 import { mkdtempSync } from "node:fs"
 import { rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
+import { describeCompiledRule, type CompiledRule } from "@heyagent/shared"
 import { and, eq } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
@@ -19,7 +20,9 @@ import * as t from "../src/db/schema.js"
 import { bossFor, QUEUES } from "../src/engine/queue.js"
 import { configureEngine, runtime } from "../src/engine/runtime.js"
 import { startSessionImpl, startSessionInTx } from "../src/engine/sessions.js"
+import { journalHash } from "../src/routine/runtime/bridge.js"
 import { setRoutineSandboxDeps } from "../src/routine/runtime/run.js"
+import { sweepRoutines } from "../src/routine/sweep.js"
 import { login } from "./helpers.js"
 import {
   bossJobs,
@@ -32,6 +35,7 @@ import {
   sessionRow,
   setupEngine,
   step,
+  text,
   useScript,
   waitFor,
   type EngineTestContext,
@@ -157,23 +161,40 @@ describe("普通运行先跑脚本", () => {
     expect(routine).toMatchObject({ directStreak: 0, fallbackStreak: 1, status: "trial" })
   })
 
-  it("要挂起：交接的话和挂起一起落库，继续后 agent 接着做（看得到交接的话）", async () => {
-    const { taskId, script } = await routineTask(
-      `
+  it("要挂起：照常挂起、不写交接的话（state = suspended）；等到了按日志接着跑完，执行模型一次都没调", async () => {
+    const { taskId, script } = await routineTask(`
   await ha.file.save({ path: "out/a.txt", content: "a" })
   await ha.tool("session.wait", { what: "等一会儿", afterMinutes: 0.05 })
-  return ha.finish({ outcome: "achieved", summary: "不该到这里", evidence: "-" })`,
-      { turns: [step(finishWith("等完了，接着做完了"))] }
-    )
+  const back = await ha.file.read({ path: "out/a.txt" })
+  return ha.finish({ outcome: "achieved", summary: "等完了，读回来 " + back, evidence: "读回来了" })`)
     const sessionId = await runNow(taskId)
-    await waitFor(async () => (await sessionRow(ctx.db, sessionId))?.status === "waiting", { what: "挂起" })
-    const messages = await messagesOf(ctx.db, sessionId)
-    expect(JSON.stringify(messages.at(-1)?.content)).toContain("做到第 2 步要先挂起等待")
+    const waiting = await waitFor(async () => {
+      const row = await sessionRow(ctx.db, sessionId)
+      return row?.status === "waiting" ? row : undefined
+    }, { what: "挂起" })
+    expect(waiting.routine).toMatchObject({ state: "suspended", steps: 2, stoppedAt: { step: 2, kind: "suspend", tool: "session.wait" } })
+    // 没有交接的话
+    expect(JSON.stringify(await messagesOf(ctx.db, sessionId))).not.toContain("这次运行先按固化流程")
+    const journal = await ctx.db.select().from(t.routineJournal).where(eq(t.routineJournal.sessionId, sessionId)).orderBy(t.routineJournal.seq)
+    expect(journal.map((row) => [row.seq, row.op, row.tool, row.stop, row.reply === null])).toEqual([
+      [1, "tool", "file.save", null, false],
+      [2, "tool", "session.wait", "suspend", false],
+    ])
     const row = await waitOutcome(sessionId, 40_000)
     expect(row.outcome).toBe("achieved")
-    expect(script.prompts).toHaveLength(1)
-    expect(firstPromptText(script)).toContain("做到第 2 步要先挂起等待")
-    expect(row.routine).toMatchObject({ state: "fell_back", stoppedAt: { step: 2, kind: "suspend" } })
+    expect(script.prompts).toHaveLength(0)
+    expect(row.stepCount).toBe(0)
+    expect(row.routine).toMatchObject({ state: "finished", steps: 4, resumes: 1, replayed: 2 })
+    expect(row.routine?.stoppedAt).toBeUndefined()
+    const events = await eventsOf(ctx.db, sessionId)
+    // 前两步按记录跳过：file.save 只真做了一次
+    expect(events.filter((event) => event.kind === "tool").map((event) => [event.toolId, event.trace?.routineStep])).toEqual([
+      ["file.save", 1],
+      ["session.wait", 2],
+      ["file.read", 3],
+      ["run.finish", 4],
+    ])
+    expect(events.some((event) => event.title === "脚本接着跑：前 2 步按记录跳过，从第 3 步接着做")).toBe(true)
   })
 
   it("ha.fail(\"input\")：直接按没办成收尾，不叫模型、不交 agent", async () => {
@@ -205,22 +226,301 @@ describe("普通运行先跑脚本", () => {
     expect((await eventsOf(ctx.db, sessionId)).some((event) => event.toolId === "file.save")).toBe(false)
   })
 
-  it("进程中途被杀：继续时 sessions.routine 还是 running，按中断交给 agent，写「不确定第 n 步做没做」", async () => {
-    const { taskId, script, routineId, versionId } = await routineTask(SAVE_AND_FINISH, { turns: [step(finishWith("核对过，接着做完了"))] })
-    const sessionId = await ctx.db.transaction(async (tx) => {
-      const { sessionId: id } = await startSessionInTx(ctx.db, tx, { taskId, source: "manual", actorId: "u-wang" })
-      await tx
-        .update(t.sessions)
-        .set({ routine: { routineId, versionId, version: 1, mode: "run", state: "running", startedAt: new Date().toISOString(), steps: 1, commits: [] } })
-        .where(eq(t.sessions.id, id))
-      return id
-    })
+})
+
+/** 一行重放日志（参数按 SDK 发的样子算 hash） */
+const journalRow = (seq: number, op: "tool" | "commit" | "verified" | "log" | "now", payload: unknown, extra: { tool?: string; reply?: Record<string, unknown> | null; stop?: string; instanceId?: string } = {}) => ({
+  seq,
+  op,
+  tool: extra.tool ?? null,
+  inputHash: journalHash(payload),
+  reply: extra.reply === undefined ? { ok: true } : extra.reply,
+  stop: extra.stop ?? null,
+  instanceId: extra.instanceId ?? null,
+})
+
+/**
+ * 模拟进程中途被杀：开一次运行，同一个事务里写上「脚本跑到一半」的状态（state = running）和重放日志，
+ * 提交后引擎进来按日志接着跑
+ */
+async function interruptedRun(taskId: string, routine: { routineId: string; versionId: string }, steps: number, rows: ReturnType<typeof journalRow>[], commits: { step: number; label: string }[] = []) {
+  return ctx.db.transaction(async (tx) => {
+    const { sessionId: id } = await startSessionInTx(ctx.db, tx, { taskId, source: "manual", actorId: "u-wang" })
+    await tx
+      .update(t.sessions)
+      .set({ routine: { routineId: routine.routineId, versionId: routine.versionId, version: 1, mode: "run", state: "running", startedAt: new Date().toISOString(), steps, commits, input: {} } })
+      .where(eq(t.sessions.id, id))
+    if (rows.length) await tx.insert(t.routineJournal).values(rows.map((row) => ({ sessionId: id, ...row })))
+    return id
+  })
+}
+
+const scriptToolEvents = async (sessionId: string) =>
+  (await eventsOf(ctx.db, sessionId)).filter((event) => event.kind === "tool" && event.trace?.routineStep).map((event) => [event.toolId, event.trace?.routineStep])
+
+let ruleCounter = 0
+async function addRule(taskId: string, shape: Pick<CompiledRule, "trigger" | "actions">, name: string) {
+  const id = `rl-routine-${++ruleCounter}`
+  const compiled: CompiledRule = { v: 1, ...shape, understood: describeCompiledRule(shape) }
+  await ctx.db.insert(t.rules).values({ id, name, trigger: "测试", action: "测试", compiledTrigger: compiled, compiledText: JSON.stringify({ trigger: "测试", action: "测试" }), confirmedById: "u-lin", confirmedAt: new Date() })
+  const position = (await ctx.db.select().from(t.taskRules).where(eq(t.taskRules.taskId, taskId))).length
+  await ctx.db.insert(t.taskRules).values({ taskId, refId: id, position })
+  return id
+}
+
+describe("接着跑（重放日志）", () => {
+  const NOW = "2026-01-02T03:04:05.000+08:00"
+  const STAMP = `
+  await ha.log("开始")
+  const now = await ha.now()
+  await ha.file.save({ path: "out/时间.txt", content: now })
+  const back = await ha.file.read({ path: "out/时间.txt" })
+  return ha.finish({ outcome: "achieved", summary: "存了 " + now, evidence: String(back) })`
+
+  it("进程中途被杀、前面没有提交：按日志跳过（ha.now 回记下的时间），做到一半的那一步重做，接着跑完；执行模型没调", async () => {
+    const { taskId, script, ...routine } = await routineTask(STAMP)
+    const sessionId = await interruptedRun(taskId, routine, 1, [
+      journalRow(1, "log", "开始"),
+      journalRow(2, "now", "", { reply: { ok: true, data: NOW } }),
+      journalRow(3, "tool", { path: "out/时间.txt", content: NOW }, { tool: "file.save", reply: null }),
+    ])
     const row = await waitOutcome(sessionId)
     expect(row.outcome).toBe("achieved")
-    expect(row.routine).toMatchObject({ state: "fell_back", stoppedAt: { step: 1, kind: "interrupted" } })
-    expect(firstPromptText(script)).toContain("跑到第 1 步时 worker 重启了，脚本中断，不确定第 1 步做没做完")
-    // 没有重跑脚本
-    expect((await eventsOf(ctx.db, sessionId)).some((event) => event.toolId === "file.save")).toBe(false)
+    expect(script.prompts).toHaveLength(0)
+    expect(row.routine).toMatchObject({ state: "finished", steps: 3, resumes: 1, replayed: 2, logs: ["开始"] })
+    // 用的是记下的时间
+    expect(row.routine?.stoppedAt).toBeUndefined()
+    const events = await eventsOf(ctx.db, sessionId)
+    expect(events.find((event) => event.toolId === "run.finish")?.input).toContain(NOW)
+    expect(await scriptToolEvents(sessionId)).toEqual([
+      ["file.save", 1],
+      ["file.read", 2],
+      ["run.finish", 3],
+    ])
+    expect(events.some((event) => event.title.startsWith("脚本接着跑：从第 1 步接着做（前面 2 个请求按记录跳过）"))).toBe(true)
+    // 跳过的 ha.log 不再记过程
+    expect(events.some((event) => event.title === "流程记录：开始")).toBe(false)
+    // 日志补上了这次的结果
+    const journal = await ctx.db.select().from(t.routineJournal).where(eq(t.routineJournal.sessionId, sessionId)).orderBy(t.routineJournal.seq)
+    expect(journal.map((each) => [each.seq, each.tool, each.reply?.ok])).toEqual([
+      [1, null, true],
+      [2, null, true],
+      [3, "file.save", true],
+      [4, "file.read", true],
+      [5, "run.finish", true],
+    ])
+  })
+
+  it("进程中途被杀、前面有没核对的 ha.commit：不重做，交给 agent，写「可能已经生效」", async () => {
+    const { taskId, script, ...routine } = await routineTask(
+      `
+  await ha.file.save({ path: "out/a.txt", content: "a" })
+  await ha.commit("保存第 2 个")
+  await ha.file.save({ path: "out/b.txt", content: "b" })
+  await ha.verified("存好了")
+  return ha.finish({ outcome: "achieved", summary: "存好了", evidence: "-" })`,
+      { turns: [step(finishWith("核对过，b 已经存了"))] }
+    )
+    const sessionId = await interruptedRun(
+      taskId,
+      routine,
+      2,
+      [
+        journalRow(1, "tool", { path: "out/a.txt", content: "a" }, { tool: "file.save", reply: { ok: true, text: "存好了" } }),
+        journalRow(2, "commit", "保存第 2 个"),
+        journalRow(3, "tool", { path: "out/b.txt", content: "b" }, { tool: "file.save", reply: null }),
+      ],
+      [{ step: 1, label: "保存第 2 个" }]
+    )
+    const row = await waitOutcome(sessionId)
+    expect(row.outcome).toBe("achieved")
+    expect(script.prompts).toHaveLength(1)
+    expect(row.routine).toMatchObject({ state: "fell_back", steps: 2, resumes: 1, replayed: 2, stoppedAt: { step: 2, kind: "interrupted", tool: "file.save" }, commits: [{ step: 1, label: "保存第 2 个" }] })
+    const prompt = firstPromptText(script)
+    expect(prompt).toContain("跑到第 2 步时 worker 重启了，脚本中断，不确定第 2 步做没做完（过了提交点「保存第 2 个」还没核对")
+    expect(prompt).toContain("第 2 步「保存第 2 个」已经做了，可能已经生效")
+    // 脚本一步都没真做
+    expect(await scriptToolEvents(sessionId)).toEqual([])
+  })
+
+  it("对不上：日志里第 1 步的参数和这次不一样，停下（replay_mismatch）交给 agent，不真做", async () => {
+    const { taskId, script, ...routine } = await routineTask(SAVE_AND_FINISH, { turns: [step(finishWith("自己做完了"))] })
+    const sessionId = await interruptedRun(taskId, routine, 1, [journalRow(1, "tool", { path: "out/单号.txt", content: "上次的" }, { tool: "file.save", reply: { ok: true, text: "存好了" } })])
+    const row = await waitOutcome(sessionId)
+    expect(row.outcome).toBe("achieved")
+    expect(row.routine).toMatchObject({ state: "fell_back", stoppedAt: { step: 1, kind: "replay_mismatch", tool: "file.save" } })
+    expect(row.routine?.stoppedAt?.reason).toContain("第 1 个请求（调 file.save）的参数和上次不一样")
+    expect(firstPromptText(script)).toContain("接着跑时按记录重放到第 1 步对不上")
+    expect(await scriptToolEvents(sessionId)).toEqual([])
+  })
+
+  it("浏览器没了：日志里有浏览器动作，这次运行的 Chrome 已经不在了 → 不重放，交给 agent（resume_lost）", async () => {
+    const { taskId, script, ...routine } = await routineTask(SAVE_AND_FINISH, { turns: [step(finishWith("重新打开网页做完了"))] })
+    const sessionId = await interruptedRun(taskId, routine, 1, [journalRow(1, "tool", { url: "https://a.example.com" }, { tool: "browser.navigate", reply: { ok: true, text: "打开了" }, instanceId: "B-gone" })])
+    const row = await waitOutcome(sessionId)
+    expect(row.outcome).toBe("achieved")
+    expect(row.routine).toMatchObject({ state: "fell_back", steps: 1, stoppedAt: { step: 1, kind: "resume_lost" } })
+    const prompt = firstPromptText(script)
+    expect(prompt).toContain("Chrome 已经关了")
+    expect(prompt).toContain("请先重新打开要用的网页")
+    expect(await scriptToolEvents(sessionId)).toEqual([])
+  })
+
+  const PAY = `
+  await ha.log("准备付款")
+  try {
+    await ha.file.read({ path: "上次的付款.txt" })
+  } catch (error) {
+    await ha.log("没有上次的记录")
+  }
+  await ha.file.save({ path: "out/付款.txt", content: "100 元" })
+  return ha.finish({ outcome: "achieved", summary: "付好了", evidence: "存了 out/付款.txt" })`
+
+  async function approvalRun(turns: ConstructorParameters<typeof Script>[0] = []) {
+    const made = await routineTask(PAY, { turns })
+    const ruleId = await addRule(made.taskId, { trigger: { type: "before_tool", toolIds: ["file.save"], risks: [] }, actions: [{ type: "ask_human", recipient: { to: "owner" } }] }, "存文件要批")
+    const sessionId = await runNow(made.taskId)
+    const waiting = await waitFor(async () => {
+      const row = await sessionRow(ctx.db, sessionId)
+      return row?.status === "needs_human" ? row : undefined
+    }, { what: "等审批" })
+    const [item] = await ctx.db.select().from(t.humanItems).where(and(eq(t.humanItems.sessionId, sessionId), eq(t.humanItems.status, "open")))
+    return { ...made, ruleId, sessionId, waiting, item: item! }
+  }
+
+  it("要人审批：生成和 agent 调用时一样的「审批工具调用」，写「固化流程第 k 步」；批准后按日志接着跑，带着批准真做这一步", async () => {
+    const { script, ruleId, sessionId, waiting, item } = await approvalRun()
+    expect(waiting.routine).toMatchObject({ state: "suspended", steps: 1, stoppedAt: { step: 2, kind: "approval", tool: "file.save" } })
+    expect(item).toMatchObject({ kind: "approval", ruleId, assigneeId: "u-wang" })
+    expect(item.title).toContain("固化流程「存单号」第 2 步")
+    expect(item.detail.toolCall).toMatchObject({ toolId: "file.save", ruleId, ruleName: "存文件要批" })
+    expect(item.detail.toolCall!.input).toContain("100 元")
+    const [wait] = await ctx.db.select().from(t.sessionWaits).where(and(eq(t.sessionWaits.sessionId, sessionId), eq(t.sessionWaits.status, "waiting")))
+    expect(wait!.pending).toMatchObject({ calls: [], routineStep: 2, ruleId, approvedRuleIds: [] })
+    // 这一步还没做
+    expect(await ctx.db.select().from(t.files).where(and(eq(t.files.sessionId, sessionId), eq(t.files.path, "out/付款.txt")))).toHaveLength(0)
+
+    const resolved = await mutate(ctx.app, "engine.resolveHumanItem", wang, { itemId: item.id, how: "approve", note: "可以" })
+    expect(resolved.data).toEqual({ resumedSessionId: sessionId })
+    const row = await waitOutcome(sessionId)
+    expect(row.outcome).toBe("achieved")
+    expect(script.prompts).toHaveLength(0)
+    expect(row.routine).toMatchObject({ state: "finished", steps: 3, resumes: 1, replayed: 3, logs: ["准备付款", "没有上次的记录"] })
+    expect(await ctx.db.select().from(t.files).where(and(eq(t.files.sessionId, sessionId), eq(t.files.path, "out/付款.txt")))).toHaveLength(1)
+    expect(await scriptToolEvents(sessionId)).toEqual([
+      ["file.read", 1],
+      ["file.save", 2],
+      ["run.finish", 3],
+    ])
+    const [done] = await ctx.db.select().from(t.sessionWaits).where(eq(t.sessionWaits.id, wait!.id))
+    expect(done!.pending?.state).toBe("done")
+  })
+
+  it("要人审批、被拒绝：不做这一步，停下（rejected）交给 agent，交接的话写理由", async () => {
+    const { script, sessionId, item } = await approvalRun([step(finishWith("没付，按理由改成记一笔待办", "not_achieved", "被拒绝了，没付款"))])
+    await mutate(ctx.app, "engine.resolveHumanItem", wang, { itemId: item.id, how: "reject", note: "这个月不付" })
+    const row = await waitOutcome(sessionId)
+    expect(script.prompts).toHaveLength(1)
+    expect(row.routine).toMatchObject({ state: "fell_back", steps: 1, resumes: 1, stoppedAt: { step: 2, kind: "rejected", tool: "file.save" } })
+    const prompt = firstPromptText(script)
+    expect(prompt).toContain("做到第 2 步停下：file.save「out/付款.txt」 要人审批，王悦拒绝了。理由：这个月不付，这一步没做")
+    expect(prompt).toContain("被拒绝的这一步不要换个办法绕过去做")
+    expect(await ctx.db.select().from(t.files).where(and(eq(t.files.sessionId, sessionId), eq(t.files.path, "out/付款.txt")))).toHaveLength(0)
+  })
+
+  it("要人处理的事被点了「处理不了」：不重放（重做还会停在同一处），交给 agent，交接的话写清楚", async () => {
+    const { taskId, script } = await routineTask(
+      `
+  await ha.file.save({ path: "out/a.txt", content: "a" })
+  await ha.tool("ask.human", { question: "请登录一下系统", kind: "login" })
+  await ha.file.read({ path: "out/a.txt" })
+  return ha.finish({ outcome: "achieved", summary: "不该到这里", evidence: "-" })`,
+      { turns: [step(finishWith("登录不了，记没办成", "not_achieved", "账号被锁了"))] }
+    )
+    const sessionId = await runNow(taskId)
+    await waitFor(async () => (await sessionRow(ctx.db, sessionId))?.routine?.state === "suspended", { what: "等人处理" })
+    const [item] = await ctx.db.select().from(t.humanItems).where(and(eq(t.humanItems.sessionId, sessionId), eq(t.humanItems.status, "open")))
+    await mutate(ctx.app, "engine.resolveHumanItem", wang, { itemId: item!.id, how: "reject", note: "账号被锁了" })
+    const row = await waitOutcome(sessionId)
+    expect(row.outcome).toBe("not_achieved")
+    expect(script.prompts).toHaveLength(1)
+    expect(row.routine).toMatchObject({ state: "fell_back", steps: 2, resumes: 1, stoppedAt: { step: 2, kind: "suspend", tool: "ask.human" } })
+    expect(firstPromptText(script)).toContain("做到第 2 步停下等人处理，接着跑时没有重做这一步：要人处理的事被点了「处理不了」（账号被锁了）")
+    expect(await scriptToolEvents(sessionId)).toEqual([
+      ["file.save", 1],
+      ["ask.human", 2],
+    ])
+  })
+
+  it("停下等人时运行被取消：脚本状态记停下（取消），不再是「等人处理后接着跑」", async () => {
+    const { taskId } = await routineTask(`
+  await ha.tool("session.wait", { what: "等很久", afterMinutes: 60 })
+  return ha.finish({ outcome: "achieved", summary: "不该到这里", evidence: "-" })`)
+    const sessionId = await runNow(taskId)
+    await waitFor(async () => (await sessionRow(ctx.db, sessionId))?.routine?.state === "suspended", { what: "挂起" })
+    const res = await mutate(ctx.app, "engine.cancel", wang, { sessionId })
+    expect(res.error).toBeUndefined()
+    const row = await sessionRow(ctx.db, sessionId)
+    expect(row?.routine).toMatchObject({ state: "stopped", stoppedAt: { kind: "cancelled" } })
+  })
+
+  it("脚本报了办成、三方验收反问、agent 接着做：记 agentAfter，两个计数都不动", async () => {
+    // 验收模型要是另一家（按 id 里的厂商名判断）
+    const executor = `test/claude-routine-${++modelCounter}`
+    const verifier = `test/gemini-routine-${modelCounter}`
+    const script = useScript(executor, new Script([step(finishWith("补上了核对记录"))]))
+    useScript(
+      verifier,
+      new Script([
+        step([text(JSON.stringify({ items: [{ index: 1, verdict: "fail", reason: "没看到记录" }], verdict: "fail", headline: "记录不全", question: "记录在哪？" }))], 0.002),
+        step([text(JSON.stringify({ items: [{ index: 1, verdict: "pass", reason: "有记录了" }], verdict: "pass", headline: "补做后通过", question: "" }))], 0.002),
+      ])
+    )
+    const taskId = await createTask(ctx.db, { modelId: executor, toolIds: ["file.save", "file.read"], steps: [{ id: "s1", text: "存单号", wait: false, checkpoint: "单号已保存" }] })
+    await ctx.db.update(t.tasks).set({ verifyModelId: verifier }).where(eq(t.tasks.id, taskId))
+    await addRule(taskId, { trigger: { type: "agent_done" }, actions: [{ type: "verify" }] }, "三方验收")
+    const { routineId } = await createRoutine(ctx.db, taskId, { code: routineCode(SAVE_AND_FINISH), name: "存单号" })
+    const sessionId = await runNow(taskId, "C-1")
+    const row = await waitOutcome(sessionId)
+    expect(row.outcome).toBe("achieved")
+    expect(script.prompts).toHaveLength(1)
+    expect(script.promptText(0)).toContain("【三方验收】")
+    expect(row.routine).toMatchObject({ state: "finished", agentAfter: true })
+    // 结果定了以后才记成绩：等试用期的通知出来再看计数
+    await waitFor(async () => {
+      const notes = await ctx.db.select().from(t.notifications).where(eq(t.notifications.sessionId, sessionId))
+      return notes.some((note) => note.body.includes("验收反问以后 agent 接着做"))
+    }, { what: "试用期的通知" })
+    const [routine] = await ctx.db.select().from(t.routines).where(eq(t.routines.id, routineId))
+    expect(routine).toMatchObject({ directStreak: 0, fallbackStreak: 0 })
+  })
+})
+
+describe("清扫（routine.sweep）", () => {
+  it("试跑中、这一轮的试跑运行已经结束（没人发 routine.compile）→ 补发；写脚本中 30 分钟没动静 → 再发一次；刚动过的不发", async () => {
+    const modelId = `test/routine-${++modelCounter}`
+    useScript(modelId, new Script([]))
+    const taskId = await createTask(ctx.db, { modelId, toolIds: ["file.save"] })
+    const { routineId, versionId } = await createRoutine(ctx.db, taskId, { versionStatus: "testing", code: routineCode(`await ha.file.save({ path: "a.txt", content: "a" })`) })
+    await ctx.db.update(t.routineVersions).set({ round: 1 }).where(eq(t.routineVersions.id, versionId))
+    // 试跑的运行在别处被标了失败（没经过引擎收尾）：开运行和标失败在同一个事务里，引擎进来时已经不是执行中
+    await ctx.db.transaction(async (tx) => {
+      const { sessionId } = await startSessionInTx(ctx.db, tx, { taskId, source: "manual", actorId: "u-wang", routineTest: { versionId, round: 1, input: {}, attachments: [] } })
+      expect(sessionId).toBe(`${versionId}-t1`)
+      await tx.update(t.sessions).set({ status: "failed", endedAt: new Date(), error: "别处标的失败" }).where(eq(t.sessions.id, sessionId))
+    })
+    const old = new Date(Date.now() - 31 * 60_000)
+    await ctx.db.insert(t.routineVersions).values([
+      { id: `${routineId}-v2`, routineId, version: 2, status: "drafting", name: "卡住的", code: "", inputSchema: {}, outputSchema: {}, updatedAt: old },
+      { id: `${routineId}-v3`, routineId, version: 3, status: "drafting", name: "刚动过的", code: "", inputSchema: {}, outputSchema: {} },
+    ])
+    const sent = await sweepRoutines(ctx.db)
+    expect(sent).toEqual(expect.arrayContaining([versionId, `${routineId}-v2`]))
+    expect(sent).not.toContain(`${routineId}-v3`)
+    const jobs = (await bossJobs(ctx.db, "routine.compile")).map((job) => job.data.versionId)
+    expect(jobs).toEqual(expect.arrayContaining([versionId, `${routineId}-v2`]))
+    // 再扫一次：卡住的那版刚发过（updated_at 也碰过了），不再发
+    expect(await sweepRoutines(ctx.db)).not.toContain(`${routineId}-v2`)
   })
 })
 

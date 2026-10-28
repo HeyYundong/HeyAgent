@@ -1,7 +1,8 @@
 // 试用、正式、自动停用（docs/dev/solidify.md 6.5、6.6、15.2 第 6 条）：跑过脚本的普通运行结果定了以后（收尾复核完、标失败）调一次。
 // - 脚本报了结果而且办成：连着直接办成 +1、连着交给 agent 清零；试用期连着满 3 次转正式，记审计、通知负责人；
 // - 交给 agent：连着交给 agent +1、连着直接办成清零；满 3 次自动停用（写清楚原因），通知负责人；
-// - 别的（脚本报了没办成、输入有问题、取消）不动计数。
+// - 别的（脚本报了没办成、输入有问题、取消）不动计数；
+// - 脚本报了办成、三方验收反问、agent 接着做的（agentAfter，docs/dev/solidify.md 17.3）：不算直接办成，也不算交给 agent，不动计数。
 // 试用期的运行每次结束都通知负责人结果（办成也发）。只算运行开始时冻的那一版还是启用版本的情况：中途换了版本，旧版的结果不算到新版上。
 import { ROUTINE_PAUSE_AFTER_FALLBACKS, ROUTINE_TRIAL_RUNS, routineStopKindLabel, runOutcomeLabel } from "@heyagent/shared"
 import { eq } from "drizzle-orm"
@@ -30,7 +31,7 @@ export async function settleRoutineRun(db: Db, sessionId: string): Promise<void>
   if (!session || session.kind !== "run" || !state || state.mode !== "run" || state.state === "running") return
   const task = session.snapshot?.task
   const wasTrial = session.snapshot?.routine?.status === "trial"
-  const direct = state.state === "finished" && session.outcome === "achieved"
+  const direct = state.state === "finished" && session.outcome === "achieved" && !state.agentAfter
   const fellBack = state.state === "fell_back"
 
   const change = await db.transaction(async (tx) => {
@@ -97,7 +98,9 @@ export async function settleRoutineRun(db: Db, sessionId: string): Promise<void>
       ? `脚本直接办成：${state.steps} 步 · ${seconds(state.ms)}。`
       : fellBack
         ? `脚本停在第 ${state.stoppedAt?.step ?? state.steps} 步（${routineStopKindLabel[state.stoppedAt?.kind ?? "script_error"]}：${state.stoppedAt?.reason ?? ""}），交给 agent 接着做；结果：${result}${session.outcomeReason ? `（${session.outcomeReason}）` : ""}。`
-        : `脚本${state.state === "finished" ? "跑完了" : "停下了"}，结果：${result}${session.outcomeReason ? `（${session.outcomeReason}）` : ""}。`
+        : state.agentAfter
+          ? `脚本报了办成，验收反问以后 agent 接着做；结果：${result}${session.outcomeReason ? `（${session.outcomeReason}）` : ""}。`
+          : `脚本${state.state === "finished" ? "跑完了" : "停下了"}，结果：${result}${session.outcomeReason ? `（${session.outcomeReason}）` : ""}。`
     await notifyUsers(db, { ...base, title: `${task.title}：固化流程「${name}」试用中的一次运行`, body, push: false })
   }
 }

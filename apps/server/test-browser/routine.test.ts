@@ -2,7 +2,8 @@
 // - 录：浏览器动作的过程记录带上 MCP 录下的 Playwright 代码和前后网址，给模型的输出里没有这一段；
 // - browser.wait_any / browser.extract：等几种结果里的一个、按定位读列表（JS 写法和选择器字符串）；
 // - 先跑脚本：沙箱（worker 镜像里有 bwrap 就用真沙箱）里的脚本经工具桥在真 Chrome 上跑通，执行模型一次都没调；
-// - 按钮改了名字：脚本停下，agent 用同一个 Chrome 接着办成。
+// - 按钮改了名字：脚本停下，agent 用同一个 Chrome 接着办成；
+// - 中途遇到登录页：交给人，处理好以后脚本按重放日志跳过前面几步、在同一个 Chrome 里接着跑完（docs/dev/solidify.md 17.2）。
 import { mkdtempSync } from "node:fs"
 import { rm } from "node:fs/promises"
 import { createServer, type Server } from "node:http"
@@ -10,7 +11,7 @@ import type { AddressInfo } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { eq } from "drizzle-orm"
+import { and, eq } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
 import * as t from "../src/db/schema.js"
@@ -69,7 +70,22 @@ beforeAll(async () => {
   console.log(`[routine] 跑脚本用：${runnerName}`)
   server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://x")
-    const page = url.pathname === "/orders" ? ordersPage("查询") : url.pathname === "/orders2" ? ordersPage("搜索") : url.pathname.startsWith("/detail/") ? html("详情", "<h1>详情</h1>") : undefined
+    // 会员页要登录：没登录跳到登录页（有密码框、网址带 login，引擎认成登录页、交给人）；登录页提交后写 cookie、跳回会员页
+    const loggedIn = /(?:^|;\s*)member=ok/.test(req.headers.cookie ?? "")
+    if (url.pathname === "/members" && !loggedIn) return res.writeHead(302, { location: "/login?next=/members" }).end()
+    if (url.pathname === "/login" && req.method === "POST") return res.writeHead(302, { location: "/members", "set-cookie": "member=ok; Path=/; HttpOnly" }).end()
+    const page =
+      url.pathname === "/orders"
+        ? ordersPage("查询")
+        : url.pathname === "/orders2"
+          ? ordersPage("搜索")
+          : url.pathname.startsWith("/detail/")
+            ? html("详情", "<h1>详情</h1>")
+            : url.pathname === "/members"
+              ? html("会员", `<p id="who">会员：张三</p>`)
+              : url.pathname === "/login"
+                ? html("登录", `<form method="post" action="/login"><input name="user" aria-label="账号"><input id="pw" type="password" name="pw" aria-label="密码"><button id="go" type="submit">登录</button></form>`)
+                : undefined
     if (!page) return res.writeHead(404).end()
     res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }).end(page)
   })
@@ -217,5 +233,65 @@ describe("先跑脚本（真 Chrome）", () => {
     expect(prompt).toContain(`现在的页面：「订单列表」 ${base}/orders2`)
     // 同一个 Chrome、同一页：agent 点「搜索」以后读得到表
     expect(outputs(script, 2)).toContain("| 1 | 已发货 |")
+  })
+
+  it("脚本中途遇到登录页：照常交给人、Chrome 保留；人登录好点「已处理好了」→ 脚本按日志跳过前两步，在同一个 Chrome 里接着跑完（执行模型一次都没调）", async () => {
+    const script = useScript("test/routine-resume", new Script([]))
+    const taskId = await browserTask("test/routine-resume")
+    await createRoutine(ctx.db, taskId, {
+      name: "读会员",
+      code: routineCode(`
+  await ha.browser.navigate({ url: ${JSON.stringify(`${base}/orders`)} })
+  await ha.browser.type({ element: "单号", target: "getByRole('textbox', { name: '单号' })", text: "A-1" })
+  await ha.browser.navigate({ url: ${JSON.stringify(`${base}/members`)} })
+  const { rows } = await ha.browser.extract({ fields: { 会员: "#who" } })
+  return ha.finish({ outcome: "achieved", summary: rows[0].会员, evidence: "会员页：" + rows[0].会员 })`),
+    })
+    const sessionId = await runNow(taskId)
+    const waiting = await waitFor(
+      async () => {
+        const row = await sessionRow(ctx.db, sessionId)
+        return row?.status === "needs_human" ? row : undefined
+      },
+      { timeout: 90_000, what: "遇到登录页、等人处理" }
+    )
+    expect(waiting.routine).toMatchObject({ state: "suspended", steps: 3, stoppedAt: { step: 3, kind: "suspend", tool: "browser.navigate" } })
+    const [item] = await ctx.db.select().from(t.humanItems).where(and(eq(t.humanItems.sessionId, sessionId), eq(t.humanItems.status, "open")))
+    expect(item).toMatchObject({ kind: "login" })
+    const browserId = item!.detail.browser!.browserId
+    // Chrome 保留着，日志里记的就是它
+    const journal = await ctx.db.select().from(t.routineJournal).where(eq(t.routineJournal.sessionId, sessionId)).orderBy(t.routineJournal.seq)
+    expect(journal.map((row) => [row.tool, row.stop, row.instanceId])).toEqual([
+      ["browser.navigate", null, browserId],
+      ["browser.type", null, browserId],
+      ["browser.navigate", "suspend", browserId],
+    ])
+    await waitFor(async () => (await ctx.db.select().from(t.browserInstances).where(eq(t.browserInstances.id, browserId)))[0]?.state === "held", { what: "Chrome 保留" })
+
+    // 人在远程画面里登录（这里直接用编排器连接点）
+    const page = ctx.worker.browser!.get(browserId)!.currentPage()!
+    await page.fill("#pw", "secret")
+    await Promise.all([page.waitForURL(/\/members/), page.click("#go")])
+    const resolved = await mutate(ctx.app, "engine.resolveHumanItem", wang, { itemId: item!.id, how: "done", note: "登录好了" })
+    expect(resolved.data).toMatchObject({ resumedSessionId: sessionId })
+
+    const row = await waitOutcome(sessionId)
+    expect(row.outcome).toBe("achieved")
+    expect(script.prompts).toHaveLength(0)
+    expect(row.stepCount).toBe(0)
+    expect(row.routine).toMatchObject({ state: "finished", steps: 5, resumes: 1, replayed: 2 })
+    const events = await eventsOf(ctx.db, sessionId)
+    // 前两步只做了一次；遇到登录页的那一步重做了一次
+    expect(events.filter((event) => event.kind === "tool").map((event) => [event.toolId, event.trace?.routineStep])).toEqual([
+      ["browser.navigate", 1],
+      ["browser.type", 2],
+      ["browser.navigate", 3],
+      ["browser.navigate", 3],
+      ["browser.extract", 4],
+      ["run.finish", 5],
+    ])
+    expect(events.some((event) => event.title === "脚本接着跑：前 2 步按记录跳过，从第 3 步接着做")).toBe(true)
+    const finish = events.find((event) => event.toolId === "run.finish")
+    expect(finish?.input).toContain("会员：张三")
   })
 })

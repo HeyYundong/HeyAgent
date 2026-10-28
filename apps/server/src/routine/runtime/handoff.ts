@@ -79,11 +79,18 @@ function stopSentence(state: SessionRoutineState): string {
     case "bad_input":
       return `没有跑：${stop.reason}`
     case "interrupted":
-      return `跑到第 ${stop.step} 步时 worker 重启了，脚本中断，不确定第 ${stop.step} 步做没做完`
+      return `跑到第 ${stop.step} 步时 worker 重启了，脚本中断，不确定第 ${stop.step} 步做没做完（${stop.reason}）`
     case "approval":
       return `做到第 ${stop.step} 步停下：${what}，脚本不发起审批，这一步没做`
     case "suspend":
-      return `做到第 ${stop.step} 步要先挂起等待（${stop.reason}）`
+      // 第二期起挂起是等人处理完接着跑脚本；走到这里是接着跑时不敢重做那一步（前面的提交还没核对）
+      return `做到第 ${stop.step} 步停下等人处理，接着跑时没有重做这一步：${stop.reason}`
+    case "rejected":
+      return `做到第 ${stop.step} 步停下：${stop.reason}，这一步没做`
+    case "replay_mismatch":
+      return `中途停下等人处理过，接着跑时按记录重放到第 ${stop.step} 步对不上，没有接着跑（${stop.reason}）`
+    case "resume_lost":
+      return `做到第 ${stop.step} 步停下等人处理；${stop.reason}`
     case "page":
       return `做到第 ${stop.step} 步，脚本发现页面和预期不一样：${stop.reason}`
     default:
@@ -96,7 +103,9 @@ function instruction(state: SessionRoutineState): string {
   const stop = state.stoppedAt
   if (stop?.kind === "bad_input") return "请按任务目标自己把事情办完。"
   if (stop?.kind === "approval") return `请先单独调用第 ${stop.step} 步（${stop.label ?? stop.tool ?? "这一步"}，会照常交给人审批），再接着把任务办完，前面做过的不要重复。`
-  if (stop?.kind === "suspend") return "等到了（或者人处理好了）会叫你继续：先看一下现状（开着网页的先看页面），再接着把任务办完，前面做过的不要重复。"
+  if (stop?.kind === "rejected")
+    return "被拒绝的这一步不要换个办法绕过去做；请按拒绝的理由调整做法（需要的话用 ask.human 问清楚），再接着把任务办完，前面做过的不要重复。"
+  if (stop?.kind === "resume_lost") return "请先重新打开要用的网页、看清现状，再接着把任务办完，前面做过的不要重复。"
   return "请从现在的页面接着把任务办完，前面做过的不要重复。"
 }
 
