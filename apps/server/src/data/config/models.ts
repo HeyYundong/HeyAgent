@@ -9,7 +9,7 @@ import { defaultsAfterRemove, modelFamily, OPENROUTER_DEFAULT_URL, providerKindL
 import type { Db } from "../../db/client.js"
 import * as t from "../../db/schema.js"
 import { kickGalleryEmbeddings } from "../../gallery/background.js"
-import { kickMemoryEmbeddings } from "../../memory/embed.js"
+import { kickMemoryEmbeddings, retryMemoryEmbeddingsNow } from "../../memory/embed.js"
 import { decryptText, type Keyring } from "../../lib/crypto.js"
 import { assertCan, audit, badRequest, conflict, deleteSecret, notFound, putSecret, type DbOrTx, type WriteCtx } from "./common.js"
 import { usedByText } from "./tasks.js"
@@ -552,6 +552,8 @@ export async function updateProvider(ctx: WriteCtx, input: { id: string; name?: 
     if (listed !== false) await writeModels(tx, input.id, models, embeddingsKnown)
     await audit(tx, ctx.actor.id, "model_provider.update", "model_providers", input.id, { baseUrl: trimUrl(input.baseUrl), apiKeyChanged: Boolean(input.apiKey), models: models.length, ...(before.kind === "custom" ? { supportsJsonSchema } : {}) })
   })
+  // 换了 key、改了地址（连上了才存到这里）：之前因为 key 不对算失败的记忆向量马上重算，不用等 10 分钟
+  retryMemoryEmbeddingsNow()
   return { id: input.id, check }
 }
 
@@ -572,6 +574,8 @@ export async function testProvider(ctx: WriteCtx, input: { id: string }): Promis
     await tx.update(t.modelProviders).set({ status: check.ok ? "ok" : "error", checkedAt: new Date(), latencyMs: check.latencyMs ?? null }).where(eq(t.modelProviders.id, input.id))
     await audit(tx, ctx.actor.id, "model_provider.test", "model_providers", input.id, { ok: check.ok, message: check.message })
   })
+  // 从出错变好：算失败的记忆向量马上重算
+  if (check.ok && before.status === "error") retryMemoryEmbeddingsNow()
   return check
 }
 
@@ -587,6 +591,7 @@ export async function refreshProvider(db: Db, keyring: Keyring, actorId: string 
     if (check.ok && listed !== false) await writeModels(tx, id, models, embeddingsKnown)
     await audit(tx, actorId, "model_provider.refresh", "model_providers", id, { ok: check.ok, models: models.length })
   })
+  if (check.ok && before.status === "error") retryMemoryEmbeddingsNow()
   return check
 }
 

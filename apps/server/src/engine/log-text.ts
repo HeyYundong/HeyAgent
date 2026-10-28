@@ -129,19 +129,37 @@ export function batchResultLines(output: string | null): string {
   return lines.join(" ")
 }
 
-/** 一次工具调用的结果写成文字：批给逐步的 ✓ / ✗；别的给开头 max 字 */
+/**
+ * 结果里排好版的 JSON（JSON.stringify(x, null, 2)：一行只有 { 或 [ 开头）从那一行起压成一行（去掉换行和缩进）。
+ * 截断过的半截 JSON 也照样压（JSON 的字符串里不会有原样的换行）；JSON 前面的说明行照旧
+ */
+export function compactJsonOutput(output: string): string {
+  const start = /(^|\n)[[{]\n[ \t]/.exec(output)
+  if (!start) return output
+  const at = start.index + start[1]!.length
+  return `${output.slice(0, at)}${output.slice(at).replace(/\n[ \t]*/g, "")}`
+}
+
+/** 读数据的工具（复核要核对读到的每一条）：结果多给字数（总量在 reviewLog 里另有上限） */
+export const DATA_TOOLS = new Set(["browser.fetch", "browser.extract"])
+
+/** 一次工具调用的结果写成文字：批给逐步的 ✓ / ✗；别的给开头 max 字（排好版的 JSON 先压成一行再截） */
 export function describeToolOutput(toolId: string | null, output: string | null, max: number): string {
   if (toolId === "browser.batch") {
     const steps = batchResultLines(output)
     if (steps) return clip(steps, Math.max(max, 1200))
   }
-  return oneLine(clip(output, max))
+  return oneLine(clip(output ? compactJsonOutput(output) : output, max))
 }
 
 // ---------- 复核看的过程记录 ----------
 
+/** 详细的几条里，读数据的工具结果合计最多多少字、每条最多多少字 */
+export const DATA_OUTPUT_BUDGET = 8000
+export const DATA_OUTPUT_MAX = 2000
+
 export interface ReviewLogOptions {
-  /** 最近几条照详细的写（参数、结果各 300 字） */
+  /** 最近几条照详细的写（参数、结果各 300 字；读数据的工具结果多给，见 DATA_OUTPUT_BUDGET） */
   recent: number
   /** 更早的（每条压成一行）合计最多多少字：超了留最早的一段和较近的一段，中间写省略了几条 */
   budget: number
@@ -255,22 +273,27 @@ export function reviewLog(events: EventRow[], options: ReviewLogOptions): { line
   }
   const mark = (event: EventRow) => (isToolError(event) ? "✗ 出错" : "✓")
 
-  // 详细的几条：填的值给全（例如提交的汇总有好几行），参数、结果各 300 字（批的参数 2000 字）
-  const detailed = (event: EventRow) =>
-    event.kind === "tool"
-      ? `- #${toolNo.get(event.seq)} 调用 ${event.title}（${event.toolId ?? ""}）${tags(event)}：参数 ${describeToolInput(event.toolId, event.input, event.toolId === "browser.batch" ? 2000 : 600, 300)} → 结果 ${describeToolOutput(event.toolId, event.output, 300) || "（没有输出）"}`
-      : `- ${event.kind === "rule" ? "规则" : "人"}：${event.title}${tags(event)}${event.detail ? `（${clip(event.detail, 200)}）` : ""}`
   // 库流程里的步骤每次调用只留最近几步
   const items = foldLibrarySteps(events)
-  // 更早的每条压成一行：较早的条数少时每行多给些（读到的电话、提交的内容别被截掉），多时少给，合计按 budget
   const cut = Math.max(0, items.length - options.recent)
+  // 详细的几条：填的值给全（例如提交的汇总有好几行），参数、结果各 300 字（批的参数 2000 字）。
+  // 读数据的工具（browser.fetch、browser.extract）的结果合计 DATA_OUTPUT_BUDGET 字，平分，每条 300～2000 字
+  // （基准 E：接口读的 5 页只看得到每页第一条，复核把对的运行判成没办成）
+  const dataCount = items.slice(cut).filter((item) => !("placeholder" in item) && item.kind === "tool" && DATA_TOOLS.has(item.toolId ?? "")).length
+  const dataMax = Math.min(DATA_OUTPUT_MAX, Math.max(300, Math.floor(DATA_OUTPUT_BUDGET / Math.max(1, dataCount))))
+  const detailed = (event: EventRow) =>
+    event.kind === "tool"
+      ? `- #${toolNo.get(event.seq)} 调用 ${event.title}（${event.toolId ?? ""}）${tags(event)}：参数 ${describeToolInput(event.toolId, event.input, event.toolId === "browser.batch" ? 2000 : 600, 300)} → 结果 ${describeToolOutput(event.toolId, event.output, DATA_TOOLS.has(event.toolId ?? "") ? dataMax : 300) || "（没有输出）"}`
+      : `- ${event.kind === "rule" ? "规则" : "人"}：${event.title}${tags(event)}${event.detail ? `（${clip(event.detail, 200)}）` : ""}`
+  // 更早的每条压成一行：较早的条数少时每行多给些（读到的电话、提交的内容别被截掉），多时少给，合计按 budget；
+  // 读数据的工具结果给两倍（还在 budget 里）
   const perLine = Math.min(900, Math.max(160, Math.floor(options.budget / Math.max(1, cut))))
   const inputMax = Math.min(500, Math.max(120, Math.floor(perLine * 0.55)))
   const outputMax = Math.min(400, Math.max(60, Math.floor(perLine * 0.45)))
   const valueMax = Math.min(120, Math.max(VALUE_MAX, Math.floor(perLine / 8)))
   const compact = (event: EventRow) =>
     event.kind === "tool"
-      ? `- #${toolNo.get(event.seq)} ${event.toolId ?? event.title} ${mark(event)}${tags(event)} ${describeToolInput(event.toolId, event.input, event.toolId === "browser.batch" ? Math.max(600, perLine) : inputMax, valueMax)} → ${describeToolOutput(event.toolId, event.output, outputMax) || "（没有输出）"}`
+      ? `- #${toolNo.get(event.seq)} ${event.toolId ?? event.title} ${mark(event)}${tags(event)} ${describeToolInput(event.toolId, event.input, event.toolId === "browser.batch" ? Math.max(600, perLine) : inputMax, valueMax)} → ${describeToolOutput(event.toolId, event.output, DATA_TOOLS.has(event.toolId ?? "") ? outputMax * 2 : outputMax) || "（没有输出）"}`
       : `- ${event.kind === "rule" ? "规则" : "人"}：${event.title}${tags(event)}${event.detail ? `（${oneLine(clip(event.detail, 80))}）` : ""}`
 
   const line = (each: (event: EventRow) => string) => (item: LogItem) => ("placeholder" in item ? item.placeholder : each(item))

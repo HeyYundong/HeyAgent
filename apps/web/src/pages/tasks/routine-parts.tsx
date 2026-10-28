@@ -266,7 +266,7 @@ export function RoutineVersionView({ version, review = false }: { version: Routi
         {review ? <Folded label={`看脚本（${version.code.split("\n").length} 行）`}>{script}</Folded> : script}
         <BaseDiff version={version} />
       </Part>
-      {!review && version.testReport && version.testReport.rounds.length > 0 && <Part title="试跑结果"><RoutineTestReportView version={version} /></Part>}
+      {!review && version.testReport && (version.testReport.rounds.length > 0 || (version.testReport.drafts?.length ?? 0) > 0) && <Part title="试跑结果"><RoutineTestReportView version={version} /></Part>}
     </div>
   )
 }
@@ -310,12 +310,34 @@ export function HttpSuggestions({ suggestions }: { suggestions: HttpToolSuggesti
 
 // ---------- 试跑报告 ----------
 
-/** 最后一轮试跑：一行结论 + 每一步 + 结果对比 + 停下时的截图；前面没过的几轮一句话 */
+/** 没到试跑就没过的几轮（程序检查没过、固化员出错）：一轮一句 */
+function DraftRounds({ drafts }: { drafts: NonNullable<NonNullable<RoutineVersion["testReport"]>["drafts"]> }) {
+  if (drafts.length === 0) return null
+  return (
+    <ul className="flex flex-col gap-1 text-muted-foreground">
+      {drafts.map((draft) => <li key={draft.round} className="break-words">第 {draft.round} 轮没到试跑：{draft.error}</li>)}
+    </ul>
+  )
+}
+
+/** 最后一轮试跑：一行结论 + 每一步 + 结果对比 + 停下时的截图；前面没过的几轮一句话（没到试跑就没过的也列出来） */
 export function RoutineTestReportView({ version }: { version: RoutineVersion }) {
   const rounds = version.testReport?.rounds ?? []
+  const drafts = version.testReport?.drafts ?? []
   if (version.skipTest && rounds.length === 0)
-    return <p className="text-muted-foreground">点「固化成流程」时选了不试跑：脚本没真跑过，只过了程序检查。启用后试用期的头几次运行要多看看。</p>
-  if (rounds.length === 0) return <p className="text-muted-foreground">{version.status === "drafting" || version.status === "testing" ? "还在写、试跑，好了这里会显示结果。" : "没有试跑记录。"}</p>
+    return (
+      <div className="flex flex-col gap-3">
+        <p className="text-muted-foreground">点「固化成流程」时选了不试跑：脚本没真跑过，只过了程序检查。启用后试用期的头几次运行要多看看。</p>
+        <DraftRounds drafts={drafts} />
+      </div>
+    )
+  if (rounds.length === 0)
+    return (
+      <div className="flex flex-col gap-3">
+        <p className="text-muted-foreground">{version.status === "drafting" || version.status === "testing" ? "还在写、试跑，好了这里会显示结果。" : "没有试跑记录。"}</p>
+        <DraftRounds drafts={drafts} />
+      </div>
+    )
   const last = rounds.at(-1)!
   const earlier = rounds.slice(0, -1)
   return (
@@ -341,6 +363,7 @@ export function RoutineTestReportView({ version }: { version: RoutineVersion }) 
           ))}
         </ul>
       )}
+      <DraftRounds drafts={drafts} />
     </div>
   )
 }

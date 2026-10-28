@@ -71,7 +71,7 @@ import { accountForHost, busyProfileIds } from "./leases.js"
 import { getBrowserManager } from "./manager.js"
 import { BLOCKED_MCP_TOOLS, EVALUATE_TOOL, listBrowserMcpTools, VISION_MCP_TOOLS } from "./mcp.js"
 import { blockedKind, DISMISS_ATTR, explainError, formatBrief, modalGuidance, overlayText, readPageBrief, stripAnsi, stripPageSections } from "./page-brief.js"
-import { fetchTargetAllowed, maskBody, maskJson, maskUrl, NEED_PAGE, sendInPage } from "./site-api.js"
+import { fetchAuthHint, fetchTargetAllowed, maskBody, maskJson, maskNetworkOutput, maskUrl, NEED_PAGE, sendInPage } from "./site-api.js"
 import { phaseTimer, recordBrowserTiming } from "./timing.js"
 
 /** 一次 MCP 动作录下的：代码、做之前的网址（callMcp 收尾时再读做之后的网址、标题） */
@@ -125,6 +125,8 @@ function pageKey(url: string) {
 const NAVIGATION_TOOLS = new Set(["browser_navigate", "browser_navigate_back"])
 /** 只读的工具：调完不用扫页面、不用检测 */
 const READ_ONLY_TOOLS = new Set(["browser_snapshot", "browser_find", "browser_console_messages", "browser_network_requests", "browser_network_request", "browser_take_screenshot"])
+/** 看网页请求的：输出里请求头、返回头的值按名字打码（maskNetworkOutput） */
+const NETWORK_TOOLS = new Set(["browser_network_requests", "browser_network_request"])
 /** 点元素的动作：被弹窗挡住时（Playwright 的 intercepts pointer events，或超时且认出了弹窗）先试着关掉弹窗再做一次 */
 const POINTER_TOOLS = new Set(["browser_click", "browser_hover", "browser_type", "browser_fill_form", "browser_select_option", "browser_check", "browser_uncheck", "browser_drag", "browser_press_sequentially"])
 /** 不能放进 browser.batch 的：batch 自己、指定 Chrome、只读的（看页面的放最后由 snapshot 参数做） */
@@ -446,7 +448,7 @@ export class BrowserTools {
         { ...target, description: "字段的定位（相对这一行）" },
         {
           type: "object",
-          properties: { target: { ...target, description: "字段的定位（相对这一行）" }, attr: { type: "string", minLength: 1, description: "取属性而不是文字，例如 href、value、src" } },
+          properties: { target: { ...target, description: "字段的定位（相对这一行）" }, attr: { type: "string", minLength: 1, description: "取 HTML 属性而不是文字，例如 href、value、src。读文字就不写 attr" } },
           required: ["target"],
           additionalProperties: false,
         },
@@ -460,7 +462,7 @@ export class BrowserTools {
           id: EXTRACT_TOOL,
           name: "浏览器：读列表",
           summary: "按定位读页面上的字，一行一个对象（读表格、列表比看快照省事）",
-          description: `按定位读页面上的字，返回一张小表（结构化的行也给脚本用）。list 是每一行的定位（例如 getByRole('row')、css=.item），fields 是行里每个字段的定位（相对这一行，例如 getByRole('cell').nth(2)），{ target, attr } 取属性（href、value）；不给 list 就是整页一行。limit 默认 ${EXTRACT_DEFAULT_ROWS}、最多 ${EXTRACT_MAX_ROWS} 行；文字里最多列 50 行。一行也没有不算出错。${TARGET_HELP}。只读，不改页面。`,
+          description: `按定位读页面上的字，返回一张小表（结构化的行也给脚本用）。list 是每一行的定位（例如 getByRole('row')、css=.item），fields 是行里每个字段的定位（相对这一行，例如 getByRole('cell').nth(2)），{ target, attr } 取 HTML 属性（href、value；读文字不写 attr）；不给 list 就是整页一行。limit 默认 ${EXTRACT_DEFAULT_ROWS}、最多 ${EXTRACT_MAX_ROWS} 行；文字里最多列 50 行。一行也没有不算出错。${TARGET_HELP}。只读，不改页面。`,
           source: "builtin",
           risk: "read",
         },
@@ -640,7 +642,14 @@ export class BrowserTools {
     }
     const ok = result.status >= 200 && result.status < 300
     const lines = [`${shown} → ${result.status} ${contentType || "（没有 content-type）"}（${sizeText(result.bytes)}，${result.ms} 毫秒）`]
-    if (result.status === 401 || result.status === 403) lines.push("多半登录过期了，先用 browser.navigate 打开网站的页面看看要不要登录。")
+    if (result.status === 401 || result.status === 403) {
+      const cookies = await page
+        .context()
+        .cookies(target)
+        .then((list) => list.length)
+        .catch(() => 1)
+      lines.push(fetchAuthHint({ authenticate: result.authenticate, cookies, tokenApi: instance.network?.usesToken(target) ?? false }))
+    }
     let shownBody = json !== undefined ? JSON.stringify(json, null, 2) : text
     if (shownBody === undefined) lines.push(method === "HEAD" ? "（HEAD 没有返回体）" : `（返回不是文字：只给大小 ${sizeText(result.bytes)}。要文件用下载）`)
     else if (shownBody === "") lines.push("（返回体是空的）")
@@ -965,7 +974,9 @@ export class BrowserTools {
         const outcome = await executeMcpTool(this.connection(instance, mcp.client), name, args)
         const taken = takeCode(outcome.output)
         recorded.code = taken.code
-        return { ...outcome, output: outcome.isError ? stripAnsi(taken.output) : taken.output }
+        const output = outcome.isError ? stripAnsi(taken.output) : taken.output
+        // 看网页请求的：认证头、cookie 的值打码，不进模型上下文和过程记录
+        return { ...outcome, output: NETWORK_TOOLS.has(name) ? maskNetworkOutput(output) : output }
       })
     let result = await run()
     // 被弹窗挡住：认得出无害的关闭按钮就点掉、再做一次；认不出就写清楚是哪个弹窗挡着

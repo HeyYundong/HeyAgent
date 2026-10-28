@@ -55,7 +55,7 @@
 
 **「要算」由 SQL 判断，不靠各处写记忆的代码通知**：当前模型下没有这一行，或者行里的 `content_hash` 不等于 `md5(applies_to || E'\n' || content)`（内容、适用于改过）。所以记忆页、助手、导入、审核通过，谁改了记忆都不用另外调用什么，后台自己会发现。JS 里算 md5 用 `createHash("md5").update(memoryEmbedText(m), "utf8")`，和 SQL 的结果一致（库是 UTF-8），测试里对一遍。
 
-- **后台循环**（API 进程，`memory/embed.ts`，`index.ts` 里和图库的并列启动）：只算 `status = active` 的；一批 32 条一次调用；算完一批马上接下一批，没活干时每分钟看一次。失败的写 `embed_error`、`embed_tried_at`，隔 10 分钟再试。多个 API 进程用事务级 advisory lock（`hashtext('heyagent.memory_embed')`）。
+- **后台循环**（API 进程，`memory/embed.ts`，`index.ts` 里和图库的并列启动）：只算 `status = active` 的；一批 32 条一次调用；算完一批马上接下一批，没活干时每分钟看一次。失败的写 `embed_error`、`embed_tried_at`，隔 10 分钟再试；模型服务改了 key / 地址（`updateProvider`），或者测试连接、刷新列表从出错变好（`testProvider`、`refreshProvider`），调 `retryMemoryEmbeddingsNow()`：在这之前失败的马上重算，不等 10 分钟（2026-10-28 加，见第 12 节第 2 条）。多个 API 进程用事务级 advisory lock（`hashtext('heyagent.memory_embed')`）。
 - **叫醒**（`kickMemoryEmbeddings()`，只是让它早点算）：记忆新建、修改、审核通过以后；默认 embedding 模型换了以后（`data/config/models.ts` 两处，和 `kickGalleryEmbeddings` 并列）。不叫醒也就晚一分钟。
 - **运行开始时顺手补算**：挑的时候发现有生效的记忆还没算好，最多 64 条（`AUTO_MEMORY_INLINE_EMBED_MAX`）和查询文字放在同一次调用里算掉、存下。多出来的这次不参与，过程里写「还有 N 条没算好，这次没参与」。
 - 写向量用 upsert（主键冲突就更新 hash 和向量），后台和运行开始时同时算同一条也没事。
@@ -368,5 +368,5 @@
 
 **问题和建议**（都不是 bug，不阻塞）：
 
-1. 条数上限把真正相关的挡掉、反而留下不太相关的（库存那次）：「最多 3 条」时第 3、4 名只差 0.003。可以考虑「最多几条」按分数断崖截（例如和第 1 名差超过 0.08 的不要），或者默认 5 条不要让人往小调；先观察。
-2. 种子演示数据的 OpenRouter key 是假的时，后台会把生效的记忆都记成「算失败」，换了 key 以后 10 分钟内记忆页仍显示失败（运行开始时会顺手补算，不影响挑选）。可以考虑改模型服务的 key 后也叫醒一次（`kickMemoryEmbeddings`），和换默认模型一样。
+1. （先不做）条数上限把真正相关的挡掉、反而留下不太相关的（库存那次）：「最多 3 条」时第 3、4 名只差 0.003。可以考虑「最多几条」按分数断崖截（例如和第 1 名差超过 0.08 的不要），或者默认 5 条不要让人往小调；先观察。
+2. **已修（edeb8ce）**：`updateProvider`（改 key、改地址）后，以及 `testProvider` / `refreshProvider` 从出错变好时调 `retryMemoryEmbeddingsNow()`，之前算失败的马上重算（见第 2 节）。原来的记录：种子演示数据的 OpenRouter key 是假的时，后台会把生效的记忆都记成「算失败」，换了 key 以后 10 分钟内记忆页仍显示失败（运行开始时会顺手补算，不影响挑选）。可以考虑改模型服务的 key 后也叫醒一次（`kickMemoryEmbeddings`），和换默认模型一样。

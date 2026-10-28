@@ -515,5 +515,5 @@ shared（已写好 `packages/shared/test/dispatch.test.ts`，11 个用例）：�
 
 **看到的小问题**（不阻塞）：
 
-- `link` 用请求的 Host 拼（`publicBaseUrl`）：开发时 API 和网页分两个端口，curl 打 3139 拿到的是 `http://127.0.0.1:3139/#/…`，点开是 API 端口；整套 pod 同一个入口没这个问题。和图库、比物一样，接口文档提一句「link 按调用时的地址拼」就够了。
+- **已修（edeb8ce）**：`link` 改用控制台地址（`BETTER_AUTH_URL`，部署时就是 `PUBLIC_URL`，`lib/api-auth.ts` 的 `consoleBaseUrl`），不按请求的 Host 拼。原来的记录：`link` 用请求的 Host 拼（`publicBaseUrl`）：开发时 API 和网页分两个端口，curl 打 3139 拿到的是 `http://127.0.0.1:3139/#/…`，点开是 API 端口；整套 pod 同一个入口没这个问题。和图库、比物一样，接口文档提一句「link 按调用时的地址拼」就够了。
 - 被派任务没声明「要交回的结果」时，agent 的 `work.report` 照样交了好几个自己起名的字段（「处理说明」「是否已读取」），外部系统查单会看到。不算错，只是提醒：给外部系统用的任务最好声明结果字段。

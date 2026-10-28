@@ -3,7 +3,8 @@
 // - 只算「生效」的记忆；向量按 (memory_id, model_id) 存在 memory_embeddings，content_hash = md5(shared 的 memoryEmbedText)；
 // - 「要算」= 当前模型下没有行，或者行里的 content_hash 和记忆现在的内容对不上（改过）。判断全在 SQL 里：
 //   md5(applies_to || E'\n' || content)，所以谁改了记忆（记忆页、助手、导入、审核通过）都不用另外通知，后台自己会发现；
-// - 后台循环在 API 进程（index.ts 里和图库的并列启动），一批 32 条，失败的隔 10 分钟再试，多进程用事务级 advisory lock；
+// - 后台循环在 API 进程（index.ts 里和图库的并列启动），一批 32 条，失败的隔 10 分钟再试（模型服务换了 key、从出错变好时马上重试，
+//   retryMemoryEmbeddingsNow），多进程用事务级 advisory lock；
 //   当前模型一条不落都算完了才删别的模型的行（同图库）。
 import { createHash } from "node:crypto"
 
@@ -39,8 +40,17 @@ const embeddingOf = (db: DbLike, modelId: string) =>
 /** 这条记忆在 modelId 下有按现在的内容算好的向量（用在 from memories 的查询里） */
 export const memoryEmbedReady = (db: DbLike, modelId: string): SQL => exists(embeddingOf(db, modelId))
 
-/** 没失败过、算成过，或者失败已经过了 10 分钟 */
-const retryable = or(isNull(t.memories.embedTriedAt), isNull(t.memories.embedError), sql`${t.memories.embedTriedAt} < now() - interval '10 minutes'`)
+/** 改了模型服务的 key、服务从出错变好的时间（retryMemoryEmbeddingsNow）：在这之前失败的不用等 10 分钟 */
+let forcedAt: Date | undefined
+
+/** 没失败过、算成过，或者失败已经过了 10 分钟，或者失败在模型服务修好以前 */
+const retryable = () =>
+  or(
+    isNull(t.memories.embedTriedAt),
+    isNull(t.memories.embedError),
+    sql`${t.memories.embedTriedAt} < now() - interval '10 minutes'`,
+    ...(forcedAt ? [sql`${t.memories.embedTriedAt} < ${forcedAt.toISOString()}::timestamptz`] : [])
+  )
 
 /** 当前模型下还没算好的生效记忆（不管失败过没有） */
 export function memoriesNotReady(db: DbLike, modelId: string): SQL {
@@ -75,6 +85,15 @@ export function kickMemoryEmbeddings(): void {
   wake?.()
 }
 
+/**
+ * 模型服务改了 key、改了地址，或者测试连接 / 刷新列表从出错变好以后调用（memory-retrieval.md 第 12 节第 2 条）：
+ * 之前算失败的记忆不用等 10 分钟，马上叫醒后台重算
+ */
+export function retryMemoryEmbeddingsNow(): void {
+  forcedAt = new Date()
+  wake?.()
+}
+
 /** 处理一批要算的记忆，返回处理了几条；没设 embedding 模型返回 0；拿不到锁（别的进程在算）返回 0。模型出错时记下原因再抛出 */
 export async function embedPendingMemoriesOnce(db: Db, batch = 32): Promise<number> {
   return db.transaction(async (tx) => {
@@ -90,7 +109,7 @@ async function embedPending(db: Db, batch: number): Promise<number> {
   const rows = await db
     .select({ id: t.memories.id, appliesTo: t.memories.appliesTo, content: t.memories.content })
     .from(t.memories)
-    .where(and(memoriesNotReady(db, model.id), retryable))
+    .where(and(memoriesNotReady(db, model.id), retryable()))
     .orderBy(asc(t.memories.id))
     .limit(batch)
   if (rows.length === 0) {

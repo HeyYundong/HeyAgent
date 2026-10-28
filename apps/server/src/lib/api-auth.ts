@@ -6,6 +6,7 @@ import type { z } from "zod"
 import type { Auth } from "../auth.js"
 import { verifyApiKey } from "../data/config/api-keys.js"
 import type { Db } from "../db/client.js"
+import { env } from "../env.js"
 
 /** 认出来的调用方：密钥调用算密钥的创建人（apiKeyId、apiKeyName 有值），cookie 是登录的人。name 是人的名字（派活的处理记录、不办了的原因用） */
 export interface ApiCaller {
@@ -25,6 +26,14 @@ export async function authenticateRequest(deps: { db: Db; auth: Auth }, req: Req
   const session = await deps.auth.api.getSession({ headers: req.headers })
   if (!session?.user) return { reason: "请先登录，或者在 Authorization: Bearer 里带上 API 密钥" }
   return { user: { id: session.user.id, isAdmin: session.user.role === "admin", name: session.user.name } }
+}
+
+/**
+ * 控制台对外的地址（BETTER_AUTH_URL，部署脚本设成 PUBLIC_URL）：给外部系统的「点开看」链接用它，不按请求的 Host 拼
+ * （开发时 API 和网页不是一个端口，按 Host 拼的链接点开是 API 端口；经过网关、内网地址调用时 Host 也不是人能打开的地址）
+ */
+export function consoleBaseUrl() {
+  return env.authUrl.replace(/\/+$/, "")
 }
 
 /** 返回给外部的地址要完整（经过反向代理时看 X-Forwarded-*） */

@@ -1349,7 +1349,7 @@ claude mcp add --transport http heyagent-compare http://<host>:8080/api/compare/
 
 | 方法和路径 | 输入 | 返回 |
 |---|---|---|
-| `POST /api/work-items` | JSON（≤ 256 KB，`workApiCreateInputSchema`）：`task`（任务 id）、`params`（`{ 参数名: 文字 \| 数字 \| 是否 \| null }`，数字、是否存成文字，null = 没填）、`title?`、`note?`、`key?`（任务没有标「去重」的参数时必填，也认请求头 `Idempotency-Key`，内容里的优先；有去重参数时不看）、`priority?`、`notBefore?`（带时区的时间）或 `delayMinutes?`（0～43200，只给一个；不晚于现在 = 马上）、`ifExists?`（`skip` 默认 / `update`） | 新建 **201**、同一件事已经有单 **200**（不论状态，不重开）：`{ item: WorkItem, existing, updated, link, notice? }`。`link` = `<base>/#/tasks?id=<任务>&work=<单号>`；`notice` 有才写：「任务停用了，单先排着，重新启用后自动开始办」「定在 10-28 18:00 以后办」「今天的花费到了上限，单留到明天 0 点以后办」（几条用「；」连） |
+| `POST /api/work-items` | JSON（≤ 256 KB，`workApiCreateInputSchema`）：`task`（任务 id）、`params`（`{ 参数名: 文字 \| 数字 \| 是否 \| null }`，数字、是否存成文字，null = 没填）、`title?`、`note?`、`key?`（任务没有标「去重」的参数时必填，也认请求头 `Idempotency-Key`，内容里的优先；有去重参数时不看）、`priority?`、`notBefore?`（带时区的时间）或 `delayMinutes?`（0～43200，只给一个；不晚于现在 = 马上）、`ifExists?`（`skip` 默认 / `update`） | 新建 **201**、同一件事已经有单 **200**（不论状态，不重开）：`{ item: WorkItem, existing, updated, link, notice? }`。`link` = `<控制台地址>/#/tasks?id=<任务>&work=<单号>`（控制台地址取 `BETTER_AUTH_URL`，部署时就是 `PUBLIC_URL`；2026-10-28 以前按请求的 Host 拼，开发时 API、网页分两个端口会指到 API 端口）；`notice` 有才写：「任务停用了，单先排着，重新启用后自动开始办」「定在 10-28 18:00 以后办」「今天的花费到了上限，单留到明天 0 点以后办」（几条用「；」连） |
 | `GET /api/work-items?task=&key=&status=&limit=&cursor=` | `task` 被派任务、`key` 去重键（精确）、`status`、`limit`（默认 50，1～100）、`cursor`（上一页的 `nextCursor`） | `{ items: WorkItem[], nextCursor }`，新派的在前，不限天数。查询不限权限（任何有效密钥、任何登录的人都能查全部单） |
 | `GET /api/work-items/:id` | — | `WorkItem`；没有 404 |
 | `POST /api/work-items/:id/cancel` | `{ reason? }`（可以没有内容） | `WorkItem`。同控制台「不办了」：排队的直接结束；在办的取消正在跑的运行；已经结束的 409。密钥调用要那个任务开着 `allowApi`、创建人有 `work.manage`；原因写「外部系统（密钥「名字」）点了不办了：…」 |
@@ -1573,7 +1573,7 @@ curl -X POST http://<host>:8080/api/work-items/W-57/cancel -H "Authorization: Be
 ### 20.1 数据
 
 - 新表 `routines`（一个任务一个，`RT-<n>`，序列 `routine_no_seq`）：`status`（trial / active / paused）、`active_version`、`direct_streak`、`fallback_streak`、`paused_reason`。
-- 新表 `routine_versions`（`RT-<n>-v<版本>`）：`status`（drafting / testing / review / failed / approved / rejected）、`name`、`description`、`code`、`input_schema`、`output_schema`、`commits`、`assumptions`、`fail_reason`、`source_session_id`、`base_version`、`round`、`skip_test`、`test_report`（`RoutineTestReport`）、`model_id`、`tokens_in`、`tokens_out`、`cost_usd`、`reject_reason`、`created_by_id`、`approved_by_id`、`approved_at`。
+- 新表 `routine_versions`（`RT-<n>-v<版本>`）：`status`（drafting / testing / review / failed / approved / rejected）、`name`、`description`、`code`、`input_schema`、`output_schema`、`commits`、`assumptions`、`fail_reason`、`source_session_id`、`base_version`、`round`、`skip_test`、`test_report`（`RoutineTestReport`：`rounds` 每轮试跑；`drafts?` 没到试跑就没过的几轮 `{ round, error }`，2026-10-28 加）、`model_id`、`tokens_in`、`tokens_out`、`cost_usd`、`reject_reason`、`created_by_id`、`approved_by_id`、`approved_at`。
 - `tasks.routine_mode`（off / first，默认 off；第一次启用时改成 first）。
 - `sessions.kind`（run / routine_test）、`sessions.routine`（`SessionRoutineState`：脚本跑到哪、停在哪 `stoppedAt { step, kind, tool?, label?, reason }`、提交和核对 `commits`、试跑记下没生效的 `recorded`、`logs`、`screenshotFileId`）。固化试跑的运行 id 是 `RT-<n>-v<版本>-t<轮>`，不进会话列表、会话页的个数和办成率、「今天花了」、定时的「上一次还没跑完」判断；`sessions.get` 按 id 照常能取。
 - `session_events.trace`（`EventTrace`：浏览器动作录下的 Playwright 代码 `code`、`urlBefore`、`urlAfter`、`title`；脚本做的步骤 `routineStep`）。`SessionRun.events[].trace` 原样给出。
@@ -1720,7 +1720,7 @@ curl -X POST http://<host>:8080/api/work-items/W-57/cancel -H "Authorization: Be
   | `method` `url` | 方法、完整网址（查询参数打码） |
   | `page` | 发请求时页面的网址（可选） |
   | `headers` | 网页设的请求头名字（小写、排好序，去掉浏览器自己加的），值不记 |
-  | `auth` | `{ cookie: 带没带 cookie, headers: 像认证的请求头名字 }`（`authorization`、`x-api-key`、名字含 `token` / `auth` 的；含 `csrf` / `xsrf` 的不算） |
+  | `auth` | `{ cookie: 带没带 cookie, headers: 像认证的请求头名字, schemes?: { 名字: 方案名 } }`（`authorization`、`x-api-key`、名字含 `token` / `auth` 的；含 `csrf` / `xsrf` 的不算）。`schemes`（2026-10-28 加）：认证头的值里第一个空格前的词（`Bearer`、`Basic`、`Token`），值里没有空格（整个就是密钥）记 `""`，第一个词不全是字母的不记；密钥本身不记 |
   | `csrf` | 可选：请求头里有 csrf 类的、认出了值来自页面的 meta 或 cookie 时 `{ header, from, name }`，照抄给 `browser.fetch` |
   | `requestType` `requestBody` `requestOmitted` | 请求体的 content-type、开头 2 KB（打码）、后面没记的字节数 |
   | `status` | 状态码；没拿到返回是 0，原因在 `error` |
