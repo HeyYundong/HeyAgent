@@ -16,6 +16,7 @@ import type {
   SkillStatus,
   ToolSource,
 } from "./schemas.js"
+import type { SubagentState } from "./subagents.js"
 
 export const accountStatusLabel: Record<AccountStatus, string> = {
   ok: "已登录",
@@ -143,3 +144,15 @@ export const modelRoles: { id: Exclude<ModelRole, "embed" | "assistant" | "revie
 
 /** 只靠事件继续时，最多等几天；到期还没等到就提醒负责人（已定） */
 export const EVENT_FALLBACK_DAYS = 7
+
+/** 子 agent（docs/dev/sub-agents.md 第 3 节）：子运行现在的样子 */
+export const subagentStateLabel: Record<SubagentState, string> = {
+  queued: "排队",
+  running: "在跑",
+  waiting: "等资源",
+  needs_human: "等人处理",
+  ended: "结束",
+}
+
+/** 子 agent：运行的来源「父运行拆出来的」（快照 source、sessions.triggered_by = sub） */
+export const SUB_SOURCE_LABEL = "父运行拆出来的"

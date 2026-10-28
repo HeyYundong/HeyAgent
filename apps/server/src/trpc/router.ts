@@ -62,6 +62,9 @@ import {
   settingsAgentInputSchema,
   settingsBrowserInputSchema,
   settingsDispatchInputSchema,
+  settingsSubagentInputSchema,
+  subagentListInputSchema,
+  subagentRowSchema,
   settingsAssistantInputSchema,
   settingsLimitsInputSchema,
   settingsViewSchema,
@@ -107,6 +110,7 @@ import { pageSessions } from "../data/session-page.js"
 import * as t from "../db/schema.js"
 import { setOutcomeImpl } from "../engine/control.js"
 import { EngineError } from "../engine/sessions.js"
+import { listSubagents } from "../engine/subagents/view.js"
 import { protectedProcedure, router, type Context, type SessionUser } from "./init.js"
 import { browserRouter } from "./browser-router.js"
 import { desktopRouter, desktopsRouter } from "./desktop-router.js"
@@ -245,6 +249,11 @@ export const appRouter = router({
           throw error
         }
       }),
+    /** 子 agent（docs/dev/sub-agents.md 10.3）：父运行拆出去的子运行，按 n 排（父运行详情「子 agent」区块）。子运行的详情、过程用 sessions.get */
+    subagents: protectedProcedure
+      .input(subagentListInputSchema)
+      .output(z.array(subagentRowSchema))
+      .query(({ ctx, input }) => listSubagents(ctx.db, input.parentId)),
     /** 一个 session 的全部，带全部过程（工具的输入、输出）：运行详情里看过程时才取 */
     get: protectedProcedure
       .input(idInput)
@@ -369,6 +378,8 @@ export const appRouter = router({
     updateAgent: protectedProcedure.input(settingsAgentInputSchema).mutation(({ ctx, input }) => settings.updateAgentSettings(w(ctx), input)),
     /** 派活的四个上限（层数、一次运行最多派几张、一个任务每天最多被派几张、最多排队几张） */
     updateDispatch: protectedProcedure.input(settingsDispatchInputSchema).mutation(({ ctx, input }) => settings.updateDispatchSettings(w(ctx), input)),
+    /** 子 agent 的五个上限（docs/dev/sub-agents.md 6.1：每次运行同时几个、一共几个，全系统同时几个，每个子 agent 的花费、步数上限） */
+    updateSubagent: protectedProcedure.input(settingsSubagentInputSchema).mutation(({ ctx, input }) => settings.updateSubagentSettings(w(ctx), input)),
     /** 右下角助手的两个上限（一次请求最多几步、最多花多少） */
     updateAssistant: protectedProcedure.input(settingsAssistantInputSchema).mutation(({ ctx, input }) => settings.updateAssistantSettings(w(ctx), input)),
     /** 生成新的外部事件令牌：原文只在这次返回 */

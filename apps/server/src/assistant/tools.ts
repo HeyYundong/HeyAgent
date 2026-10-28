@@ -179,6 +179,7 @@ const taskInputOf = (task: TaskDef): TaskInput => ({
   routineSkipTest: task.routineSkipTest ?? false,
   autoMemory: task.autoMemory,
   autoMemoryLimit: task.autoMemoryLimit,
+  subagentModelId: task.subagentModelId,
 })
 
 async function loadTodoRow(ctx: ToolCtx, id: string) {
@@ -329,6 +330,7 @@ const TASK_LABELS: Partial<Record<keyof TaskInput, string>> = {
   routineSkipTest: "固化时不试跑",
   autoMemory: "自动挑选记忆",
   autoMemoryLimit: "自动挑的记忆最多几条",
+  subagentModelId: "子 agent 用的模型",
 }
 
 function taskFormatter(names: Names) {
@@ -344,6 +346,8 @@ function taskFormatter(names: Names) {
         return names.one("model", value as string, "默认验收模型")
       case "reviewModelId":
         return names.one("model", value as string, "默认复核模型")
+      case "subagentModelId":
+        return names.one("model", value as string, "和执行模型一样")
       case "ownerId":
         return names.one("user", value as string, "自己")
       case "skillIds":
@@ -422,6 +426,7 @@ export const TOOLS: Record<string, ToolDef> = {
           model: await names.one("model", task.modelId),
           verifyModel: await names.one("model", task.verifyModelId, "默认验收模型"),
           reviewModel: await names.one("model", task.reviewModelId, "默认复核模型"),
+          subagentModel: await names.one("model", task.subagentModelId, "和执行模型一样"),
           memories: await names.list("memory", task.memoryIds),
           skills: await names.list("skill", task.skillIds),
           tools: await names.list("tool", task.toolIds),

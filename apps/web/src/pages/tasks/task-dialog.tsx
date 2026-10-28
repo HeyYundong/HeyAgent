@@ -395,6 +395,8 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
           // 自动挑选记忆（docs/dev/memory-retrieval.md 第 4 节）：改任务时带上原来的值（不带会变回默认的「开」）
           autoMemory: task.autoMemory ?? false,
           autoMemoryLimit: task.autoMemoryLimit ?? AUTO_MEMORY_LIMIT_DEFAULT,
+          // 子 agent 用的模型（docs/dev/sub-agents.md 11.3）：改任务时带上原来的值（不带会被清空）；空 = 和执行模型一样
+          subagentModelId: task.subagentModelId ?? "",
         }
       : {
           title: "", goal: "", steps: [{ text: "", wait: false }], modelId: defaults.run, ownerId: user.id, schedule: null, enabled: true,
@@ -403,6 +405,7 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
           dispatch: null, dispatchFrom: [], cronSkipIfRunning: true,
           autoSolidify: null, routineSkipTest: false,
           autoMemory: AUTO_MEMORY_DEFAULT, autoMemoryLimit: AUTO_MEMORY_LIMIT_DEFAULT,
+          subagentModelId: "",
         },
   })
   // 网址白名单在表单里是一段文字（每行一个），提交时拆成数组

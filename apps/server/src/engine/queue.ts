@@ -43,6 +43,10 @@ export const QUEUES = {
   routineCompile: "routine.compile",
   /** 固化的清扫（docs/dev/solidify.md 17.3）：每 5 分钟，漏发、丢了的 routine.compile 补发 */
   routineSweep: "routine.sweep",
+  /** 子 agent（docs/dev/sub-agents.md 6.2）：按名额放行排队的子运行；全系统一个（singletonKey = all），多次触发合并 */
+  subagentPump: "subagent.pump",
+  /** 子 agent（7.2）：子运行结束后看要不要叫醒父运行；参数是父运行编号，singletonKey = 父运行编号 */
+  subagentNotify: "subagent.notify",
 } as const
 
 export const SCHEDULE_TZ = "Asia/Shanghai"
@@ -112,6 +116,16 @@ export function desktopVmJobOptions(desktopId: string): SendOptions {
   return { singletonKey: desktopId, expireInSeconds: 3600, retryLimit: 3, retryDelay: 10 }
 }
 
+/** subagent.pump 的任务参数：全系统合并成一个（stately + 固定的 singletonKey）；放行只是几条 SQL，出错重试几次 */
+export function subagentPumpJobOptions(): SendOptions {
+  return { singletonKey: "all", expireInSeconds: 300, retryLimit: 5, retryDelay: 5 }
+}
+
+/** subagent.notify 的任务参数：同一个父运行的合并成一个（stately）；叫醒是幂等的，出错重试几次 */
+export function subagentNotifyJobOptions(parentSessionId: string): SendOptions {
+  return { singletonKey: parentSessionId, expireInSeconds: 300, retryLimit: 5, retryDelay: 5 }
+}
+
 /** work.notify 的任务参数：只是找等待、resume，出错重试几次（叫醒是幂等的） */
 export function workNotifyJobOptions(): SendOptions {
   return { expireInSeconds: 300, retryLimit: 5, retryDelay: 5 }
@@ -133,6 +147,8 @@ const QUEUE_SETUP: { name: string; policy: "standard" | "stately" }[] = [
   { name: QUEUES.desktopVm, policy: "stately" },
   { name: QUEUES.routineCompile, policy: "stately" },
   { name: QUEUES.routineSweep, policy: "standard" },
+  { name: QUEUES.subagentPump, policy: "stately" },
+  { name: QUEUES.subagentNotify, policy: "stately" },
 ]
 
 export async function ensureQueues(boss: PgBoss) {

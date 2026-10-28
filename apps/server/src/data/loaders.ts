@@ -117,6 +117,7 @@ export async function listTasks(db: Db, ids?: string[]): Promise<TaskDef[]> {
       allowDesktopVision: row.allowDesktopVision,
       verifyModelId: opt(row.verifyModelId),
       reviewModelId: opt(row.reviewModelId),
+      subagentModelId: opt(row.subagentModelId),
       dispatch: row.dispatch ?? undefined,
       dispatchFrom: dispatchFrom.get(row.id) ?? [],
       cronSkipIfRunning: row.cronSkipIfRunning,

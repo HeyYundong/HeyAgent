@@ -155,6 +155,8 @@ export const taskInputSchema = z.object({
   verifyModelId: z.string().optional(),
   /** 复核模型（必填）：运行结束后一定复核（三方验收通过的除外）。新任务预填默认复核模型 */
   reviewModelId: z.string({ error: "选一个复核模型" }).trim().min(1, "选一个复核模型"),
+  /** 子 agent（docs/dev/sub-agents.md 11.3）：拆出去的子 agent 用的模型；不填（或空串）= 和执行模型一样。只在选了「拆给子 agent」时有意义 */
+  subagentModelId: z.string().optional(),
   /** 派活：能被派活（参数声明 + 名额）；null = 不能被派活 */
   dispatch: taskDispatchSchema.nullable().default(null),
   /** 派活：谁能派活给这个任务（任务 id） */
@@ -582,6 +584,16 @@ export const SETTING_KEYS = {
   dispatchMaxPerTaskPerDay: "dispatch.maxPerTaskPerDay",
   /** 派活：一个任务最多排队几张 */
   dispatchMaxQueued: "dispatch.maxQueued",
+  /** 子 agent（docs/dev/sub-agents.md 6.1）：每次运行同时最多几个子 agent 在跑 */
+  subagentMaxParallel: "subagent.maxParallel",
+  /** 子 agent：每次运行一共最多拆几个（含补拆的） */
+  subagentMaxPerRun: "subagent.maxPerRun",
+  /** 子 agent：全系统同时最多几个在跑 */
+  subagentMaxRunningGlobal: "subagent.maxRunningGlobal",
+  /** 子 agent：每个子 agent 的花费上限（美元），到了直接记没办成、不问人 */
+  subagentMaxCostUsd: "subagent.maxCostUsd",
+  /** 子 agent：每个子 agent 的步数上限，到了同上 */
+  subagentMaxSteps: "subagent.maxSteps",
   /** 右下角助手：一次请求最多几步模型调用（2026-10-19） */
   assistantMaxSteps: "assistant.maxSteps",
   /** 右下角助手：一次请求最多花多少美元（2026-10-19） */
@@ -605,6 +617,11 @@ export const SETTINGS_DEFAULTS = {
   dispatchMaxQueued: 1000,
   assistantMaxSteps: 20,
   assistantMaxCostUsd: 0.2,
+  subagentMaxParallel: 3,
+  subagentMaxPerRun: 10,
+  subagentMaxRunningGlobal: 8,
+  subagentMaxCostUsd: 1,
+  subagentMaxSteps: 60,
 } as const
 
 /** 设置页「派活」一组 */
@@ -615,6 +632,16 @@ export const settingsDispatchInputSchema = z.object({
   maxQueued: z.number().int().min(1, "至少 1 张").max(100_000, "最多 100000 张"),
 })
 export type SettingsDispatchInput = z.infer<typeof settingsDispatchInputSchema>
+
+/** 设置页「子 agent」一组（docs/dev/sub-agents.md 6.1）：每次运行同时几个、一共几个，全系统同时几个，每个子 agent 的花费、步数上限 */
+export const settingsSubagentInputSchema = z.object({
+  maxParallel: z.number().int().min(1, "至少 1 个").max(10, "最多 10 个"),
+  maxPerRun: z.number().int().min(1, "至少 1 个").max(50, "最多 50 个"),
+  maxRunningGlobal: z.number().int().min(1, "至少 1 个").max(50, "最多 50 个"),
+  maxCostUsd: z.number().min(0.01, "至少 0.01 美元").max(100, "最多 100 美元"),
+  maxSteps: z.number().int().min(1, "至少 1 步").max(1000, "最多 1000 步"),
+})
+export type SettingsSubagentInput = z.infer<typeof settingsSubagentInputSchema>
 
 /** 浏览器视觉模型的默认值（OpenRouter 上便宜的视觉模型）；设置页「浏览器」里可以换 */
 export const BROWSER_VISION_MODEL = SETTINGS_DEFAULTS.browserVisionModel
@@ -683,6 +710,8 @@ export const settingsViewSchema = settingsLimitsInputSchema.extend({
   dispatch: settingsDispatchInputSchema.optional(),
   /** 右下角助手的两个上限（老前端不认也不影响） */
   assistant: settingsAssistantInputSchema.optional(),
+  /** 子 agent 的五个上限（老前端不认也不影响） */
+  subagent: settingsSubagentInputSchema.optional(),
   eventToken: z.object({ hint: z.string(), createdAt: z.string() }).optional(),
   channels: z.array(notifyChannelSchema.extend({ urlMasked: z.string().optional() })),
 })

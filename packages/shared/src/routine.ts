@@ -40,8 +40,11 @@ export const routineModeSchema = z.enum(["off", "first"])
 export type RoutineMode = z.infer<typeof routineModeSchema>
 export const routineModeLabel: Record<RoutineMode, string> = { off: "不用", first: "先跑流程" }
 
-/** 运行的种类：run = 普通运行；routine_test = 固化试跑（只跑脚本、不叫 agent、不复核；不进会话列表、不算统计） */
-export const sessionKindSchema = z.enum(["run", "routine_test"])
+/**
+ * 运行的种类：run = 普通运行；routine_test = 固化试跑（只跑脚本、不叫 agent、不复核；不进会话列表、不算统计）；
+ * sub = 父运行拆出来的子运行（docs/dev/sub-agents.md：不进会话列表、不上看板，花费算进今天的花费）
+ */
+export const sessionKindSchema = z.enum(["run", "routine_test", "sub"])
 export type SessionKind = z.infer<typeof sessionKindSchema>
 
 // ---------- 录：过程记录上的录制信息（session_events.trace） ----------

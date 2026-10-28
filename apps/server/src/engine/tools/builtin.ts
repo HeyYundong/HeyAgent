@@ -57,6 +57,7 @@ import {
 } from "../humans.js"
 import { listFromAgent, reportFromAgent } from "../dispatch/agent-tools.js"
 import { dispatchFromAgent } from "../dispatch/dispatch.js"
+import { cancelFromAgent, startFromAgent, waitFromAgent } from "../subagents/agent-tools.js"
 import { isFinalWorkStatus, itemIdOfEvent, workDoneMessage } from "../dispatch/notify.js"
 import { toWorkItems } from "../../work/service.js"
 import { notifyUsers, sessionLink } from "../notify.js"
@@ -718,6 +719,16 @@ const handlers: {
   },
   async "work.report"(ctx, input) {
     return reportFromAgent(ctx, input)
+  },
+  // 子 agent（docs/dev/sub-agents.md）：拆、等、停（engine/subagents/agent-tools.ts）
+  async "subagent.start"(ctx, input) {
+    return startFromAgent(ctx, input)
+  },
+  async "subagent.wait"(ctx, input) {
+    return waitFromAgent(ctx, input)
+  },
+  async "subagent.cancel"(ctx, input) {
+    return cancelFromAgent(ctx, input)
   },
   // 报结果：只把结果交给引擎，由引擎（loop.ts）收尾：办成的先过「说做完了」的规则（三方验收），再按硬规则、复核定最终结果
   async "run.finish"(_ctx, input) {

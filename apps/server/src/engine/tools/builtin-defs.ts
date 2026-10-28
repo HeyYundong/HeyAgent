@@ -186,6 +186,33 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
     risk: "read",
     implied: true,
   },
+  // 子 agent（docs/dev/sub-agents.md 4.1）：「拆给子 agent」在任务里选；「等子 agent」「停掉子 agent」跟着它自动带上
+  {
+    id: "subagent.start",
+    name: "拆给子 agent",
+    summary: "把几件互相独立的事拆给几个子 agent 同时做，每个是一次单独的运行，做完把结果交回给你",
+    description:
+      "items 一件事一项（一次最多 10 个）：title 一句话说清做什么；goal 写全要做到什么、怎么算做完、交回什么（子 agent 看不到你的对话、你读过的网页和文件）；input 交给它的数据；fileIds 给它读的文件 id（只读）；results 要它用 work_report 交回的字段名（都必填）。子 agent 和你用同样的工具、记忆、技能、规则、浏览器和桌面配置，但不能再拆、不能派活、不能长时间等待；每个用浏览器的子 agent 要自己的 Chrome。拆完先排队，按名额同时跑几个，多的等。返回每个子 agent 的编号；之后用 subagent_wait 等结果。",
+    risk: "write",
+  },
+  {
+    id: "subagent.wait",
+    name: "等子 agent",
+    summary: "等这次运行拆出去的子 agent：全部结束（默认）或有一个结束就继续，拿到它们交回的结果",
+    description:
+      "mode = all（默认）：等这次运行拆出去的全部结束，一次拿到全部结果；any：有一个结束就继续，只给新结束的；none：不等，只看现状。条件已经满足就直接返回结果，不挂起。结果里有每个子 agent 办成没有、总结、依据、交回的字段和它存的文件（在你空间的 subs/<n>/ 下，只读）。结果是子 agent 自报的，没有复核，自己核对关键的数据和文件。",
+    risk: "read",
+    implied: true,
+  },
+  {
+    id: "subagent.cancel",
+    name: "停掉子 agent",
+    summary: "停掉这次运行拆出去、还没结束的几个子 agent",
+    description:
+      "ids 写子运行编号（例如 R-12-3.2），reason 写为什么停。只能停这次运行拆出去的、还没结束的；停掉的记没办成，排队的直接取消。用在 any 模式拿到想要的结果以后、或者发现拆错了。",
+    risk: "write",
+    implied: true,
+  },
   {
     id: "file.read",
     name: "读附件",

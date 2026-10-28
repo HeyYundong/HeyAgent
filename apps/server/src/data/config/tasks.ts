@@ -48,6 +48,13 @@ async function checkTask(db: DbOrTx, input: TaskInput, previousRuleIds: string[]
   const [review] = await db.select({ id: t.models.id, kind: t.models.kind }).from(t.models).where(eq(t.models.id, reviewModelId))
   if (!review) throw badRequest(`复核模型 ${reviewModelId} 不存在，请换一个`)
   if (review.kind !== "chat") throw badRequest(`${reviewModelId} 是 embedding 模型，不能用来复核，请换一个`)
+  // 子 agent 用的模型（docs/dev/sub-agents.md 11.3）：可以不选（和执行模型一样）；选了要是聊天模型
+  const subagentModelId = input.subagentModelId?.trim()
+  if (subagentModelId) {
+    const [found] = await db.select({ id: t.models.id, kind: t.models.kind }).from(t.models).where(eq(t.models.id, subagentModelId))
+    if (!found) throw badRequest(`子 agent 用的模型 ${subagentModelId} 不存在，请换一个`)
+    if (found.kind !== "chat") throw badRequest(`${subagentModelId} 是 embedding 模型，不能给子 agent 用，请换一个`)
+  }
   const dispatchFrom = await checkDispatchSources(db, input.dispatchFrom, selfId)
   const exist = async (table: typeof t.memories | typeof t.skills | typeof t.rules | typeof t.tools, list: string[], what: string) => {
     if (list.length === 0) return
@@ -153,6 +160,8 @@ function columns(input: TaskInput, modelId: string, verifyModelId: string | null
     // 自动挑选记忆（docs/dev/memory-retrieval.md 第 4 节）
     autoMemory: input.autoMemory,
     autoMemoryLimit: input.autoMemoryLimit,
+    // 子 agent 用的模型（docs/dev/sub-agents.md 11.3）：空 = 和执行模型一样
+    subagentModelId: input.subagentModelId?.trim() || null,
   }
 }
 

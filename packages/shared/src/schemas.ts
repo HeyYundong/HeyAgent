@@ -8,6 +8,7 @@ import { z } from "zod"
 import { eventTraceSchema, sessionKindSchema, sessionRoutineStateSchema } from "./routine.js"
 import { ruleCompileViewSchema } from "./rules.js"
 import { memoryEmbedInfoSchema, runMemoryUseSchema } from "./memory-retrieval.js"
+import { sessionSubSchema, subagentGoalViewSchema, subagentStatsSchema } from "./subagents.js"
 
 /** ISO 8601 时间（UTC）。接口返回的时间都是这个格式 */
 export const isoTime = z.string()
@@ -398,6 +399,8 @@ export const taskSchema = z.object({
    * 2026-10-20 以前建的任务可能没有，运行时用默认复核模型，下次保存时要选上
    */
   reviewModelId: z.string().optional(),
+  /** 子 agent（docs/dev/sub-agents.md 11.3）：拆出去的子 agent 用的模型；没有 = 和执行模型一样 */
+  subagentModelId: z.string().optional(),
   /** 派活：能被派活时的参数声明和名额；没有 = 不能被派活 */
   dispatch: z
     .object({
@@ -664,6 +667,10 @@ export const sessionSummarySchema = z.object({
   kind: sessionKindSchema.optional(),
   /** 跑过固化流程的运行、固化试跑：脚本跑到哪、停在哪、为什么 */
   routine: sessionRoutineStateSchema.optional(),
+  /** 子 agent（docs/dev/sub-agents.md 10.2）：子运行才有：第几个、标题（父运行编号是 parentSessionId） */
+  sub: sessionSubSchema.optional(),
+  /** 子 agent：拆过的父运行才有：几个、各在什么状态、办成几个、子运行花费合计 */
+  subagents: subagentStatsSchema.optional(),
 })
 export type SessionSummary = z.infer<typeof sessionSummarySchema>
 
@@ -673,6 +680,8 @@ export const sessionRunSchema = sessionSummarySchema.extend({
   events: z.array(runEventSchema),
   /** 这次用了哪些记忆：手选的、自动挑的（带相似度）、挑选情况（docs/dev/memory-retrieval.md 第 6 节）。没有快照的演示数据没有 */
   memoryUse: runMemoryUseSchema.optional(),
+  /** 子运行详情的「子目标」区块（docs/dev/sub-agents.md 11.1）：子运行才有 */
+  subGoal: subagentGoalViewSchema.optional(),
 })
 export type SessionRun = z.infer<typeof sessionRunSchema>
 

@@ -7,6 +7,10 @@ import {
   DESKTOP_TOOL_ID,
   GALLERY_TOOL_ID,
   RUN_FINISH_TOOL_ID,
+  SUB_SOURCE_LABEL,
+  SUBAGENT_CANCEL_TOOL_ID,
+  SUBAGENT_START_TOOL_ID,
+  SUBAGENT_WAIT_TOOL_ID,
   WORK_DISPATCH_TOOL_ID,
   WORK_LIST_TOOL_ID,
   WORK_REPORT_TOOL_ID,
@@ -28,6 +32,7 @@ import * as t from "../db/schema.js"
 import { listTaskAttachments } from "../files/service.js"
 import { QUEUES, runJobOptions, sendInTx, type Tx } from "./queue.js"
 import { appendEvent, appendMessage, writeAudit } from "./records.js"
+import { subFirstUserMessage } from "./subagents/start.js"
 import {
   browserSnapshotTool,
   compareSnapshotTool,
@@ -53,6 +58,7 @@ const sourceLabel: Record<SessionSource, string> = {
   todo: "人加的待办触发",
   event: "外部事件触发",
   dispatch: "派活触发",
+  sub: SUB_SOURCE_LABEL,
 }
 
 /** 按任务当前的配置做快照 */
@@ -216,6 +222,8 @@ export async function buildSnapshot(
   if (attachments.length || tools.some((tool) => tool.id === BROWSER_TOOL_ID || tool.id === DESKTOP_TOOL_ID)) implied.push("file.read")
   if (tools.some((tool) => tool.id === WORK_DISPATCH_TOOL_ID)) implied.push(WORK_LIST_TOOL_ID)
   if (extra.dispatch) implied.push(WORK_REPORT_TOOL_ID)
+  // 子 agent（docs/dev/sub-agents.md 4.1）：选了「拆给子 agent」自动带上「等子 agent」「停掉子 agent」
+  if (tools.some((tool) => tool.id === SUBAGENT_START_TOOL_ID)) implied.push(SUBAGENT_WAIT_TOOL_ID, SUBAGENT_CANCEL_TOOL_ID)
   for (const id of implied) {
     if (!tools.some((each) => each.id === id))
       tools.push(builtinSnapshotTool(id))
@@ -263,6 +271,8 @@ export async function buildSnapshot(
     },
     modelId: task.modelId,
     ...(task.verifyModelId ? { verifyModelId: task.verifyModelId } : {}),
+    // 子 agent（5.1）：选了「拆给子 agent」、又另选了子 agent 用的模型时冻进来；子运行用它
+    ...(task.subagentModelId && tools.some((tool) => tool.id === SUBAGENT_START_TOOL_ID) ? { subagentModelId: task.subagentModelId } : {}),
     // 结束后的复核（run-outcome 第 5 节）：模型冻进快照；旧任务没选复核模型的，复核那一刻取默认复核模型（开始时已经确认有）
     ...(task.reviewModelId ? { reviewModelId: task.reviewModelId } : {}),
     memories: memories
@@ -356,6 +366,8 @@ function dispatchOriginShort(dispatch: NonNullable<SessionSnapshot["dispatch"]>)
 
 /** 第一条用户消息：开始执行 + 附加说明 */
 export function firstUserMessage(snapshot: SessionSnapshot): string {
+  // 子运行（docs/dev/sub-agents.md 5.2）：子目标只放在第一条消息里，系统提示对所有兄弟都一样（前缀缓存）
+  if (snapshot.sub) return subFirstUserMessage({ ...snapshot, sub: snapshot.sub })
   const dispatch = snapshot.dispatch
   if (dispatch) {
     // 派活（方案 5.4）：参数只放在第一条消息里，系统提示对所有被派的运行都一样（前缀缓存）

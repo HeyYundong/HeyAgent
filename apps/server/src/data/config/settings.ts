@@ -15,6 +15,7 @@ import {
   type SettingsBrowserInput,
   type SettingsDispatchInput,
   type SettingsLimitsInput,
+  type SettingsSubagentInput,
   type SettingsView,
 } from "@heyagent/shared"
 import { z } from "zod"
@@ -95,6 +96,11 @@ export async function ensureDefaultSettings(db: DbOrTx) {
     [SETTING_KEYS.dispatchMaxPerSession, SETTINGS_DEFAULTS.dispatchMaxPerSession],
     [SETTING_KEYS.dispatchMaxPerTaskPerDay, SETTINGS_DEFAULTS.dispatchMaxPerTaskPerDay],
     [SETTING_KEYS.dispatchMaxQueued, SETTINGS_DEFAULTS.dispatchMaxQueued],
+    [SETTING_KEYS.subagentMaxParallel, SETTINGS_DEFAULTS.subagentMaxParallel],
+    [SETTING_KEYS.subagentMaxPerRun, SETTINGS_DEFAULTS.subagentMaxPerRun],
+    [SETTING_KEYS.subagentMaxRunningGlobal, SETTINGS_DEFAULTS.subagentMaxRunningGlobal],
+    [SETTING_KEYS.subagentMaxCostUsd, SETTINGS_DEFAULTS.subagentMaxCostUsd],
+    [SETTING_KEYS.subagentMaxSteps, SETTINGS_DEFAULTS.subagentMaxSteps],
   ]
   for (const [key, value] of defaults) await db.insert(t.settings).values({ key, value }).onConflictDoNothing()
 }
@@ -115,7 +121,8 @@ export async function getSettings(ctx: WriteCtx): Promise<SettingsView> {
   const agent = await readAgentSettings(ctx.db)
   const dispatch = await readDispatchSettings(ctx.db)
   const assistant = await readAssistantSettings(ctx.db)
-  return { ...limits, browser, agent, dispatch, assistant, ...(token ? { eventToken: { hint: token.hint, createdAt: token.createdAt } } : {}), channels: withMask }
+  const subagent = await readSubagentSettings(ctx.db)
+  return { ...limits, browser, agent, dispatch, assistant, subagent, ...(token ? { eventToken: { hint: token.hint, createdAt: token.createdAt } } : {}), channels: withMask }
 }
 
 /** agent 相关的设置（M3）：验收最多几轮、压缩上下文的 token 上限。引擎每次用到时重新读 */
@@ -160,6 +167,41 @@ export async function updateDispatchSettings(ctx: WriteCtx, input: SettingsDispa
     await writeKey(tx, SETTING_KEYS.dispatchMaxPerTaskPerDay, input.maxPerTaskPerDay, ctx.actor.id)
     await writeKey(tx, SETTING_KEYS.dispatchMaxQueued, input.maxQueued, ctx.actor.id)
     await audit(tx, ctx.actor.id, "settings.dispatch.update", "settings", "dispatch", { before, after: input })
+    return input
+  })
+}
+
+/** 子 agent 的五个上限（docs/dev/sub-agents.md 6.1）。拆、放行、开子运行时每次重新读，读不到用默认值 */
+export async function readSubagentSettings(db: DbOrTx): Promise<SettingsSubagentInput> {
+  const values = await readKeys(db, [
+    SETTING_KEYS.subagentMaxParallel,
+    SETTING_KEYS.subagentMaxPerRun,
+    SETTING_KEYS.subagentMaxRunningGlobal,
+    SETTING_KEYS.subagentMaxCostUsd,
+    SETTING_KEYS.subagentMaxSteps,
+  ])
+  const positiveInt = (value: unknown, fallback: number) => (typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback)
+  const positive = (value: unknown, fallback: number) => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback)
+  return {
+    maxParallel: positiveInt(values.get(SETTING_KEYS.subagentMaxParallel), SETTINGS_DEFAULTS.subagentMaxParallel),
+    maxPerRun: positiveInt(values.get(SETTING_KEYS.subagentMaxPerRun), SETTINGS_DEFAULTS.subagentMaxPerRun),
+    maxRunningGlobal: positiveInt(values.get(SETTING_KEYS.subagentMaxRunningGlobal), SETTINGS_DEFAULTS.subagentMaxRunningGlobal),
+    maxCostUsd: positive(values.get(SETTING_KEYS.subagentMaxCostUsd), SETTINGS_DEFAULTS.subagentMaxCostUsd),
+    maxSteps: positiveInt(values.get(SETTING_KEYS.subagentMaxSteps), SETTINGS_DEFAULTS.subagentMaxSteps),
+  }
+}
+
+/** 改子 agent 的上限。TODO(子 agent 后端)：提交后发 subagent.pump（名额调大了，排队的能放行；signal.ts 的 sendSubagentPump） */
+export async function updateSubagentSettings(ctx: WriteCtx, input: SettingsSubagentInput) {
+  assertCan(ctx.actor, "settings.manage", {}, "只有主管能改全局设置")
+  return ctx.db.transaction(async (tx) => {
+    const before = await readSubagentSettings(tx)
+    await writeKey(tx, SETTING_KEYS.subagentMaxParallel, input.maxParallel, ctx.actor.id)
+    await writeKey(tx, SETTING_KEYS.subagentMaxPerRun, input.maxPerRun, ctx.actor.id)
+    await writeKey(tx, SETTING_KEYS.subagentMaxRunningGlobal, input.maxRunningGlobal, ctx.actor.id)
+    await writeKey(tx, SETTING_KEYS.subagentMaxCostUsd, input.maxCostUsd, ctx.actor.id)
+    await writeKey(tx, SETTING_KEYS.subagentMaxSteps, input.maxSteps, ctx.actor.id)
+    await audit(tx, ctx.actor.id, "settings.subagent.update", "settings", "subagent", { before, after: input })
     return input
   })
 }

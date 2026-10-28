@@ -1500,6 +1500,7 @@ describe("其他接口", () => {
       "session.wait",
       "skill.load",
       "skill.propose",
+      "subagent.start",
       "work.dispatch",
     ])
     expect(

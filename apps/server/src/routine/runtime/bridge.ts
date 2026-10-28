@@ -29,6 +29,7 @@ import {
   builtinToolInputs,
   isWriteMethod,
   routineStopKindLabel,
+  SUBAGENT_TOOL_IDS,
   type EventTrace,
   type Risk,
   type RoutineRecorded,
@@ -544,6 +545,11 @@ export class ToolBridge {
               ? NOT_FOR_AGENT_SCRIPTS["run.finish"]!
               : "用 ha.finish 报结果",
       }
+    }
+    // 子 agent（docs/dev/sub-agents.md 第 15 节）：拆、等、停只能由 agent 自己调，固化脚本和 code.run 的脚本里都不行
+    if ((SUBAGENT_TOOL_IDS as readonly string[]).includes(toolId)) {
+      this.count(toolId, true)
+      return { ok: false, code: "step_error", error: "脚本里不能拆子 agent：subagent_start / subagent_wait / subagent_cancel 只能由 agent 自己调" }
     }
     if (mode === "agent" && NOT_FOR_AGENT_SCRIPTS[toolId]) {
       this.count(toolId, true)

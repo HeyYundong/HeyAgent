@@ -64,6 +64,7 @@ import {
   type SessionDigest,
   type SessionRoutineState,
   type SessionSnapshot,
+  type SubResult,
   type TaskDispatch,
   type TaskStep,
   type RunOutcome,
@@ -551,6 +552,8 @@ export const tasks = pgTable(
      * 2026-10-20 以前建的任务可能为空（迁移 0026 补了默认复核模型，没有默认的留空），运行时用默认复核模型
      */
     reviewModelId: text("review_model_id"),
+    /** 子 agent（docs/dev/sub-agents.md 11.3）：拆出去的子 agent 用的模型；为空 = 和执行模型一样。不加外键，同 review_model_id */
+    subagentModelId: text("subagent_model_id"),
     /** 派活：能被派活时的参数声明和名额；为空 = 不能被派活。results（要交回的结果）是 run-outcome 加的，旧数据没有 = 不要求 */
     dispatch: jsonb("dispatch").$type<StoredTaskDispatch>(),
     /** 定时到点时上一次还没跑完（执行中 / 验收中）就跳过这次 */
@@ -643,7 +646,7 @@ export const sessions = pgTable(
     taskId: text("task_id")
       .notNull()
       .references(() => tasks.id),
-    /** 父 session：v1.1 规划 agent 拆给子 agent 时用 */
+    /** 父 session：派活触发的运行 = 派活的那次运行；子运行（kind = sub）= 拆出它的父运行（docs/dev/sub-agents.md） */
     parentSessionId: text("parent_session_id").references((): AnyPgColumn => sessions.id, { onDelete: "set null" }),
     status: runStatusEnum("status").notNull(),
     /** 结果（run-outcome）：办成 / 没办成；运行结束时写，没结束、复核还在跑时为空 */
@@ -696,8 +699,13 @@ export const sessions = pgTable(
     digest: jsonb("digest").$type<SessionDigest>(),
     /** 派活触发的运行：哪张派活单（parent_session_id 同时写派活的那次运行） */
     workItemId: text("work_item_id").references((): AnyPgColumn => workItems.id, { onDelete: "set null" }),
-    /** 运行的种类（docs/dev/solidify.md 5.6）：run = 普通运行；routine_test = 固化试跑（不进会话列表、不算统计） */
+    /**
+     * 运行的种类（docs/dev/solidify.md 5.6）：run = 普通运行；routine_test = 固化试跑（不进会话列表、不算统计）；
+     * sub = 父运行拆出来的子运行（docs/dev/sub-agents.md：不进会话列表、不上看板，花费算进今天的花费）
+     */
     kind: sessionKindEnum("kind").notNull().default("run"),
+    /** 子运行交回给父运行的结果（docs/dev/sub-agents.md 7.3）：run.finish 的 summary / evidence、work.report 交的字段、交给父的时间。只有 kind = sub 才写 */
+    subResult: jsonb("sub_result").$type<SubResult>(),
     /** 跑过固化流程的运行、固化试跑：脚本跑到哪了、停在哪、为什么（shared/routine.ts 的 sessionRoutineStateSchema） */
     routine: jsonb("routine").$type<SessionRoutineState>(),
     createdAt: createdAt(),

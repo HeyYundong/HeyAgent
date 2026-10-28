@@ -6,6 +6,7 @@ import { sessionDesktopSnapshotSchema } from "./desktop.js"
 import { workDelayMinutesSchema, workPrioritySchema } from "./dispatch.js"
 import { autoMemorySnapshotSchema, snapshotMemoryAutoSchema } from "./memory-retrieval.js"
 import { routineSnapshotSchema } from "./routine.js"
+import { snapshotSubSchema, subagentCancelInputSchema, subagentStartInputSchema, subagentWaitInputSchema } from "./subagents.js"
 import {
   checkpointKindSchema,
   httpSpecSchema,
@@ -48,6 +49,8 @@ export const sessionSnapshotSchema = z.object({
   modelId: z.string(),
   /** M3：任务自己选的验收模型（没有就在验收时取默认验收模型） */
   verifyModelId: z.string().optional(),
+  /** 子 agent（docs/dev/sub-agents.md 5.1）：任务选了「拆给子 agent」、又另选了「子 agent 用的模型」时才有；子运行用它（没有就用 modelId）。子快照里没有 */
+  subagentModelId: z.string().optional(),
   /**
    * run-outcome：复核模型（没有就在复核时取默认复核模型）。运行结束后一定复核（三方验收通过的除外）。
    * 2026-10-20 以前的快照里还可能有 reviewEnabled（复核开关，已经去掉），读的时候忽略
@@ -103,7 +106,8 @@ export const sessionSnapshotSchema = z.object({
   ),
   /** 额外的一句话（例如人加的待办的标题） */
   note: z.string().optional(),
-  source: z.enum(["manual", "cron", "todo", "event", "dispatch"]),
+  /** sub = 父运行拆出来的子运行（docs/dev/sub-agents.md） */
+  source: z.enum(["manual", "cron", "todo", "event", "dispatch", "sub"]),
   /** 派活：这次运行是被派来办一件事的（派活单、参数、谁派的）。参数在第一条消息里交给 agent */
   dispatch: z
     .object({
@@ -153,6 +157,8 @@ export const sessionSnapshotSchema = z.object({
   desktop: sessionDesktopSnapshotSchema.optional(),
   /** 固化（docs/dev/solidify.md 6.2）：这次运行先跑的那一版脚本；固化试跑冻的是要试的那一版 */
   routine: routineSnapshotSchema.optional(),
+  /** 子 agent（docs/dev/sub-agents.md 5.1）：子运行才有：父运行编号、第几个、子目标、输入、要交回的字段、给它读的文件。子快照由 shared 的 deriveSubSnapshot 从父快照派生 */
+  sub: snapshotSubSchema.optional(),
 })
 export type SessionSnapshot = z.infer<typeof sessionSnapshotSchema>
 
@@ -459,6 +465,10 @@ export const builtinToolInputs = {
   "run.not_done": z.object({
     reason: z.string().min(1).max(2000).describe("为什么没做成：卡在哪、试过哪些办法、还差什么"),
   }),
+  // 子 agent（docs/dev/sub-agents.md 4.1）：拆、等、停。输入定义在 subagents.ts
+  "subagent.start": subagentStartInputSchema,
+  "subagent.wait": subagentWaitInputSchema,
+  "subagent.cancel": subagentCancelInputSchema,
   "plan.set": z.object({
     steps: z
       .array(z.string().min(1).max(300))

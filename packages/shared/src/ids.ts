@@ -16,6 +16,17 @@ export const taskNumber = (id: string) => Number(id.replace(/^T-/, ""))
 export const manualSessionId = (taskIdValue: string, k: number) => `R-${taskNumber(taskIdValue)}-${k}`
 export const cronSessionId = (taskIdValue: string, mmdd: string, k = 1) => `R-${taskNumber(taskIdValue)}-${mmdd}${k > 1 ? `-${k}` : ""}`
 
+/**
+ * 子运行（docs/dev/sub-agents.md 第 3 节）：<父运行编号>.<n>，例如 R-12-3.2、R-12-1028-2.1。n 在一次运行里从 1 往上数，补拆的接着数。
+ * 父运行编号里不会有点（手动、定时、固化试跑的编号都没有），所以最后一个点后面就是 n
+ */
+export const subSessionId = (parentSessionId: string, n: number) => `${parentSessionId}.${n}`
+/** 子运行编号 → 父运行编号和 n；不是子运行编号返回 null */
+export function parseSubSessionId(id: string): { parentSessionId: string; n: number } | null {
+  const match = /^(.+)\.([1-9][0-9]*)$/.exec(id)
+  return match ? { parentSessionId: match[1]!, n: Number(match[2]) } : null
+}
+
 /** 记忆：m-011（三位，不够补零）。序列 memory_no_seq */
 export const memoryId = (n: number) => `m-${String(n).padStart(3, "0")}`
 
