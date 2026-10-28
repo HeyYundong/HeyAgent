@@ -4,7 +4,10 @@
 # ---------- 构建：pnpm 装依赖，构建 apps/web ----------
 FROM docker.io/library/node:24-bookworm-slim AS build
 WORKDIR /repo
-RUN npm install -g pnpm@11.23.0 && pnpm --version
+RUN npm install -g --fetch-timeout=600000 --fetch-retries=6 pnpm@11.23.0 && pnpm --version
+
+# 可选的宿主机 pnpm store，同 deploy/api.Containerfile
+ARG PNPM_STORE=
 
 # 先只拷依赖清单，依赖没变时这一层可以复用。
 # web 的 tsc 会顺带检查 shared 和 server 的源码（用 @heyagent/source 条件直接引用，路由类型来自 server），所以它们的依赖也要装
@@ -13,7 +16,9 @@ COPY patches patches/
 COPY packages/shared/package.json packages/shared/
 COPY apps/server/package.json apps/server/
 COPY apps/web/package.json apps/web/
-RUN pnpm install --frozen-lockfile --filter "@heyagent/web..."
+RUN pnpm install --frozen-lockfile --fetch-timeout=600000 --fetch-retries=6 --network-concurrency=4 \
+      ${PNPM_STORE:+--store-dir "$PNPM_STORE" --prefer-offline --package-import-method copy} \
+      --filter "@heyagent/web..."
 
 COPY tsconfig.base.json ./
 COPY packages/shared packages/shared

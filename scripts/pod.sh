@@ -4,6 +4,9 @@
 #   reset                                    停掉 pod、删掉全部数据卷，回到空白环境（不会自动再起，接着 up）
 #   HEYAGENT_SEED_DEMO=1 scripts/pod.sh up   起来后灌演示数据（只给开发用，默认不灌）
 #   HEYAGENT_SKIP_BUILD=1 scripts/pod.sh up  不重新构建镜像（镜像已经有了时省时间）
+#   HEYAGENT_PNPM_STORE=/mnt/toshiba/.pnpm-store scripts/pod.sh up
+#                                            构建时用本机现成的 pnpm store（`pnpm store path` 去掉末尾的 /v11）：挂到构建容器的 /pnpm-store，
+#                                            本机有的包不再下载，缺的照旧从官方源下（网慢时用）；不设时和以前一样
 #   HEYAGENT_PUBLIC_URL                      控制台对外的地址，默认 http://localhost:8080（better-auth 的 baseURL）
 #   HEYAGENT_DESKTOP_STORAGE_ROOTS=/a,/b     开「系统开的桌面」：虚拟机存在这些目录（同路径挂进 api、worker），先 scripts/desktop-host.sh setup；
 #                                            HEYAGENT_HOST_PODMAN_SOCKET 换 Podman API 的 socket（默认 systemd 的 podman.socket），见 docs/ops.md 第 14 节
@@ -49,17 +52,24 @@ build() {
     podman image exists "$API_IMAGE" && podman image exists "$WEB_IMAGE" && podman image exists "$WORKER_IMAGE" && return 0
     echo "镜像不全，还是要构建" >&2
   fi
+  # 可选：本机的 pnpm store 挂进构建容器（Podman 3.4 的 buildah 不支持 RUN --mount=type=cache，所以用 podman build -v）
+  local store=()
+  if [ -n "${HEYAGENT_PNPM_STORE:-}" ]; then
+    [ -d "$HEYAGENT_PNPM_STORE" ] || { echo "HEYAGENT_PNPM_STORE 不是目录：$HEYAGENT_PNPM_STORE" >&2; exit 1; }
+    store=(-v "$HEYAGENT_PNPM_STORE:/pnpm-store" --build-arg PNPM_STORE=/pnpm-store)
+    echo "== 构建用本机的 pnpm store：$HEYAGENT_PNPM_STORE"
+  fi
   echo "== 构建 $API_IMAGE"
-  podman build -f "$ROOT/deploy/api.Containerfile" -t "$API_IMAGE" "$ROOT"
+  podman build "${store[@]}" -f "$ROOT/deploy/api.Containerfile" -t "$API_IMAGE" "$ROOT"
   echo "== 构建 $WEB_IMAGE"
-  podman build -f "$ROOT/deploy/web.Containerfile" -t "$WEB_IMAGE" "$ROOT"
+  podman build "${store[@]}" -f "$ROOT/deploy/web.Containerfile" -t "$WEB_IMAGE" "$ROOT"
   # worker 以浏览器基础镜像为底（M2 要用里面的 Chrome）；基础镜像下载 Chrome 等要很久，已经有了就不重建
   if ! podman image exists "$BROWSER_BASE_IMAGE"; then
     echo "== 构建 $BROWSER_BASE_IMAGE（第一次要下载 Chrome、Node、gost）"
     podman build -f "$ROOT/deploy/browser-base.Containerfile" -t "$BROWSER_BASE_IMAGE" "$ROOT/deploy"
   fi
   echo "== 构建 $WORKER_IMAGE"
-  podman build -f "$ROOT/deploy/worker.Containerfile" -t "$WORKER_IMAGE" "$ROOT"
+  podman build "${store[@]}" -f "$ROOT/deploy/worker.Containerfile" -t "$WORKER_IMAGE" "$ROOT"
 }
 
 random_secret() { head -c 32 /dev/urandom | base64 | tr -d '\n/+=' ; }
@@ -153,7 +163,7 @@ up() {
   ensure_volumes
   if pod_exists; then
     echo "== pod $POD 已经在了，先停掉重建（数据卷保留）"
-    "${PLAY[@]}" --down "$YAML" >/dev/null
+    stop_pod
   fi
   local network=()
   if desktop_enabled; then
@@ -175,11 +185,12 @@ up() {
   echo "整套已启动：http://localhost:$PORT${ip:+ ，内网 http://$ip:$PORT}"
 }
 
-# worker 等 api 健康后才起；看它的日志确认已经开始干活
+# worker 等 api 健康后才起；看它的日志确认已经开始干活。
+# 不用 grep -q：它匹配到就关管道，日志长时 podman logs 收到 SIGPIPE（141），在 pipefail 下整条管道算失败，永远判不成功
 wait_worker() {
   echo -n "等 worker 启动 "
   for _ in $(seq 1 60); do
-    if podman logs "$POD-worker" 2>&1 | grep -q "HeyAgent worker 已启动"; then
+    if podman logs "$POD-worker" 2>&1 | grep "HeyAgent worker 已启动" >/dev/null; then
       echo " 就绪"
       return 0
     fi
@@ -191,9 +202,17 @@ wait_worker() {
   exit 1
 }
 
+# 停 pod 并删掉（数据卷保留）。先 podman pod stop 给 60 秒：postgres 收到 SIGINT 后要写完关机检查点，
+# 开发机的盘慢时要十几秒，默认 10 秒一到就被强杀，下次启动要做崩溃恢复（2026-10-28 重建时遇到）。
+# Podman 3.4 的 play kube 不认 terminationGracePeriodSeconds，所以在脚本里先停；停好后 --down 只负责删除
+stop_pod() {
+  podman pod stop -t 60 "$POD" >/dev/null
+  "${PLAY[@]}" --down "$YAML" >/dev/null
+}
+
 down() {
   if pod_exists; then
-    "${PLAY[@]}" --down "$YAML" >/dev/null
+    stop_pod
     echo "已停止并删除 pod $POD（数据卷 ${VOLUMES[*]} 保留）"
   else
     echo "pod $POD 不存在"

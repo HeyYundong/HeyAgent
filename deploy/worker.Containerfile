@@ -12,20 +12,26 @@
 # ---------- 构建：和 API 镜像同一套步骤 ----------
 FROM docker.io/library/node:24-bookworm-slim AS build
 WORKDIR /repo
-RUN npm install -g pnpm@11.23.0 && pnpm --version
+RUN npm install -g --fetch-timeout=600000 --fetch-retries=6 pnpm@11.23.0 && pnpm --version
+
+# 可选的宿主机 pnpm store，同 deploy/api.Containerfile
+ARG PNPM_STORE=
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY patches patches/
 COPY packages/shared/package.json packages/shared/
 COPY apps/server/package.json apps/server/
-RUN pnpm install --frozen-lockfile --filter "@heyagent/server..."
+RUN pnpm install --frozen-lockfile --fetch-timeout=600000 --fetch-retries=6 --network-concurrency=4 \
+      ${PNPM_STORE:+--store-dir "$PNPM_STORE" --prefer-offline --package-import-method copy} \
+      --filter "@heyagent/server..."
 
 COPY tsconfig.base.json ./
 COPY packages/shared packages/shared
 COPY apps/server apps/server
 RUN pnpm --filter @heyagent/shared build \
  && pnpm --filter @heyagent/server build \
- && pnpm --filter @heyagent/server deploy --prod --legacy /out
+ && pnpm --filter @heyagent/server deploy --prod --legacy --fetch-timeout=600000 --fetch-retries=6 --network-concurrency=4 \
+      ${PNPM_STORE:+--store-dir "$PNPM_STORE" --prefer-offline --package-import-method copy} /out
 
 # ---------- 运行代码的沙箱的根文件系统（docs/dev/session-space.md 4.4）----------
 # 独立的 Debian：Python 3.12 + 常用包、Node 24（带 npm）、bash、coreutils、jq、curl、socat（把出网代理的 unix socket 转成 127.0.0.1:3128）。
