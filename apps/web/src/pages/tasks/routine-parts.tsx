@@ -2,7 +2,7 @@
 // 任务详情「固化流程」的「看脚本」弹窗、版本记录，和「等人处理」里的「审核固化流程」都用这里的组件，内容来自 routine.version。
 // 全部是 registry 组件的组合：Badge、Trace、CodeBlock（经 components/files 的 CodeView）、Table、Collapsible、Item；截图用已登记的 FileList。
 import * as React from "react"
-import { useQueries, useQuery } from "@tanstack/react-query"
+import { useQuery } from "@tanstack/react-query"
 import { diffLines } from "diff"
 import { BotIcon, ChevronDownIcon, ChevronRightIcon, CircleCheckIcon, CirclePauseIcon, CircleStopIcon, CircleXIcon, FlaskConicalIcon, GitCompareIcon, HourglassIcon, WorkflowIcon } from "lucide-react"
 import {
@@ -56,15 +56,6 @@ export function VersionStatusBadge({ status, current = false }: { status: Routin
 /** 运行办成后系统自动固化的那一版（docs/dev/solidify.md 17.1）；人点「固化成流程」的不加 */
 export function AutoBadge() {
   return <Badge variant="outline"><BotIcon data-icon="inline-start" />自动固化</Badge>
-}
-
-/**
- * 几版是不是自动固化的：routine.get 的版本列表不带 auto，逐版取 routine.version（和「看脚本」同一份缓存）。
- * 返回自动固化的版本 id；没取到的当不是
- */
-export function useAutoVersions(versionIds: string[]): Set<string> {
-  const results = useQueries({ queries: versionIds.map((id) => trpc.routine.version.queryOptions({ id })) })
-  return new Set(results.flatMap((result) => (result.data?.auto ? [result.data.id] : [])))
 }
 
 /** 「300 毫秒」「1.2 秒」「18 秒」「3.5 分钟」 */

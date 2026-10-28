@@ -25,7 +25,7 @@ import { trpc } from "@/lib/trpc"
 import { TextLink } from "@/pages/sessions/parts"
 
 import { money } from "./parts"
-import { AutoBadge, durationText, RoutineStatusBadge, RoutineVersionView, useAutoVersions, VersionStatusBadge } from "./routine-parts"
+import { AutoBadge, durationText, RoutineStatusBadge, RoutineVersionView, VersionStatusBadge } from "./routine-parts"
 
 type VersionRow = RoutineSummary["versions"][number]
 
@@ -61,7 +61,7 @@ function RoutineSection({ task, routine, canEdit }: { task: TaskDef; routine: Ro
   const [history, setHistory] = React.useState(false)
   const [pausing, setPausing] = React.useState(false)
   const active = routine.versions.find((each) => each.version === routine.activeVersion)
-  const activeAuto = useAutoVersions(active ? [active.id] : []).size > 0
+  const activeAuto = active?.auto ?? false
   const paused = routine.status === "paused"
   const setMode = useAction(trpc.routine.setMode.mutationOptions(), {
     success: (_data, vars) => (vars.mode === "first" ? "已打开：以后的运行先跑固化流程" : "已关掉：以后的运行都由 agent 做"),
@@ -203,7 +203,7 @@ function SettingsLine({ task }: { task: TaskDef }) {
 /** 正在写、试跑、待审核的那一版：待审核的链到那件「审核固化流程」 */
 function PendingVersion({ version, routineName }: { version: VersionRow; routineName: string }) {
   const item = useHumanItems().find((each) => each.kind === "routine" && each.detail.routine?.versionId === version.id)
-  const auto = useAutoVersions([version.id]).has(version.id)
+  const auto = version.auto
   const text = version.status === "review" ? "写好、试跑过了，等你审核" : version.status === "testing" ? "脚本写好了，正在试跑（走到提交前停）" : "固化员在读运行的过程、写脚本"
   return (
     <Item variant="muted" size="xs">
@@ -278,7 +278,6 @@ export function VersionDialog({ versionId, activeVersion, onClose }: { versionId
 /** 版本记录：每版一行（状态、来源运行、时间）；启用过、不是现在用的那一版能「回到这一版」（AlertDialog 确认） */
 function HistoryDialog({ routine, canEdit, onView, onClose }: { routine: RoutineSummary; canEdit: boolean; onView: (id: string) => void; onClose: () => void }) {
   const [restoring, setRestoring] = React.useState<VersionRow | null>(null)
-  const autoIds = useAutoVersions(routine.versions.map((version) => version.id))
   const restore = useAction(trpc.routine.restore.mutationOptions({ onSuccess: () => setRestoring(null) }), {
     success: (result) => `已回到第 ${result.activeVersion} 版，从试用期开始`,
     errorTitle: "没能回到这一版",
@@ -296,7 +295,7 @@ function HistoryDialog({ routine, canEdit, onView, onClose }: { routine: Routine
             return (
               <Item key={version.id} variant="outline" size="xs">
                 <ItemContent className="min-w-0">
-                  <ItemTitle className="flex-wrap">第 {version.version} 版 <VersionStatusBadge status={version.status} current={current} />{autoIds.has(version.id) && <AutoBadge />}</ItemTitle>
+                  <ItemTitle className="flex-wrap">第 {version.version} 版 <VersionStatusBadge status={version.status} current={current} />{version.auto && <AutoBadge />}</ItemTitle>
                   <ItemDescription>
                     {fmtDateTime(version.createdAt)}
                     {version.sourceSessionId && <> · 从 <TextLink to={href("sessions", { id: version.sourceSessionId })}>{version.sourceSessionId}</TextLink> 固化</>}

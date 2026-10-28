@@ -296,6 +296,8 @@ export const routineSummarySchema = z.object({
       status: routineVersionStatusSchema,
       name: z.string(),
       sourceSessionId: z.string().nullable(),
+      /** 运行办成后系统自动固化的（17.1） */
+      auto: z.boolean(),
       createdAt: isoTime,
     })
   ),
