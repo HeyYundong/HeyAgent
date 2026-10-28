@@ -200,7 +200,7 @@ describe("工具桥 + SDK（本机 node，假网关）", () => {
     expect(gateway.calls.map((each) => each.call.toolName)).toEqual(["code.run"])
     expect(gateway.calls[0]!.call.input).toMatchObject({ language: "python" })
     expect(state.logs).toHaveLength(1)
-    expect(state.logs[0]).toContain("固化脚本里不能用带工具的 code.run")
+    expect(state.logs?.[0]).toContain("固化脚本里不能用带工具的 code.run")
   })
 
   it("要人审批：停在这一步之前（不算调过）；接住 RoutineStop 再调也一律 stop，网关不再被调", async () => {

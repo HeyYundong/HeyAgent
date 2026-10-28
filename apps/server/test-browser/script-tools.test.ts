@@ -157,8 +157,10 @@ describe("agent 用 code.run（tools）在真 Chrome 上循环录表单", () => 
     expect(saved.map((each) => each.价格)).toEqual(ROWS.map((each) => String(each.价格)))
     expect(output).toContain("第 5 行 西瓜 录好了")
     expect(output).toContain("脚本调了 15 次工具：browser.fill_form 5 次、browser.click 5 次、browser.wait_any 5 次")
-    const scripted = events.filter((event) => event.kind === "tool" && event.trace?.scriptCallId === "call-entry")
+    // code.run 自己那条也带 scriptCallId（按 id 把步骤归到它下面），它没有 scriptStep
+    const scripted = events.filter((event) => event.kind === "tool" && event.trace?.scriptCallId === "call-entry" && event.toolId !== "code.run")
     expect(scripted.map((event) => event.trace?.scriptStep)).toEqual(Array.from({ length: 15 }, (_, index) => index + 1))
+    expect(events.find((event) => event.toolId === "code.run")?.trace).toEqual({ scriptCallId: "call-entry" })
     expect(scripted.slice(0, 3).map((event) => event.toolId)).toEqual(["browser.fill_form", "browser.click", "browser.wait_any"])
     // 脚本做的浏览器动作照样录下代码
     expect(scripted[1]!.trace?.code).toContain("getByRole('button', { name: '保存' }).click()")

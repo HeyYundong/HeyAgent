@@ -232,7 +232,14 @@ describe("固化从头到尾", () => {
       console.log(`[routine-e2e] 第 ${n} 次先跑脚本：${run.routine?.steps} 步，${run.routine?.ms} 毫秒`)
     }
     expect(agent.prompts).toHaveLength(agentCalls)
-    const summary = await query(ctx.app, "routine.get", wang, { taskId })
+    // 结果定了以后才记试用 / 正式（先通知负责人，再 afterRunSettled）：等最后一次也记上
+    const summary = await waitFor(
+      async () => {
+        const res = await query(ctx.app, "routine.get", wang, { taskId })
+        return res.data?.directStreak === ROUTINE_TRIAL_RUNS ? res : undefined
+      },
+      { timeout: 30_000, what: "试用满 3 次记上" }
+    )
     expect(summary.data).toMatchObject({ status: "active", activeVersion: 1, directStreak: ROUTINE_TRIAL_RUNS, fallbackStreak: 0 })
     expect(summary.data.recent).toMatchObject({ runs: ROUTINE_TRIAL_RUNS, direct: ROUTINE_TRIAL_RUNS, fellBack: 0 })
   })
