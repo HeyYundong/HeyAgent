@@ -1,6 +1,7 @@
 // 记忆页（v3）：左边按「适用于」的分类分组，右边一条记忆的详情（标题卡 + 分区卡）。
 // 只负责「看」和主管的「新建 / 编辑 / 归档 / 删除」；agent 提议的记忆在「会话」的「等人处理」里审核（审核人也可以在这里直接批）。
 // 被任务选用的记忆不能删（后端拦，页面先说明），归档前提醒哪些任务会读不到。
+// 生效的记忆详情里有「自动挑选」一行：向量算没算好、来自网页的不会被挑、没设 embedding 模型（docs/dev/memory-retrieval.md 6.3 节）。
 import * as React from "react"
 import { BrainIcon, CheckIcon, EllipsisIcon, InboxIcon, ListChecksIcon, PencilIcon, PlusIcon, XIcon } from "lucide-react"
 
@@ -12,11 +13,12 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "@/components/ui/item"
+import { Spinner } from "@/components/ui/spinner"
 import { can, evidenceLabel, findById, fmtDate, fmtDateTime, memoryCategory, memoryStatusLabel, tasksUsing } from "@heyagent/shared"
 import type { MemoryRef, TaskDef } from "@heyagent/shared"
 
 import { MarkdownView } from "@/components/markdown"
-import { useMemoriesQuery, useStaffName, useStaffQuery, useTasksQuery } from "@/lib/data"
+import { useMemoriesQuery, useModelsQuery, useStaffName, useStaffQuery, useTasksQuery } from "@/lib/data"
 import { useAction } from "@/lib/mutations"
 import { href, setParams, useRoute } from "@/lib/router"
 import { useMe } from "@/lib/session"
@@ -72,7 +74,7 @@ export default function MemoryPage() {
   const header = (
     <SimpleHeader
       title="记忆"
-      description="agent 记住的经验和偏好。建任务时选用哪几条，运行开始时 agent 就读到哪几条。"
+      description="agent 记住的经验和偏好。建任务时选用哪几条，运行开始时 agent 就读到哪几条；任务开着「自动挑选记忆」时，还会按内容挑相关的。"
       learnId="memory"
       action={
         isAdmin && visible.length > 0 && (
@@ -254,6 +256,11 @@ function MemoryDetail({
           <TaskLinks tasks={usedBy} empty={pending ? "审核通过后才能被任务选用。" : "还没有任务选用这条记忆。"} />
         </DetailSection>
       </div>
+      {memory.status === "active" && (
+        <DetailSection title="自动挑选" description="开着「自动挑选记忆」的任务，运行开始时会按内容挑相关的记忆。">
+          <AutoPickLine memory={memory} />
+        </DetailSection>
+      )}
       <AlertDialog open={confirming !== null} onOpenChange={(open) => !open && setConfirming(null)}>
         <AlertDialogContent>
           {confirming === "archive" && (
@@ -302,6 +309,25 @@ function MemoryDetail({
         </AlertDialogContent>
       </AlertDialog>
     </DetailPanel>
+  )
+}
+
+/** 「自动挑选」区块的一行字：来自网页的、没设 embedding 模型的不会被挑；其余看向量算没算好 */
+function AutoPickLine({ memory }: { memory: MemoryRef }) {
+  const modelsQuery = useModelsQuery()
+  if (memory.webUnverified) return <p className="text-muted-foreground">来自网页、没核实，不会被自动挑，要用请在任务里手选。</p>
+  // 模型设置没取到前先不下结论
+  if (!modelsQuery.isSuccess) return null
+  if (!modelsQuery.data.defaults.embed) return <p className="text-muted-foreground">没设 embedding 模型，不会被自动挑。</p>
+  const embed = memory.embed
+  if (embed?.state === "ready") return <p>能被自动挑（向量算好了）。</p>
+  if (embed?.state === "failed") return <p className="text-destructive">向量算失败{embed.error ? `：${embed.error}` : ""}。10 分钟后自动重试。</p>
+  // pending；后端还没带 embed 时也按还在算
+  return (
+    <p className="flex items-center gap-2 text-muted-foreground">
+      <Spinner />
+      向量还在算
+    </p>
   )
 }
 

@@ -1,4 +1,4 @@
-// 某次运行的 session 详情：标题卡 + 没处理的「要人办的事」（每件一张处理面板，sessions/human-item.tsx，就在这里批 / 拒 / 登录）+ 结果（结束后，run-outcome.tsx：原因、谁定的、复核报告、改结果）/ 检查点 / 验收 / 总结和记忆（结束后）/ agent 的步骤 / 空间文件 / 过程。
+// 某次运行的 session 详情：标题卡 + 没处理的「要人办的事」（每件一张处理面板，sessions/human-item.tsx，就在这里批 / 拒 / 登录）+ 结果（结束后，run-outcome.tsx：原因、谁定的、复核报告、改结果）/ 检查点 / 记忆（run-memory.tsx：手选的、自动挑的、挑选情况）/ 验收 / 总结和记忆（结束后）/ agent 的步骤 / 空间文件 / 过程。
 // 右上角「空间文件」（run-space.tsx）弹窗按来源、名字筛这次运行的全部文件。
 // M3：过程里标出规则命中、agent 写下步骤（plan.set）、上下文压缩；验收逐条显示结论和理由；agent 的步骤可以「存为任务步骤」（tasks.saveStepsFromSession）。
 // 派活：meta 前面写怎么开始的（派活触发写清哪张单、谁派的）；被派来的加「派来的活」，派过活的加「派出去的活」（docs/dev/dispatch.md 9.4 节）。
@@ -43,6 +43,7 @@ import { RunBrowserButton } from "./run-browser"
 import { RunDesktopButton } from "./run-desktop"
 import { RunSpaceButton } from "./run-space"
 import { RunDigestSection } from "./run-digest"
+import { RunMemorySection } from "./run-memory"
 import { RunOutcomeSection } from "./run-outcome"
 import { canSolidify, isRoutineTest, RoutineRunLine, SolidifyDialog } from "./run-routine"
 import { CODE_RUN_TOOL_ID, groupScriptEvents, isErrorStep, judgeOf, parseToolsSummary, TOOLS_MARK } from "./run-script"
@@ -120,6 +121,7 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionSummary }
       <DetailSection title={`检查点 · ${checkpointSummary(run.checkpoints)}`}>
         <CheckpointList run={run} focused={detail.data && focusedCheckpoint(detail.data)} />
       </DetailSection>
+      <RunMemorySection use={detail.data?.memoryUse} status={run.status} />
       {run.verification && <VerificationSection run={run} verification={run.verification} />}
       {ended && !test && <RunDigestSection task={task} run={run} canEdit={canManage} />}
       {run.exploredSteps && run.exploredSteps.length > 0 && (
