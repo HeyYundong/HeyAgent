@@ -244,6 +244,35 @@ async function measure(sessionId: string, status: string) {
     .from(t.routineCalls)
     .where(eq(t.routineCalls.sessionId, sessionId))
     .orderBy(asc(t.routineCalls.id))
+  // 最后一次 agent 调库流程之后（18.6）：又调了哪些工具、几次模型调用、多用几秒、模型说了什么（看它信不信交回的结果）
+  const libraryTools = tools.filter((event) =>
+    event.toolId?.startsWith("routine.")
+  )
+  const lastLibrary = libraryTools.at(-1)
+  const afterLibrary = lastLibrary
+    ? (() => {
+        const rest = events.filter((event) => event.seq > lastLibrary.seq)
+        const restTools = rest.filter((event) => event.kind === "tool")
+        const afterTool: Record<string, number> = {}
+        for (const event of restTools)
+          afterTool[event.toolId ?? "?"] =
+            (afterTool[event.toolId ?? "?"] ?? 0) + 1
+        return {
+          sec:
+            Math.round((end - lastLibrary.at.getTime()) / 100) / 10,
+          modelCalls: rest.filter((event) => event.kind === "think").length,
+          byTool: afterTool,
+          // 又打开、点进的页面（navigate、click、extract）
+          pages:
+            (afterTool["browser.navigate"] ?? 0) +
+            (afterTool["browser.click"] ?? 0),
+          extracts: afterTool["browser.extract"] ?? 0,
+          said: rest
+            .filter((event) => event.kind === "think" && event.detail)
+            .map((event) => String(event.detail).slice(0, 400)),
+        }
+      })()
+    : null
   return {
     sessionId,
     status,
@@ -263,6 +292,9 @@ async function measure(sessionId: string, status: string) {
     toolCalls: tools.length,
     costUsd: row.costUsd,
     byTool,
+    afterLibrary,
+    // 第一次 agent 调库流程的完整结果（看「做过的步骤」「直接用」、最后一行 JSON）
+    firstLibraryOutput: libraryTools[0]?.output ?? null,
     library: {
       // agent 调的：工具名、参数、结果第一行、用时
       toolCalls: tools
@@ -534,6 +566,12 @@ async function run() {
   })
   if (!published.data) return
   const toolId = `routine.${SLUG}`
+  // 选用它的任务的 agent 看到的工具说明（18.6：不带来源任务的话、输入交回有说明）
+  const [toolRow] = await ctx.db
+    .select({ summary: t.tools.summary, description: t.tools.description })
+    .from(t.tools)
+    .where(eq(t.tools.id, toolId))
+  write({ label: LABEL, step: "tool-row", toolId, ...toolRow })
 
   // ---------- 3. 对照：不选库流程 ----------
   const plainTask = await browserTask("基准 B（不选库流程）", wholeGoal(), [
