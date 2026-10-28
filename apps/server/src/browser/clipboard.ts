@@ -559,7 +559,10 @@ export class ClipboardTools {
         data: { fileId: row.id, width, height },
       }
     } finally {
-      await found?.locator.evaluate(`(el) => el.removeAttribute(${JSON.stringify(PICK_ATTR)})`).catch(() => {})
+      // 去掉记号。要传函数，不能传字符串：Playwright 把字符串当表达式求值，"(el) => …" 不会被调用；属性名作参数传进页面
+      await found?.locator
+        .evaluate((node, attr) => (node as unknown as { removeAttribute(name: string): void }).removeAttribute(attr), PICK_ATTR, { timeout: 2000 })
+        .catch(() => {})
     }
   }
 

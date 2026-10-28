@@ -1107,13 +1107,25 @@ export class BrowserTools {
         await target.click({ timeout: 2000 })
         return true
       } catch {
-        // 点不了（例如又被别的挡着）：直接在元素上触发 click
+        // 点不了（例如又被别的挡着）：直接在元素上触发 click。
+        // 要传函数，不能传字符串：Playwright 把字符串当表达式求值，"(el) => …" 只求出一个函数值、不会调用它（回来是 undefined）
         return target
-          .evaluate("(el) => { el.click(); return true }", undefined, { timeout: 1000 })
-          .then(Boolean)
+          .evaluate(
+            (node) => {
+              const el = node as unknown as { click(): void }
+              el.click()
+              return true
+            },
+            undefined,
+            { timeout: 1000 }
+          )
+          .then((value) => value === true)
           .catch(() => false)
       } finally {
-        await target.evaluate(`(el) => el.removeAttribute(${JSON.stringify(DISMISS_ATTR)})`, undefined, { timeout: 1000 }).catch(() => {})
+        // 去掉记号（同上要传函数；属性名作参数传进页面，函数在页面里跑，不能引用外面的变量）
+        await target
+          .evaluate((node, attr) => (node as unknown as { removeAttribute(name: string): void }).removeAttribute(attr), DISMISS_ATTR, { timeout: 1000 })
+          .catch(() => {})
       }
     })
     if (!clicked) return { result: { ...result, output: `${blockedBy(brief.overlays)}\n${result.output}` } }

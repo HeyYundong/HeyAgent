@@ -2,7 +2,8 @@
 // - browser.batch：连着做几步成功（每步一条过程、最后附页面概况和快照）；中途出错停下、报后面几步没做；
 //   规则拦下、要人审批（停在那一步之前，不发起审批，单独调时照常审批）；验证码页挂起，批的结果带上 suspend；
 // - 动作做完附页面概况：标题网址、弹窗和按钮；文件选择框的中文提示；
-// - 被弹窗挡住：「我知道了」自动点掉再做一次、记一条过程；「接受」不点，出错文字写清楚被哪个弹窗挡着；
+// - 被弹窗挡住：「我知道了」自动点掉再做一次、记一条过程；关闭按钮被透明层盖住时靠备用点击关掉；点完记号去掉；
+//   「接受」不点，出错文字写清楚被哪个弹窗挡着；
 // - 分段用时：打出来看打开网页、点击的时间花在哪。
 import { createServer, type Server } from "node:http"
 import type { AddressInfo } from "node:net"
@@ -11,6 +12,7 @@ import { and, eq } from "drizzle-orm"
 import { describeCompiledRule, type CompiledRule } from "@heyagent/shared"
 import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vitest"
 
+import { DISMISS_ATTR } from "../src/browser/page-brief.js"
 import { takeBrowserTimings } from "../src/browser/timing.js"
 import * as t from "../src/db/schema.js"
 import { call, createTask, eventsOf, Script, setupEngine, step, text, useScript, waitFor, waitStatus, type EngineTestContext } from "../test/engine-helpers.js"
@@ -39,7 +41,15 @@ const PAGES: Record<string, string> = {
     "公告页",
     `<button id="behind" style="margin:40px" onclick="${ping("/behind")}; document.title = '点到了'">保存</button>
 <div id="mask" style="position:fixed;inset:0;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;z-index:10">
-<div role="dialog" aria-label="系统公告" style="background:#fff;padding:24px"><h2>系统公告</h2><p>周六晚上系统维护。</p><button onclick="document.getElementById('mask').remove()">我知道了</button></div></div>`
+<div role="dialog" aria-label="系统公告" style="background:#fff;padding:24px"><h2>系统公告</h2><p>周六晚上系统维护。</p><button onclick="document.getElementById('mask').style.display = 'none'">我知道了</button></div></div>`
+  ),
+  // 关闭按钮被弹窗里一层透明的 div 盖住：Playwright 的点击被拦，要靠备用点击（直接在元素上触发 click）关掉；
+  // 关掉只是藏起来（按钮还在页面上），看得出记号有没有去掉
+  "/notice-covered": html(
+    "升级页",
+    `<button id="behind2" style="margin:40px" onclick="${ping("/behind2")}; document.title = '点到了'">保存</button>
+<div id="mask2" style="position:fixed;inset:0;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;z-index:10">
+<div role="dialog" aria-label="升级提示" style="position:relative;background:#fff;padding:24px"><h2>升级提示</h2><p>新版本已上线。</p><button id="close2" onclick="document.getElementById('mask2').style.display = 'none'">知道了</button><div style="position:absolute;inset:0"></div></div></div>`
   ),
   // Cookie 提示条：盖住下半屏，只有「接受」（有含义，不能替人点）
   "/cookie": html(
@@ -231,12 +241,23 @@ describe("browser.batch", () => {
 
 describe("页面概况、弹窗", () => {
   it("打开有公告弹窗的页面：概况里写弹窗和按钮；点被挡住的按钮：自动点「我知道了」、再做一次，记一条过程", async () => {
+    let sessionId = ""
+    let marks = -1
     const script = useScript(
       "test/speed-notice",
-      new Script([step([call("browser.navigate", { url: url("/notice") })]), step([call("browser.click", { element: "保存", target: "#behind" })]), step([text("做完了")])])
+      new Script([
+        step([call("browser.navigate", { url: url("/notice") })]),
+        step([call("browser.click", { element: "保存", target: "#behind" })]),
+        async () => {
+          // 点完关闭按钮以后记号要去掉（Chrome 运行结束就关了，要在运行中读）
+          marks = await ctx.worker.browser!.forSession(sessionId)!.currentPage()!.locator(`[${DISMISS_ATTR}]`).count()
+          return step([text("做完了")])
+        },
+      ])
     )
-    const sessionId = await runNow(await browserTask("test/speed-notice"))
+    sessionId = await runNow(await browserTask("test/speed-notice"))
     await waitStatus(ctx.db, sessionId, "done", 90_000)
+    expect(marks).toBe(0)
     expect(outputs(script, 1)).toContain("页面上有弹窗「系统公告」，按钮：我知道了")
     const clicked = outputs(script, 2)
     expect(clicked).toContain("系统点了「我知道了」关掉它，再做了一次")
@@ -246,6 +267,36 @@ describe("页面概况、弹窗", () => {
     const events = await eventsOf(ctx.db, sessionId)
     expect(events.some((event) => event.kind === "plan" && event.title === "自动关掉了弹窗「系统公告」（点了「我知道了」）")).toBe(true)
     expect(events.find((event) => event.toolId === "browser.click")?.title).toBe("浏览器：click")
+  })
+
+  it("关闭按钮被透明层盖住、Playwright 点不到：备用点击直接在元素上触发 click 关掉弹窗，再做一次；记号去掉", async () => {
+    let sessionId = ""
+    let state = { marks: -1, mask: "" }
+    const script = useScript(
+      "test/speed-covered",
+      new Script([
+        step([call("browser.navigate", { url: url("/notice-covered") })]),
+        step([call("browser.click", { element: "保存", target: "#behind2" })]),
+        async () => {
+          const page = ctx.worker.browser!.forSession(sessionId)!.currentPage()!
+          state = {
+            marks: await page.locator(`[${DISMISS_ATTR}]`).count(),
+            mask: (await page.evaluate("getComputedStyle(document.getElementById('mask2')).display")) as string,
+          }
+          return step([text("做完了")])
+        },
+      ])
+    )
+    sessionId = await runNow(await browserTask("test/speed-covered"))
+    await waitStatus(ctx.db, sessionId, "done", 90_000)
+    expect(outputs(script, 1)).toContain("页面上有弹窗「升级提示」，按钮：知道了")
+    const clicked = outputs(script, 2)
+    expect(clicked).toContain("系统点了「知道了」关掉它，再做了一次")
+    expect(clicked).toContain("现在的页面：「点到了」")
+    expect(hits).toContain("/behind2")
+    expect(state).toEqual({ marks: 0, mask: "none" })
+    const events = await eventsOf(ctx.db, sessionId)
+    expect(events.some((event) => event.kind === "plan" && event.title === "自动关掉了弹窗「升级提示」（点了「知道了」）")).toBe(true)
   })
 
   it("挡着的弹窗只有「接受」：不替人点，出错文字写清楚被哪个弹窗挡着", async () => {

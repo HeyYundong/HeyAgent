@@ -1,6 +1,6 @@
 // 真浏览器 + 假模型：剪贴板工具（docs/dev/online-sheets.md）。
 // - 复制图片（ref 方式）：<img>、要登录 cookie 才给的图（证明原图走的是 Chrome 自己的网络栈）、背景图、canvas、blob: 图；
-//   原图 404 时退回元素截图；贴进 contenteditable，网页收到的 paste 事件里有 image/png，尺寸等于原图；
+//   原图 404 时退回元素截图，复制完打的记号都去掉；贴进 contenteditable，网页收到的 paste 事件里有 image/png，尺寸等于原图；
 // - 编排器自己的 Playwright 连接认不出 MCP 快照的 aria-ref（所以 ref 走 MCP 的 browser_evaluate 打记号）；
 // - 表格粘贴进 textarea 是正确的 TSV；选中表格文字 → clipboard_read（copy: true）读回行列；
 // - 原图走 Chrome 自己的网络栈：Chrome 配了代理时，取原图的请求也经代理（假域名只有代理解析得了）；
@@ -12,6 +12,7 @@ import { and, eq } from "drizzle-orm"
 import sharp from "sharp"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
+import { PICK_ATTR } from "../src/browser/clipboard.js"
 import type { BrowserManager } from "../src/browser/manager.js"
 import { encodeTsv } from "../src/browser/tsv.js"
 import * as t from "../src/db/schema.js"
@@ -139,6 +140,7 @@ describe("剪贴板工具", () => {
     let ariaRefCount = -1
     let pastedLog = ""
     let textareaValue = ""
+    let pickMarks = -1
     const snapshotTurn = step([call("browser.snapshot", {})])
     const script = useScript(
       "test/clipboard",
@@ -171,6 +173,8 @@ describe("剪贴板工具", () => {
         step([call("browser.clipboard_paste", { table: [["名称", "说明"], ["苹果", '红的\n"脆"'], ["含\t制表符", ""]] })]),
         async () => {
           textareaValue = await page().inputValue("#ta")
+          // 复制过 6 张图：每次打的记号都要去掉
+          pickMarks = await page().locator(`[${PICK_ATTR}]`).count()
           // 人（测试）在页面上选中表格文字
           await page().evaluate(`(() => { const range = document.createRange(); range.selectNodeContents(document.getElementById('tbl')); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range) })()`)
           return step([call("browser.clipboard_read", { copy: true })])
@@ -184,6 +188,7 @@ describe("剪贴板工具", () => {
     const pasted = JSON.parse(pastedLog) as { types: string[]; files: { type: string; width: number; height: number }[] }
     expect(pasted.types).toContain("Files")
     expect(pasted.files).toEqual([{ type: "image/png", width: 64, height: 40 }])
+    expect(pickMarks).toBe(0)
     expect(textareaValue).toBe(encodeTsv([["名称", "说明"], ["苹果", '红的\n"脆"'], ["含\t制表符", ""]]))
 
     expect(ariaRefCount).toBe(0)

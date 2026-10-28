@@ -52,6 +52,7 @@
 - A：`browser.batch` 定义在 `browser/tools.ts`，在 `engine/gateway.ts` 的 `callBatch` 展开。批本身不过规则（每一步都过了，免得「浏览器」整组的规则对批再审一次），只查参数、落一条总的过程记录；每一步之前看一眼运行是不是被取消了。要审批的一步：网关不发起审批，过程里记「批里的第 n 步 … 要人审批，没做」。最后的快照直接调 MCP，不单独记过程。
 - B：`browser/page-brief.ts`。大的 `position: fixed` 元素要真的盖着别的内容（它下面还有不在它里面的元素）才算遮罩：整个应用包在一个全屏 fixed 容器里的网页（在线文档常这样）不算弹窗，也就不会被 C 误点。批里中间的步骤不读概况，批做完读一次。
 - C：只对点元素的动作（click、hover、type、fill_form、select_option、check、uncheck、drag、press_sequentially）。关闭类按钮也认文字正好是「×」这类、带点击监听的 span / div。Playwright 出错日志里的终端颜色码顺手去掉了。
+- C 的点法：`page-brief.ts` 给认出的关闭按钮打 `data-heyagent-dismiss` 记号，编排器按记号用 Playwright 点（2 秒）；点不了（例如按钮被透明层盖住）再直接在元素上触发 `el.click()`；不管点没点成，最后都把记号去掉。这两步用 `locator.evaluate` 传**函数**（属性名作参数传进去）：传字符串时 Playwright 把它当表达式求值，`"(el) => …"` 只求出一个函数值、不会被调用。2026-10-28 以前就是传的字符串，备用点击从没生效过（被盖住的关闭按钮关不掉，报「点不到」），记号也一直留在页面上；已改，浏览器测试 `browser-speed.test.ts` 有「关闭按钮被透明层盖住」一条。
 - D：分段用时记在 `browser/timing.ts`（`HEYAGENT_BROWSER_TIMING=1` 时打到日志），`test-browser/browser-speed.test.ts` 里打出来。本地测试站点上量到的（页面上一张 1.5 秒才加载完的图；点击引起一个 1 秒的请求）：
 
   | 动作 | 原来 | 现在 | 时间花在哪 |

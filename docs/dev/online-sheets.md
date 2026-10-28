@@ -37,6 +37,7 @@
 - **ref 的解析要验证**：ref 是 Playwright MCP 那条连接的快照生成的，我们自己的 Playwright 连接不一定认 `aria-ref=`。
   稳妥做法：网关内部通过 MCP 调 `browser_evaluate`（`{ element, ref, function }`，内部调用，不受「允许执行脚本」开关限制，也不给 agent）
   拿到图片地址、尺寸，并给元素打一个一次性的 `data-heyagent-pick="<随机串>"` 属性，我们这边再按这个属性定位（截图兜底用），用完删掉。
+  （删记号用 `locator.evaluate` 传函数、属性名作参数：传字符串 `"(el) => el.removeAttribute(…)"` 时 Playwright 当表达式求值、不会调用，2026-10-28 以前记号其实一直没删掉，已改。）
   先试 `page.locator("aria-ref=…")` 行不行，行就更简单；两种都要在浏览器测试里覆盖。
 - 取原图：**必须走 Chrome 自己的网络栈**（代理、登录态、白名单都在 Chrome 里；Playwright 的 `context.request` 是 Node 发的请求，会绕过 gost 代理、暴露服务器真实 IP，禁止用）。
   建议 CDP `Network.loadNetworkResource`（`frameId` 用当前页主 frame，`options: { disableCache: false, includeCredentials: true }`，返回的 stream 用 `IO.read` 读完 `IO.close`）。
