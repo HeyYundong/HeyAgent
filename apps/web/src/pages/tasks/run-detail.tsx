@@ -45,7 +45,7 @@ import { RunSpaceButton } from "./run-space"
 import { RunDigestSection } from "./run-digest"
 import { RunOutcomeSection } from "./run-outcome"
 import { canSolidify, isRoutineTest, RoutineRunLine, SolidifyDialog } from "./run-routine"
-import { CODE_RUN_TOOL_ID, groupScriptEvents, isErrorStep, judgeOf, parseToolsSummary, TOOLS_MARK } from "./run-script"
+import { CODE_RUN_TOOL_ID, fetchCallOf, groupScriptEvents, isErrorStep, judgeOf, parseToolsSummary, TOOLS_MARK } from "./run-script"
 
 const EVENT_ICON: Record<RunEventKind, LucideIcon> = { plan: ListTreeIcon, think: BrainIcon, tool: WrenchIcon, checkpoint: FlagIcon, rule: ShieldIcon, wait: PauseIcon, resume: PlayIcon, human: UserIcon, verify: ScanSearchIcon, done: CircleCheckIcon, error: TriangleAlertIcon }
 
@@ -252,13 +252,23 @@ function EventRow({ event, run, running }: { event: RunEvent; run: SessionSummar
   const tag = eventTag(event)
   const RowIcon = tag?.icon ?? Icon
   const scriptStep = event.trace?.scriptStep
+  // 直接调网站接口：方法、路径和参数（悬停看完整网址）、状态码（2xx outline，4xx、5xx destructive）；出错的（没拿到返回）照常标出
+  const fetchCall = fetchCallOf(event)
+  const fetchFailed = !!fetchCall && isErrorStep(event)
   const line = (
-    <TraceLine status={status}>
+    <TraceLine status={status ?? (fetchFailed ? "error" : undefined)}>
       <TraceIcon><RowIcon /></TraceIcon>
       {routineBadge}
       {scriptStep && <Badge variant="outline"><CodeIcon data-icon="inline-start" />脚本</Badge>}
       {tag && <Badge variant={tag.variant}>{tag.label}</Badge>}
-      <TraceTitle>{scriptStep ? `第 ${scriptStep} 步 · ${event.title}` : event.title}</TraceTitle>
+      {fetchCall ? (
+        <>
+          <Badge variant="outline">{fetchCall.method}</Badge>
+          <TraceTitle className="font-mono" title={fetchCall.url}>{scriptStep ? `第 ${scriptStep} 步 · ${fetchCall.path}` : fetchCall.path}</TraceTitle>
+          {fetchCall.status !== undefined && <Badge variant={fetchCall.status >= 400 ? "destructive" : "outline"}>{fetchCall.status}</Badge>}
+          {fetchFailed && <Badge variant="destructive">出错</Badge>}
+        </>
+      ) : <TraceTitle>{scriptStep ? `第 ${scriptStep} 步 · ${event.title}` : event.title}</TraceTitle>}
       <TraceDescription>{at}</TraceDescription>
       {meta && <TraceDescription className="hidden sm:inline">· {meta}</TraceDescription>}
     </TraceLine>

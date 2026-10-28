@@ -4,17 +4,25 @@
 //   第二期（17.2、17.3）：1 次脚本停在登录页等人处理（suspended，运行在等人）、1 次等人处理后接着跑完（resumes / replayed）、1 次脚本跑完验收反问 agent 接着做（agentAfter）；
 //   第二期第二批（18.1、18.2）：1 次 agent 自己用 code.run（tools）写循环脚本（两段脚本：一段逐个打开商品页读详情、有一步出错；一段停在要人审批的那步），
 //   1 次脚本直接办成、中间有两次判断（ha.judge）；
+//   第三期第一批（19.8）：任务打开「允许直接调网站接口」；1 次 agent 用 browser.fetch 直接调接口（GET 200、POST 403、一次出错），
+//   带一份 network/requests.jsonl（19 个请求 + 最后一行 end）；
+// - 待审核的第 5 版带 2 条 HTTP 工具建议，正在用的第 3 版带 1 条；
 // - 待审核的第 5 版是运行办成后系统自动固化的（auto，17.1）；
 // - 一件「审核固化流程」（kind = routine）给任务负责人。
 // 运行只插页面要的几列（没有快照和消息，不能「继续」）。重复跑会先删掉上一次插的（按 note 标记和这个任务的固化流程），再重新插。
 import sharp from "sharp"
 import {
+  BROWSER_TOOL_ID,
   humanItemId,
   manualSessionId,
   routineId as makeRoutineId,
   routineTestSessionId,
   routineVersionId,
+  NETWORK_LOG_NAME,
+  NETWORK_LOG_PATH,
   type EventTrace,
+  type HttpToolSuggestion,
+  type NetworkLogLine,
   type RoutineTestReport,
   type SessionRoutineState,
 } from "@heyagent/shared"
@@ -22,6 +30,7 @@ import { and, eq, inArray, like, sql } from "drizzle-orm"
 
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
+import { syncBuiltinTools } from "../engine/tools/builtin-defs.js"
 import { saveFile } from "../files/service.js"
 
 /** 用种子数据里的这个任务（每天打开榜单、记录新品、写日报：浏览器任务，适合演示固化） */
@@ -37,6 +46,87 @@ const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000)
 const DAY = 24 * 60
 
 const RANK_URL = "https://shop.example.com/rank/new?cat=home"
+
+/** 网站的源（演示用，example.com） */
+const SHOP_ORIGIN = new URL(RANK_URL).origin
+/** browser.fetch 在过程里的名字（工具名，19.4） */
+const FETCH_TOOL_NAME = "浏览器：调网站接口"
+
+/** 榜单接口返回的几个商品（从第 from 名起 count 个） */
+const rankItems = (from: number, count: number) =>
+  Array.from({ length: count }, (_, index) => ({ id: 10000 + from + index, name: `新品 ${from + index}`, price: Number((9.9 + (from + index) * 1.3).toFixed(2)), days: 1 + ((from + index) % 6) }))
+
+const RANK_SHAPE = "{ code: number, data: { list: [{ id: number, name: string, price: number, days: number }], total: number } }"
+
+/**
+ * 网页自己调的接口记录（network/requests.jsonl，格式见 packages/shared/src/site-api.ts）：
+ * 榜单分页、用户信息、收藏（POST，带 csrf；有一次 403）、统计上报连不上（status 0）、用 token 认证的开放接口（HTTP 工具建议的依据），
+ * 同一个轮询接口记满 3 次，最后一行 end。started = 运行开始的毫秒时间
+ */
+function networkLog(started: number): string {
+  const at = (second: number) => new Date(started + second * 1000).toISOString()
+  const rank = (page: number) => `${SHOP_ORIGIN}/api/rank/new?cat=home&page=${page}&size=20`
+  const lines: NetworkLogLine[] = []
+  let seq = 0
+  const add = (second: number, line: Omit<Extract<NetworkLogLine, { seq: number }>, "seq" | "at" | "type" | "page"> & { type?: "xhr" | "fetch" }) =>
+    lines.push({ seq: ++seq, at: at(second), type: "fetch", page: RANK_URL, ...line })
+  const cookie = { cookie: true, headers: [] }
+  const rankBody = (page: number) => JSON.stringify({ code: 0, data: { list: rankItems((page - 1) * 20 + 1, 3), total: 60 } }).slice(0, -3) + "…"
+  add(9, { method: "GET", url: rank(1), headers: ["accept", "x-requested-with"], auth: cookie, status: 200, responseType: "application/json", bytes: 18_342, shape: RANK_SHAPE, responseBody: rankBody(1), ms: 184 })
+  add(9, { type: "xhr", method: "GET", url: `${SHOP_ORIGIN}/api/user/profile`, headers: ["accept"], auth: cookie, status: 200, responseType: "application/json", bytes: 412, shape: "{ code: number, data: { id: number, nickname: string, token: string, level: number } }", responseBody: '{"code":0,"data":{"id":3021,"nickname":"采购小王","token":"••••","level":2}}', ms: 66 })
+  add(10, { method: "GET", url: `${SHOP_ORIGIN}/api/rank/tabs?cat=home`, headers: ["accept"], auth: cookie, status: 200, responseType: "application/json", bytes: 220, shape: "{ code: number, data: [{ key: string, label: string }] }", responseBody: '{"code":0,"data":[{"key":"hot","label":"热销榜"},{"key":"new","label":"新上架"}]}', ms: 48 })
+  add(10, { method: "POST", url: `${SHOP_ORIGIN}/api/track`, headers: ["content-type"], auth: cookie, requestType: "application/json", requestBody: '{"event":"view","page":"rank_new"}', status: 0, error: "net::ERR_BLOCKED_BY_CLIENT" })
+  for (let page = 2; page <= 3; page++)
+    add(20 + page * 3, { method: "GET", url: rank(page), headers: ["accept", "x-requested-with"], auth: cookie, status: 200, responseType: "application/json", bytes: 18_100 + page * 37, shape: RANK_SHAPE, responseBody: rankBody(page), ms: 150 + page * 11 })
+  const csrf = { header: "x-csrf-token", from: "meta" as const, name: "csrf-token" }
+  add(30, { method: "POST", url: `${SHOP_ORIGIN}/api/favorites`, headers: ["content-type", "x-csrf-token"], auth: cookie, csrf, requestType: "application/json", requestBody: '{"itemId":10003}', status: 200, responseType: "application/json", bytes: 38, shape: "{ code: number, data: { favorited: boolean } }", responseBody: '{"code":0,"data":{"favorited":true}}', ms: 91 })
+  add(32, { method: "POST", url: `${SHOP_ORIGIN}/api/favorites`, headers: ["content-type", "x-csrf-token"], auth: cookie, csrf, requestType: "application/json", requestBody: '{"itemId":10021}', status: 403, responseType: "application/json", bytes: 62, shape: "{ code: number, message: string }", responseBody: '{"code":40301,"message":"请先登录"}', ms: 88 })
+  add(36, { method: "GET", url: `${SHOP_ORIGIN}/api/items/10003?fields=desc,material`, headers: ["accept"], auth: cookie, status: 200, responseType: "application/json", bytes: 2_310, shape: "{ code: number, data: { id: number, name: string, desc: string, material: string, images: [string] } }", responseBody: '{"code":0,"data":{"id":10003,"name":"新品 3","desc":"免打孔安装","material":"ABS","images":["https://img.example.com/10003-1.jpg"]}}', ms: 120 })
+  for (const [index, page] of [1, 2].entries())
+    add(40 + index * 4, { method: "GET", url: `${SHOP_ORIGIN}/openapi/v1/orders?status=paid&page=${page}`, headers: ["accept", "authorization"], auth: { cookie: false, headers: ["authorization"] }, status: 200, responseType: "application/json", bytes: 5_480, shape: "{ orders: [{ orderNo: string, status: string, amount: number, items: [{ sku: string, qty: number }] }], nextPageToken: string }", responseBody: `{"orders":[{"orderNo":"SO2026102${page}01","status":"paid","amount":59.8,"items":[{"sku":"HM-10003","qty":2}]}],"nextPageToken":"p${page + 1}"}`, ms: 210 })
+  add(47, { method: "GET", url: `${SHOP_ORIGIN}/openapi/v1/items/10003/stock`, headers: ["accept", "x-api-key"], auth: { cookie: false, headers: ["x-api-key"] }, status: 200, responseType: "application/json", bytes: 96, shape: "{ sku: string, available: number, warehouse: string }", responseBody: '{"sku":"HM-10003","available":128,"warehouse":"US-West"}', ms: 75 })
+  add(50, { method: "PUT", url: `${SHOP_ORIGIN}/api/cart/items/10003`, headers: ["content-type", "x-csrf-token"], auth: cookie, csrf, requestType: "application/json", requestBody: '{"qty":1}', status: 204, bytes: 0, ms: 70 })
+  add(52, { method: "DELETE", url: `${SHOP_ORIGIN}/api/cart/items/10003`, headers: ["x-csrf-token"], auth: cookie, csrf, status: 204, bytes: 0, ms: 64 })
+  add(55, { method: "POST", url: `${SHOP_ORIGIN}/api/search`, headers: ["content-type"], auth: cookie, requestType: "application/x-www-form-urlencoded", requestBody: "q=%E6%94%B6%E7%BA%B3&page=1&sid=••••", status: 200, responseType: "application/json", bytes: 9_870, shape: "{ code: number, data: { hits: [{ id: number, name: string, price: number }], total: number, nextPageToken: string } }", responseBody: '{"code":0,"data":{"hits":[{"id":10007,"name":"新品 7","price":18.9}],"total":132,"nextPageToken":"c2VhcmNoOjI="}}…', responseOmitted: 1_650, ms: 230 })
+  add(56, { method: "GET", url: `${SHOP_ORIGIN}/api/cart/count`, headers: ["accept"], auth: cookie, status: 200, responseType: "application/json", bytes: 29, shape: "{ code: number, data: { count: number } }", responseBody: '{"code":0,"data":{"count":0}}', ms: 35 })
+  for (let poll = 0; poll < 3; poll++)
+    add(58 + poll * 5, { type: "xhr", method: "GET", url: `${SHOP_ORIGIN}/api/notice/unread`, headers: ["accept"], auth: cookie, status: 200, responseType: "application/json", bytes: 31, shape: "{ code: number, data: { count: number } }", responseBody: '{"code":0,"data":{"count":2}}', ms: 40 })
+  lines.push({ end: true, skipped: 14, reason: "同一个网址（GET /api/notice/unread）已经记了 3 次，后面的轮询不再记；运行结束前又跳过了 14 个" })
+  return lines.map((line) => JSON.stringify(line)).join("\n") + "\n"
+}
+
+/** 固化员建议建的 HTTP 工具（用 token 认证的开放接口，browser.fetch 调不了） */
+const HTTP_SUGGESTIONS: HttpToolSuggestion[] = [
+  {
+    name: "查询已付款订单",
+    summary: "按状态和页码查网店的订单列表，要看订单、对账时用",
+    reason: "网页调 /openapi/v1/orders 时带的是 Authorization 请求头（不靠 cookie），browser.fetch 不能设 Authorization；建成 HTTP 工具以后不用打开页面就能翻订单。",
+    http: {
+      method: "GET",
+      url: `${SHOP_ORIGIN}/openapi/v1/orders?status={status}&page={page}`,
+      headers: { Authorization: "Bearer {{shop_api_token}}", Accept: "application/json" },
+      params: [
+        { name: "status", type: "string", required: true, description: "订单状态：paid、shipped……" },
+        { name: "page", type: "string", required: false, description: "第几页，从 1 开始" },
+      ],
+    },
+    secrets: ["shop_api_token"],
+    requestSeqs: [10, 11],
+  },
+  {
+    name: "查询商品库存",
+    summary: "按商品 id 查可用库存和所在仓库",
+    reason: "库存接口用 X-API-Key 认证，网页是自己加的这个请求头；建成 HTTP 工具，挑新品时可以顺带看有没有货。",
+    http: {
+      method: "GET",
+      url: `${SHOP_ORIGIN}/openapi/v1/items/{itemId}/stock`,
+      headers: { "X-API-Key": "{{shop_api_key}}" },
+      params: [{ name: "itemId", type: "string", required: true, description: "商品 id（榜单接口里的 id）" }],
+    },
+    secrets: ["shop_api_key"],
+    requestSeqs: [12],
+  },
+]
 
 const inputSchema = {
   type: "object",
@@ -216,6 +306,7 @@ export async function insertRoutineFixtures(db: Db): Promise<{ routineId: string
   const agentAfterRun = runId() // 4 天前：脚本跑完报了办成，三方验收反问，agent 接着做完（17.3）
   const agentScriptRun = runId() // 今天中午：agent 自己写循环脚本（code.run 带 tools，18.1）
   const judgeRun = runId() // 两天半前：脚本直接办成，中间判断了两次（ha.judge，18.2）
+  const fetchRun = runId() // 一个半小时前：agent 用 browser.fetch 直接调网站接口，记下了 network/requests.jsonl（19.8）
   const testRuns = [routineTestSessionId(vid(5), 1), routineTestSessionId(vid(5), 2)]
   const testRunV3 = routineTestSessionId(vid(3), 1)
 
@@ -229,7 +320,12 @@ export async function insertRoutineFixtures(db: Db): Promise<{ routineId: string
     pausedReason: null,
     createdAt: minutesAgo(10 * DAY),
   })
-  await db.update(t.tasks).set({ routineMode: "first" }).where(eq(t.tasks.id, task.id))
+  // 打开「允许直接调网站接口」（19.8：一个打开了开关的任务）；种子里这个任务用的是旧的工具 id，挂上「浏览器」工具，
+  // 任务详情、编辑弹窗里才有浏览器那几项
+  await db.update(t.tasks).set({ routineMode: "first", allowBrowserFetch: true }).where(eq(t.tasks.id, task.id))
+  await syncBuiltinTools(db)
+  const linkedTools = await db.select({ refId: t.taskTools.refId }).from(t.taskTools).where(eq(t.taskTools.taskId, task.id))
+  if (!linkedTools.some((row) => row.refId === BROWSER_TOOL_ID)) await db.insert(t.taskTools).values({ taskId: task.id, refId: BROWSER_TOOL_ID, position: linkedTools.length })
 
   // ---------- 运行 ----------
   type SessionInsert = typeof t.sessions.$inferInsert
@@ -584,6 +680,61 @@ await ha.file.save({ name: "新品日报 ${date}.md", content: "# 家居新品�
     ])
   }
 
+  // 一个半小时前：任务开着「允许直接调网站接口」，agent 用 browser.fetch 直接读第 2 页（200）、收藏一个商品被拒（403）、
+  // 刷新登录态的接口要跳转（出错）；运行记下了网页自己调的接口 network/requests.jsonl（第三期 19.8）
+  const fetchStartMin = 90
+  {
+    const date = dateOf(fetchStartMin)
+    const page2 = `${SHOP_ORIGIN}/api/rank/new?cat=home&page=2&size=20`
+    sessions.push({ ...base(fetchRun, fetchStartMin, 75), outcome: "achieved", outcomeBy: "review", outcomeReason: "日报里 5 个商品都有名字、价格和链接。", tokensIn: 52_000, tokensOut: 2_400, costUsd: 0.0191, stepCount: 6 })
+    events.set(fetchRun, [
+      { at: 1, kind: "plan", title: "按任务步骤开始", detail: "4 个步骤", tokensIn: 5_800, tokensOut: 260 },
+      { at: 8, kind: "tool", title: "打开家居类新品榜", toolId: "browser.navigate", input: { url: RANK_URL }, output: "### Page\n- Title: 家居 · 新品榜", ms: 2_100, tokensIn: 7_200, tokensOut: 120, trace: { urlBefore: "about:blank", urlAfter: RANK_URL, title: "家居 · 新品榜", network: { first: 1, last: 4 } } },
+      { at: 15, kind: "tool", title: "读取文件", toolId: "file.read", input: { path: "network/requests.jsonl" }, output: "network/requests.jsonl（20 行）\n{\"seq\":1,…", ms: 40, tokensIn: 12_000, tokensOut: 200 },
+      {
+        at: 22,
+        kind: "tool",
+        title: FETCH_TOOL_NAME,
+        toolId: "browser.fetch",
+        input: { url: page2, method: "GET", headers: { accept: "application/json" } },
+        output: `GET ${page2} → 200 application/json（17.9 KB，184 毫秒）\n${JSON.stringify({ code: 0, data: { list: rankItems(21, 3), total: 60 } }, null, 2)}\n…`,
+        ms: 260,
+        tokensIn: 15_400,
+        tokensOut: 180,
+        trace: { urlBefore: RANK_URL },
+      },
+      {
+        at: 34,
+        kind: "tool",
+        title: FETCH_TOOL_NAME,
+        toolId: "browser.fetch",
+        input: { url: `${SHOP_ORIGIN}/api/favorites`, method: "POST", body: { itemId: 10021 }, csrf: { header: "x-csrf-token", from: "meta", name: "csrf-token" } },
+        output: `POST ${SHOP_ORIGIN}/api/favorites → 403 application/json（62 字节，96 毫秒）\n多半登录过期了，先用 browser.navigate 打开网站的页面看看要不要登录\n${JSON.stringify({ code: 40301, message: "请先登录" }, null, 2)}`,
+        ms: 150,
+        tokensIn: 18_000,
+        tokensOut: 160,
+        trace: { urlBefore: RANK_URL },
+      },
+      {
+        at: 41,
+        kind: "tool",
+        title: `${FETCH_TOOL_NAME}（出错）`,
+        toolId: "browser.fetch",
+        input: { url: `${SHOP_ORIGIN}/api/session/refresh`, method: "GET" },
+        output: "工具出错：接口要跳转（多半登录过期了）：先用 browser.navigate 打开网站的页面看看",
+        ms: 120,
+        tokensIn: 18_600,
+        tokensOut: 140,
+        trace: { urlBefore: RANK_URL },
+      },
+      { at: 50, kind: "think", title: "收藏不是这次要做的事，跳过；前 20 个新品已经读到", tokensIn: 19_000, tokensOut: 600 },
+      { at: 60, kind: "tool", title: `存下日报「新品日报 ${date}.md」`, toolId: "file.save", input: { name: `新品日报 ${date}.md` }, output: `已保存：新品日报 ${date}.md（1.2 KB）`, ms: 110, tokensIn: 20_500, tokensOut: 1_100 },
+      { at: 66, kind: "tool", title: "报告办成了", toolId: "run.finish", input: { outcome: "achieved" }, output: "已收到，交给复核", ms: 20, tokensIn: 21_000, tokensOut: 300 },
+      { at: 73, kind: "verify", title: "AI 复核：办成", detail: "日报里 5 个商品都有名字、价格和链接。" },
+      { at: 74, kind: "done", title: "办成了", detail: `用接口读了 40 个新品，挑了 5 个写进「新品日报 ${date}.md」。` },
+    ])
+  }
+
   // 固化试跑：第 3 版 1 轮（通过）；第 5 版两轮：第 1 轮还按旧标签点、出错；第 2 轮停在提交前
   const testState = (version: number, startMin: number, seconds: number, rest: Partial<SessionRoutineState> & Pick<SessionRoutineState, "state" | "steps">): SessionRoutineState => ({
     ...routineState(version, startMin, seconds, rest),
@@ -664,6 +815,17 @@ await ha.file.save({ name: "新品日报 ${date}.md", content: "# 家居新品�
     createdById: admin?.id,
   })
 
+  // 直接调接口那次运行记下的网页请求（network/requests.jsonl，19 个请求 + 最后一行 end）
+  await saveFile(db, {
+    data: Buffer.from(networkLog(minutesAgo(fetchStartMin).getTime())),
+    name: NETWORK_LOG_NAME,
+    path: NETWORK_LOG_PATH,
+    mime: "application/x-ndjson",
+    kind: "network",
+    sessionId: fetchRun,
+    createdById: admin?.id,
+  })
+
   // ---------- 版本 ----------
   const v3Report: RoutineTestReport = {
     rounds: [{ round: 1, sessionId: testRunV3, passed: true, steps: 5, stoppedAt: stopAtCommit, data: { 新品数: 20 }, compare: [{ field: "新品数", expected: "20", actual: "20", same: true }] }],
@@ -723,8 +885,8 @@ await ha.file.save({ name: "新品日报 ${date}.md", content: "# 家居新品�
       failReason: "固化员判断不适合固化：第 3 步「挑 5 个适合的」要看商品图和描述判断，写不成明确的规则。把挑选的标准写进任务记忆（例如价格、上架天数）以后可以再试。",
       costUsd: 0.008,
     },
-    // 第 3 版：正在用（正式）
-    { ...common(3, 6 * DAY + 30), sourceSessionId: agentRunB, status: "approved", baseVersion: 1, testReport: v3Report, approvedById: approverId, approvedAt: minutesAgo(6 * DAY - 60) },
+    // 第 3 版：正在用（正式）；固化员建议建 1 个 HTTP 工具（固化流程区块显示一行）
+    { ...common(3, 6 * DAY + 30), sourceSessionId: agentRunB, status: "approved", baseVersion: 1, testReport: v3Report, approvedById: approverId, approvedAt: minutesAgo(6 * DAY - 60), httpSuggestions: HTTP_SUGGESTIONS.slice(0, 1) },
     // 第 4 版：不用
     {
       ...common(4, 2 * DAY),
@@ -749,6 +911,8 @@ await ha.file.save({ name: "新品日报 ${date}.md", content: "# 家居新品�
       code: code("新上架"),
       assumptions: [...assumptions, "标签名是「新上架」（2026-10 网站改版后的名字）"],
       testReport: v5Report,
+      // 两条 HTTP 工具建议（19.7、19.8）
+      httpSuggestions: HTTP_SUGGESTIONS,
       tokensIn: 71_000,
       tokensOut: 8_900,
       costUsd: 0.058,
@@ -776,5 +940,5 @@ await ha.file.save({ name: "新品日报 ${date}.md", content: "# 家居新品�
     createdAt: minutesAgo(180),
   })
 
-  return { routineId: routine, reviewVersionId: vid(5), itemId, runIds: [agentRunA, agentRunB, ...directRuns, fallbackRun, freshRun, suspendedRun, resumedRun, agentAfterRun, agentScriptRun, judgeRun], testRunIds: [testRunV3, ...testRuns] }
+  return { routineId: routine, reviewVersionId: vid(5), itemId, runIds: [agentRunA, agentRunB, ...directRuns, fallbackRun, freshRun, suspendedRun, resumedRun, agentAfterRun, agentScriptRun, judgeRun, fetchRun], testRunIds: [testRunV3, ...testRuns] }
 }

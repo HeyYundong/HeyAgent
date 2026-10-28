@@ -149,7 +149,7 @@ export function StepEditor({ index, control, register, error, checkpointError, o
   )
 }
 
-/** 选了「浏览器」工具才出现：允许用哪些 Chrome 配置、网址白名单、是否允许执行脚本、是否允许看画面（导入时改任务没有这两项：hideEvaluate） */
+/** 选了「浏览器」工具才出现：允许用哪些 Chrome 配置、网址白名单、是否允许执行脚本、看画面、直接调网站接口（导入时改任务没有这三项：hideEvaluate） */
 export function BrowserFields({ control, domainText, domainError, onDomainText, hideEvaluate = false }: { control: Control<TaskInput>; domainText: string; domainError?: string; onDomainText: (text: string) => void; hideEvaluate?: boolean }) {
   const profiles = useBrowsersQuery().data ?? []
   const options = profiles.map((profile) => ({ value: profile.id, label: profile.name, hint: profile.description }))
@@ -194,6 +194,19 @@ export function BrowserFields({ control, domainText, domainError, onDomainText, 
               <FieldContent>
                 <FieldLabel htmlFor="task-allowVision">允许看画面</FieldLabel>
                 <FieldDescription>agent 可以截当前画面给模型看、按坐标点击（在线表格、画布类网页用得上）。每看一次多花一张图的模型费用。</FieldDescription>
+              </FieldContent>
+            </Field>
+          )}
+        />}
+        {!hideEvaluate && <Controller
+          control={control}
+          name="allowBrowserFetch"
+          render={({ field }) => (
+            <Field orientation="horizontal" className="sm:col-span-2">
+              <Checkbox id="task-allowFetch" checked={!!field.value} onCheckedChange={(on) => field.onChange(Boolean(on))} />
+              <FieldContent>
+                <FieldLabel htmlFor="task-allowFetch">允许直接调网站接口</FieldLabel>
+                <FieldDescription>agent 和固化流程可以带着登录态直接调网站自己用的接口，读列表、翻页快得多；运行时会记下网页调的接口，给固化用。只能调当前网站的；会改东西的请求照常过规则。</FieldDescription>
               </FieldContent>
             </Field>
           )}

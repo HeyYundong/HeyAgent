@@ -2,7 +2,9 @@
 // - agent 用 code.run（tools）写的脚本做的步骤（trace.scriptCallId，工具调用还有 scriptStep）：先记步骤、code.run 跑完才记它自己，
 //   那条 code.run 的 trace 也写了同一个 scriptCallId，按 id 把步骤收在它下面；还没等到 code.run 的（脚本还在跑、中途被打断）单独成组；
 // - 判断事件：kind = plan、标题「流程判断：问题 → 答案（理由）」，拆成问题、答案、理由；
-// - code.run 输出末尾「--- 脚本调的工具 ---」那一段（服务端 sandbox/code-run.ts 的 formatScriptTools）拆成几段。
+// - code.run 输出末尾「--- 脚本调的工具 ---」那一段（服务端 sandbox/code-run.ts 的 formatScriptTools）拆成几段；
+// - browser.fetch 那一行的方法、网址、状态码（第 19 节）。
+import { BROWSER_FETCH_TOOL } from "@heyagent/shared"
 import type { RunEvent } from "@heyagent/shared"
 
 export const CODE_RUN_TOOL_ID = "code.run"
@@ -123,4 +125,46 @@ export function parseToolsSummary(text: string): ToolsSummary {
     else summary.others.push(line)
   }
   return summary
+}
+
+// ---------- browser.fetch（docs/dev/solidify.md 19.4、19.8） ----------
+
+export interface FetchCall {
+  method: string
+  /** 完整网址（悬停看全文） */
+  url: string
+  /** 只显示路径和参数 */
+  path: string
+  /** 状态码：从输出第一行的「→ 200」取；出错（没拿到返回）没有 */
+  status?: number
+}
+
+/** 网址只留路径和参数；解析不了原样返回 */
+export function urlPath(url: string): string {
+  try {
+    const parsed = new URL(url)
+    return `${parsed.pathname}${parsed.search}`
+  } catch {
+    return url
+  }
+}
+
+/**
+ * browser.fetch 那一行要的：方法、网址从输入（JSON）取，取不到再看输出第一行
+ * 「GET https://… → 200 application/json（17.9 KB，184 毫秒）」；状态码只看输出第一行。不是这个工具返回 undefined
+ */
+export function fetchCallOf(event: RunEvent): FetchCall | undefined {
+  if (event.kind !== "tool" || event.toolId !== BROWSER_FETCH_TOOL) return undefined
+  let input: { url?: unknown; method?: unknown } = {}
+  try {
+    const parsed: unknown = JSON.parse(event.input ?? "")
+    if (parsed && typeof parsed === "object") input = parsed as typeof input
+  } catch {
+    // 输入不是 JSON：只看输出
+  }
+  const head = /^([A-Z]+) (\S+) → (\d{3})\b/.exec(event.output?.split("\n", 1)[0] ?? "")
+  const url = typeof input.url === "string" ? input.url : head?.[2]
+  if (!url) return undefined
+  const method = typeof input.method === "string" ? input.method.toUpperCase() : head?.[1] ?? "GET"
+  return { method, url, path: urlPath(url), status: head ? Number(head[3]) : undefined }
 }

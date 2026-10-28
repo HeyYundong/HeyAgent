@@ -2,6 +2,7 @@
 // 步骤说明、要的输入和交回、试跑结果（最后一轮的每一步、停在哪、结果对比、停下时的截图）、会改东西的步骤、假设、脚本（收起）、修的版本和旧版的对比。
 // 「启用」→ routine.review(approve)，进试用期；「不用」→ 写理由（必填，固化员下次看得到）→ routine.review(reject)。
 // 运行办成后系统自动固化的版本（auto，第 17.1 节）加「自动固化」徽章。
+// 固化员建议建的 HTTP 工具（19.7）：有就多一节「HTTP 工具建议」（routine-parts.tsx 的 HttpSuggestions，和「看脚本」共用）。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
 import { zodResolver } from "@hookform/resolvers/zod"

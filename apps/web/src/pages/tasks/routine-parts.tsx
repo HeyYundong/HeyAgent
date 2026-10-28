@@ -1,6 +1,7 @@
 // 固化流程（docs/dev/solidify.md 第 9 节）几处共用的小块：状态徽章、一版脚本的内容（步骤说明、输入和交回、会改东西的步骤、假设、脚本、和旧版的对比）、试跑报告。
 // 任务详情「固化流程」的「看脚本」弹窗、版本记录，和「等人处理」里的「审核固化流程」都用这里的组件，内容来自 routine.version。
 // 全部是 registry 组件的组合：Badge、Trace、CodeBlock（经 components/files 的 CodeView）、Table、Collapsible、Item；截图用已登记的 FileList。
+// 第三期（19.8）：固化员建议建的 HTTP 工具（HttpSuggestions）放在「假设」后面，审核卡和「看脚本」弹窗都经 RoutineVersionView 显示。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
 import { diffLines } from "diff"
@@ -10,6 +11,7 @@ import {
   routineStopKindLabel,
   routineVersionId,
   routineVersionStatusLabel,
+  type HttpToolSuggestion,
   type RoutineStatus,
   type RoutineStop,
   type RoutineTestRound,
@@ -23,6 +25,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { CodeBlock, CodeBlockContent, CodeBlockHeader, CodeBlockLine, CodeBlockTitle } from "@/components/ui/code-block"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
+import { Item, ItemContent, ItemDescription, ItemFooter, ItemGroup, ItemTitle } from "@/components/ui/item"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Spinner } from "@/components/ui/spinner"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -256,12 +259,50 @@ export function RoutineVersionView({ version, review = false }: { version: Routi
           <ul className="flex list-disc flex-col gap-1 pl-5">{version.assumptions.map((text) => <li key={text}>{text}</li>)}</ul>
         ) : <p className="text-muted-foreground">没写假设。</p>}
       </Part>
+      <HttpSuggestions suggestions={version.httpToolSuggestions ?? []} />
       <Part title="脚本" description="只能用 heyagent 的 SDK 调这个任务的工具，每一步都经过工具网关：规则、白名单、审批、验证码检测、过程记录和 agent 自己调一样。">
         {review ? <Folded label={`看脚本（${version.code.split("\n").length} 行）`}>{script}</Folded> : script}
         <BaseDiff version={version} />
       </Part>
       {!review && version.testReport && version.testReport.rounds.length > 0 && <Part title="试跑结果"><RoutineTestReportView version={version} /></Part>}
     </div>
+  )
+}
+
+// ---------- HTTP 工具建议（docs/dev/solidify.md 19.7、19.8） ----------
+
+/**
+ * 固化员建议建的 HTTP 工具：每条一个 Item（名字 + 方法、网址模板、理由、要准备的密钥），配置（http 那一段）收在折叠的 CodeBlock 里，自带复制。
+ * 只列出来，系统不自动建；没有建议时不显示
+ */
+export function HttpSuggestions({ suggestions }: { suggestions: HttpToolSuggestion[] }) {
+  if (suggestions.length === 0) return null
+  return (
+    <Part title="HTTP 工具建议" description="这些接口用 token 认证，直接调接口用不了。主管可以在工具页照着建 HTTP 工具，密钥写成 {{名字}}；系统不会自动建。">
+      <ItemGroup className="gap-2">
+        {suggestions.map((suggestion, index) => (
+          <Item key={`${suggestion.name}-${index}`} variant="outline" size="sm">
+            <ItemContent className="min-w-0">
+              <ItemTitle className="flex-wrap">{suggestion.name}<Badge variant="outline">{suggestion.http.method}</Badge></ItemTitle>
+              <ItemDescription className="line-clamp-none">
+                <span className="block font-mono break-all">{suggestion.http.url}</span>
+                {suggestion.summary && <span className="block">{suggestion.summary}</span>}
+                {suggestion.reason && <span className="block">{suggestion.reason}</span>}
+              </ItemDescription>
+              <span className="text-xs">
+                要准备的密钥：{suggestion.secrets.length ? suggestion.secrets.join("、") : "不用"}
+                {suggestion.requestSeqs.length > 0 && <span className="text-muted-foreground"> · 依据 network/requests.jsonl 第 {suggestion.requestSeqs.join("、")} 个请求</span>}
+              </span>
+            </ItemContent>
+            <ItemFooter className="flex-col items-stretch">
+              <Folded label="看配置">
+                <CodeView code={JSON.stringify(suggestion.http, null, 2)} language="json" title="HTTP 工具配置" />
+              </Folded>
+            </ItemFooter>
+          </Item>
+        ))}
+      </ItemGroup>
+    </Part>
   )
 }
 
