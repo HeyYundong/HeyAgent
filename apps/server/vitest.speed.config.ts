@@ -5,7 +5,7 @@ export default defineConfig({
   resolve: { conditions: ["@heyagent/source"] },
   ssr: { resolve: { conditions: ["@heyagent/source"] } },
   test: {
-    // SPEED_FILE 选跑哪个基准：speed（浏览器提速，默认）/ routine（固化，docs/dev/solidify.md）
+    // SPEED_FILE 选跑哪个基准：speed（浏览器提速，默认）/ routine（固化，docs/dev/solidify.md）/ subagents（子 agent，docs/dev/sub-agents.md）
     include: [`test-browser/speed/${process.env.SPEED_FILE ?? "speed"}.bench.ts`],
     fileParallelism: false,
     testTimeout: 40 * 60_000,
