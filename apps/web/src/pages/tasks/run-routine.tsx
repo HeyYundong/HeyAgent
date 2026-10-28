@@ -20,8 +20,9 @@ import { routineResumeText, routineRunText } from "./routine-parts"
 /** 固化试跑的运行（不进会话列表、不复核、不算结果） */
 export const isRoutineTest = (run: Pick<SessionSummary, "kind">) => run.kind === "routine_test"
 
-/** 能「固化成流程」：已结束、办成的普通运行 */
-export const canSolidify = (run: SessionSummary) => !isRoutineTest(run) && isRunEnded(run.status) && outcomeOf(run) === "achieved"
+/** 能「固化成流程」：已结束、办成的普通运行。子运行、拆过子 agent 的运行不能（子 agent 做的那部分录不到，docs/dev/sub-agents.md 第 15 节） */
+export const canSolidify = (run: SessionSummary) =>
+  !isRoutineTest(run) && run.kind !== "sub" && !run.subagents?.total && isRunEnded(run.status) && outcomeOf(run) === "achieved"
 
 /** 头部的一行（放在 DetailPanel 的 meta 里，自己占一行）：跑过脚本的运行、固化试跑才有 */
 export function RoutineRunLine({ run }: { run: SessionSummary }) {

@@ -52,7 +52,9 @@ export function RunOutcomeSection({ run, canEdit }: { run: SessionSummary; canEd
     <DetailSection
       collapsible
       title={outcome ? `结果 · ${runOutcomeLabel[outcome]}` : reviewing ? "结果 · 复核中" : "结果"}
-      description="只有办成、没办成两种，只看任务目标要的东西拿没拿到，不看 agent 多努力：没找到（包括确认「没有」）、只拿到一部分都是没办成。agent 说办成了的，要三方验收通过或者 AI 复核判办成才算办成，证据不足也记没办成。"
+      description={run.kind === "sub"
+        ? "子 agent 的结果是它自己报的，加上硬规则（缺了要交回的字段、到了花费或步数上限都记没办成），不复核、不能改。结果已经交回给父运行，父运行复核时会一起看。"
+        : "只有办成、没办成两种，只看任务目标要的东西拿没拿到，不看 agent 多努力：没找到（包括确认「没有」）、只拿到一部分都是没办成。agent 说办成了的，要三方验收通过或者 AI 复核判办成才算办成，证据不足也记没办成。"}
       action={canEdit && (
         <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
           <PencilIcon data-icon="inline-start" />改结果

@@ -5,6 +5,7 @@
 // 窄屏一条就是一个链接，里面不放按钮：点开抽屉，在「结果」区块里改。
 // 翻页在服务端（sessions.page），这里只画列表下面的页码；页码在网址 ?page=，第 1 页不写。
 // 宽屏「开始」「结束」两列的表头能点：按这一列排（再点换正序 / 倒序），排序也在服务端（?sort=ended&dir=asc；默认已结束按结束倒序、别的按开始倒序，不写）。
+// 拆过子 agent 的运行（docs/dev/sub-agents.md 11.2）：编号后面一个「子 agent 4」徽章，悬停看几个结束、花费合计（父 + 子）。子运行不进列表。
 // 派活触发的运行，「来源」里的单号（派活 W-3）是链接：在被派任务的抽屉里打开那张单。
 import * as React from "react"
 import { ArrowDownIcon, ArrowUpDownIcon, ArrowUpIcon, EllipsisIcon, HandIcon, PencilIcon } from "lucide-react"
@@ -15,13 +16,15 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "@/components/ui/item"
 import { Pagination, PaginationContent, PaginationEllipsis, PaginationItem, PaginationLink, PaginationNext, PaginationPrevious } from "@/components/ui/pagination"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { can, endedText, findById, groupOf, isReviewing, isRunEnded, outcomeOf, outcomeReasonOf, startText, type HumanItem, type SessionSummary, type TaskDef } from "@heyagent/shared"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { can, endedText, findById, groupOf, isReviewing, isRunEnded, outcomeOf, outcomeReasonOf, startText, SUB_SOURCE_LABEL, type HumanItem, type SessionSummary, type TaskDef } from "@heyagent/shared"
 
 import { OutcomeBadge } from "@/components/shell/outcome-badge"
 
 import { useModels, useRunNow, useStaffName } from "@/lib/data"
 import { useMe } from "@/lib/session"
-import { Elapsed, RunStatusBadge, tokens } from "@/pages/tasks/parts"
+import { Elapsed, money, RunStatusBadge, tokens } from "@/pages/tasks/parts"
+import { familyCost } from "@/pages/tasks/run-subagents"
 import { SetOutcomeDialog } from "@/pages/tasks/run-outcome"
 import { workLink } from "@/pages/tasks/work-parts"
 
@@ -77,7 +80,22 @@ function RowActions({ run, task }: { run: SessionSummary; task?: TaskDef }) {
 }
 
 /** 来源（怎么开始的）：手动 / 定时 / 人加的（待办到点）/ 事件 / 派活。老数据没有来源 */
-export const SOURCE_LABEL: Record<string, string> = { manual: "手动", cron: "定时", todo: "人加的", event: "事件", dispatch: "派活" }
+export const SOURCE_LABEL: Record<string, string> = { manual: "手动", cron: "定时", todo: "人加的", event: "事件", dispatch: "派活", sub: SUB_SOURCE_LABEL }
+
+/** 「子 agent 4」：拆过子 agent 的运行才有。tip = 宽屏表格里悬停看几个结束、花费合计（浮在整行链接上面）；窄屏整条是链接，只显示徽章 */
+export function SubagentsBadge({ run, tip = false }: { run: SessionSummary; tip?: boolean }) {
+  const stats = run.subagents
+  if (!stats?.total) return null
+  const label = `子 agent ${stats.total}`
+  if (!tip) return <Badge variant="outline">{label}</Badge>
+  const text = `拆了 ${stats.total} 个子 agent：结束 ${stats.ended} 个（办成 ${stats.achieved}）${stats.queued ? `，排队 ${stats.queued}` : ""}${stats.running ? `，在跑 ${stats.running}` : ""}${stats.needsHuman ? `，等人处理 ${stats.needsHuman}` : ""}。花费合计 ${money(familyCost(run))}（含子 agent ${money(stats.costUsd)}）。`
+  return (
+    <Tooltip>
+      <TooltipTrigger render={<Badge variant="outline" className="relative z-10" tabIndex={0} aria-label={text} />}>{label}</TooltipTrigger>
+      <TooltipContent>{text}</TooltipContent>
+    </Tooltip>
+  )
+}
 
 /** 「定时」「派活 W-57」 */
 export const sourceText = (run: SessionSummary) => `${(run.source && SOURCE_LABEL[run.source]) || "—"}${run.workItemId ? ` ${run.workItemId}` : ""}`
@@ -193,9 +211,12 @@ export function SessionTable({ rows, tasks, selectedId, linkTo, sort }: ListProp
                     <RowActions run={run} task={task} />
                   </div>
                 </TableCell>
-                <TableCell className="font-mono">
-                  {/* 整行可点：链接铺满这一行 */}
-                  <a href={linkTo(run.id)} className="after:absolute after:inset-0 hover:underline">{run.id}</a>
+                <TableCell>
+                  <div className="flex items-center gap-2">
+                    {/* 整行可点：链接铺满这一行 */}
+                    <a href={linkTo(run.id)} className="font-mono after:absolute after:inset-0 hover:underline">{run.id}</a>
+                    <SubagentsBadge run={run} tip />
+                  </div>
                 </TableCell>
                 <TableCell className="max-w-64 truncate" title={task?.title}>{task?.title ?? run.taskId}</TableCell>
                 <TableCell className="text-muted-foreground"><SourceCell run={run} /></TableCell>
@@ -244,6 +265,7 @@ export function SessionItems({ rows, tasks, selectedId, linkTo }: ListProps) {
               <ItemTitle className="w-full">
                 <span className="shrink-0 font-mono">{run.id}</span>
                 <span className="truncate">{task?.title ?? run.taskId}</span>
+                <SubagentsBadge run={run} />
               </ItemTitle>
               <ItemDescription className="line-clamp-1"><NowText run={run} items={items} /></ItemDescription>
               <ItemDescription className="tabular-nums">
