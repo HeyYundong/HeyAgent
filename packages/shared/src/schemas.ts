@@ -409,6 +409,10 @@ export const taskSchema = z.object({
   dispatchFrom: z.array(z.string()),
   /** 定时到点时上一次还没跑完（执行中 / 验收中）就跳过这次；默认跳过 */
   cronSkipIfRunning: z.boolean(),
+  /** 固化（docs/dev/solidify.md 17.1）：办成后自动固化；null = 没单独设，按 autoSolidifyDefault（被派的、定时的开） */
+  autoSolidify: z.boolean().nullable(),
+  /** 固化时不试跑（会自动存草稿的网站）：自动固化照它，手动固化的弹窗默认勾上 */
+  routineSkipTest: z.boolean(),
 })
 export type TaskDef = z.infer<typeof taskSchema>
 

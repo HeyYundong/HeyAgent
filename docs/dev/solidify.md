@@ -729,3 +729,89 @@ P1 验收：
 - 脚本报了办成、三方验收反问、agent 接着做完的，`sessions.routine.state` 还是 finished，统计会算成一次「脚本直接办成」（很少见）。
 - 试跑被取消时，可能多发一次 `routine.compile`（`handleCompileJob` 遇到已经判过的版本什么都不做，没有影响）。
 - 试跑的运行如果在别处被标失败（不经过 `failSession`、`control.ts`），没人发 `routine.compile`，这一版会停在「试跑中」：第二期加清扫。
+
+## 17. 第二期第一批（2026-10-28）：自动固化、脚本接着跑、收尾
+
+> 用户 2026-10-28 说「继续吧，交给你了」。第二期分两批：
+> - 这一批做第 13 节 P2 的 1、2、6；
+> - 第二批做 3（agent 写循环脚本）、4（判断题）；
+> - 5（固化流程当工具）挪到第三期的流程库。在那之前，派活给有固化流程的任务，就是这个用法。
+
+### 17.1 办成后自动固化、跑不通后自动修
+
+- 任务设置「办成后自动固化」（`tasks.auto_solidify`）。空 = 按默认：被派的任务、定时任务开，别的关（`autoSolidifyDefault`）。
+- 运行结果定了以后（复核完，`finishRun` 和 `failSession` 之后）调 `afterRunSettled`。它先记试用、正式、停用，再看要不要自动固化：
+  - 前提：普通运行、办成、任务的自动固化是开的。
+  - 没有固化流程 → 固化第一版。
+  - 有启用的版本：
+    - 这次脚本直接办成 → 不用；
+    - 这次交给 agent、agent 办成（`fell_back`）→ 修（`baseVersion` = 那一版）；
+    - 流程停用着（连续跑不通）、这次 agent 办成 → 修。
+  - 跳过的情况：
+    - 有一版在写、试跑、待审核；
+    - 24 小时内自动固化过；
+    - 最近一版是「不用」或「没成功」，还不到 7 天。
+  - 人点「固化成流程」不受这些限制。
+- 自动的版本 `routine_versions.auto = true`、`created_by_id` 为空。审核卡、版本记录上写「自动固化」，通知里也写。
+- 任务设置「固化时不试跑」（`tasks.routine_skip_test`）：自动固化照它；手动固化的弹窗默认勾上它。
+
+### 17.2 脚本接着跑（重放日志）
+
+- **记日志**：普通运行的工具桥把每个请求记进 `routine_journal`：`session_id`、`seq`、`op`、`tool`、`input_hash`、`reply`、`instance_id`、`at`。
+  - 记的请求：tool（含结果、出错、停下的样子）、commit、verified、log、now。
+  - 试跑不记，试跑每次从头跑。
+- **停下后改成挂起、等处理完接着跑**（不再直接交给 agent）：
+  1. 要挂起（验证码、登录页、等浏览器）：照常挂起（「登录」类要人办的事），不写交接的话，`sessions.routine.state = suspended`。
+  2. 要人审批：生成「审批工具调用」，和 agent 调用时一样的卡片（参数、规则），卡片里写「固化流程第 k 步」。待执行的那一步记在 `session_waits.pending.routineStep`，`state = suspended`。
+  3. 进程中途被杀（继续时 `state` 还是 running）：按日志接着跑，不再一律交给 agent。
+- **继续时**（`runSession` 看到 `state` 是 suspended 或 running）：从头再跑一遍脚本，按日志重放。
+  - 第 1…k−1 个请求：和日志对得上（op、工具、参数的 hash 都一样），就直接回记下的结果，不真做、不再记过程。对不上 → 停（`replay_mismatch`），交给 agent。
+  - 第 k 个（停下的那一步）：
+    - **审批**：批准 → 带上批准的规则真做；拒绝 → 停（`rejected`），交给 agent，交接的话写理由。
+    - **挂起**：真做一遍。但如果它前面有没核对的 `ha.commit`（这一步可能就是提交），不重做，交给 agent，写「可能已经生效」。
+    - **中断**：日志里没有结果的那一步，同上：前面没有没核对的提交就重做，有就交给 agent。
+  - 之后照常真做。
+- **浏览器没了**：日志里有浏览器动作，而继续时这次运行的 Chrome 已经不在了（过了保留时间被关掉）→ 不重放，交给 agent（`resume_lost`）。
+- **时间和随机**：`ha.now()` 重放时回记下的时间。脚本自己用 `Date`、`Math.random` 走了不同的路，会在对不上时停下。
+- **界面**：
+  - 运行详情头部写「固化流程第 3 版：等人处理后接着跑（前 5 步按记录跳过）」；
+  - 过程里加一条「脚本接着跑：前 5 步按记录跳过，从第 6 步接着做」。
+
+### 17.3 收尾
+
+- **清扫**：`routine.sweep`，每 5 分钟一次。
+  - 版本在「试跑中」、这一轮的试跑运行已经结束 → 发 `routine.compile`；
+  - 版本在「写脚本中」、30 分钟没动静 → 再发一次。
+- **统计**：脚本报了办成、三方验收反问、agent 接着做完的，记 `sessions.routine.agentAfter = true`。这种不算「脚本直接办成」，也不算交给 agent，两个计数都不动。
+
+### 17.4 数据（迁移 0032）
+
+- **表**：
+  - `tasks.auto_solidify`（boolean，可空）、`tasks.routine_skip_test`（boolean，默认 false）；
+  - `routine_versions.auto`（boolean，默认 false）；
+  - 新表 `routine_journal`。
+- **shared**：
+  - `routineStopKind` 加 `replay_mismatch`、`resume_lost`、`rejected`；
+  - `sessionRoutineState.state` 加 `suspended`，再加 `agentAfter`、`resumes`、`replayed`；
+  - `routineVersion` 加 `auto`；
+  - 任务加 `autoSolidify`（null = 默认）、`routineSkipTest`；
+  - `autoSolidifyDefault(task)`；
+  - `PendingToolCalls` 加 `routineStep`。
+- **钩子**：`routine/after-run.ts` 的 `afterRunSettled` 替换 `loop.ts` 里两处 `settleRoutineRun`；`routine/auto.ts`、`routine/sweep.ts` 先是空函数。
+
+### 17.5 分工
+
+- **A2（运行时）**：
+  - `bridge.ts` 记日志、重放；`run.ts`、`loop.ts` 的挂起、审批、继续；`handoff.ts`；`stats.ts` 的 `agentAfter`；`routine/sweep.ts` 和注册。
+  - 单元测试：重放对得上 / 对不上、审批批准 / 拒绝、挂起后接着跑、提交前后的中断、浏览器没了。
+  - 浏览器测试：脚本中途遇到登录页 → 人处理好 → 脚本接着跑完。
+- **B2（自动固化、设置）**：
+  - `routine/auto.ts` 的 `maybeAutoSolidify`；
+  - `startCompile` 拆出不查权限的内部函数（`auto`、`createdById` 为空）；
+  - 任务设置的读写（`data/config/tasks.ts`）；助手改任务时认这两个字段；
+  - 测试。
+- **C2（界面）**：
+  - 任务弹窗加两个开关（「?」里写说明），固化流程区块显示这两个设置；
+  - 运行详情的新状态（等人处理后接着跑、按记录跳过了几步）；
+  - 审核卡、版本记录的「自动固化」标签；
+  - 「固化成流程」弹窗的「不试跑」默认取任务设置。

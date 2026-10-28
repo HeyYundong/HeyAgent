@@ -28,7 +28,7 @@ import type { PendingToolCalls } from "../db/schema.js"
 import { sendRoutineCompile } from "../routine/jobs.js"
 import { buildHandoff } from "../routine/runtime/handoff.js"
 import { runRoutineScript, type RoutineSnapshotted } from "../routine/runtime/run.js"
-import { settleRoutineRun } from "../routine/runtime/stats.js"
+import { afterRunSettled } from "../routine/after-run.js"
 import { endRoutineTestInTx } from "../routine/runtime/test-end.js"
 import { maybeCompact } from "./compact.js"
 import {
@@ -202,7 +202,7 @@ async function failSession(
   })
   if (!failed) return
   // 跑过固化流程的运行：试用、转正式、连续跑不通停用（routine/runtime/stats.ts）
-  await settleRoutineRun(db, session.id).catch((error: unknown) => console.warn(`[routine] ${session.id} 的固化流程统计没记上：${(error as Error).message}`))
+  await afterRunSettled(db, session.id)
   // 固化试跑不通知负责人（固化没成功时由固化那边通知）
   if (session.kind === "routine_test") return
   if (failed.settled?.kind === "retry") return
@@ -283,7 +283,7 @@ async function finishRun(
   const final = finished.result ?? (await reviewAfterFinish(db, session, snapshot, { modelId: finished.reviewModelId!, report, summary }))
   await notifyFinished(db, session, snapshot, final, summary)
   // 跑过固化流程的运行：结果定了，记试用 / 正式 / 停用（routine/runtime/stats.ts）
-  await settleRoutineRun(db, session.id).catch((error: unknown) => console.warn(`[routine] ${session.id} 的固化流程统计没记上：${(error as Error).message}`))
+  await afterRunSettled(db, session.id)
   return "done"
 }
 

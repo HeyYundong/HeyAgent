@@ -225,6 +225,13 @@
       "when": 1793112978222,
       "tag": "0031_routines",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1793170432329,
+      "tag": "0032_routine_resume",
+      "breakpoints": true
     }
   ]
 }

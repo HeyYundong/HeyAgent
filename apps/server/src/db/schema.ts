@@ -124,6 +124,11 @@ export interface PendingToolCalls {
   decision?: { how: "approve" | "reject"; note?: string; actorName: string }
   /** executing：正在执行批准的那个调用（进程中途被杀掉时，继续时不再重复执行）；done：处理完了 */
   state?: "executing" | "done"
+  /**
+   * 固化脚本的第几个工具调用要审批（docs/dev/solidify.md 17.2）：这时 calls 是空的（不是模型的调用），
+   * 继续时按日志重放脚本，到这一步按 decision 做（批准 = 带上 ruleId 真做；拒绝 = 停下交给 agent）
+   */
+  routineStep?: number
 }
 
 // ---------- 枚举 ----------
@@ -548,6 +553,10 @@ export const tasks = pgTable(
     cronSkipIfRunning: boolean("cron_skip_if_running").notNull().default(true),
     /** 固化流程的开关（docs/dev/solidify.md 6.1）：off = 不用；first = 先跑流程。第一次启用固化流程时自动打开 */
     routineMode: routineModeEnum("routine_mode").notNull().default("off"),
+    /** 办成后自动固化（docs/dev/solidify.md 17.1）：空 = 按默认（被派的、定时的开，shared 的 autoSolidifyDefault） */
+    autoSolidify: boolean("auto_solidify"),
+    /** 固化时不试跑（会自动存草稿的网站）：自动固化照它，手动固化的弹窗默认勾上 */
+    routineSkipTest: boolean("routine_skip_test").notNull().default(false),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -1612,6 +1621,8 @@ export const routineVersions = pgTable(
     round: integer("round").notNull().default(0),
     /** 点「固化成流程」时选了不试跑（会自动存草稿的网站，第 14 节问题 4）：写好、程序检查过了直接交给人审核 */
     skipTest: boolean("skip_test").notNull().default(false),
+    /** 运行办成后系统自动固化的（17.1）；人点的是 false */
+    auto: boolean("auto").notNull().default(false),
     testReport: jsonb("test_report").$type<RoutineTestReport>(),
     /** 写这一版用的模型和花费（几轮合计） */
     modelId: text("model_id"),
@@ -1627,4 +1638,33 @@ export const routineVersions = pgTable(
     updatedAt: updatedAt(),
   },
   (t) => [uniqueIndex("routine_versions_routine_version_idx").on(t.routineId, t.version)]
+)
+
+/**
+ * 固化脚本的重放日志（docs/dev/solidify.md 17.2）：普通运行里工具桥收到的每个请求一行（试跑不记）。
+ * 停下等人、进程中途被杀以后接着跑时，从头再跑一遍脚本：对得上的请求直接回这里记下的结果，不真做
+ */
+export const routineJournal = pgTable(
+  "routine_journal",
+  {
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    /** 第几个请求（从 1 开始；和工具调用的序号不同：commit、log、now 也占一个） */
+    seq: integer("seq").notNull(),
+    /** tool / commit / verified / log / now */
+    op: text("op").notNull(),
+    /** op = tool：工具 id */
+    tool: text("tool"),
+    /** 请求参数（tool 的 input、commit 的 label……）的 sha256：重放时对一下，对不上就是脚本走了别的路 */
+    inputHash: text("input_hash").notNull(),
+    /** 回给脚本的（{ ok, text?, data?, error?, code? }）；还没做完（进程被杀、停下等人）的为空 */
+    reply: jsonb("reply").$type<Record<string, unknown>>(),
+    /** 这一步停下的样子：approval（没做，等审批）/ suspend（做了，等人处理）；正常的为空 */
+    stop: text("stop"),
+    /** 做这一步时用的 Chrome（浏览器动作才有）：接着跑时 Chrome 换了就不重放 */
+    instanceId: text("instance_id"),
+    at: ts("at").notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.sessionId, t.seq] })]
 )

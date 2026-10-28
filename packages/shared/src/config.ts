@@ -155,6 +155,10 @@ export const taskInputSchema = z.object({
   dispatchFrom: ids.default([]),
   /** 定时到点时上一次还没跑完就跳过这次（默认跳过） */
   cronSkipIfRunning: z.boolean().default(true),
+  /** 办成后自动固化（docs/dev/solidify.md 17.1）：null = 按默认（被派的、定时的开）；不传 = null */
+  autoSolidify: z.boolean().nullable().default(null),
+  /** 固化时不试跑（会自动存草稿的网站） */
+  routineSkipTest: z.boolean().default(false),
 })
 export type TaskInput = z.input<typeof taskInputSchema>
 export const taskUpdateSchema = taskInputSchema.extend({ id: z.string().min(1) })

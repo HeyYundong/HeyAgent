@@ -117,6 +117,8 @@ export async function listTasks(db: Db, ids?: string[]): Promise<TaskDef[]> {
       dispatch: row.dispatch ?? undefined,
       dispatchFrom: dispatchFrom.get(row.id) ?? [],
       cronSkipIfRunning: row.cronSkipIfRunning,
+      autoSolidify: row.autoSolidify,
+      routineSkipTest: row.routineSkipTest,
     })
   )
 }

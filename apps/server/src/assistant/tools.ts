@@ -172,6 +172,8 @@ const taskInputOf = (task: TaskDef): TaskInput => ({
   dispatch: task.dispatch ? { ...task.dispatch, results: task.dispatch.results ?? [] } : null,
   dispatchFrom: task.dispatchFrom ?? [],
   cronSkipIfRunning: task.cronSkipIfRunning ?? true,
+  autoSolidify: task.autoSolidify ?? null,
+  routineSkipTest: task.routineSkipTest ?? false,
 })
 
 async function loadTodoRow(ctx: ToolCtx, id: string) {

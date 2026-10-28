@@ -41,6 +41,8 @@ export const QUEUES = {
   desktopVm: "desktop.vm",
   /** 固化（docs/dev/solidify.md 5.6）：一版脚本往下走一步（写 / 改脚本、看试跑结果、交给人审核）；参数是版本 id，singletonKey = 版本 id */
   routineCompile: "routine.compile",
+  /** 固化的清扫（docs/dev/solidify.md 17.3）：每 5 分钟，漏发、丢了的 routine.compile 补发 */
+  routineSweep: "routine.sweep",
 } as const
 
 export const SCHEDULE_TZ = "Asia/Shanghai"
@@ -130,6 +132,7 @@ const QUEUE_SETUP: { name: string; policy: "standard" | "stately" }[] = [
   { name: QUEUES.workNotify, policy: "standard" },
   { name: QUEUES.desktopVm, policy: "stately" },
   { name: QUEUES.routineCompile, policy: "stately" },
+  { name: QUEUES.routineSweep, policy: "standard" },
 ]
 
 export async function ensureQueues(boss: PgBoss) {

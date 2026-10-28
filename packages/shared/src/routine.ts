@@ -114,6 +114,12 @@ export const routineStopKindSchema = z.enum([
   "test_commit",
   /** 试跑：下一步是会对外发送、改东西的非浏览器工具，停在它前面 */
   "test_blocked",
+  /** 接着跑（第 17.2 节）：重放时脚本走了和日志不一样的路 */
+  "replay_mismatch",
+  /** 接着跑：日志里有浏览器动作，但这次运行的 Chrome 已经不在了 */
+  "resume_lost",
+  /** 接着跑：这一步要人审批，被拒绝了 */
+  "rejected",
 ])
 export type RoutineStopKind = z.infer<typeof routineStopKindSchema>
 export const routineStopKindLabel: Record<RoutineStopKind, string> = {
@@ -133,6 +139,9 @@ export const routineStopKindLabel: Record<RoutineStopKind, string> = {
   run_failed: "运行出错",
   test_commit: "试跑停在提交前",
   test_blocked: "试跑停在对外发送前",
+  replay_mismatch: "接着跑时对不上",
+  resume_lost: "浏览器已经关了",
+  rejected: "审批被拒绝",
 }
 
 export const routineStopSchema = z.object({
@@ -161,14 +170,15 @@ export type RoutineRecorded = z.infer<typeof routineRecordedSchema>
  * - running：脚本在跑；
  * - finished：脚本报了结果（ha.finish），按 run.finish 照常收尾；
  * - fell_back：交给 agent 了（stoppedAt 写着停在哪、为什么）；
- * - stopped：没交给 agent 就停了：试跑停下（看 stoppedAt.kind）、运行被取消、输入有问题直接记没办成
+ * - stopped：没交给 agent 就停了：试跑停下（看 stoppedAt.kind）、运行被取消、输入有问题直接记没办成；
+ * - suspended：停下等人（验证码、登录页、等浏览器、审批），处理完按日志重放、接着跑（第 17.2 节）
  */
 export const sessionRoutineStateSchema = z.object({
   routineId: z.string(),
   versionId: z.string(),
   version: z.number().int(),
   mode: z.enum(["run", "test"]),
-  state: z.enum(["running", "finished", "fell_back", "stopped"]),
+  state: z.enum(["running", "finished", "fell_back", "stopped", "suspended"]),
   startedAt: isoTime,
   endedAt: isoTime.optional(),
   ms: z.number().int().optional(),
@@ -182,6 +192,12 @@ export const sessionRoutineStateSchema = z.object({
   recorded: routineRecordedSchema.optional(),
   /** ha.log 记的几句话（最多 50 条） */
   logs: z.array(z.string()).optional(),
+  /** 脚本报了办成、三方验收反问、agent 接着做的（第 17.3 节）：不算直接办成，也不算交给 agent */
+  agentAfter: z.boolean().optional(),
+  /** 停下等人后接着跑了几次（第 17.2 节） */
+  resumes: z.number().int().optional(),
+  /** 最近一次接着跑时，按日志跳过了几个请求 */
+  replayed: z.number().int().optional(),
   /** 固化试跑停下、跑完时截的图（试跑报告「停下时的截图」用）；普通运行没有 */
   screenshotFileId: z.string().optional(),
 })
@@ -236,6 +252,8 @@ export const routineVersionSchema = z.object({
   round: z.number().int(),
   /** 点「固化成流程」时选了不试跑 */
   skipTest: z.boolean(),
+  /** 运行办成后系统自动固化的（第 17.1 节）；人点的是 false */
+  auto: z.boolean(),
   testReport: routineTestReportSchema.nullable(),
   modelId: z.string().nullable(),
   costUsd: z.number(),
@@ -319,4 +337,11 @@ export function routineInputOf(snapshot: {
       : {}),
     ...(snapshot.note ? { $note: snapshot.note } : {}),
   }
+}
+
+// ---------- 自动固化（第 17.1 节） ----------
+
+/** 任务的「办成后自动固化」没单独设（null）时按什么来：被派的任务、定时任务开，别的关 */
+export function autoSolidifyDefault(task: { dispatch?: unknown; schedule?: unknown }): boolean {
+  return Boolean(task.dispatch) || Boolean(task.schedule)
 }

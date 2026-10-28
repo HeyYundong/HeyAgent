@@ -118,6 +118,7 @@ export async function getRoutineVersion(db: Db, versionId: string): Promise<Rout
     baseVersion: version.baseVersion,
     round: version.round,
     skipTest: version.skipTest,
+    auto: version.auto,
     testReport: version.testReport ?? null,
     modelId: version.modelId,
     costUsd: version.costUsd,
