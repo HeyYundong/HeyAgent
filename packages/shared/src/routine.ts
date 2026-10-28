@@ -230,7 +230,18 @@ export const routineTestRoundSchema = z.object({
 })
 export type RoutineTestRound = z.infer<typeof routineTestRoundSchema>
 
-export const routineTestReportSchema = z.object({ rounds: z.array(routineTestRoundSchema) })
+/** 固化员写的一轮没到试跑就没过（程序检查没过、固化员出错、没给合格的 JSON）：原因留着，没成功的版本查得到每一轮为什么没过 */
+export const routineDraftRoundSchema = z.object({
+  round: z.number().int().positive(),
+  error: z.string(),
+})
+export type RoutineDraftRound = z.infer<typeof routineDraftRoundSchema>
+
+export const routineTestReportSchema = z.object({
+  rounds: z.array(routineTestRoundSchema),
+  /** 没到试跑就没过的几轮（按轮次排）；以前的版本没有 */
+  drafts: z.array(routineDraftRoundSchema).optional(),
+})
 export type RoutineTestReport = z.infer<typeof routineTestReportSchema>
 
 // ---------- 固化员建议建的 HTTP 工具（routine_versions.http_suggestions，docs/dev/solidify.md 19.5） ----------

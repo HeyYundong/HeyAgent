@@ -103,7 +103,7 @@ interface Ha {
     handleDialog(args: { accept: boolean; promptText?: string }): Promise<unknown>
     /** 等页面出现其中一个（看得见的），返回是哪个名字。定位也可以写 "url=片段"（网址包含这一段）。默认 10 秒、最多 60 秒，超时抛 StepError */
     waitAny(outcomes: Record<string, Target>, options?: { timeout?: number }): Promise<string>
-    /** 按定位读页面上的字：list 是每一行的定位（不给 = 整页一行），fields 是行内每个字段的相对定位，{ target, attr } 取属性（href、value）。limit 默认 50、最多 500；一行也没有不算出错 */
+    /** 按定位读页面上的字：list 是每一行的定位（不给 = 整页一行），fields 是行内每个字段的相对定位（读文字），{ target, attr } 取 HTML 属性（href、value；读文字不写 attr）。limit 默认 50、最多 500；一行也没有不算出错 */
     extract(args: { list?: Target; fields: Record<string, Target | { target: Target; attr: string }>; limit?: number }): Promise<{ rows: Record<string, string>[]; total: number }>
     /** 复制图片（右键 → 复制图片，工具 browser.copy_image）：写进剪贴板、存成这次运行的文件。target 优先，坐标 x、y 要「允许看画面」 */
     copyImage(args: { element?: string; target?: Target; x?: number; y?: number }): Promise<{ fileId: string; width: number; height: number }>
@@ -292,7 +292,7 @@ export const SITE_API_RULES = [
   "21. 会改东西的请求（POST、PUT、PATCH、DELETE）：只有材料里看得到 agent 那次在提交那一步确实发了它（「在哪一步」对得上 agent 点提交、保存的那次调用），才能改成直接调接口；每个请求前面各一个 await ha.commit(\"说明\")（一个 commit 不能管好几个请求，不然脚本会被系统停下），做完读回来核对（用接口或页面读都行）再 ha.verified。没把握就照页面点。",
   "22. ha.browser.fetch 的请求头只写记录里网页设过的业务头（content-type、accept、x-requested-with 这类），不写 cookie、authorization、origin、referer（工具会拒绝）：登录态是浏览器自己带的 cookie。要 CSRF 的照记录里的 csrf 填参数 csrf: { header, from, name }，工具会在页面里读出 token 填上；不要自己去页面上读 token。",
   "23. 每次都看 ha.browser.fetch 返回的 status：4xx、5xx 不抛错，ok 是 false。确实查不到（例如 404、返回空列表）按查不到走；401、403 用 ha.fail(\"page\", \"…多半登录过期了\")；别的不是 2xx 的 ha.fail(\"page\", …)。连不上、超时、接口要跳转会抛 StepError，系统交给 agent。返回里像密码、token 的字段已打码成 ••••，不能拿它当值用。",
-  "24. 用 token 认证的接口（「认证」写着用 token 认证：有认证头、不带 cookie）browser.fetch 调不了（不能设 Authorization）：脚本里照页面点；同时在 httpToolSuggestions 里建议主管建一个 HTTP 工具：网址写完整的模板，每次不一样的部分写 {参数名}，认证头的值写 {{密钥名}}（大写字母、数字、下划线，例如 Bearer {{SHOP_API_TOKEN}}），params 列出每个 {参数名}，secrets 列出每个 {{密钥名}}，requestSeqs 写依据的请求 seq。不要把记录里的值抄成密钥，打了码的 •••• 更不能抄。没有这种接口就给空数组。",
+  "24. 用 token 认证的接口（「认证」写着用 token 认证：有认证头、不带 cookie）browser.fetch 调不了（不能设 Authorization）：脚本里照页面点；同时在 httpToolSuggestions 里建议主管建一个 HTTP 工具：网址写完整的模板，每次不一样的部分写 {参数名}，认证头的值写 {{密钥名}}（大写字母、数字、下划线），格式照「认证」里写的：值是「Bearer <密钥>」的写 Bearer {{SHOP_API_TOKEN}}，值就是密钥本身的只写 {{SHOP_API_TOKEN}}，没写格式的在 reason 里提醒主管核对格式；params 列出每个 {参数名}，secrets 列出每个 {{密钥名}}，requestSeqs 写依据的请求 seq。不要把记录里的值抄成密钥，打了码的 •••• 更不能抄。没有这种接口就给空数组。",
 ].join("\n")
 
 /** 有接口时的例子：先打开页面，再按页码调接口读完所有页（业务只是举例） */
@@ -319,13 +319,31 @@ export default async function run(input) {
 }
 \`\`\``
 
+/** 不是被派的任务（没有 work.report 工具）时例子前面的一句 */
+export const NO_WORK_REPORT_NOTE = "（这个任务不是被派的，没有 work.report 工具：不要调 ha.work.report，读到的结果写进 ha.finish 的 summary、evidence，要留的存文件。）"
+
+/**
+ * 例子：任务没有 work.report（不是被派的）时去掉例 1、例 5 里的 ha.work.report 那几行、标题里的「被派的任务」，前面加一句说明
+ * （基准 F：固化员照例子写了 ha.work.report，程序检查不过，三轮都没写成）
+ */
+export function compileExamples(workReport: boolean): string {
+  if (workReport) return COMPILE_EXAMPLES
+  const text = COMPILE_EXAMPLES.split("\n")
+    .filter((line) => !/^\s*await ha\.work\.report\(/.test(line))
+    .join("\n")
+    .replace("（被派的任务，参数「单号」，要交回「状态」）", "（参数「单号」）")
+  return [NO_WORK_REPORT_NOTE, "", text].join("\n")
+}
+
 /**
  * 系统提示：规矩 + SDK 说明（里面还没有 ha.judge 就补上）+ 5 个例子。
- * siteApi：材料里有「网页调过的接口」（19.6）时，再加第 19–24 条规矩和例 6
+ * siteApi：材料里有「网页调过的接口」（19.6）时，再加第 19–24 条规矩和例 6。
+ * workReport：任务有没有 work.report 工具（被派的任务才有）；false 时例子里不写 ha.work.report。不给当有（照旧）
  */
-export function compileSystemPrompt(sdk = sdkDescription().text, options: { siteApi?: boolean } = {}) {
+export function compileSystemPrompt(sdk = sdkDescription().text, options: { siteApi?: boolean; workReport?: boolean } = {}) {
   const withJudge = /\bjudge\s*[(<]/.test(sdk) ? sdk : [sdk, "", "// 另外还有（Heyagent 上）：", JUDGE_DTS].join("\n")
   const rules = options.siteApi ? [RULES, SITE_API_RULES] : [RULES]
-  const examples = options.siteApi ? [COMPILE_EXAMPLES, "", SITE_API_EXAMPLE] : [COMPILE_EXAMPLES]
-  return [...rules, "", "只输出要求的 JSON。", "", "## SDK（heyagent）的说明", "```ts", withJudge, "```", "", "## 例子（业务只是举例）", ...examples].join("\n")
+  const examples = compileExamples(options.workReport ?? true)
+  const allExamples = options.siteApi ? [examples, "", SITE_API_EXAMPLE] : [examples]
+  return [...rules, "", "只输出要求的 JSON。", "", "## SDK（heyagent）的说明", "```ts", withJudge, "```", "", "## 例子（业务只是举例）", ...allExamples].join("\n")
 }

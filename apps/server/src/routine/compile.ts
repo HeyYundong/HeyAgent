@@ -371,10 +371,17 @@ async function draft(db: Db, loaded: Loaded) {
   } catch (error) {
     return fail(db, loaded, `固化用的模型 ${modelId} 用不了：${(error as Error).message}`)
   }
-  // 材料里有「网页调过的接口」才加第 19–24 条规矩和例 6（19.6）
-  const system = compileSystemPrompt(undefined, { siteApi: Boolean(material.networkSeqs?.length) })
+  // 材料里有「网页调过的接口」才加第 19–24 条规矩和例 6（19.6）；任务没有 work.report（不是被派的）时例子里不写 ha.work.report
+  const system = compileSystemPrompt(undefined, { siteApi: Boolean(material.networkSeqs?.length), workReport: material.toolIds.includes("work.report") })
   let problem = await previousProblem(db, version)
   let lastError = ""
+  // 没到试跑就没过的几轮：原因存进 test_report.drafts（没成功的版本查得到每一轮为什么没过）
+  let report = reportOf(version)
+  const draftFailed = async (round: number, error: string) => {
+    lastError = error
+    report = { ...report, drafts: [...(report.drafts ?? []).filter((each) => each.round !== round), { round, error: clip(error, 2000) }].sort((a, b) => a.round - b.round) }
+    await db.update(t.routineVersions).set({ testReport: report }).where(eq(t.routineVersions.id, version.id))
+  }
 
   for (let round = version.round + 1; round <= ROUTINE_MAX_ROUNDS; round++) {
     const content = problem ? `${material.text}\n\n## 上一轮的问题（这一轮要改好）\n${problem}` : material.text
@@ -391,7 +398,7 @@ async function draft(db: Db, loaded: Loaded) {
     } catch (error) {
       // 模型出错、格式不对：这一轮算用掉了（不然坏掉的模型会一直重试）
       await addCost(db, version.id, { round, modelId, tokensIn: 0, tokensOut: 0, costUsd: 0 })
-      lastError = `固化员（${modelId}）出错：${clip((error as Error).message, 300)}`
+      await draftFailed(round, `固化员（${modelId}）出错：${clip((error as Error).message, 300)}`)
       problem = `上一轮没有给出合格的 JSON：${clip((error as Error).message, 300)}。照要求的字段只输出 JSON。`
       continue
     }
@@ -431,14 +438,23 @@ async function draft(db: Db, loaded: Loaded) {
       })
       .where(eq(t.routineVersions.id, version.id))
     if (problems.length) {
-      lastError = `程序检查没过：${problems.join("；")}`
+      await draftFailed(round, `程序检查没过：${problems.join("；")}`)
       problem = [`程序检查没过：\n${problems.map((each) => `- ${each}`).join("\n")}`, previousCode(output.code)].join("\n\n")
       continue
     }
-    if (version.skipTest) return toReview(db, loaded, { name: fields.name, description: fields.description, assumptions: fields.assumptions })
+    if (version.skipTest) return toReview(db, loaded, { name: fields.name, description: fields.description, assumptions: fields.assumptions, report })
     return startTest(db, loaded, round, material)
   }
-  return fail(db, loaded, `写了 ${ROUTINE_MAX_ROUNDS} 轮都没写出能用的脚本。最后一轮：${lastError}`)
+  return fail(db, loaded, `写了 ${ROUTINE_MAX_ROUNDS} 轮都没写出能用的脚本。${roundsText(report) || `最后一轮：${lastError}`}`)
+}
+
+/** 每一轮为什么没过（没到试跑的和试跑没过的都算），按轮次一行一句；失败通知、没成功的原因里用 */
+export function roundsText(report: RoutineTestReport): string {
+  const lines = [
+    ...(report.drafts ?? []).map((each) => ({ round: each.round, text: each.error })),
+    ...report.rounds.filter((each) => !each.passed).map((each) => ({ round: each.round, text: `试跑没过：${each.error ?? "原因不明"}` })),
+  ].sort((a, b) => a.round - b.round)
+  return lines.map((each) => `第 ${each.round} 轮：${clip(each.text, 400)}`).join("\n")
 }
 
 async function baseOf(db: Db, routineId: string, version: number) {
@@ -502,11 +518,13 @@ async function afterTest(db: Db, loaded: Loaded) {
   if (verdict.state === "pending") return
   if (verdict.state === "missing") return fail(db, loaded, `找不到第 ${version.round} 轮试跑的运行`)
   const round = verdict.round
-  const report: RoutineTestReport = { rounds: [...reportOf(version).rounds.filter((each) => each.round !== round.round), round].sort((a, b) => a.round - b.round) }
+  const previous = reportOf(version)
+  // drafts（没到试跑就没过的几轮）留着
+  const report: RoutineTestReport = { ...previous, rounds: [...previous.rounds.filter((each) => each.round !== round.round), round].sort((a, b) => a.round - b.round) }
   await db.update(t.routineVersions).set({ testReport: report }).where(eq(t.routineVersions.id, version.id))
 
-  if (round.passed) return toReview(db, loaded, { name: version.name, description: version.description, assumptions: version.assumptions, round })
-  if (version.round >= ROUTINE_MAX_ROUNDS) return fail(db, loaded, `试跑没过，${ROUTINE_MAX_ROUNDS} 轮都用完了。最后一轮：${round.error ?? "原因不明"}`)
+  if (round.passed) return toReview(db, loaded, { name: version.name, description: version.description, assumptions: version.assumptions, round, report })
+  if (version.round >= ROUTINE_MAX_ROUNDS) return fail(db, loaded, `试跑没过，${ROUTINE_MAX_ROUNDS} 轮都用完了。${roundsText(report)}`)
   await db.transaction(async (tx) => {
     const moved = await tx
       .update(t.routineVersions)
@@ -528,9 +546,10 @@ function testLine(round: RoutineTestRound | undefined, version: { skipTest: bool
 }
 
 /** 交给人审核：待审核 + 给任务负责人一件「审核固化流程」 + 通知 */
-async function toReview(db: Db, loaded: Loaded, info: { name: string; description: string; assumptions: string[]; round?: RoutineTestRound }) {
+async function toReview(db: Db, loaded: Loaded, info: { name: string; description: string; assumptions: string[]; round?: RoutineTestRound; report?: RoutineTestReport }) {
   const { version } = loaded
   const test = testLine(info.round, version)
+  const earlier = info.report ? roundsText(info.report) : ""
   const item = await db.transaction(async (tx) => {
     const moved = await tx
       .update(t.routineVersions)
@@ -552,6 +571,7 @@ async function toReview(db: Db, loaded: Loaded, info: { name: string; descriptio
           ...(version.auto ? [{ title: "自动固化", text: autoSourceText(version) }] : []),
           { title: "步骤", text: info.description || "（没写）" },
           { title: "试跑", text: test },
+          ...(earlier ? [{ title: "前面没过的几轮", text: earlier }] : []),
           ...(info.assumptions.length ? [{ title: "假设", text: info.assumptions.map((each) => `- ${each}`).join("\n") }] : []),
         ],
         primary: "启用",

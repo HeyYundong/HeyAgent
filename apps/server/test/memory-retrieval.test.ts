@@ -15,7 +15,7 @@ import { configureEngine, runtime } from "../src/engine/runtime.js"
 import { buildSnapshot } from "../src/engine/sessions.js"
 import type { EmbedInput } from "../src/gallery/embed.js"
 import { cosine } from "../src/gallery/embed.js"
-import { embedPendingMemoriesOnce, memoryContentHash } from "../src/memory/embed.js"
+import { embedPendingMemoriesOnce, memoryContentHash, retryMemoryEmbeddingsNow } from "../src/memory/embed.js"
 import { autoMemoryQueryText, resolveAutoMemory, runMemoryUseOf } from "../src/memory/retrieval.js"
 import { login, query } from "./helpers.js"
 import {
@@ -293,6 +293,28 @@ describe("记忆的向量", () => {
     const fixed = await memoryRow(id)
     expect(fixed.embedError).toBeNull()
     expect(await embedOf(id)).toEqual({ state: "ready" })
+    await mutate(ctx.app, "memories.archive", lin, { id })
+  })
+
+  it("模型服务换了 key、从出错变好（retryMemoryEmbeddingsNow）：之前算失败的不用等 10 分钟；之后再失败的照旧隔 10 分钟", async () => {
+    const id = await newMemory("换 key 测试", "向量")
+    embedBroken = true
+    await expect(embedPendingMemoriesOnce(ctx.db)).rejects.toThrow("模型挂了")
+    embedBroken = false
+    expect(await embedPendingMemoriesOnce(ctx.db)).toBe(0)
+
+    retryMemoryEmbeddingsNow()
+    expect(await embedPendingMemoriesOnce(ctx.db)).toBe(1)
+    expect(await embedOf(id)).toEqual({ state: "ready" })
+
+    // 修好以后才失败的：还是隔 10 分钟
+    await mutate(ctx.app, "memories.update", lin, { id, content: "换 key 测试改过", appliesTo: "向量" })
+    embedBroken = true
+    await expect(embedPendingMemoriesOnce(ctx.db)).rejects.toThrow("模型挂了")
+    embedBroken = false
+    expect(await embedPendingMemoriesOnce(ctx.db)).toBe(0)
+    await ctx.db.update(t.memories).set({ embedTriedAt: sql`now() - interval '11 minutes'` }).where(eq(t.memories.id, id))
+    expect(await embedPendingMemoriesOnce(ctx.db)).toBe(1)
     await mutate(ctx.app, "memories.archive", lin, { id })
   })
 

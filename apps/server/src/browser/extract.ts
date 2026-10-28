@@ -312,12 +312,20 @@ const tidy = (value: string) =>
 /** 网址类的属性：换成完整的网址（相对页面的网址） */
 const URL_ATTRS = new Set(["href", "src", "action", "poster"])
 
+/**
+ * attr 是取 HTML 属性（getAttribute）。没有叫 textContent、innerText、text 的属性，写了只会读出 null
+ * （基准 E：脚本写 attr: "textContent"，提交后的核对一直失败）：这几个按文字读
+ */
+const TEXT_ATTRS = new Set(["textcontent", "innertext", "text"])
+
 async function readField(row: Root, field: ExtractField, pageUrl: string): Promise<string | null> {
   const { target, attr } = typeof field === "string" ? { target: field, attr: undefined } : field
   const locator = buildLocator(row, target)
   if ((await locator.count()) === 0) return null
   const element = locator.first()
-  if (attr) {
+  // textContent 连藏起来的字也读（和 DOM 的 textContent 一样）；innerText、text 照不写 attr 读
+  if (attr?.toLowerCase() === "textcontent") return tidy((await element.textContent({ timeout: READ_TIMEOUT_MS })) ?? "")
+  if (attr && !TEXT_ATTRS.has(attr.toLowerCase())) {
     // value 取输入框现在的值（不是 HTML 里写的初始值）
     if (attr === "value") return element.inputValue({ timeout: READ_TIMEOUT_MS }).catch(() => element.getAttribute("value", { timeout: READ_TIMEOUT_MS }))
     const value = await element.getAttribute(attr, { timeout: READ_TIMEOUT_MS })

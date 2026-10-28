@@ -593,7 +593,14 @@ function apiBlock(group: ApiGroup, no: number, values: { label: string; value: s
   const authHeaders = [...new Set(lines.flatMap((line) => line.auth.headers))].sort()
   const csrf = lines.find((line) => line.csrf)?.csrf
   const auth = [cookie ? "带 cookie" : "不带 cookie"]
-  if (authHeaders.length) auth.push(`认证头 ${authHeaders.join("、")}`)
+  if (authHeaders.length) {
+    // 值的格式（方案名，21.3 第 5 条）：HTTP 工具建议照着加不加 Bearer
+    const formats = authHeaders.map((name) => {
+      const scheme = lines.map((line) => line.auth.schemes?.[name]).find((each) => each !== undefined)
+      return scheme === undefined ? name : scheme ? `${name}（值是「${scheme} <密钥>」）` : `${name}（值就是密钥本身，前面没有 Bearer 这类方案名）`
+    })
+    auth.push(`认证头 ${formats.join("、")}`)
+  }
   if (csrf) auth.push(`CSRF 照抄：csrf: ${JSON.stringify(csrf)}`)
   const note = authHeaders.length
     ? cookie

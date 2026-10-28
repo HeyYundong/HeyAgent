@@ -155,8 +155,12 @@ export const networkRequestLineSchema = z.object({
   page: z.string().optional(),
   /** 网页设的请求头的名字（小写、排好序），值不记 */
   headers: z.array(z.string()),
-  /** 认证方式：带没带 cookie；像认证的请求头名字（authorization、x-api-key、x-auth-token……，csrf 的不算） */
-  auth: z.object({ cookie: z.boolean(), headers: z.array(z.string()) }),
+  /**
+   * 认证方式：带没带 cookie；像认证的请求头名字（authorization、x-api-key、x-auth-token……，csrf 的不算）；
+   * schemes：认证头的值的方案名（名字 → 值里第一个空格前的词：Bearer、Basic、Token……），值里没有空格（整个就是密钥）记 ""，
+   * 第一个词不像方案名（不全是字母）的不记。密钥本身不记。以前记的行没有 schemes
+   */
+  auth: z.object({ cookie: z.boolean(), headers: z.array(z.string()), schemes: z.record(z.string(), z.string()).optional() }),
   /** 请求头里有 csrf 类的（名字含 csrf、xsrf），而且认出了值从哪来（页面的 meta、不是 HttpOnly 的 cookie）：照抄给 browser.fetch 的 csrf */
   csrf: fetchCsrfSchema.optional(),
   /** 请求体的 content-type、开头 NETWORK_REQUEST_BODY_BYTES（打码）、后面没记的字节数 */

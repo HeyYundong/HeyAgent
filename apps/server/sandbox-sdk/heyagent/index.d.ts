@@ -42,7 +42,10 @@ export interface FormField {
 export interface ExtractArgs {
   /** 每一行的定位，例如 getByRole('row')；不给 = 整页算一行 */
   list?: Target
-  /** 字段名 → 定位（相对这一行），或 { target, attr } 取属性（href、value、src） */
+  /**
+   * 字段名 → 定位（相对这一行），读的是元素的文字；或 { target, attr } 取 HTML 属性（href、value、src、alt……）。
+   * attr 是 HTML 属性名，不是 DOM 的属性：读文字就不写 attr（写 textContent、innerText、text 也按文字读）
+   */
   fields: Record<string, Target | { target: Target; attr?: string }>
   /** 最多读几行，默认 50，最多 500 */
   limit?: number

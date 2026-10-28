@@ -519,7 +519,7 @@ P1 验收：
 2. **两个新工具**（4.4、4.5）：用编排器自己的 Playwright，只读，不能放进 batch。
    - `browser.extract({ list?, fields, limit? })`：
      - `list` 是每一行的定位，不给 = 整页一行；
-     - `fields` 是 `{ 字段名: 定位 | { target, attr } }`，行内相对定位，`attr` 取属性（如 href、value）；
+     - `fields` 是 `{ 字段名: 定位 | { target, attr } }`，行内相对定位，读元素的文字；`attr` 取 HTML 属性（如 href、value）。`attr` 写 `textContent` / `innerText` / `text`（不分大小写）的按文字读（`textContent` 连藏起来的字也读），不再读出 null（2026-10-28，21.3 第 2 条）；
      - `limit` 默认 50、最多 500；
      - 返回给模型的是一张小表（文字里最多 50 行），`data` 是 `{ rows, total }`；一行也没有不算出错。
    - `browser.wait_any({ outcomes: { 名字: 定位 }, timeout? })`：
@@ -994,6 +994,7 @@ P1 验收：
 - `headers`：网页设的请求头，只记名字（小写、排好序），值一律不记。
 - `auth.cookie`：实际发出去的请求带没带 cookie（`requestWillBeSentExtraInfo` 的头里有没有 `cookie`）。
 - `auth.headers`：像认证的请求头名字：`authorization`、`x-api-key`、`api-key`、名字里有 `token` 或 `auth` 的（名字里有 `csrf`、`xsrf` 的不算）。
+- `auth.schemes`（2026-10-28 加，可选）：认证头的值的方案名，取值里第一个空格前的词（`Bearer`、`Basic`、`Token`）；值里没有空格（整个就是密钥）记 `""`；第一个词不全是字母（可能是密钥的一部分）不记。密钥本身不记。材料「认证」里写成「authorization（值是「Bearer <密钥>」）」或「（值就是密钥本身……）」，规矩第 24 条要固化员照这个格式写 HTTP 工具建议的认证头。
 - `csrf`：请求头名字里有 `csrf`、`xsrf` 时，看它的值等于页面里哪个 `<meta name>` 的 content，或者哪个 cookie 的值（`Network.getCookies`），认出来就写 `{ header, from, name }`，认不出不写。值不记。
 - `shape`：返回 JSON 的字段结构，像 TypeScript 的写法。数组只看第一项，最多 6 层、每层 40 个键，多的写 `…`。
 - `status` 是 0：没拿到返回（连不上、被取消），原因写在 `error`。
@@ -1055,7 +1056,7 @@ P1 验收：
 **算不算出错**：
 
 - 4xx、5xx 不算出错：`data.ok = false`，脚本按 `status` 走不同的路（404 = 查不到）。
-- 401、403：输出里多一行提示「多半登录过期了，先用 browser.navigate 打开网站的页面看看要不要登录」。
+- 401、403：输出里多一行提示（`site-api.ts` 的 `fetchAuthHint`，2026-10-28 改，见 21.3 第 6 条）：网页调这个接口（同源同路径）时带认证头、不带 cookie（`NetworkLog.usesToken`），或者返回头 `WWW-Authenticate` 有方案名的，写「这个接口要别的认证（例如 token），browser.fetch 调不了……照页面点或建 HTTP 工具」；这个网址没有 cookie 的，两种可能都写（还没登录 / 要 token）；带了 cookie 的才写「多半登录过期了，先用 browser.navigate 打开网站的页面看看要不要登录」。
 - 下面这些算出错（脚本里是 `StepError`）：没有页面、网址不让调、连不上、超时、跨域被拦、接口要跳转、返回体太大、CSRF 读不到。
 
 **给模型的输出**：
