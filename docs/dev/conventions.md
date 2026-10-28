@@ -48,6 +48,7 @@ design/         定稿原型，只读参考。不改、不提交（已在 .gitig
   - 没有 `podman compose`，没有 Quadlet；
   - 起整套用 `podman play kube <yaml>`（Podman 4 起叫 `podman kube play`，脚本要兼容两种写法）；
   - 镜像名写全：数据库是 `docker.io/pgvector/pgvector:0.8.7-pg18-trixie`（Postgres 18 + pgvector，2026-10-17 起，图库的向量检索要用；和原来的 `postgres:18` 同版本、数据卷通用）。
+- 网慢、`scripts/pod.sh up` 构建时 `pnpm install` 下载超时：用 `HEYAGENT_PNPM_STORE=/mnt/toshiba/.pnpm-store scripts/pod.sh up`，构建时把本机的 pnpm store（`pnpm store path` 去掉末尾的 `/v11`）挂进去，本机有的包不再下载，缺的照旧从官方源下。Podman 3.4 不支持 `RUN --mount=type=cache`，所以是 `podman build -v` 加 build arg `PNPM_STORE`。
 - 服务器上会是 Podman 4.4 以上，用 Quadlet 交给 systemd 管理（部署阶段再做）。
 - 调研报告里 Docker 的参数要换成 Podman 的对应写法：`--shm-size`、`--init`、`--security-opt seccomp=...` 在 Podman 里都有。
 - 开发机**没有免密 sudo**：不要装系统包。需要的工具放进容器，或者用户目录下的二进制。
