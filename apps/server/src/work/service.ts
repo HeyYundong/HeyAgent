@@ -26,7 +26,8 @@ export const normalizeDispatch = (dispatch: t.StoredTaskDispatch | null | undefi
   dispatch ? { ...dispatch, results: dispatch.results ?? [] } : null
 
 export class WorkError extends Error {
-  readonly code: "NOT_FOUND" | "BAD_REQUEST" | "FORBIDDEN" | "CONFLICT"
+  /** TOO_MANY_REQUESTS（第三期）：撞了「每天最多被派」「最多排队」（HTTP 接口回 429） */
+  readonly code: "NOT_FOUND" | "BAD_REQUEST" | "FORBIDDEN" | "CONFLICT" | "TOO_MANY_REQUESTS"
   constructor(code: WorkError["code"], message: string) {
     super(message)
     this.code = code
@@ -54,6 +55,26 @@ export async function occupiedSlots(db: DbOrTx, taskId: string): Promise<number>
     .where(and(eq(t.sessions.taskId, taskId), isNotNull(t.sessions.workItemId), occupiesSlotSql()))
   return row?.n ?? 0
 }
+
+/** 排队的单的领单顺序（第三期）：优先级高的先，同一级按派进来的先后。领单（pump.ts）和排队名次用同一个 */
+export const QUEUE_ORDER = [desc(t.workItems.priority), asc(t.workItems.createdAt), asc(t.workItems.id)] as const
+
+/**
+ * 今天（上海时间 0 点以后开始的）被派来的运行一共花了多少美元，按任务（第三期每天花费上限）。
+ * 含验收、复核的花费（本来就记在运行上）；跨过 0 点还在跑的算在开始那天。领单、taskStats、queueStats 用同一份
+ */
+export async function dispatchSpentToday(db: DbOrTx, taskIds: string[]): Promise<Map<string, number>> {
+  if (!taskIds.length) return new Map()
+  const rows = await db
+    .select({ taskId: t.sessions.taskId, spent: sql<string>`coalesce(sum(${t.sessions.costUsd}), 0)` })
+    .from(t.sessions)
+    .where(and(inArray(t.sessions.taskId, taskIds), isNotNull(t.sessions.workItemId), gte(t.sessions.startedAt, startOfTodayShanghai())))
+    .groupBy(t.sessions.taskId)
+  return new Map(rows.map((row) => [row.taskId, Number(row.spent)]))
+}
+
+/** 每天花费上限到了没有（没设上限的永远没到） */
+export const budgetReached = (spent: number, budget: number | null | undefined) => budget != null && spent >= budget
 
 /** 行 → 接口形状。taskTitle 等关联字段由调用方一次查好传进来 */
 function toWorkItem(
@@ -111,10 +132,9 @@ async function enrich(db: DbOrTx, rows: WorkItemRow[]) {
       ? db
           .select({ id: t.workItems.id, taskId: t.workItems.taskId })
           .from(t.workItems)
-          // 排队等自动重试的（not_before 在将来）不算名次：到点才领
-          // TODO（第三期，包 A）：名次按领单的顺序算：priority desc, created_at, id（和 pump.ts 一致）；「过多久再办」没到点的同样不算
+          // 排队等自动重试、「过多久再办」的（not_before 在将来）不算名次：到点才领。名次按领单的顺序（pump.ts 的 QUEUE_ORDER）
           .where(and(eq(t.workItems.status, "queued"), inArray(t.workItems.taskId, queuedTasks), or(isNull(t.workItems.notBefore), lte(t.workItems.notBefore, sql`now()`))))
-          .orderBy(asc(t.workItems.createdAt), asc(t.workItems.id))
+          .orderBy(...QUEUE_ORDER)
       : [],
     apiKeyIds.length ? db.select({ id: t.apiKeys.id, name: t.apiKeys.name }).from(t.apiKeys).where(inArray(t.apiKeys.id, apiKeyIds)) : [],
   ])
@@ -148,6 +168,8 @@ export async function listWorkItems(db: DbOrTx, rawInput: WorkListInput): Promis
   if (input.taskId) base.push(eq(t.workItems.taskId, input.taskId))
   if (input.fromTaskId) base.push(eq(t.workItems.fromTaskId, input.fromTaskId))
   if (input.fromSessionId) base.push(eq(t.workItems.fromSessionId, input.fromSessionId))
+  // 第三期：按去重键精确找（外部系统用自己的编号查）
+  if (input.key) base.push(eq(t.workItems.key, input.key))
   if (input.q) {
     const like = `%${input.q.replace(/[%_\\]/g, (c) => `\\${c}`)}%`
     base.push(or(ilike(t.workItems.id, like), ilike(t.workItems.title, like), ilike(t.workItems.key, like), sql`${t.workItems.params}::text ilike ${like}`)!)
@@ -245,7 +267,7 @@ export function startOfTodayShanghai(now = new Date()): Date {
 
 /** 被派任务的一行数字：排队、在办、占名额、今天办完、没办成 */
 export async function workTaskStats(db: DbOrTx, taskId: string): Promise<WorkTaskStats> {
-  const [[task], grouped, [doneToday], occupied] = await Promise.all([
+  const [[task], grouped, [doneToday], occupied, spent] = await Promise.all([
     db.select({ dispatch: t.tasks.dispatch }).from(t.tasks).where(eq(t.tasks.id, taskId)),
     db.select({ status: t.workItems.status, n: count() }).from(t.workItems).where(eq(t.workItems.taskId, taskId)).groupBy(t.workItems.status),
     db
@@ -253,6 +275,7 @@ export async function workTaskStats(db: DbOrTx, taskId: string): Promise<WorkTas
       .from(t.workItems)
       .where(and(eq(t.workItems.taskId, taskId), eq(t.workItems.status, "done"), gte(t.workItems.finishedAt, startOfTodayShanghai()))),
     occupiedSlots(db, taskId),
+    dispatchSpentToday(db, [taskId]),
   ])
   if (!task) throw new WorkError("NOT_FOUND", `没有任务 ${taskId}`)
   const by = new Map(grouped.map((row) => [row.status, row.n]))
@@ -264,8 +287,8 @@ export async function workTaskStats(db: DbOrTx, taskId: string): Promise<WorkTas
     maxRunning: task.dispatch?.maxRunning ?? 0,
     doneToday: doneToday?.n ?? 0,
     failed: by.get("failed") ?? 0,
-    // TODO（第三期，包 A）：今天被派来的运行花了多少（dispatchSpentToday），和领单时判断花费上限用同一份
-    spentTodayUsd: 0,
+    // 今天被派来的运行花了多少，和领单时判断花费上限用同一份
+    spentTodayUsd: spent.get(taskId) ?? 0,
     dailyBudgetUsd: task.dispatch?.dailyBudgetUsd ?? null,
   }
 }
@@ -293,6 +316,11 @@ export async function workQueueStats(db: DbOrTx): Promise<WorkQueueStats[]> {
     .from(t.tasks)
     .where(withItems.length ? or(isNotNull(t.tasks.dispatch), inArray(t.tasks.id, withItems)) : isNotNull(t.tasks.dispatch))
     .orderBy(asc(t.tasks.id))
+  // 只查设了花费上限的任务（没设的页面不显示花费）
+  const spent = await dispatchSpentToday(
+    db,
+    tasks.filter((task) => task.dispatch?.dailyBudgetUsd != null).map((task) => task.id)
+  )
   return tasks.map((task) => {
     const n = (status: "queued" | "running") => grouped.find((row) => row.taskId === task.id && row.status === status)?.n ?? 0
     const held = holders.filter((row) => row.taskId === task.id).map((row) => row.id)
@@ -305,8 +333,8 @@ export async function workQueueStats(db: DbOrTx): Promise<WorkQueueStats[]> {
       running: n("running"),
       occupied: held.length,
       holders: held,
-      // TODO（第三期，包 A）：同 workTaskStats，按任务一次查出今天的花费
-      spentTodayUsd: 0,
+      // 同 workTaskStats（一次查出设了上限的任务今天的花费；没设上限的写 0）
+      spentTodayUsd: spent.get(task.id) ?? 0,
       dailyBudgetUsd: task.dispatch?.dailyBudgetUsd ?? null,
     }
   })

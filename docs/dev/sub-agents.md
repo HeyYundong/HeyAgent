@@ -486,7 +486,7 @@
 都是读代码看出来的，**没有跑过验证**，改之前先写测试确认。
 
 1. **手动运行的编号按「这个任务一共有几次运行」算**（`sessions.ts` 的 `nextSessionId`：`count(*) where task_id = …` + 1）。固化试跑（`kind = routine_test`）现在就被算进去了，子运行会更明显：拆过 4 个以后，下一次「立即运行」从 R-12-4 跳到 R-12-8。建议照定时的写法改成「取现有 `R-<任务号>-<k>` 里最大的 k + 1」，只看 `kind = run`。不能简单地改成只数 `kind = run`：以前被固化试跑撑大的编号会和新算出来的撞，撞号重试最多 20 次，差得多就开不出运行。
-2. **外部事件不挡系统内部的事件名**（`control.ts` 的 `fireEventImpl`）：有事件令牌的外部系统、或者控制台手动触发，能发 `work.done:W-1`、`browser.profile:any` 这类名字，叫醒在等它的运行。子 agent 的 `subagent.` 事件这次一定挡掉（父会被提前叫醒、子会被跳过名额放行）；建议顺手把 `work.done:`、`browser.`、`desktop:` 也挡掉（要不要挡由监工定，可能有人在用控制台手动叫醒等浏览器的运行）。
+2. **外部事件不挡系统内部的事件名**（`control.ts` 的 `fireEventImpl`）：有事件令牌的外部系统、或者控制台手动触发，能发 `work.done:W-1`、`browser.profile:any` 这类名字，叫醒在等它的运行。子 agent 的 `subagent.` 事件这次一定挡掉（父会被提前叫醒、子会被跳过名额放行）；建议顺手把 `work.done:`、`browser.`、`desktop:` 也挡掉（要不要挡由监工定，可能有人在用控制台手动叫醒等浏览器的运行）。**2026-10-28 已做**（随派活第三期，监工定四种都挡）：shared `RESERVED_EVENT_PREFIXES` 加了 `subagent.`，`fireEventImpl` 第一步 `assertExternalEventName`，外部事件接口回 400、控制台 `BAD_REQUEST`，文字说清原因；见 `dispatch-p3.md` 第 12 节、`api.md` 第 7 节。
 3. **今天的花费只算 `kind = run`**（`session-page.ts`）：子运行的钱要算进去（6.4）。
 4. **被派的运行挂起时都会放出派活名额**（`waits.ts` 的 `suspendInTx`：事件不是 `browser.` / `desktop:` 开头就发 `work.pump`）。被派的运行拆了子 agent、挂起等它们时，名额放出去会再开下一张单，下一张也拆……名额 1 的任务实际同时跑好几组。要把等 `subagent.all:` / `subagent.any:` 也当成占名额（`occupiesSlotSql` 和 `suspendInTx` 两处）。
 5. **开运行带附件会把文件挪到新运行名下**（`startSessionInTx` 的 `runAttachments`：`update files set session_id = 新运行`）。子 agent 读父的文件不能走这条路，要照固化试跑那样只读地放进快照（5.1 节）。

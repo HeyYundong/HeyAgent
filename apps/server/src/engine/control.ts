@@ -1,6 +1,6 @@
 // 人对 session 的操作：取消、立即继续；外部事件（webhook 或控制台手动触发）。
 import { and, eq, inArray, notInArray } from "drizzle-orm"
-import { ENDED_RUN_STATUSES, isRunEnded, runOutcomeLabel, type FireEventResult, type SetOutcomeInput } from "@heyagent/shared"
+import { ENDED_RUN_STATUSES, isRunEnded, reservedEventPrefix, reservedEventPurpose, runOutcomeLabel, type FireEventResult, type SetOutcomeInput } from "@heyagent/shared"
 
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
@@ -153,7 +153,21 @@ export async function resumeNowImpl(
   return { sessionId: input.sessionId }
 }
 
-/** 事件：按事件名匹配等待中的 session（继续）和待办（触发） */
+/**
+ * 外部（事件接口、控制台手动触发）不能发的事件名：平台自己用的前缀（RESERVED_EVENT_PREFIXES）。
+ * 这些由系统自己叫醒（派活单结束 onWorkNotify、浏览器 / 桌面空出来、子 agent 办完），都是直接 waitsForEvent + resume，不经过 fireEventImpl；
+ * 外部发了会把在等的运行提前叫醒（docs/dev/sub-agents.md 第 12 节第 2 条）
+ */
+export function assertExternalEventName(event: string) {
+  const prefix = reservedEventPrefix(event)
+  if (prefix)
+    throw new EngineError(
+      "BAD_REQUEST",
+      `事件名不能以「${prefix}」开头：这是平台内部的事件（${reservedEventPurpose[prefix]}），只由系统自己发；外部系统和手动触发发了会把在等的运行提前叫醒。换个事件名`
+    )
+}
+
+/** 事件：按事件名匹配等待中的 session（继续）和待办（触发）。只给外部用（事件接口、控制台手动触发），平台内部的事件名一律拒 */
 export async function fireEventImpl(
   db: Db,
   input: {
@@ -163,6 +177,7 @@ export async function fireEventImpl(
     via: "webhook" | "console"
   }
 ): Promise<FireEventResult> {
+  assertExternalEventName(input.event)
   const data = input.data ?? {}
   const result: FireEventResult = { resumedSessionIds: [], firedTodoIds: [], dispatched: [], dispatchRejected: [] }
   const payload = Object.keys(data).length
@@ -187,7 +202,7 @@ export async function fireEventImpl(
     })
     if (fired) result.firedTodoIds.push(todo.id)
   }
-  // 派活第三期：按任务上的「收到事件就派一张」派单（docs/dev/dispatch-p3.md 第 3 节；现在是空壳，包 A 实现）
+  // 派活第三期：按任务上的「收到事件就派一张」派单（docs/dev/dispatch-p3.md 第 3 节），和上面两件互不影响
   const dispatched = await dispatchFromEvent(db, { event: input.event, data, actorId: input.actorId ?? null, via: input.via })
   result.dispatched = dispatched.dispatched
   result.dispatchRejected = dispatched.rejected

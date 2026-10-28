@@ -7,13 +7,18 @@ import {
   runOutcomeLabel,
   runStatusLabel,
   WORK_DISPATCH_TOOL_ID,
+  WORK_PRIORITY_RANK,
   workDedupeKey,
   workItemId,
+  workNotBefore,
   workParamsProblem,
+  workPriorityLabel,
   workReportLine,
+  workWaitKind,
   type builtinToolInputs,
   type TaskDispatch,
   type WorkItem,
+  type WorkPriority,
   type WorkVia,
 } from "@heyagent/shared"
 import { and, count, eq, gte, inArray, sql } from "drizzle-orm"
@@ -28,7 +33,7 @@ import type { Tx } from "../queue.js"
 import type { ToolContext, ToolOutcome } from "../tools/builtin.js"
 import { lockTaskInTx } from "./pump.js"
 import { appendLog } from "./settle.js"
-import { sendPumpInTx } from "./signal.js"
+import { sendPumpAtInTx, sendPumpInTx } from "./signal.js"
 
 type WorkItemRow = typeof t.workItems.$inferSelect
 
@@ -46,18 +51,29 @@ export interface NewWorkItem {
   /** 对方任务没有标「去重」的参数时，agent 自己给的去重键 */
   key?: string
   note?: string
+  /** 第三期：优先级；不写 = 普通（ifExists = update 时不写 = 不改） */
+  priority?: WorkPriority
+  /** 第三期：到这个时间以后才领（workNotBefore 算好的，null = 马上）；不写 = 马上（ifExists = update 时不写 = 不改） */
+  notBefore?: Date | null
 }
 
 export type ItemOutcome =
   | { kind: "created"; row: WorkItemRow }
   | { kind: "existing"; row: WorkItemRow; updated: boolean }
-  | { kind: "rejected"; title: string; reason: string }
+  /** limit = 撞了「每天最多被派」「最多排队」「一次运行最多派」（接口回 429）；别的（参数不对、没有去重键）为 false（400） */
+  | { kind: "rejected"; title: string; reason: string; limit: boolean }
 
 export interface CreateOptions {
   via: WorkVia
   fromTaskId?: string | null
   fromSessionId?: string | null
+  /** 人派的：谁；API 密钥派的：密钥的创建人；控制台触发事件派的：触发的人 */
   fromUserId?: string | null
+  /** via = api：哪把密钥、叫什么（名字只写进处理记录） */
+  apiKeyId?: string | null
+  apiKeyName?: string | null
+  /** via = event：事件名 */
+  fromEvent?: string | null
   depth: number
   ifExists: "skip" | "update"
   /** agent 派的：一次运行最多派几张（按 from_session_id 数）；人派的不限 */
@@ -104,8 +120,17 @@ export async function createItemsInTx(db: Db, tx: Tx, task: DispatchTarget, item
     if (problem) return { ok: false as const, title, problem }
     const key = itemKey(task.dispatch, params, item.key, options.requireKey)
     if ("problem" in key) return { ok: false as const, title, problem: key.problem }
-    return { ok: true as const, title, params, key: key.key, note: item.note?.trim().slice(0, 1000) ?? "" }
+    return { ok: true as const, title, params, key: key.key, note: item.note?.trim().slice(0, 1000) ?? "", priority: item.priority, notBefore: item.notBefore }
   })
+  // 处理记录里写单从哪来（agent、人派的看 sessionId / byId 就知道）
+  const source = dispatchSourceText(options)
+  // 新建、改过的单：马上能领的发即时的 work.pump，定了时间的到点发延迟的
+  let pumpNow = false
+  const pumpAt = new Set<number>()
+  const schedulePump = (notBefore: Date | null) => {
+    if (notBefore && notBefore.getTime() > Date.now()) pumpAt.add(notBefore.getTime())
+    else pumpNow = true
+  }
   const keys = [...new Set(prepared.flatMap((item) => (item.ok && item.key ? [item.key] : [])))]
   const existing = new Map<string, WorkItemRow>()
   if (keys.length) {
@@ -125,25 +150,33 @@ export async function createItemsInTx(db: Db, tx: Tx, task: DispatchTarget, item
   let dayLimitHit = false
   for (const item of prepared) {
     if (!item.ok) {
-      outcomes.push({ kind: "rejected", title: item.title, reason: item.problem })
+      outcomes.push({ kind: "rejected", title: item.title, reason: item.problem, limit: false })
       continue
     }
     const found = item.key ? existing.get(item.key) : undefined
     if (found) {
       if (options.ifExists === "update" && found.status === "queued") {
         const now = new Date()
+        // 时间：给了才改；等自动重试的单不改（保持「重试」的含义，要马上办由人「不办了」再「重办」）
+        const retimed = item.notBefore !== undefined && found.autoRetries === 0
         const [row] = await tx
           .update(t.workItems)
           .set({
             title: item.title || found.title,
             params: item.params,
             note: item.note,
+            ...(item.priority ? { priority: WORK_PRIORITY_RANK[item.priority] } : {}),
+            ...(retimed ? { notBefore: item.notBefore ?? null } : {}),
             updatedAt: now,
             log: appendLog({
               at: now.toISOString(),
               kind: "params_changed",
               ...(options.fromUserId ? { byId: options.fromUserId } : {}),
-              ...(options.fromSessionId ? { sessionId: options.fromSessionId, note: `运行 ${options.fromSessionId} 再派时用新参数覆盖` } : {}),
+              ...(options.fromSessionId
+                ? { sessionId: options.fromSessionId, note: `运行 ${options.fromSessionId} 再派时用新参数覆盖` }
+                : source
+                  ? { note: `${source}再派时用新参数覆盖` }
+                  : {}),
             }),
           })
           .where(and(eq(t.workItems.id, found.id), eq(t.workItems.status, "queued")))
@@ -151,6 +184,7 @@ export async function createItemsInTx(db: Db, tx: Tx, task: DispatchTarget, item
         if (row) {
           existing.set(row.key, row)
           outcomes.push({ kind: "existing", row, updated: true })
+          if (retimed) schedulePump(row.notBefore)
           continue
         }
       }
@@ -158,18 +192,19 @@ export async function createItemsInTx(db: Db, tx: Tx, task: DispatchTarget, item
       continue
     }
     if (options.maxPerSession !== undefined && perSession >= options.maxPerSession) {
-      outcomes.push({ kind: "rejected", title: item.title, reason: `这次运行已经派了 ${perSession} 张，到了上限（一次运行最多派 ${options.maxPerSession} 张）` })
+      outcomes.push({ kind: "rejected", title: item.title, reason: `这次运行已经派了 ${perSession} 张，到了上限（一次运行最多派 ${options.maxPerSession} 张）`, limit: true })
       continue
     }
     if (today >= options.maxPerTaskPerDay) {
       dayLimitHit = true
-      outcomes.push({ kind: "rejected", title: item.title, reason: `对方任务今天已经被派了 ${today} 张，到了上限（一个任务每天最多被派 ${options.maxPerTaskPerDay} 张）` })
+      outcomes.push({ kind: "rejected", title: item.title, reason: `对方任务今天已经被派了 ${today} 张，到了上限（一个任务每天最多被派 ${options.maxPerTaskPerDay} 张）`, limit: true })
       continue
     }
     if (queued >= options.maxQueued) {
-      outcomes.push({ kind: "rejected", title: item.title, reason: `对方任务已经有 ${queued} 张在排队，到了上限（最多排队 ${options.maxQueued} 张）` })
+      outcomes.push({ kind: "rejected", title: item.title, reason: `对方任务已经有 ${queued} 张在排队，到了上限（最多排队 ${options.maxQueued} 张）`, limit: true })
       continue
     }
+    const notBefore = item.notBefore && item.notBefore.getTime() > Date.now() ? item.notBefore : null
     const id = workItemId(Number((await tx.execute<{ n: string }>(sql`select nextval('work_item_no_seq') as n`)).rows[0]!.n))
     const now = new Date()
     const [row] = await tx
@@ -184,11 +219,23 @@ export async function createItemsInTx(db: Db, tx: Tx, task: DispatchTarget, item
         note: item.note,
         status: "queued",
         via: options.via,
+        priority: WORK_PRIORITY_RANK[item.priority ?? "normal"],
+        notBefore,
         fromTaskId: options.fromTaskId ?? null,
         fromSessionId: options.fromSessionId ?? null,
         fromUserId: options.fromUserId ?? null,
+        apiKeyId: options.apiKeyId ?? null,
+        fromEvent: options.fromEvent ?? null,
         depth: options.depth,
-        log: [{ at: now.toISOString(), kind: "created", ...(options.fromUserId ? { byId: options.fromUserId } : {}), ...(options.fromSessionId ? { sessionId: options.fromSessionId } : {}) }],
+        log: [
+          {
+            at: now.toISOString(),
+            kind: "created",
+            ...(options.fromUserId ? { byId: options.fromUserId } : {}),
+            ...(options.fromSessionId ? { sessionId: options.fromSessionId } : {}),
+            ...(source ? { note: source } : {}),
+          },
+        ],
         createdAt: now,
         updatedAt: now,
       })
@@ -205,29 +252,45 @@ export async function createItemsInTx(db: Db, tx: Tx, task: DispatchTarget, item
     }
     existing.set(row.key, row)
     outcomes.push({ kind: "created", row })
+    schedulePump(notBefore)
     queued++
     today++
     perSession++
   }
-  if (outcomes.some((outcome) => outcome.kind === "created")) await sendPumpInTx(db, tx, task.id)
+  if (pumpNow) await sendPumpInTx(db, tx, task.id)
+  for (const at of pumpAt) await sendPumpAtInTx(db, tx, task.id, new Date(at))
   return { outcomes, dayLimitHit }
 }
 
-/** 被派任务今天第一次撞到「每天最多被派几张」：通知它的负责人一次（按今天有没有发过同样的通知判断） */
-export async function notifyDayLimitOnce(db: Db, task: DispatchTarget, limit: number) {
-  const title = `${task.title}：今天被派的单到了上限`
+/** 单从哪来（处理记录 created 的 note、「再派时覆盖」的 note）：外部系统（密钥「名字」）/ 外部事件「名字」；agent、人派的不写 */
+export function dispatchSourceText(options: Pick<CreateOptions, "via" | "apiKeyName" | "fromEvent">): string | null {
+  if (options.via === "api") return options.apiKeyName ? `外部系统（密钥「${options.apiKeyName}」）` : "外部系统"
+  if (options.via === "event") return `外部事件「${options.fromEvent ?? ""}」`
+  return null
+}
+
+/**
+ * 给被派任务的负责人发一条通知，同一个标题当天（上海时间）只发一次（按今天有没有发过同标题的通知判断）。
+ * 撞了每天上限、花费到了上限、外部事件派单没派成都用它
+ */
+export async function notifyOwnerOnceToday(db: Db, task: Pick<DispatchTarget, "id" | "ownerId">, title: string, body: string) {
   const [sent] = await db
     .select({ n: count() })
     .from(t.notifications)
     .where(and(eq(t.notifications.userId, task.ownerId), eq(t.notifications.taskId, task.id), eq(t.notifications.title, title), gte(t.notifications.createdAt, startOfTodayShanghai())))
-  if ((sent?.n ?? 0) > 0) return
-  await notifyUsers(db, {
-    userIds: [task.ownerId],
-    title,
-    body: `今天已经被派了 ${limit} 张（设置里的「一个任务每天最多被派几张」），再派来的单都被拒了。要放宽就去设置页调大，或者看看派活的任务是不是派重了。`,
-    link: `#/tasks?id=${encodeURIComponent(task.id)}`,
-    taskId: task.id,
-  })
+  if ((sent?.n ?? 0) > 0) return false
+  await notifyUsers(db, { userIds: [task.ownerId], title, body, link: `#/tasks?id=${encodeURIComponent(task.id)}`, taskId: task.id })
+  return true
+}
+
+/** 被派任务今天第一次撞到「每天最多被派几张」：通知它的负责人一次 */
+export async function notifyDayLimitOnce(db: Db, task: DispatchTarget, limit: number) {
+  await notifyOwnerOnceToday(
+    db,
+    task,
+    `${task.title}：今天被派的单到了上限`,
+    `今天已经被派了 ${limit} 张（设置里的「一个任务每天最多被派几张」），再派来的单都被拒了。要放宽就去设置页调大，或者看看派活的任务是不是派重了。`
+  )
 }
 
 /** 读被派任务（开着被派活才返回 dispatch） */
@@ -251,10 +314,15 @@ export function describeItem(item: WorkItem): string {
   const data = workReportLine(item.result?.data)
   const tail = data ? ` · 结果：${data}` : ""
   switch (item.status) {
-    case "queued":
+    case "queued": {
       // 排队等自动重试（第二期）：到点才领，不算排队名次
-      if (item.notBefore) return `排队（第 ${item.autoRetries} 次重试，${fmtShort(item.notBefore)} 以后）${item.error ? `，上次：${clip(item.error)}` : ""}`
-      return item.queuePosition ? `排队第 ${item.queuePosition} 位` : "排队"
+      if (item.notBefore && item.autoRetries > 0) return `排队（第 ${item.autoRetries} 次重试，${fmtShort(item.notBefore)} 以后）${item.error ? `，上次：${clip(item.error)}` : ""}`
+      // 派的时候说了过多久再办（第三期）：同样到点才领
+      if (workWaitKind(item) === "scheduled") return `排队（定在 ${fmtShort(item.notBefore!)} 以后办）`
+      // 优先级不是普通的才提
+      const priority = item.priority === "normal" ? "" : `（优先级${workPriorityLabel[item.priority]}）`
+      return `${item.queuePosition ? `排队第 ${item.queuePosition} 位` : "排队"}${priority}`
+    }
     case "running":
       return `在办（运行 ${item.sessionId ?? "—"}${item.sessionStatus ? `，${runStatusLabel[item.sessionStatus]}` : ""}）`
     case "done":
@@ -301,7 +369,9 @@ export async function dispatchFromAgent(ctx: ToolContext, input: DispatchInput):
 
   const target: DispatchTarget = { ...task, dispatch: task.dispatch }
   const { items, dayLimitHit } = await db.transaction(async (tx) => {
-    const { outcomes, dayLimitHit } = await createItemsInTx(db, tx, target, input.items, {
+    // 第三期：每张可以带优先级、过多久再办（一般不填）
+    const items: NewWorkItem[] = input.items.map(({ priority, delayMinutes, ...item }) => ({ ...item, ...(priority ? { priority } : {}), ...(delayMinutes ? { notBefore: workNotBefore({ delayMinutes }) } : {}) }))
+    const { outcomes, dayLimitHit } = await createItemsInTx(db, tx, target, items, {
       via: "agent",
       fromTaskId: snapshot.task.id,
       fromSessionId: session.id,
@@ -325,7 +395,7 @@ export async function dispatchFromAgent(ctx: ToolContext, input: DispatchInput):
   if (!task.enabled && created) lines.push("对方任务停用了，新建的单先排着，重新启用后自动开始办。")
   for (const { outcome, item } of items) {
     if (outcome.kind === "rejected") lines.push(`- 被拒「${outcome.title || "（没写标题）"}」：${outcome.reason}`)
-    else if (outcome.kind === "created") lines.push(`- ${outcome.row.id} 新建，${item?.queuePosition ? `排队第 ${item.queuePosition} 位` : "排队"}`)
+    else if (outcome.kind === "created") lines.push(`- ${outcome.row.id} 新建，${item ? describeItem(item) : "排队"}`)
     else lines.push(`- ${outcome.row.id} 已经有了：${item ? describeItem(item) : outcome.row.status}${outcome.updated ? "（已用这次的参数更新）" : ""}`)
   }
   return { output: lines.join("\n"), ...(created + existed === 0 ? { isError: true } : {}) }

@@ -34,12 +34,6 @@ async function translate<T>(action: () => Promise<T>): Promise<T> {
   }
 }
 
-/** 派活第三期的新输入（优先级、过多久再办）：包 A 实现之前，给了非默认值就报「还没做好」，免得页面以为设上了 */
-function notYetP3(input: { priority?: string; delayMinutes?: number }) {
-  if ((input.priority && input.priority !== "normal") || input.delayMinutes)
-    throw new TRPCError({ code: "NOT_IMPLEMENTED", message: "优先级、过多久再办还没做好（派活第三期）" })
-}
-
 export const workRouter = router({
   /** 派活单列表：新派的在前，默认最近 7 天，能搜、按状态 / 被派的任务 / 来源筛，翻页（cursor 或 offset） */
   list: protectedProcedure
@@ -62,22 +56,16 @@ export const workRouter = router({
     .input(workLookupInputSchema)
     .output(workItemSchema.nullable())
     .query(({ ctx, input }) => translate(() => lookupWorkItem(ctx.db, input))),
-  /** 人派一张：要有被派任务的 task.manage；同一件事已经有单时返回那张（existing = true），不重开 */
+  /** 人派一张：要有被派任务的 task.manage；同一件事已经有单时返回那张（existing = true），不重开。第三期：优先级、过多久再办 */
   dispatch: protectedProcedure
     .input(workDispatchInputSchema)
     .output(workDispatchResultSchema)
-    .mutation(({ ctx, input }) => {
-      notYetP3(input)
-      return translate(() => dispatchByHuman(ctx.db, ctx.user, input))
-    }),
-  /** 改参数：只有排队的单；去重的参数不能改。work.manage */
+    .mutation(({ ctx, input }) => translate(() => dispatchByHuman(ctx.db, ctx.user, input))),
+  /** 改参数：只有排队的单；去重的参数不能改。第三期：改优先级、什么时候办（等自动重试的单不能改时间）。work.manage */
   updateParams: protectedProcedure
     .input(workUpdateParamsInputSchema)
     .output(workItemSchema)
-    .mutation(({ ctx, input }) => {
-      notYetP3(input)
-      return translate(() => updateWorkParams(ctx.db, ctx.user, input))
-    }),
+    .mutation(({ ctx, input }) => translate(() => updateWorkParams(ctx.db, ctx.user, input))),
   /** 重办：办完 / 没办成 / 不办了的单再排一次队（attempts 在开运行时 +1）。work.manage */
   redo: protectedProcedure
     .input(workRedoInputSchema)

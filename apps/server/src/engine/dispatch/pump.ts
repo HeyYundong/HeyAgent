@@ -1,12 +1,13 @@
 // 派活：领单（work.pump 的处理函数，方案 5.2）。同一个任务的领单排成一队（事务级 advisory lock），
-// 按名额数空位、取最早的排队单（for update skip locked）、开运行、单改成「在办」，全在一个事务里：
+// 按名额数空位、取排队单（优先级高的先、同一级先派的先，for update skip locked）、开运行、单改成「在办」，全在一个事务里：
 // 要么单和运行一起成，要么都不成，一张单不会被两个运行领到。
+// 第三期：任务设了每天花费上限、今天被派来的运行花到了，就不开新运行（budgetHit，worker 提交后通知负责人一次）。
 import type { SessionSnapshot, TaskDispatchResult } from "@heyagent/shared"
-import { and, asc, eq, isNull, lte, or, sql } from "drizzle-orm"
+import { and, count, eq, isNull, lte, or, sql } from "drizzle-orm"
 
 import type { Db } from "../../db/client.js"
 import * as t from "../../db/schema.js"
-import { occupiedSlots } from "../../work/service.js"
+import { budgetReached, dispatchSpentToday, occupiedSlots, QUEUE_ORDER } from "../../work/service.js"
 import type { Tx } from "../queue.js"
 import { startSessionInTx } from "../sessions.js"
 import { sendWorkDoneInTx } from "./notify.js"
@@ -25,11 +26,22 @@ async function snapshotDispatch(tx: Tx, item: WorkItemRow, results: TaskDispatch
     const [task] = await tx.select({ title: t.tasks.title }).from(t.tasks).where(eq(t.tasks.id, item.fromTaskId))
     from = { taskId: item.fromTaskId, taskTitle: task?.title ?? item.fromTaskId, sessionId: item.fromSessionId }
   }
+  // 第三期：外部系统（API 密钥）、外部事件派的写各自的来源，不写 fromUser（不然第一条消息会说成「某某手动派的」）
+  if (item.via === "api") {
+    const [key] = item.apiKeyId ? await tx.select({ name: t.apiKeys.name }).from(t.apiKeys).where(eq(t.apiKeys.id, item.apiKeyId)) : []
+    return { ...base(item, results), fromApi: { keyName: key?.name ?? "已删除的密钥" } }
+  }
+  if (item.via === "event") return { ...base(item, results), fromEvent: { event: item.fromEvent ?? "" } }
   let fromUser: NonNullable<SessionSnapshot["dispatch"]>["fromUser"]
   if (item.fromUserId) {
     const [user] = await tx.select({ name: t.users.name }).from(t.users).where(eq(t.users.id, item.fromUserId))
     fromUser = { id: item.fromUserId, name: user?.name ?? item.fromUserId }
   }
+  return { ...base(item, results), ...(from ? { from } : {}), ...(fromUser ? { fromUser } : {}) }
+}
+
+/** 快照里和来源无关的那部分 */
+function base(item: WorkItemRow, results: TaskDispatchResult[]): NonNullable<SessionSnapshot["dispatch"]> {
   return {
     itemId: item.id,
     key: item.key,
@@ -37,29 +49,49 @@ async function snapshotDispatch(tx: Tx, item: WorkItemRow, results: TaskDispatch
     ...(item.note ? { note: item.note } : {}),
     params: item.params,
     depth: item.depth,
-    ...(from ? { from } : {}),
-    ...(fromUser ? { fromUser } : {}),
     // 要交回的结果（run-outcome 6.1）：按领单时的配置冻进来，收尾时按它查必填的交没交
     ...(results.length ? { results: results.map(({ name, description, required }) => ({ name, description, required })) } : {}),
   }
 }
 
-/** 给一个被派任务领单：返回这次开出来的运行 */
-export async function pumpTask(db: Db, taskId: string): Promise<{ started: { itemId: string; sessionId: string }[] }> {
+/** 这次领单因为每天花费上限没开新运行（第三期）：worker 在事务提交后通知负责人（当天一次） */
+export interface BudgetHit {
+  spent: number
+  budget: number
+  /** 到点的排队单（明天 0 点以后接着办的） */
+  queued: number
+}
+
+/** 排队、到点了的单（等自动重试、「过多久再办」的 not_before 在将来，到点才领） */
+const dueQueued = (taskId: string) =>
+  and(eq(t.workItems.taskId, taskId), eq(t.workItems.status, "queued"), or(isNull(t.workItems.notBefore), lte(t.workItems.notBefore, sql`now()`)))
+
+/** 给一个被派任务领单：返回这次开出来的运行；因为每天花费上限没开的返回 budgetHit */
+export async function pumpTask(db: Db, taskId: string): Promise<{ started: { itemId: string; sessionId: string }[]; budgetHit?: BudgetHit }> {
   return db.transaction(async (tx) => {
     await lockTaskInTx(tx, "pump", taskId)
     const [task] = await tx.select({ id: t.tasks.id, enabled: t.tasks.enabled, dispatch: t.tasks.dispatch }).from(t.tasks).where(eq(t.tasks.id, taskId))
     // 停用了、关了被派活：单留着排队，重新打开时接着领
     if (!task || !task.enabled || !task.dispatch) return { started: [] }
+    // 第三期每天花费上限：今天被派来的运行花到了就不开新的，排队的单留到明天 0 点以后（每分钟的清扫照常发 work.pump）；在跑的不停
+    const budget = task.dispatch.dailyBudgetUsd
+    if (budget != null) {
+      const spent = (await dispatchSpentToday(tx, [taskId])).get(taskId) ?? 0
+      if (budgetReached(spent, budget)) {
+        const [due] = await tx.select({ n: count() }).from(t.workItems).where(dueQueued(taskId))
+        // 没有排队的就不算「挡住了」（运行结束时也会发 work.pump），不用通知
+        return due?.n ? { started: [], budgetHit: { spent, budget, queued: due.n } } : { started: [] }
+      }
+    }
     const results = task.dispatch.results ?? []
     const free = task.dispatch.maxRunning - (await occupiedSlots(tx, taskId))
     if (free <= 0) return { started: [] }
     const items = await tx
       .select()
       .from(t.workItems)
-      // 排队等自动重试的（not_before 在将来）到点才领
-      .where(and(eq(t.workItems.taskId, taskId), eq(t.workItems.status, "queued"), or(isNull(t.workItems.notBefore), lte(t.workItems.notBefore, sql`now()`))))
-      .orderBy(asc(t.workItems.createdAt), asc(t.workItems.id))
+      .where(dueQueued(taskId))
+      // 优先级高的先领，同一级按派进来的先后（排队名次用同一个顺序）
+      .orderBy(...QUEUE_ORDER)
       .limit(free)
       .for("update", { skipLocked: true })
     const started: { itemId: string; sessionId: string }[] = []

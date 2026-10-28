@@ -13,8 +13,10 @@ const url = process.argv.includes("--test") ? env.testDatabaseUrl : env.database
 if (!url) throw new Error("没有配置数据库地址")
 const { db, pool } = createDb(url, 2)
 try {
-  const { patrolId, workerId, checkerId, itemIds } = await insertWorkFixtures(db)
-  console.log(`派活演示数据已插进 ${new URL(url).pathname.slice(1)}：${patrolId} 派活给 ${workerId}、${checkerId}（自动重试 2 次），派活单 ${itemIds.join("、")}`)
+  const { patrolId, workerId, checkerId, budgetId, itemIds } = await insertWorkFixtures(db)
+  console.log(
+    `派活演示数据已插进 ${new URL(url).pathname.slice(1)}：${patrolId} 派活给 ${workerId}（外部系统能派活、收到事件派单）、${checkerId}（自动重试 2 次）；${budgetId} 设了每天花费上限、今天已经到了；派活单 ${itemIds.join("、")}`
+  )
 } finally {
   await pool.end()
 }

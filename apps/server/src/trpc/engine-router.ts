@@ -262,12 +262,15 @@ export const engineRouter = router({
     .mutation(async ({ ctx, input }) => {
       if (!can(ctx.user, "config.manage", {}))
         throw forbidden("只有主管能手动触发事件")
-      return fireEventImpl(ctx.db, {
-        event: input.event,
-        data: input.data,
-        actorId: ctx.user.id,
-        via: "console",
-      })
+      // 平台内部的事件名（work.done: / browser. / desktop: / subagent.）会被拒：BAD_REQUEST
+      return engineCall(() =>
+        fireEventImpl(ctx.db, {
+          event: input.event,
+          data: input.data,
+          actorId: ctx.user.id,
+          via: "console",
+        })
+      )
     }),
 
   /** 任务附件：跨运行一直有效 */

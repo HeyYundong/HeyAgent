@@ -12,6 +12,7 @@ import type { Auth } from "../auth.js"
 import type { Db } from "../db/client.js"
 import { registerFileRoutes } from "../files/routes.js"
 import { fireEventImpl } from "./control.js"
+import { EngineError } from "./sessions.js"
 import { loadEngineSettings } from "./settings.js"
 
 export const sha256Hex = (text: string) =>
@@ -56,12 +57,19 @@ export function registerEngineRoutes(app: Hono, deps: { db: Db; auth: Auth }) {
       const parsed = fireEventInputSchema.safeParse(body)
       if (!parsed.success)
         return c.json({ error: "内容要是 { event: 事件名, data?: 对象 }" }, 400)
-      const result = await fireEventImpl(deps.db, {
-        event: parsed.data.event,
-        data: parsed.data.data,
-        via: "webhook",
-      })
-      return c.json({ ok: true, ...result })
+      try {
+        const result = await fireEventImpl(deps.db, {
+          event: parsed.data.event,
+          data: parsed.data.data,
+          via: "webhook",
+        })
+        return c.json({ ok: true, ...result })
+      } catch (error) {
+        // 平台内部的事件名（work.done: / browser. / desktop: / subagent.）：400，说清原因
+        if (error instanceof EngineError && error.code === "BAD_REQUEST")
+          return c.json({ error: error.message }, 400)
+        throw error
+      }
     }
   )
 }
