@@ -3,9 +3,16 @@
 // S2 Chrome 不够：任务只允许 2 个 Chrome，拆 3 个用浏览器的子 agent 各查一家供应商（基准站点 /b/s/<id>）；S2seq 同样的事不拆（对比用时）
 // S3 有一个做不到：同 S2，其中一家的页面不存在（404「没有这家供应商」）
 // S4 取消：同 S2（每次运行同时最多 2 个子 agent），子 agent 在用 Chrome 时取消父运行
+// S5 够大的任务：基准站点场景 B（搜 6 家供应商、最后提交汇总表单），任务允许 3 个 Chrome，建议拆 3 组各 2 家；S5seq 同一个任务不拆
+// 每遍之前 1 分钟负载超过 8 先等（SPEED_MAX_LOAD 换）；场景可以重复写（S5,S5seq,S5,S5seq 交替跑）
 // 每个场景一行 JSON 追加进 SPEED_OUT；过程（子 agent 状态变化、提示词、交回的结果、过程记录）存到旁边的 -<场景>.json。
-// 用法：SPEED_FILE=subagents scripts/speed-bench.sh <标签> [场景，默认 S1,S1seq,S2,S3,S4；另有 S2seq]
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs"
+// 用法：SPEED_FILE=subagents scripts/speed-bench.sh <标签> [场景，默认 S1,S1seq,S2,S3,S4；另有 S2seq、S5、S5seq，可以重复写]
+import {
+  appendFileSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs"
 
 import { and, eq, inArray, ne } from "drizzle-orm"
 import { afterAll, beforeAll, describe, it } from "vitest"
@@ -26,7 +33,13 @@ import {
 } from "../../test/engine-helpers.js"
 import { login, mutate } from "../../test/helpers.js"
 import { createProfile } from "../fixtures.js"
-import { startSpeedSite, SUPPLIERS, type SpeedSite } from "./site.js"
+import {
+  score as siteScore,
+  startSpeedSite,
+  SUPPLIERS,
+  TARGET_SUPPLIERS,
+  type SpeedSite,
+} from "./site.js"
 
 const MODEL =
   process.env.SPEED_MODEL ?? "openrouter/deepseek/deepseek-v4.1-flash-1017"
@@ -36,6 +49,7 @@ const SCENARIOS = (process.env.SPEED_SCENARIOS ?? "S1,S1seq,S2,S3,S4")
   .filter(Boolean)
 const OUT = process.env.SPEED_OUT
 const RUN_TIMEOUT = 15 * 60_000
+const MAX_LOAD = Number(process.env.SPEED_MAX_LOAD ?? 8)
 
 let ctx: EngineTestContext
 let site: SpeedSite
@@ -44,6 +58,7 @@ let lin: string
 let profiles: string[] = []
 
 const dump = (suffix: string, content: unknown) => {
+  // 同一个场景跑几遍：文件名带运行编号，不互相覆盖
   if (!OUT) return undefined
   const path = OUT.replace(/\.jsonl$/, `-${suffix}.json`)
   writeFileSync(path, JSON.stringify(content, null, 2))
@@ -75,17 +90,15 @@ async function useRealModel() {
       .set({ enc, version, masked: mask(apiKey) })
       .where(eq(t.secrets.id, secretId))
   else
-    await ctx.db
-      .insert(t.secrets)
-      .values({
-        id: secretId,
-        scope: "model_provider",
-        refId: provider.id,
-        name: "api_key",
-        version,
-        enc,
-        masked: mask(apiKey),
-      })
+    await ctx.db.insert(t.secrets).values({
+      id: secretId,
+      scope: "model_provider",
+      refId: provider.id,
+      name: "api_key",
+      version,
+      enc,
+      masked: mask(apiKey),
+    })
   await ctx.db
     .update(t.modelProviders)
     .set({
@@ -99,17 +112,15 @@ async function useRealModel() {
     .from(t.models)
     .where(eq(t.models.id, MODEL))
   if (!model)
-    await ctx.db
-      .insert(t.models)
-      .values({
-        id: MODEL,
-        providerId: provider.id,
-        name: MODEL,
-        contextK: 1000,
-        priceIn: 0.3,
-        priceOut: 1.2,
-        vision: true,
-      })
+    await ctx.db.insert(t.models).values({
+      id: MODEL,
+      providerId: provider.id,
+      name: MODEL,
+      contextK: 1000,
+      priceIn: 0.3,
+      priceOut: 1.2,
+      vision: true,
+    })
   // 测试默认重试间隔 10 毫秒（engine-helpers）：真模型照正式环境 2 秒起翻倍，外网抖一下不至于 3 次重试都撞上（第 21 节第 7 条）
   configureEngine({ modelFactory: undefined, modelRetryBaseMs: 2000 })
 }
@@ -133,6 +144,7 @@ beforeAll(async () => {
   wang = await login(ctx.app, "wangyue@heyagent.local")
   lin = await login(ctx.app, "linzhou@heyagent.local")
   profiles = [
+    await createProfile(ctx.db, ctx.keyring),
     await createProfile(ctx.db, ctx.keyring),
     await createProfile(ctx.db, ctx.keyring),
   ]
@@ -211,6 +223,13 @@ const supplierOf = (id: string) =>
   }
 
 function goalOf(scenario: string) {
+  if (scenario === "S5" || scenario === "S5seq") {
+    const names = TARGET_SUPPLIERS.map((id) => supplierOf(id).name)
+    const base = `在供应商搜索 ${site.url("/b/search")} 查下面 ${names.length} 家供应商的电话和评分（注意有名字相近的别家，要看准全名）：${names.join("、")}。查完后到 ${site.url("/b/report")} 提交汇总，每行一家，格式「名称,电话,评分」，名称写全名。`
+    if (scenario === "S5seq") return base
+    const groups = [0, 2, 4].map((k) => names.slice(k, k + 2).join("、"))
+    return `${base}建议分成 3 组、每组 2 家（${groups.map((g, i) => `第 ${i + 1} 组：${g}`).join("；")}），各拆一个子 agent 同时查，用 work_report 交回每家的名称、电话、评分；全部交回后你自己去提交汇总。`
+  }
   const stat = "个数、合计、平均值（保留两位小数）、最大值、最小值"
   if (scenario === "S1")
     return `附件里有 ${FILES.length} 个文本文件（${FILES.map((f) => f.name).join("、")}），每个是一列数字读数，一行一个。每个文件拆一个子 agent，让它用运行代码算出这个文件的${stat}，用 work_report 交回这 5 个字段。全部交回后，你汇总成一张 Markdown 表（每个文件一行，列：文件、${stat}），写在 run_finish 的 summary 里。`
@@ -418,7 +437,141 @@ const loadavg = () => {
   }
 }
 
+/** 一个 Chrome 的时间线（相对运行开始的秒数）：登记、进程出现（真正开始起）、起好（running）、关掉 */
+interface ChromeTrack {
+  id: string
+  sessionId: string | null
+  profileId: string
+  registeredSec?: number
+  queuedSec?: number
+  launchSec?: number
+  runningSec?: number
+  closedSec?: number
+}
+
+/** 本容器里在跑的 Chrome 主进程：instance 编号（user-data-dir 是 heyagent-<编号>-xxxxxx/profile）→ 进程号 */
+function chromeMainProcs() {
+  const out = new Map<string, number>()
+  for (const entry of readdirSync("/proc")) {
+    if (!/^\d+$/.test(entry)) continue
+    try {
+      const args = readFileSync(`/proc/${entry}/cmdline`, "utf8").split("\0")
+      if (args.some((arg) => arg.startsWith("--type="))) continue
+      const dir = args.find((arg) => arg.startsWith("--user-data-dir="))
+      const id = dir && /heyagent-(.+)-[^-/]+\/profile/.exec(dir)?.[1]
+      if (id) out.set(id, Number(entry))
+    } catch {
+      // 进程刚好退出了
+    }
+  }
+  return out
+}
+
+function startChromeTracker(
+  familyIds: () => Promise<string[]>,
+  started: number
+) {
+  const tracks = new Map<string, ChromeTrack>()
+  let stopped = false
+  const sec = () => Math.round((Date.now() - started) / 100) / 10
+  const loop = (async () => {
+    while (!stopped) {
+      try {
+        const ids = await familyIds()
+        const rows = ids.length
+          ? await ctx.db
+              .select()
+              .from(t.browserInstances)
+              .where(
+                and(
+                  inArray(t.browserInstances.sessionId, ids),
+                  eq(t.browserInstances.kind, "session")
+                )
+              )
+          : []
+        const procs = chromeMainProcs()
+        const now = sec()
+        for (const row of rows) {
+          let track = tracks.get(row.id)
+          if (!track) {
+            track = {
+              id: row.id,
+              sessionId: row.sessionId,
+              profileId: row.profileId,
+              registeredSec:
+                Math.round((row.startedAt.getTime() - started) / 100) / 10,
+            }
+            tracks.set(row.id, track)
+          }
+          if (row.state === "queued" && track.queuedSec === undefined)
+            track.queuedSec = now
+          if (procs.has(row.id) && track.launchSec === undefined)
+            track.launchSec = now
+          if (row.state === "running" && track.runningSec === undefined)
+            track.runningSec = now
+          if (row.state === "closing" && track.closedSec === undefined)
+            track.closedSec = now
+        }
+        for (const track of tracks.values())
+          if (
+            track.closedSec === undefined &&
+            !rows.some((row) => row.id === track.id)
+          )
+            track.closedSec = now
+      } catch {
+        // 采样出错不影响验收
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+  })()
+  return {
+    tracks,
+    stop: async () => {
+      stopped = true
+      await loop
+      return [...tracks.values()]
+    },
+  }
+}
+
+/** OpenRouter key 的累计用量（美元）；拿不到返回 undefined */
+async function orUsage() {
+  try {
+    const res = await fetch("https://openrouter.ai/api/v1/key", {
+      headers: { authorization: `Bearer ${process.env.OPENROUTER_API_KEY}` },
+    })
+    const body = (await res.json()) as { data?: { usage?: number } }
+    return body.data?.usage
+  } catch {
+    return undefined
+  }
+}
+
+/** 每遍之前：1 分钟负载超过 MAX_LOAD 先等（最多 20 分钟），两组条件接近 */
+async function waitLoad() {
+  const begin = Date.now()
+  while (Number(loadavg()) > MAX_LOAD && Date.now() - begin < 20 * 60_000)
+    await new Promise((resolve) => setTimeout(resolve, 15_000))
+  return Math.round((Date.now() - begin) / 1000)
+}
+
+async function familyCostOf(sessionId: string) {
+  const parent = (await sessionRow(ctx.db, sessionId))!
+  const subs = await ctx.db
+    .select({ cost: t.sessions.costUsd })
+    .from(t.sessions)
+    .where(eq(t.sessions.parentSessionId, sessionId))
+  return (
+    Math.round(
+      (Number(parent.costUsd) +
+        subs.reduce((sum, each) => sum + Number(each.cost), 0)) *
+        1e6
+    ) / 1e6
+  )
+}
+
 async function runScenario(scenario: string) {
+  const loadWaitSec = await waitLoad()
   site.reset()
   // 设置：S4 每次运行同时最多 2 个、子 agent 上限 0.3 美元 / 30 步（看设置生效）；其余用默认
   const settings =
@@ -439,7 +592,7 @@ async function runScenario(scenario: string) {
         })
   const browser = !scenario.startsWith("S1")
   const toolIds =
-    scenario === "S2seq"
+    scenario === "S2seq" || scenario === "S5seq"
       ? ["browser", "run.finish"]
       : browser
         ? ["browser", "subagent.start", "run.finish"]
@@ -457,11 +610,17 @@ async function runScenario(scenario: string) {
   if (browser)
     await ctx.db
       .update(t.tasks)
-      .set({ browserProfileIds: profiles })
+      // S2–S4 只允许 2 个 Chrome（看 Chrome 不够时）；S5 允许 3 个
+      .set({
+        browserProfileIds: scenario.startsWith("S5")
+          ? profiles
+          : profiles.slice(0, 2),
+      })
       .where(eq(t.tasks.id, taskId))
   const attachmentFileIds = scenario.startsWith("S1")
     ? await Promise.all(FILES.map((file) => upload(file.name, file.text)))
     : undefined
+  const usageBefore = scenario === "S4" ? await orUsage() : undefined
   const res = await mutate(ctx.app, "engine.runNow", wang, {
     taskId,
     attachmentFileIds,
@@ -471,6 +630,13 @@ async function runScenario(scenario: string) {
   const started = Date.now()
   const loadBefore = loadavg()
   const sampler = startSampler(sessionId, started)
+  const chromeTracker = startChromeTracker(
+    async () => [
+      sessionId,
+      ...(await listSubagents(ctx.db, sessionId)).map((each) => each.id),
+    ],
+    started
+  )
   let status = "timeout"
   const cancel: Record<string, unknown> = {}
   try {
@@ -528,6 +694,16 @@ async function runScenario(scenario: string) {
         sessionId,
         ...before.map((each) => each.id),
       ])
+      // 停掉以后才回来的模型回复照算花费（21.3 第 4 条）：停下那一刻的花费、等 60 秒后的花费，和 OpenRouter 的用量比
+      cancel.costAtStop = await familyCostOf(sessionId)
+      await new Promise((resolve) => setTimeout(resolve, 60_000))
+      cancel.costSettled = await familyCostOf(sessionId)
+      await new Promise((resolve) => setTimeout(resolve, 30_000))
+      const usageAfter = await orUsage()
+      cancel.orUsageDelta =
+        usageBefore !== undefined && usageAfter !== undefined
+          ? Math.round((usageAfter - usageBefore) * 1e6) / 1e6
+          : undefined
       status = (await sessionRow(ctx.db, sessionId))!.status
     } else {
       status = (
@@ -559,6 +735,7 @@ async function runScenario(scenario: string) {
   }).catch(() => undefined)
   await new Promise((resolve) => setTimeout(resolve, 1500))
   await sampler.stop()
+  const chromes = await chromeTracker.stop()
 
   const row = (await sessionRow(ctx.db, sessionId))!
   const events = await eventsOf(ctx.db, sessionId)
@@ -581,7 +758,24 @@ async function runScenario(scenario: string) {
   const subs = await subIntervals(sessionId)
   const end = (finish?.at ?? row.endedAt ?? new Date()).getTime()
   const think = events.filter((event) => event.kind === "think")
-  const graded = score(scenario, finishInput.summary ?? "")
+  const graded = scenario.startsWith("S5")
+    ? siteScore("B", site.results)
+    : score(scenario, finishInput.summary ?? "")
+  // 提交汇总时 fill_form 的结果（有没有回显实际的值）
+  const fillForms = events
+    .filter(
+      (event) =>
+        event.kind === "tool" &&
+        event.toolId?.startsWith("browser.") &&
+        (event.toolId === "browser.fill_form" ||
+          (event.input ?? "").includes("fill_form"))
+    )
+    .map((event) => ({
+      toolId: event.toolId,
+      title: event.title,
+      input: event.input?.slice(0, 800),
+      output: event.output?.slice(0, 1500),
+    }))
   const messages = await ctx.db
     .select()
     .from(t.sessionMessages)
@@ -647,11 +841,17 @@ async function runScenario(scenario: string) {
     notes: graded.notes,
     cancel: Object.keys(cancel).length ? cancel : undefined,
     load: `${loadBefore} → ${loadavg()}`,
+    loadWaitSec,
+    reportSubmits: scenario.startsWith("S5")
+      ? site.results.reportSubmits
+      : undefined,
+    chromes,
   }
   console.log(JSON.stringify(record))
   if (OUT) appendFileSync(OUT, `${JSON.stringify(record)}\n`)
-  dump(scenario, {
+  dump(`${scenario}-${sessionId}`, {
     record,
+    fillForms,
     settings,
     samples: sampler.samples,
     parentSection: section,
@@ -676,10 +876,11 @@ async function runScenario(scenario: string) {
 }
 
 describe("子 agent 真模型验收", () => {
-  for (const scenario of SCENARIOS)
+  SCENARIOS.forEach((scenario, index) =>
     it(
-      `${LABEL} ${scenario}`,
+      `${LABEL} ${scenario} #${index + 1}`,
       () => runScenario(scenario),
-      RUN_TIMEOUT + 8 * 60_000
+      RUN_TIMEOUT + 30 * 60_000
     )
+  )
 })
