@@ -45,7 +45,7 @@ import { RunSpaceButton } from "./run-space"
 import { RunDigestSection } from "./run-digest"
 import { RunOutcomeSection } from "./run-outcome"
 import { canSolidify, isRoutineTest, RoutineRunLine, SolidifyDialog } from "./run-routine"
-import { CODE_RUN_TOOL_ID, groupScriptEvents, isErrorStep, judgeOf, parseToolsSummary, TOOLS_SUMMARY_LINE } from "./run-script"
+import { CODE_RUN_TOOL_ID, groupScriptEvents, isErrorStep, judgeOf, parseToolsSummary, TOOLS_MARK } from "./run-script"
 
 const EVENT_ICON: Record<RunEventKind, LucideIcon> = { plan: ListTreeIcon, think: BrainIcon, tool: WrenchIcon, checkpoint: FlagIcon, rule: ShieldIcon, wait: PauseIcon, resume: PlayIcon, human: UserIcon, verify: ScanSearchIcon, done: CircleCheckIcon, error: TriangleAlertIcon }
 
@@ -354,7 +354,7 @@ interface CodeRunResult {
   notes: string[]
   stdout?: string
   stderr?: string
-  /** 带工具的脚本：末尾「脚本调了 n 次工具：……；停在第 k 步：……」那一段（18.1） */
+  /** 带工具的脚本：末尾「--- 脚本调的工具 ---」后面那几行（18.1） */
   tools?: string
 }
 
@@ -362,7 +362,7 @@ const STDOUT_MARK = "--- stdout ---"
 const STDERR_MARK = "--- stderr ---"
 
 /** 按 3.2 的格式拆 code.run 的返回文本；第一行不是已知的几种就返回 undefined */
-function parseCodeRunOutput(raw: string | undefined): CodeRunResult | undefined {
+function parseCodeRunOutput(raw: string | undefined, withTools: boolean): CodeRunResult | undefined {
   if (!raw) return undefined
   const lines = raw.split("\n")
   const first = lines[0] ?? ""
@@ -373,16 +373,16 @@ function parseCodeRunOutput(raw: string | undefined): CodeRunResult | undefined 
   const exitCode = exit ? Number(exit[1]) : undefined
   const outAt = lines.indexOf(STDOUT_MARK)
   const errAt = lines.indexOf(STDERR_MARK, outAt + 1)
-  // 工具汇总接在最后：取最后一个以「脚本调了 n 次工具」开头的行（stdout 里碰巧有同样开头的行，也是更早的那些）
-  const toolsAt = lines.findLastIndex((line, at) => at > 0 && TOOLS_SUMMARY_LINE.test(line))
+  // 工具汇总接在最后：取最后一个「--- 脚本调的工具 ---」（stdout 里碰巧有同样的一行，也是更早的那个）
+  const toolsAt = withTools ? lines.lastIndexOf(TOOLS_MARK) : -1
   const marks = [outAt, errAt, toolsAt].filter((at) => at >= 0).sort((a, b) => a - b)
   const headEnd = marks[0] ?? lines.length
   const nextMark = (from: number) => marks.find((at) => at > from) ?? lines.length
-  // stdout、stderr 两段：标记行的下一行起，到下一个标记（或结尾）前；工具汇总从它那一行起
+  // stdout、stderr、工具汇总：标记行的下一行起，到下一个标记（或结尾）前
   const section = (from: number) => (from < 0 ? undefined : lines.slice(from + 1, nextMark(from)).join("\n").replace(/\n+$/, ""))
   const stdout = section(outAt)
   const stderr = section(errAt)
-  const tools = toolsAt < 0 ? undefined : lines.slice(toolsAt, nextMark(toolsAt)).join("\n").trim()
+  const tools = section(toolsAt)?.trim()
   return {
     summary: sandboxFailed ? [first] : first.split(" · "),
     exitCode,
@@ -397,7 +397,7 @@ function parseCodeRunOutput(raw: string | undefined): CodeRunResult | undefined 
 /** 一次运行代码：语言和代码（或脚本路径）、标准输入，再是退出码 / 写回 / 访问的网站 / stdout / stderr */
 function CodeRunView({ call, output }: { call: CodeRunCall; output: string | undefined }) {
   const language = CODE_LANGUAGE[call.language]
-  const result = parseCodeRunOutput(output)
+  const result = parseCodeRunOutput(output, call.tools)
   return (
     <>
       <div className="flex flex-wrap items-center gap-2">

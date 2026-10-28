@@ -108,6 +108,12 @@ function traceOf(outcome: ToolOutcome, secrets: string[], step?: EventTrace): Ev
   return Object.keys(trace).length ? trace : undefined
 }
 
+/** code.run 带 tools 的那条记录也写上 scriptCallId（= 这次调用的 id）：界面、固化材料按 id 把脚本做的步骤归到它下面 */
+function ownScriptTrace(toolId: string, input: unknown, callId: string, step?: EventTrace): EventTrace | undefined {
+  const tools = toolId === "code.run" && typeof input === "object" && input !== null && (input as { tools?: unknown }).tools === true
+  return tools ? { ...step, scriptCallId: callId } : step
+}
+
 function safeName(id: string, taken: Set<string>) {
   const base = id.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 60) || "tool"
   let name = base
@@ -612,7 +618,7 @@ export class ToolGateway {
       input: redactSecrets(JSON.stringify(decision.input ?? {}), secrets),
       output,
       ms: Date.now() - started,
-      trace: traceOf(outcome, secrets, routineTrace),
+      trace: traceOf(outcome, secrets, ownScriptTrace(toolId, decision.input, call.toolCallId, routineTrace)),
     })
     // code.run 的脚本停在要挂起的那一步：结果带着那一步的 signals、facts（引擎照常挂起），那一步自己已经过了调工具后的钩子，
     // 这里不再按它们触发规则、记检查点（不然「遇到验证码」的规则动作会做两遍）

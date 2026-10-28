@@ -188,6 +188,21 @@ describe("工具桥 + SDK（本机 node，假网关）", () => {
     expect(bridge.stopped).toBeUndefined()
   })
 
+  it("固化脚本里不能用带工具的 code.run（脚本本身就能调工具）；不带工具的照常过网关", async () => {
+    const { gateway, state } = await runScript(`
+  try {
+    await ha.tool("code.run", { language: "node", code: "1", tools: true })
+  } catch (error) {
+    if (!(error instanceof ha.StepError)) throw error
+    await ha.log("拒了：" + error.message)
+  }
+  await ha.tool("code.run", { language: "python", code: "print(1)" })`)
+    expect(gateway.calls.map((each) => each.call.toolName)).toEqual(["code.run"])
+    expect(gateway.calls[0]!.call.input).toMatchObject({ language: "python" })
+    expect(state.logs).toHaveLength(1)
+    expect(state.logs[0]).toContain("固化脚本里不能用带工具的 code.run")
+  })
+
   it("要人审批：停在这一步之前（不算调过）；接住 RoutineStop 再调也一律 stop，网关不再被调", async () => {
     const { bridge, gateway, state, stops } = await runScript(`
   await ha.browser.navigate({ url: "https://pay.example.com" })

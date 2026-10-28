@@ -131,7 +131,8 @@ await ha.log("五行都存好了")`
     expect(output).toContain("录好第 5 行")
     expect(output).toContain("--- 脚本调的工具 ---\n脚本调了 5 次工具：file.save 5 次")
     // code.run 自己那一条不带 scriptStep
-    expect(events.find((event) => event.toolId === "code.run")?.trace ?? null).toBeNull()
+    // code.run 自己那条也写上 scriptCallId（= 这次调用的 id），界面、固化材料按 id 把步骤归到它下面；它自己没有 scriptStep
+    expect(events.find((event) => event.toolId === "code.run")?.trace).toEqual({ scriptCallId: "call-loop" })
     const files = await ctx.db.select().from(t.files).where(eq(t.files.sessionId, sessionId))
     expect(files.map((file) => file.path).filter((path) => path?.startsWith("out/")).sort()).toEqual(["out/第1行.txt", "out/第2行.txt", "out/第3行.txt", "out/第4行.txt", "out/第5行.txt"])
     // 系统提示：有运行代码、没有浏览器，不加写循环脚本那几句
@@ -181,6 +182,7 @@ await ha.file.save({ path: "out/b.txt", content: "b" })`
     expect(events.filter((event) => event.trace?.scriptCallId === "call-wait" && event.kind === "tool").map((event) => [event.toolId, event.trace?.scriptStep])).toEqual([
       ["file.save", 1],
       ["session.wait", 2],
+      ["code.run", undefined],
     ])
     const row = await waitOutcome(sessionId)
     expect(row.outcome).toBe("achieved")

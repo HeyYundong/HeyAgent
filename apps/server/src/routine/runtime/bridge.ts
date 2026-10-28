@@ -511,6 +511,11 @@ export class ToolBridge {
       this.count(toolId, true)
       return { ok: false, code: "step_error", error: NOT_FOR_AGENT_SCRIPTS[toolId] }
     }
+    // 固化脚本自己就能调工具：不再套一层带工具的 code.run（两层工具桥，过程记录和接着跑都对不上）
+    if (mode !== "agent" && toolId === "code.run" && typeof input === "object" && input !== null && (input as { tools?: unknown }).tools === true) {
+      this.count(toolId, true)
+      return { ok: false, code: "step_error", error: "固化脚本里不能用带工具的 code.run：脚本本身就能调工具" }
+    }
     const step = this.state.steps + 1
     const label = stepLabel(toolId, input)
     const where: Where = { step, tool: toolId, label }
