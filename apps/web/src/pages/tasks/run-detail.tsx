@@ -103,7 +103,7 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionSummary }
       </>}
     >
       <CancelRunDialog key={`${run.id}-${cancelling}`} run={run} open={cancelling} onOpenChange={setCancelling} />
-      {solidify && <SolidifyDialog key={`solidify-${run.id}-${solidifying}`} run={run} open={solidifying} onOpenChange={setSolidifying} />}
+      {solidify && <SolidifyDialog key={`solidify-${run.id}-${solidifying}`} run={run} defaultSkipTest={Boolean(task.routineSkipTest)} open={solidifying} onOpenChange={setSolidifying} />}
       {openItems.map((item) => <HumanItemPanel key={item.id} item={item} inRun />)}
       <WaitingAlert run={run} />
       {error && (

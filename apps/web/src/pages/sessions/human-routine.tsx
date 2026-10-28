@@ -1,6 +1,7 @@
 // 「等人处理」里的「审核固化流程」（kind = routine，docs/dev/solidify.md 5.7、15.4 第 3 条）：内容用 routine.version 取。
 // 步骤说明、要的输入和交回、试跑结果（最后一轮的每一步、停在哪、结果对比、停下时的截图）、会改东西的步骤、假设、脚本（收起）、修的版本和旧版的对比。
 // 「启用」→ routine.review(approve)，进试用期；「不用」→ 写理由（必填，固化员下次看得到）→ routine.review(reject)。
+// 运行办成后系统自动固化的版本（auto，第 17.1 节）加「自动固化」徽章。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
 import { zodResolver } from "@hookform/resolvers/zod"
@@ -23,7 +24,7 @@ import { href } from "@/lib/router"
 import { useMe } from "@/lib/session"
 import { trpc } from "@/lib/trpc"
 import { money } from "@/pages/tasks/parts"
-import { RoutineVersionView, VersionStatusBadge } from "@/pages/tasks/routine-parts"
+import { AutoBadge, RoutineVersionView, VersionStatusBadge } from "@/pages/tasks/routine-parts"
 
 import { TextLink, dots } from "./parts"
 
@@ -49,6 +50,7 @@ export function RoutineReviewPanel({ item, inRun = false, onDone }: { item: Huma
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant="secondary">等人处理 · 审核固化流程</Badge>
           {version && <VersionStatusBadge status={version.status} />}
+          {version?.auto && <AutoBadge />}
         </div>
         <CardTitle>{item.title}</CardTitle>
         <CardDescription>
@@ -83,7 +85,7 @@ export function RoutineReviewPanel({ item, inRun = false, onDone }: { item: Huma
               {dots(
                 query.data.sourceSessionId && <>从运行 <TextLink to={href("sessions", { id: query.data.sourceSessionId })}>{query.data.sourceSessionId}</TextLink> 固化</>,
                 query.data.baseVersion !== null && `修的是第 ${query.data.baseVersion} 版`,
-                query.data.createdBy && `${query.data.createdBy.name}点的`,
+                query.data.auto ? "运行办成后系统自动固化" : query.data.createdBy && `${query.data.createdBy.name}点的`,
                 query.data.modelId && `固化用 ${modelName(query.data.modelId)}，写了 ${query.data.round} 轮，花了 ${money(query.data.costUsd)}`,
               )}
             </p>

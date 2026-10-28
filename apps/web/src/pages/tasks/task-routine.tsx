@@ -2,10 +2,11 @@
 // 一行状态（试用 / 正式 / 停用、第几版）、「先跑流程」开关（routine.setMode）、最近几次的成绩、停用的原因、正在写 / 试跑 / 待审核的那一版；
 // 「⋯」里：看脚本（启用的那一版）、版本记录（approved 过的能回到那一版，routine.restore）、停用（AlertDialog 确认）/ 重新启用（routine.setPaused）。
 // 开关、停用、回旧版只有负责人和主管能点（后端也拦）。
+// 第二期（第 17.1 节）：一行写任务的「办成后自动固化」「固化时不试跑」现在是什么（在编辑任务里改）；自动固化的版本加「自动固化」徽章。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
 import { EllipsisIcon, FileCodeIcon, HistoryIcon, PauseIcon, PlayIcon, RotateCcwIcon, RotateCwIcon, TriangleAlertIcon, Undo2Icon } from "lucide-react"
-import { fmtDateTime, ROUTINE_PAUSE_AFTER_FALLBACKS, ROUTINE_TRIAL_RUNS, type RoutineSummary, type TaskDef } from "@heyagent/shared"
+import { autoSolidifyDefault, fmtDateTime, ROUTINE_PAUSE_AFTER_FALLBACKS, ROUTINE_TRIAL_RUNS, type RoutineSummary, type TaskDef } from "@heyagent/shared"
 
 import { DetailSection, HelpTip } from "@/components/shell/simple-page"
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -24,7 +25,7 @@ import { trpc } from "@/lib/trpc"
 import { TextLink } from "@/pages/sessions/parts"
 
 import { money } from "./parts"
-import { durationText, RoutineStatusBadge, RoutineVersionView, VersionStatusBadge } from "./routine-parts"
+import { AutoBadge, durationText, RoutineStatusBadge, RoutineVersionView, useAutoVersions, VersionStatusBadge } from "./routine-parts"
 
 type VersionRow = RoutineSummary["versions"][number]
 
@@ -60,6 +61,7 @@ function RoutineSection({ task, routine, canEdit }: { task: TaskDef; routine: Ro
   const [history, setHistory] = React.useState(false)
   const [pausing, setPausing] = React.useState(false)
   const active = routine.versions.find((each) => each.version === routine.activeVersion)
+  const activeAuto = useAutoVersions(active ? [active.id] : []).size > 0
   const paused = routine.status === "paused"
   const setMode = useAction(trpc.routine.setMode.mutationOptions(), {
     success: (_data, vars) => (vars.mode === "first" ? "已打开：以后的运行先跑固化流程" : "已关掉：以后的运行都由 agent 做"),
@@ -76,7 +78,7 @@ function RoutineSection({ task, routine, canEdit }: { task: TaskDef; routine: Ro
   return (
     <DetailSection
       title="固化流程"
-      description={`把办成过的一次运行写成脚本，以后的运行先照脚本做，不调执行模型；脚本跑不通就停下，agent 用同一个浏览器接着做完。新启用的版本先试用：连着 ${ROUTINE_TRIAL_RUNS} 次脚本直接办成转正式；连着 ${ROUTINE_PAUSE_AFTER_FALLBACKS} 次交给 agent 自动停用。在办成的运行详情里「⋯ → 固化成流程」做新的一版。`}
+      description={`把办成过的一次运行写成脚本，以后的运行先照脚本做，不调执行模型；脚本跑不通就停下，agent 用同一个浏览器接着做完。新启用的版本先试用：连着 ${ROUTINE_TRIAL_RUNS} 次脚本直接办成转正式；连着 ${ROUTINE_PAUSE_AFTER_FALLBACKS} 次交给 agent 自动停用。在办成的运行详情里「⋯ → 固化成流程」做新的一版；开了「办成后自动固化」的任务，运行办成后系统自动做。`}
       action={
         <DropdownMenu>
           <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" aria-label="固化流程的更多操作" />}>
@@ -102,6 +104,7 @@ function RoutineSection({ task, routine, canEdit }: { task: TaskDef; routine: Ro
           <span className="font-medium">{routine.name || "（还没有名字）"}</span>
           <RoutineStatusBadge status={routine.status} />
           <span className="text-muted-foreground">{routine.activeVersion !== null ? `第 ${routine.activeVersion} 版` : "还没有启用的版本"}</span>
+          {activeAuto && <AutoBadge />}
           {routine.status === "trial" && routine.activeVersion !== null && (
             <span className="text-muted-foreground">· 试用中，连着直接办成 {routine.directStreak} / {ROUTINE_TRIAL_RUNS} 次</span>
           )}
@@ -121,6 +124,7 @@ function RoutineSection({ task, routine, canEdit }: { task: TaskDef; routine: Ro
           {paused && routine.mode === "first" && <span className="text-muted-foreground">（停用中，不会跑）</span>}
         </div>
         <RecentLine recent={routine.recent} />
+        <SettingsLine task={task} />
         {paused && (
           <Alert>
             <PauseIcon />
@@ -177,16 +181,36 @@ function RecentLine({ recent }: { recent: RoutineSummary["recent"] }) {
   )
 }
 
+/** 任务上两个固化设置现在是什么：「办成后自动固化：开（默认）· 固化时试跑」（在编辑任务里改） */
+function SettingsLine({ task }: { task: TaskDef }) {
+  // 后端还没带这两项时（undefined）按没单独设处理
+  const own = task.autoSolidify ?? null
+  const auto = own ?? autoSolidifyDefault(task)
+  return (
+    <p className="flex flex-wrap items-center gap-x-1">
+      <span className="text-muted-foreground">办成后自动固化：</span>
+      {auto ? "开" : "关"}{own === null && <span className="text-muted-foreground">（默认）</span>}
+      <span className="text-muted-foreground">·</span>
+      {task.routineSkipTest ? "固化时不试跑" : "固化时试跑"}
+      <HelpTip>
+        自动固化：普通运行办成后，系统自动把它写成新的一版（还没有固化流程时写第一版；脚本跑不通、agent 接着办成时修一版），照样要人审核才启用。没单独设时按默认：被派的任务、定时任务开，别的关。
+        不试跑：会自动存草稿的网站选这个，写好直接交给人审核。两项都在「编辑任务」里改。
+      </HelpTip>
+    </p>
+  )
+}
+
 /** 正在写、试跑、待审核的那一版：待审核的链到那件「审核固化流程」 */
 function PendingVersion({ version, routineName }: { version: VersionRow; routineName: string }) {
   const item = useHumanItems().find((each) => each.kind === "routine" && each.detail.routine?.versionId === version.id)
+  const auto = useAutoVersions([version.id]).has(version.id)
   const text = version.status === "review" ? "写好、试跑过了，等你审核" : version.status === "testing" ? "脚本写好了，正在试跑（走到提交前停）" : "固化员在读运行的过程、写脚本"
   return (
     <Item variant="muted" size="xs">
       <ItemContent className="min-w-0">
-        <ItemTitle>第 {version.version} 版{version.name && version.name !== routineName ? `「${version.name}」` : ""} <VersionStatusBadge status={version.status} /></ItemTitle>
+        <ItemTitle className="flex-wrap">第 {version.version} 版{version.name && version.name !== routineName ? `「${version.name}」` : ""} <VersionStatusBadge status={version.status} />{auto && <AutoBadge />}</ItemTitle>
         <ItemDescription>
-          {text} · 从运行 {version.sourceSessionId ? <TextLink to={href("sessions", { id: version.sourceSessionId })}>{version.sourceSessionId}</TextLink> : "—"} 固化 · {fmtDateTime(version.createdAt)}
+          {text} · {auto ? "自动" : ""}从运行 {version.sourceSessionId ? <TextLink to={href("sessions", { id: version.sourceSessionId })}>{version.sourceSessionId}</TextLink> : "—"} 固化 · {fmtDateTime(version.createdAt)}
         </ItemDescription>
       </ItemContent>
       {version.status === "review" && item && (
@@ -208,13 +232,13 @@ export function VersionDialog({ versionId, activeVersion, onClose }: { versionId
       <DialogContent className="max-h-svh overflow-y-auto sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle className="flex flex-wrap items-center gap-2">
-            {version ? <>第 {version.version} 版「{version.name || "没有名字"}」<VersionStatusBadge status={version.status} current={version.version === activeVersion} /></> : "固化流程的脚本"}
+            {version ? <>第 {version.version} 版「{version.name || "没有名字"}」<VersionStatusBadge status={version.status} current={version.version === activeVersion} />{version.auto && <AutoBadge />}</> : "固化流程的脚本"}
           </DialogTitle>
           <DialogDescription>
             {version
               ? [
                   version.sourceSessionId ? `从运行 ${version.sourceSessionId} 固化` : "",
-                  version.createdBy ? `${version.createdBy.name}点的` : "",
+                  version.auto ? "运行办成后系统自动固化" : version.createdBy ? `${version.createdBy.name}点的` : "",
                   fmtDateTime(version.createdAt),
                   version.modelId ? `固化用 ${modelName(version.modelId)}，写了 ${version.round} 轮，花了 ${money(version.costUsd)}` : "",
                   version.approvedBy && version.approvedAt ? `${version.approvedBy.name} ${fmtDateTime(version.approvedAt)} 启用` : "",
@@ -254,6 +278,7 @@ export function VersionDialog({ versionId, activeVersion, onClose }: { versionId
 /** 版本记录：每版一行（状态、来源运行、时间）；启用过、不是现在用的那一版能「回到这一版」（AlertDialog 确认） */
 function HistoryDialog({ routine, canEdit, onView, onClose }: { routine: RoutineSummary; canEdit: boolean; onView: (id: string) => void; onClose: () => void }) {
   const [restoring, setRestoring] = React.useState<VersionRow | null>(null)
+  const autoIds = useAutoVersions(routine.versions.map((version) => version.id))
   const restore = useAction(trpc.routine.restore.mutationOptions({ onSuccess: () => setRestoring(null) }), {
     success: (result) => `已回到第 ${result.activeVersion} 版，从试用期开始`,
     errorTitle: "没能回到这一版",
@@ -263,7 +288,7 @@ function HistoryDialog({ routine, canEdit, onView, onClose }: { routine: Routine
       <DialogContent className="max-h-svh overflow-y-auto sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>「{routine.name}」的版本记录</DialogTitle>
-          <DialogDescription>每次「固化成流程」出一版，都要人审核启用。启用过的版本可以回去用，回去也从试用期开始。</DialogDescription>
+          <DialogDescription>每次「固化成流程」、每次办成后自动固化都出一版，都要人审核启用。启用过的版本可以回去用，回去也从试用期开始。</DialogDescription>
         </DialogHeader>
         <ItemGroup className="gap-2">
           {routine.versions.map((version) => {
@@ -271,7 +296,7 @@ function HistoryDialog({ routine, canEdit, onView, onClose }: { routine: Routine
             return (
               <Item key={version.id} variant="outline" size="xs">
                 <ItemContent className="min-w-0">
-                  <ItemTitle className="flex-wrap">第 {version.version} 版 <VersionStatusBadge status={version.status} current={current} /></ItemTitle>
+                  <ItemTitle className="flex-wrap">第 {version.version} 版 <VersionStatusBadge status={version.status} current={current} />{autoIds.has(version.id) && <AutoBadge />}</ItemTitle>
                   <ItemDescription>
                     {fmtDateTime(version.createdAt)}
                     {version.sourceSessionId && <> · 从 <TextLink to={href("sessions", { id: version.sourceSessionId })}>{version.sourceSessionId}</TextLink> 固化</>}

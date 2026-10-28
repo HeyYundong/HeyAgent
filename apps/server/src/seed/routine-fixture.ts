@@ -1,6 +1,8 @@
 // 固化流程的演示数据（开发、测试用，不进正式环境，docs/dev/solidify.md 15.4）：在种子数据的一个浏览器任务上造出界面要看的各种样子。
 // - 一个正式的固化流程（RT-<n>），任务开着「先跑流程」；5 个版本：启用过的旧版、没成功（不适合固化）、正在用的、不用（写了理由）、待审核（修的版本，带两轮试跑报告和停下时的截图）；
 // - 运行：agent 办成的普通运行（固化的原料，能点「固化成流程」）、3 次脚本直接办成、1 次脚本停在第 2 步交给 agent 办完、2 次固化试跑（一次出错、一次停在提交前）；
+//   第二期（17.2、17.3）：1 次脚本停在登录页等人处理（suspended，运行在等人）、1 次等人处理后接着跑完（resumes / replayed）、1 次脚本跑完验收反问 agent 接着做（agentAfter）；
+// - 待审核的第 5 版是运行办成后系统自动固化的（auto，17.1）；
 // - 一件「审核固化流程」（kind = routine）给任务负责人。
 // 运行只插页面要的几列（没有快照和消息，不能「继续」）。重复跑会先删掉上一次插的（按 note 标记和这个任务的固化流程），再重新插。
 import sharp from "sharp"
@@ -207,6 +209,9 @@ export async function insertRoutineFixtures(db: Db): Promise<{ routineId: string
   const directRuns = [runId(), runId(), runId()] // 3 次脚本直接办成
   const fallbackRun = runId() // 今天：脚本停在第 2 步，agent 接着办完 → 第 5 版（修的版本）的原料
   const freshRun = runId() // 今天下午 agent 自己办成（没开先跑流程之前的那种）：能点「固化成流程」
+  const suspendedRun = runId() // 刚才：脚本第 1 步打开榜单是登录页，停下等人登录，登录好接着跑（17.2）
+  const resumedRun = runId() // 一天半前：脚本第 1 步遇到登录页，人登录后按记录跳过 1 步、接着跑完
+  const agentAfterRun = runId() // 4 天前：脚本跑完报了办成，三方验收反问，agent 接着做完（17.3）
   const testRuns = [routineTestSessionId(vid(5), 1), routineTestSessionId(vid(5), 2)]
   const testRunV3 = routineTestSessionId(vid(3), 1)
 
@@ -338,6 +343,98 @@ export async function insertRoutineFixtures(db: Db): Promise<{ routineId: string
       { at: 92, kind: "tool", title: `存下日报「新品日报 ${date}.md」`, toolId: "file.save", input: { name: `新品日报 ${date}.md` }, output: `已保存：新品日报 ${date}.md（1.2 KB）`, ms: 110, tokensIn: 7_500, tokensOut: 740 },
       { at: 100, kind: "verify", title: "AI 复核：办成", detail: "日报里 5 个商品都有名字、价格和链接。" },
       { at: 101, kind: "done", title: "办成了", detail: `agent 接着做完：读了 20 个新品，挑了 5 个写进「新品日报 ${date}.md」。` },
+    ])
+  }
+
+  // 刚才：脚本第 1 步打开榜单是登录页（登录过期了），停下等人登录；运行在等人处理，登录好按记录接着跑
+  const loginReason = "打开后是登录页（登录过期了），等人登录"
+  {
+    const startMin = 30
+    sessions.push({
+      ...base(suspendedRun, startMin, 0),
+      status: "needs_human",
+      endedAt: null,
+      routine: routineState(3, startMin, 0, {
+        state: "suspended",
+        steps: 1,
+        endedAt: undefined,
+        ms: undefined,
+        stoppedAt: { step: 1, kind: "suspend", tool: "browser.navigate", label: "navigate 家居类新品榜", reason: loginReason },
+        input: {},
+      }),
+    })
+    events.set(suspendedRun, [
+      { at: 1, kind: "plan", title: "先跑固化流程「读家居新品榜、写日报」第 3 版", detail: "不调执行模型；脚本跑不通时交给 agent 接着做" },
+      { ...routineSteps("新品榜", dateOf(startMin), 1)[0]!, output: "### Page\n- URL: https://shop.example.com/login\n- Title: 登录" },
+      { at: 5, kind: "wait", title: "固化流程停在第 1 步：要人处理", detail: `${loginReason}。处理好以后脚本按记录接着跑，前面做过的不重做。` },
+    ])
+  }
+
+  // 一天半前：同样遇到登录页，人登录好以后脚本接着跑（第 1 步按记录跳过），跑完办成
+  {
+    const startMin = DAY + 12 * 60
+    const date = dateOf(startMin)
+    const steps = routineSteps("新品榜", date)
+    const waitSeconds = 240
+    const late = steps.slice(1).map((step) => ({ ...step, at: step.at + waitSeconds }))
+    const seconds = late.at(-1)!.at + 2
+    sessions.push({
+      ...base(resumedRun, startMin, seconds + 4),
+      outcome: "achieved",
+      outcomeBy: "review",
+      outcomeReason: "脚本报了办成；日报里 5 个商品都有名字、价格和链接。",
+      costUsd: 0.0006,
+      routine: routineState(3, startMin, seconds, {
+        state: "finished",
+        steps: steps.length,
+        commits: [{ step: 6, label: "保存日报", verified: `空间里有「新品日报 ${date}.md」` }],
+        input: {},
+        resumes: 1,
+        replayed: 1,
+      }),
+    })
+    events.set(resumedRun, [
+      { at: 1, kind: "plan", title: "先跑固化流程「读家居新品榜、写日报」第 3 版", detail: "不调执行模型；脚本跑不通时交给 agent 接着做" },
+      { ...steps[0]!, output: "### Page\n- URL: https://shop.example.com/login\n- Title: 登录" },
+      { at: 5, kind: "wait", title: "固化流程停在第 1 步：要人处理", detail: `${loginReason}。处理好以后脚本按记录接着跑，前面做过的不重做。` },
+      { at: waitSeconds, kind: "resume", title: "脚本接着跑：前 1 步按记录跳过，从第 2 步接着做", detail: "负责人登录好了。" },
+      ...late,
+      { at: seconds + 2, kind: "verify", title: "AI 复核：办成", detail: "日报里 5 个商品都有名字、价格和链接。" },
+      { at: seconds + 3, kind: "done", title: "办成了", detail: `读了 20 个新品，挑了 5 个写进「新品日报 ${date}.md」。` },
+    ])
+  }
+
+  // 4 天前：脚本跑完报了办成，三方验收反问「日报里有没有链接」，agent 接着补上链接（不算直接办成，也不算交给 agent）
+  {
+    const startMin = 4 * DAY + 60
+    const date = dateOf(startMin)
+    const steps = routineSteps("新品榜", date)
+    const scriptSeconds = steps.at(-1)!.at + 1
+    sessions.push({
+      ...base(agentAfterRun, startMin, scriptSeconds + 70),
+      outcome: "achieved",
+      outcomeBy: "verify",
+      outcomeReason: "三方验收通过：补上链接以后 5 个商品都有名字、价格和链接。",
+      tokensIn: 21_000,
+      tokensOut: 900,
+      costUsd: 0.0081,
+      stepCount: 2,
+      routine: routineState(3, startMin, scriptSeconds, {
+        state: "finished",
+        steps: steps.length,
+        commits: [{ step: 6, label: "保存日报", verified: `空间里有「新品日报 ${date}.md」` }],
+        input: {},
+        agentAfter: true,
+      }),
+    })
+    events.set(agentAfterRun, [
+      { at: 1, kind: "plan", title: "先跑固化流程「读家居新品榜、写日报」第 3 版", detail: "不调执行模型；脚本跑不通时交给 agent 接着做" },
+      ...steps,
+      { at: scriptSeconds + 5, kind: "verify", title: "三方验收：有疑问", detail: "日报里第 3 个商品没有链接，补上再报。" },
+      { at: scriptSeconds + 30, kind: "tool", title: `改日报「新品日报 ${date}.md」`, toolId: "file.edit", input: { name: `新品日报 ${date}.md` }, output: "已改", ms: 90, tokensIn: 12_000, tokensOut: 500 },
+      { at: scriptSeconds + 50, kind: "tool", title: "报告办成了", toolId: "run.finish", input: { outcome: "achieved" }, output: "已收到，交给验收", ms: 20, tokensIn: 9_000, tokensOut: 400 },
+      { at: scriptSeconds + 65, kind: "verify", title: "三方验收：通过", detail: "补上链接以后 5 个商品都有名字、价格和链接。" },
+      { at: scriptSeconds + 66, kind: "done", title: "办成了", detail: `agent 补上了链接：「新品日报 ${date}.md」。` },
     ])
   }
 
@@ -493,9 +590,11 @@ export async function insertRoutineFixtures(db: Db): Promise<{ routineId: string
       rejectReason: "日报要 Markdown，不要表格；先不用这一版。",
       approvedById: null,
     },
-    // 第 5 版：待审核（修的版本：标签改名了）
+    // 第 5 版：待审核（修的版本：标签改名了）。运行办成后系统自动固化的（没有人点，createdById 空）
     {
       ...common(5, 240),
+      auto: true,
+      createdById: null,
       sourceSessionId: fallbackRun,
       status: "review",
       baseVersion: 3,
@@ -516,7 +615,7 @@ export async function insertRoutineFixtures(db: Db): Promise<{ routineId: string
     id: itemId,
     kind: "routine",
     title: `审核固化流程「${name}」第 5 版`,
-    summary: `运行 ${fallbackRun} 里脚本停在第 2 步、agent 接着办完，固化员按新的做法修了一版`,
+    summary: `运行 ${fallbackRun} 里脚本停在第 2 步、agent 接着办完，系统自动固化：固化员按新的做法修了一版`,
     assigneeId: ownerId,
     taskId: task.id,
     routineVersionId: vid(5),
@@ -531,5 +630,5 @@ export async function insertRoutineFixtures(db: Db): Promise<{ routineId: string
     createdAt: minutesAgo(180),
   })
 
-  return { routineId: routine, reviewVersionId: vid(5), itemId, runIds: [agentRunA, agentRunB, ...directRuns, fallbackRun, freshRun], testRunIds: [testRunV3, ...testRuns] }
+  return { routineId: routine, reviewVersionId: vid(5), itemId, runIds: [agentRunA, agentRunB, ...directRuns, fallbackRun, freshRun, suspendedRun, resumedRun, agentAfterRun], testRunIds: [testRunV3, ...testRuns] }
 }

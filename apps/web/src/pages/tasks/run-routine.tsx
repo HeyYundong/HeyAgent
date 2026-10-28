@@ -1,6 +1,7 @@
 // 运行详情里和固化流程有关的几样（docs/dev/solidify.md 第 9 节、15.4 第 2 条）：
 // - 头部一行：「按固化流程第 3 版跑：14 步 · 9 秒 · 没调执行模型」「固化流程第 3 版停在第 5 步（原因），agent 接着做完」「固化试跑（第 5 版第 2 轮）：…停在提交前」；
-// - 「⋯ → 固化成流程」的弹窗（routine.compile）：一句话说明 + 「不试跑」勾选；只有已结束、办成的普通运行，负责人和主管能点。
+// - 停下等人（suspended）、接着跑过（resumes）、脚本跑完验收反问后 agent 接着做（agentAfter）的写法见 routine-parts 的 routineRunText（第 17.2、17.3 节）；
+// - 「⋯ → 固化成流程」的弹窗（routine.compile）：一句话说明 + 「不试跑」勾选（默认取任务的「固化时不试跑」）；只有已结束、办成的普通运行，负责人和主管能点。
 import * as React from "react"
 import { FlaskConicalIcon, WorkflowIcon } from "lucide-react"
 import { isRunEnded, outcomeOf, type SessionSummary } from "@heyagent/shared"
@@ -14,7 +15,7 @@ import { Spinner } from "@/components/ui/spinner"
 import { useAction } from "@/lib/mutations"
 import { trpc } from "@/lib/trpc"
 
-import { routineRunText } from "./routine-parts"
+import { routineResumeText, routineRunText } from "./routine-parts"
 
 /** 固化试跑的运行（不进会话列表、不复核、不算结果） */
 export const isRoutineTest = (run: Pick<SessionSummary, "kind">) => run.kind === "routine_test"
@@ -26,6 +27,7 @@ export const canSolidify = (run: SessionSummary) => !isRoutineTest(run) && isRun
 export function RoutineRunLine({ run }: { run: SessionSummary }) {
   if (!run.routine) return null
   const test = run.routine.mode === "test"
+  const resumed = routineResumeText(run.routine)
   return (
     <span className="mt-1 flex flex-wrap items-center gap-1.5 text-foreground">
       <Badge variant={test ? "secondary" : "outline"}>
@@ -33,13 +35,20 @@ export function RoutineRunLine({ run }: { run: SessionSummary }) {
         {test ? "试跑" : "流程"}
       </Badge>
       {routineRunText(run.routine, run.id, isRunEnded(run.status))}
+      {resumed && <span className="text-muted-foreground">· {resumed}</span>}
     </span>
   )
 }
 
 /** 「固化成流程」：固化员读这次运行的过程写成脚本，试跑到第一次提交前，好了在「等人处理」里叫人审核 */
-export function SolidifyDialog({ run, open, onOpenChange }: { run: SessionSummary; open: boolean; onOpenChange: (open: boolean) => void }) {
-  const [skipTest, setSkipTest] = React.useState(false)
+export function SolidifyDialog({ run, defaultSkipTest, open, onOpenChange }: {
+  run: SessionSummary
+  /** 任务的「固化时不试跑」：勾不勾的默认值（第 17.1 节） */
+  defaultSkipTest: boolean
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}) {
+  const [skipTest, setSkipTest] = React.useState(defaultSkipTest)
   const repair = run.routine?.state === "fell_back"
   const compile = useAction(trpc.routine.compile.mutationOptions(), {
     success: (_data, vars) => (vars.skipTest ? "开始固化：写好会在「等人处理」里叫你审核" : "开始固化：写好、试跑完会在「等人处理」里叫你审核"),
@@ -63,7 +72,7 @@ export function SolidifyDialog({ run, open, onOpenChange }: { run: SessionSummar
           <Checkbox id={`solidify-skip-${run.id}`} checked={skipTest} onCheckedChange={(on) => setSkipTest(Boolean(on))} />
           <FieldContent>
             <FieldLabel htmlFor={`solidify-skip-${run.id}`} className="font-normal">不试跑（填表就会自动存草稿的网站选这个）</FieldLabel>
-            {skipTest && <FieldDescription>写好、程序检查过了直接交给你审核；没真跑过，启用后头几次运行要多看看。</FieldDescription>}
+            {skipTest && <FieldDescription>{defaultSkipTest ? "任务设了「固化时不试跑」，所以默认勾上。" : ""}写好、程序检查过了直接交给你审核；没真跑过，启用后头几次运行要多看看。</FieldDescription>}
           </FieldContent>
         </Field>
         <DialogFooter>
