@@ -1,7 +1,7 @@
 // browser.fill_form 读回实际的值（browser/form-readback.ts，docs/dev/routine-library.md 18.6 第 3 条）：假页面，不开 Chrome。
 import { describe, expect, it } from "vitest"
 
-import { readBackForm, recordedFieldLocators, type FilledField } from "../src/browser/form-readback.js"
+import { readBackForm, readBackTyped, recordedFieldLocators, type FilledField } from "../src/browser/form-readback.js"
 
 interface FakeElement {
   value?: string
@@ -138,5 +138,52 @@ describe("fill_form 读回实际的值", () => {
     const [, line] = await readBackForm(page as never, [{ name: "备注", type: "textbox", target: "#note", value: long }], undefined)
     expect(line).toContain("…（共 400 字）")
     expect(line!.length).toBeLessThan(330)
+  })
+})
+
+describe("type 读回实际的值（sub-agents.md 21.6.5 第 5 条：以前只有「（没有返回内容）」）", () => {
+  it("多行文字读回来；页面改过的标出来；慢慢打（pressSequentially）的也认", async () => {
+    const summary = "甲厂,0571-1,4.6\n乙厂,0571-2,4.8"
+    const page = fakePage({ "role:textbox:汇总": { value: summary }, "role:textbox:单号": { value: "PSS-001" }, "role:textbox:搜索": { value: "前缀 关键词" } })
+    expect(await readBackTyped(page as never, { element: "汇总", ref: "e5", text: summary }, "await page.getByRole('textbox', { name: '汇总' }).fill('甲厂,0571-1,4.6\\n乙厂,0571-2,4.8');")).toEqual([
+      "填进去的值（从页面上读回来的）：",
+      '- 汇总："甲厂,0571-1,4.6\\n乙厂,0571-2,4.8"',
+    ])
+    expect(await readBackTyped(page as never, { element: "单号", text: "pss-001" }, "await page.getByRole('textbox', { name: '单号' }).fill('pss-001');")).toEqual([
+      "填进去的值（从页面上读回来的）：",
+      '- 单号："PSS-001"（和要填的不一样）',
+    ])
+    expect(await readBackTyped(page as never, { element: "搜索", text: "关键词", slowly: true }, "await page.getByRole('textbox', { name: '搜索' }).pressSequentially('关键词');")).toEqual([
+      "填进去的值（从页面上读回来的）：",
+      '- 搜索："前缀 关键词"（和要填的不一样）',
+    ])
+    // 没有 element、录下的代码对不上时，target 是选择器的照它找
+    expect(await readBackTyped(fakePage({ "css:#qty": { value: "3" } }) as never, { target: "#qty", text: "3" }, undefined)).toEqual(["填进去的值（从页面上读回来的）：", '- 输入框："3"'])
+  })
+
+  it("密码类照样打码：密码框、名字像密钥的、用了 {{password}} 占位符的、MCP 标了 SECRET_ 的", async () => {
+    const page = fakePage({
+      "role:textbox:密码": { value: "real-1", password: true },
+      "role:textbox:API Token": { value: "tok-2" },
+      "role:textbox:账号": { value: "real-3" },
+      "role:textbox:口令": { value: "real-4" },
+    })
+    const cases: [Record<string, unknown>, string][] = [
+      [{ element: "密码", text: "real-1" }, "await page.getByRole('textbox', { name: '密码' }).fill('real-1');"],
+      [{ element: "API Token", text: "tok-2" }, "await page.getByRole('textbox', { name: 'API Token' }).fill('tok-2');"],
+      [{ element: "账号", text: "{{password}}" }, "await page.getByRole('textbox', { name: '账号' }).fill('{{password}}');"],
+      [{ element: "口令", text: "x" }, "await page.getByRole('textbox', { name: '口令' }).fill('SECRET_x');"],
+    ]
+    for (const [input, code] of cases) {
+      const lines = await readBackTyped(page as never, input, code)
+      expect(lines[1]).toBe(`- ${input.element as string}：已填（密码类，不显示）`)
+      for (const secret of ["real-1", "tok-2", "real-3", "real-4"]) expect(lines.join("\n")).not.toContain(secret)
+    }
+  })
+
+  it("submit 的不读（按了回车，页面多半已经变了）；没有 text 不读", async () => {
+    const page = fakePage({ "role:textbox:搜索": { value: "" } })
+    expect(await readBackTyped(page as never, { element: "搜索", text: "关键词", submit: true }, "await page.getByRole('textbox', { name: '搜索' }).fill('关键词');")).toEqual([])
+    expect(await readBackTyped(page as never, { element: "搜索" }, undefined)).toEqual([])
   })
 })

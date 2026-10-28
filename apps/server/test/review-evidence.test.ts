@@ -10,7 +10,7 @@ import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
 import * as t from "../src/db/schema.js"
-import { DATA_OUTPUT_BUDGET, describeToolInput, describeToolOutput, reviewLog } from "../src/engine/log-text.js"
+import { batchSnapshotText, compactSnapshot, DATA_OUTPUT_BUDGET, describeToolInput, describeToolOutput, reviewLog } from "../src/engine/log-text.js"
 import { buildReviewPrompt } from "../src/engine/review.js"
 import { configureEngine } from "../src/engine/runtime.js"
 import { buildSnapshot } from "../src/engine/sessions.js"
@@ -136,7 +136,7 @@ describe("复核看的过程记录", () => {
     for (const [code] of PRODUCTS) expect(prompt).toContain(`编号=${code}`)
     expect(prompt).toContain("- #1 browser.navigate ✓ http://shop.test/admin/products/new")
     expect(prompt).toContain("- #3 browser.fill_form ✓ 编号=P-101、名称=折叠露营椅、单价（元）=45.00")
-    // 批里的步骤标出来，批那条是汇总、逐个动作带值、结果给逐步的 ✓ / ✗（不要页面快照）
+    // 批里的步骤标出来，批那条是汇总、逐个动作带值、结果给逐步的 ✓ / ✗，附压过的页面快照（不要原样的快照）
     expect(prompt).toContain("browser.fill_form ✓（第 1 批第 2 步） 编号=P-106")
     const batch = prompt.split("\n").find((line) => line.includes("（browser.batch）"))!
     expect(batch).toMatch(/^- #31 调用 连着做几步（browser\.batch）（第 1 批的汇总：这一批的 9 步上面已逐条记过，不是又做了一遍）：参数 1\. click「继续录入」 2\. fill_form 编号=P-106、名称=防水登山背包 30L、单价（元）=89\.00/)
@@ -144,7 +144,8 @@ describe("复核看的过程记录", () => {
     expect(batch).toContain("8. fill_form 编号=P-108、名称=睡袋 -5℃")
     expect(batch).toContain("→ 结果 1. click「继续录入」 ✓（0.4 秒）")
     expect(batch).toContain("9. click「提交」 ✓（0.4 秒）")
-    expect(batch).not.toContain("页面快照")
+    expect(batch).toContain("9. click「提交」 ✓（0.4 秒） 最后的页面快照：继续录入")
+    expect(batch).not.toContain("页面：商品录入")
     // 最近 30 条照原来的详细程度
     expect(prompt).toContain(`- #${events.length} 调用 报结果（run.finish）：参数 {"outcome":"achieved"`)
     // 系统提示（批和固化流程的说明）在 review.ts 的 REVIEW_SYSTEM，这里只看输入
@@ -234,6 +235,111 @@ describe("读数据的工具：结果的 JSON 压成一行、多给字数（基�
     // 平分到每条不到 300 字时按原来的 300 字给（不比原来少）
     expect(DATA_OUTPUT_BUDGET / 30).toBeLessThan(300)
     expect(Math.max(...results.map((line) => line.length))).toBeLessThanOrEqual(302)
+  })
+})
+
+describe("批里的页面快照：值只在批的快照里读到（sub-agents.md 21.6.5 第 4 条：复核看不到，把对的运行判成没办成）", () => {
+  const SUPPLIERS = [
+    ["S-1", "甲地第一日用品厂", "李一", "0571-80000001", "4.6"],
+    ["S-2", "乙地第二五金厂", "李二", "0571-80000002", "4.8"],
+    ["S-3", "丙地第三照明厂", "李三", "0571-80000003", "4.4"],
+    ["S-4", "丁地第四纺织厂", "李四", "0571-80000004", "4.1"],
+    ["S-5", "戊地第五包装厂", "李五", "0571-80000005", "4.9"],
+    ["S-6", "己地第六玩具厂", "李六", "0571-80000006", "4.3"],
+  ] as const
+  /** gateway.ts 的批输出：逐步 ✓、页面概况、「页面快照：」+ Playwright MCP 的快照原文 */
+  const batchOutput = (steps: string[], title: string, url: string, tree: string[]) =>
+    [
+      ...steps.map((step, index) => `${index + 1}. ${step} ✓（0.3 秒）`),
+      "",
+      `现在的页面：「${title}」 ${url}`,
+      "",
+      "页面快照：",
+      "### Page",
+      `- Page URL: ${url}`,
+      `- Page Title: ${title}`,
+      "### Snapshot",
+      "```yaml",
+      ...tree,
+      "```",
+    ].join("\n")
+  const detailTree = ([, name, contact, phone, score]: readonly string[]) => [
+    "- generic [active] [ref=f4e1]:",
+    `  - heading "${name}" [level=1] [ref=f4e2]`,
+    "  - table [ref=f4e3]:",
+    "    - rowgroup [ref=f4e4]:",
+    ...[["联系人", contact], ["电话", phone], ["评分", score]].flatMap(([key, value], index) => [
+      `      - row [ref=f4e${10 + index * 3}]:`,
+      `        - rowheader "${key}" [ref=f4e${11 + index * 3}]`,
+      `        - cell "${value}" [ref=f4e${12 + index * 3}]`,
+    ]),
+    "  - paragraph [ref=f4e30]:",
+    '    - link "返回搜索" [ref=f4e31] [cursor=pointer]:',
+    "      - /url: /b/search",
+  ]
+
+  /** 6 家各一次「搜索」批、一次「点进详情」批（批里每一步网关也单独记了一条，只有页面标题），中间又看了很多次别的；最后 type 填汇总、提交 */
+  function supplierRun(): EventInput[] {
+    const events: EventInput[] = [{ kind: "tool", title: "打开网页", toolId: "browser.navigate", input: { url: "http://site.test/b/search" }, output: "现在的页面：「供应商搜索」" }]
+    for (const supplier of SUPPLIERS) {
+      const [id, name] = supplier
+      const search = [
+        { tool: "type", input: { element: "搜索框", target: "role=textbox", text: name } },
+        { tool: "click", input: { element: "搜索按钮", target: "role=button[name=\"搜索\"]" } },
+      ]
+      events.push({ kind: "tool", title: "输入文字", toolId: "browser.type", input: search[0]!.input, output: "（没有返回内容）" })
+      events.push({ kind: "tool", title: "点击", toolId: "browser.click", input: search[1]!.input, output: "现在的页面：「供应商搜索」" })
+      events.push({
+        kind: "tool",
+        title: "连着做几步",
+        toolId: "browser.batch",
+        input: { actions: search },
+        output: batchOutput(["type「搜索框」", "click「搜索按钮」"], "供应商搜索", "http://site.test/b/search", [
+          "- generic [active] [ref=f1e1]:",
+          '  - textbox "搜索供应商" [ref=f1e4]: ' + name,
+          "  - list [ref=f1e7]:",
+          "    - listitem [ref=f1e8]:",
+          `      - link "${name}" [ref=f1e9] [cursor=pointer]:`,
+          `        - /url: /b/s/${id}`,
+        ]),
+      })
+      const open = [{ tool: "click", input: { element: name, target: `text=${name}` } }]
+      events.push({ kind: "tool", title: "点击", toolId: "browser.click", input: open[0]!.input, output: `现在的页面：「${name}」` })
+      events.push({ kind: "tool", title: "连着做几步", toolId: "browser.batch", input: { actions: open }, output: batchOutput([`click「${name}」`], name, `http://site.test/b/s/${id}`, detailTree(supplier)) })
+      for (let i = 0; i < 3; i++) events.push({ kind: "tool", title: "看日志", toolId: "file.list", input: {}, output: "没有文件" })
+    }
+    const summary = SUPPLIERS.map(([, name, , phone, score]) => `${name},${phone},${score}`).join("\n")
+    events.push({ kind: "tool", title: "输入文字", toolId: "browser.type", input: { element: "汇总", text: summary }, output: "（没有返回内容）" })
+    events.push({ kind: "tool", title: "点击", toolId: "browser.click", input: { element: "提交" }, output: "现在的页面：「已提交」" })
+    events.push({ kind: "tool", title: "报结果", toolId: "run.finish", input: { outcome: "achieved", summary: "6 家都查到并提交了" }, output: "好" })
+    return events
+  }
+
+  it("快照压成文字行：去掉 ### Page、代码块、ref；表格一行连成「电话 | 0571-…」；输入框写「名字=值」", () => {
+    const output = batchOutput(["click「乙地第二五金厂」"], "乙地第二五金厂", "http://site.test/b/s/S-2", detailTree(SUPPLIERS[1]))
+    expect(batchSnapshotText(output)).toBe("乙地第二五金厂 ⏎ 联系人 | 李二 ⏎ 电话 | 0571-80000002 ⏎ 评分 | 4.8 ⏎ 返回搜索")
+    expect(describeToolOutput("browser.batch", output, 300, 2000)).toBe("1. click「乙地第二五金厂」 ✓（0.3 秒） 最后的页面快照：乙地第二五金厂 ⏎ 联系人 | 李二 ⏎ 电话 | 0571-80000002 ⏎ 评分 | 4.8 ⏎ 返回搜索")
+    expect(compactSnapshot('- generic [ref=e1]:\n  - textbox "数量" [ref=e2]: "12"\n  - checkbox "加急" [checked] [ref=e3]\n  - text: 合计 36 元')).toBe("数量=12 ⏎ 加急=[checked] ⏎ 合计 36 元")
+    // 没带快照（snapshot: false、挂起了）的批照旧只有逐步的 ✓
+    expect(describeToolOutput("browser.batch", "1. click「提交」 ✓（0.3 秒）\n\n现在的页面：「已提交」", 300, 2000)).toBe("1. click「提交」 ✓（0.3 秒）")
+    // browser.snapshot 一样压
+    expect(describeToolOutput("browser.snapshot", ["### Page", "- Page URL: http://site.test/", "### Snapshot", "```yaml", ...detailTree(SUPPLIERS[2]), "```"].join("\n"), 2000)).toContain("电话 | 0571-80000003 ⏎ 评分 | 4.4")
+  })
+
+  it("一次运行的电话、评分只在批的快照里读到：复核材料里 6 家的值都看得到（较早的压成一行的也在）", async () => {
+    const events = supplierRun()
+    expect(events.length).toBeGreaterThan(40)
+    const { session, snapshot } = await insertRun(events)
+    const { prompt } = await buildReviewPrompt(ctx.db, session, snapshot, "6 家都查到并提交了", false)
+    expect(prompt).toContain("较早的记录")
+    for (const [, name, contact, phone, score] of SUPPLIERS) {
+      expect(prompt).toContain(`${name} ⏎ 联系人 | ${contact} ⏎ 电话 | ${phone} ⏎ 评分 | ${score}`)
+    }
+    // 第一家在较早的那一段（压成一行）
+    const first = prompt.split("\n").find((line) => line.includes("电话 | 0571-80000001"))!
+    expect(first).toMatch(/^- #\d+ browser\.batch ✓/)
+    expect(prompt).not.toContain("[ref=")
+    expect(prompt).not.toContain("```yaml")
   })
 })
 

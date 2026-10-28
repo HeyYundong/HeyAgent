@@ -3,7 +3,7 @@
 // 等（all 叫醒一次、any 只给新的、已经满足的直接返回、none、挂起窗口补发、外部事件挡掉）；结果（不复核、只回文字、work.report、缺字段、
 // subs/<n>/ 只读）；失败（出错、上限、subagent.cancel、人取消、父结束跟着停、run.finish 被拒、只回文字提醒后停掉）；
 // 花费（合计、同意继续按合计、今天的花费、派活每天花费）；别处（列表、统计、手动编号、派活名额、复核一节、不能固化）；清扫。
-import { SETTING_KEYS, subagentQueueEvent, subagentWaitEvent, type SessionSnapshot } from "@heyagent/shared"
+import { SETTING_KEYS, SUBAGENT_GOAL_AS_ASKED, SUBAGENT_RESULTS_ARE_BASIS, subagentQueueEvent, subagentWaitEvent, type SessionSnapshot } from "@heyagent/shared"
 import { and, eq, inArray, notInArray, sql } from "drizzle-orm"
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest"
 
@@ -24,6 +24,7 @@ import { familyCost } from "../src/engine/subagents/settle.js"
 import { sweepSubagents } from "../src/engine/subagents/sweep.js"
 import { listSubagents } from "../src/engine/subagents/view.js"
 import { executeBuiltin, type SessionRow } from "../src/engine/tools/builtin.js"
+import { BUILTIN_TOOLS } from "../src/engine/tools/builtin-defs.js"
 import { writeSpaceFile } from "../src/files/service.js"
 import { insertSubagentFixtures } from "../src/seed/subagent-fixture.js"
 import { compileFromSession } from "../src/routine/compile.js"
@@ -221,6 +222,11 @@ describe("拆", () => {
     const again = await startFromAgent(toolCtx(parent.row, parent.snapshot), { items: items("丙") })
     expect(again.output).toContain(`${parent.row.id}.3「丙」`)
     expect(again.output).toContain("一共拆了 3 个")
+    // 21.6.5 第 1 条：返回的最后一句和系统提示一样，不再让它「先做自己能做的」
+    expect(first.output).toContain("先做不在子目标里的事")
+    expect(first.output).toContain("交出去的不要自己再做一遍")
+    expect(first.output).toContain(SUBAGENT_RESULTS_ARE_BASIS)
+    expect(first.output).not.toContain("自己能做的")
 
     const rows = await childrenOf(parent.row.id)
     expect(rows.map((row) => row.id)).toEqual([1, 2, 3].map((n) => `${parent.row.id}.${n}`))
@@ -656,11 +662,28 @@ describe("别处", () => {
     // 21.3 第 1 条：交出去的不要自己再做、只查矛盾和缺的那一处；没办成、缺的照常处理
     expect(system).toContain("拆完先做不在子目标里的事")
     expect(system).toContain("交出去的不要自己再做一遍")
-    expect(system).toContain("看各个子 agent 交回的依据、文件有没有互相矛盾、和目标对不对得上")
-    expect(system).toContain("有矛盾或缺的只查那一处，或补拆")
+    expect(system).toContain("也不要为了写子目标先自己把其中一件做一遍")
+    // 21.6.5 第 1 条：交回的值就是汇总的依据，不重算、不重开网页；只有矛盾或缺了才查那一处
+    expect(system).toContain(SUBAGENT_RESULTS_ARE_BASIS)
+    expect(SUBAGENT_RESULTS_ARE_BASIS).toContain("子 agent 交回的值就是汇总的依据，不用重算，也不用重开网页核对")
+    expect(SUBAGENT_RESULTS_ARE_BASIS).toContain("只有依据互相矛盾或缺了，才查那一处或补拆")
+    // 21.6.5 第 2 条：子目标照任务原来的要求写，不另加说明、核对类的交回字段
+    expect(system).toContain(SUBAGENT_GOAL_AS_ASKED)
+    expect(SUBAGENT_GOAL_AS_ASKED).toContain("子目标照任务原来的要求写")
+    expect(SUBAGENT_GOAL_AS_ASKED).toContain("不要另加说明、核对类的交回字段")
     expect(system).toContain("子 agent 报没办成、或交回的东西缺了的，看原因")
-    expect(system).not.toContain("先做你自己能做的")
+    expect(system).not.toContain("自己能做的")
     expect(system).not.toContain("自己核对")
+    expect(system).not.toContain("独立复核")
+    // 工具说明也一样
+    const defs = new Map<string, string>(BUILTIN_TOOLS.map((def) => [def.id, def.description]))
+    expect(defs.get("subagent.start")).toContain("照任务原来的要求写，不另加说明、核对类的交回字段")
+    expect(defs.get("subagent.start")).toContain("交出去的不要自己再做一遍")
+    expect(defs.get("subagent.wait")).toContain("子 agent 交回的值就是汇总的依据，不用重算，也不用重开网页核对")
+    for (const id of ["subagent.start", "subagent.wait", "subagent.cancel"]) {
+      expect(defs.get(id)).not.toContain("自己能做的")
+      expect(defs.get(id)).not.toContain("没有复核")
+    }
     expect(buildSystemPrompt(parent.snapshot, new Map())).not.toContain("## 拆给子 agent")
   })
 
@@ -676,13 +699,13 @@ describe("别处", () => {
     expect(text).toContain("- R-1-1.1「甲」办成：好了\n  依据：页面上有\n  交回的字段：数=3\n  文件：subs/1/out/a.csv")
     expect(text).toContain("R-1-1.2「乙」没办成（出错或被停掉）：父 agent 停掉的：不要了")
     expect(text).toContain("R-1-1.3「丙」办成（前面给过）")
-    expect(text).toContain("没有复核")
-    // 21.3 第 1 条：叫醒消息的最后一句只让看矛盾、查缺的那一处，不要逐个重做
+    // 21.3 第 1 条、21.6.5 第 1 条：叫醒消息的最后一句：交回的值就是依据，只查矛盾、缺的那一处，不要逐个重做
     expect(text.split("\n").at(-1)).toBe(SUBAGENT_RESULTS_TAIL)
-    expect(SUBAGENT_RESULTS_TAIL).toContain("看各个子 agent 交回的依据、文件有没有互相矛盾、和目标对不对得上")
-    expect(SUBAGENT_RESULTS_TAIL).toContain("有矛盾或缺的只查那一处，或补拆")
+    expect(SUBAGENT_RESULTS_TAIL).toContain(SUBAGENT_RESULTS_ARE_BASIS)
+    expect(SUBAGENT_RESULTS_TAIL).toContain("不要把交出去的事逐个重做")
     expect(SUBAGENT_RESULTS_TAIL).toContain("报没办成的、交回的东西缺了的照常处理")
     expect(text).not.toContain("自己核对")
+    expect(text).not.toContain("没有复核")
   })
 })
 

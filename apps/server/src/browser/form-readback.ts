@@ -1,6 +1,6 @@
-// browser.fill_form 做完以后，把每个字段实际的值从页面上读回来，写进给 agent 的结果（docs/dev/routine-library.md 18.6 第 3 条）：
-// agent 看不到填进去的是什么，会不放心、再填再提交一遍；会改数据的表单提交两次可能办两次。
-// - 字段的定位用这次录下的 Playwright 代码（MCP 的 ### Ran Playwright code，一个字段一行：fill / check / uncheck / selectOption），
+// browser.fill_form、browser.type 做完以后，把每个字段实际的值从页面上读回来，写进给 agent 的结果（docs/dev/routine-library.md 18.6 第 3 条；
+// type 见 docs/dev/sub-agents.md 21.6.5 第 5 条）：agent 看不到填进去的是什么，会不放心、再填再提交一遍；会改数据的表单提交两次可能办两次。
+// - 字段的定位用这次录下的 Playwright 代码（MCP 的 ### Ran Playwright code，一个字段一行：fill / check / uncheck / selectOption；type 慢慢打的是 pressSequentially），
 //   和字段一一对应；对不上时，字段的 target 是选择器（不是快照 ref）的照它找；都不行写「读不出来」；
 // - 输入框读 value，下拉框读选中的文字，勾选框、单选读勾没勾；
 // - 密码框（type=password、autocomplete 是密码、验证码）和名字像密钥的（密码、token、secret、密钥……）、用了 {{password}} 占位符的打码。
@@ -23,8 +23,8 @@ const VALUE_CHARS = 300
 const SECRET_NAME = /密码|口令|密钥|秘钥|私钥|令牌|验证码|passw|pwd|passcode|secret|token|api[\s_-]?key|credential|otp/i
 /** 快照 ref（e12）、aria-ref=…：只有 MCP 自己认得，这里找不到 */
 const SNAPSHOT_REF = /^(?:aria-ref=)?[a-z]?\d+$/i
-/** 录下的一个字段动作：await page.<定位>.fill(…) / check() / uncheck() / setChecked(…) / selectOption(…) */
-const ACTION_LINE = /^(?:await\s+)?(page\..+)\.(fill|check|uncheck|setChecked|selectOption)\(.*\);?$/
+/** 录下的一个字段动作：await page.<定位>.fill(…) / check() / uncheck() / setChecked(…) / selectOption(…) / pressSequentially(…)（type 的 slowly） */
+const ACTION_LINE = /^(?:await\s+)?(page\..+)\.(fill|check|uncheck|setChecked|selectOption|pressSequentially)\(.*\);?$/
 
 /** 录下的代码里，每个字段动作的定位（按顺序） */
 export function recordedFieldLocators(code: string | undefined): { locator: string; secret: boolean }[] {
@@ -134,4 +134,15 @@ export async function readBackForm(page: Page, fields: FilledField[], code: stri
     lines.push(`- ${field.name || `第 ${index + 1} 个字段`}：${line}`)
   }
   return ["填进去的值（从页面上读回来的）：", ...lines]
+}
+
+/**
+ * browser.type 做完：和 fill_form 一样读回输入框里实际的值（一个字段，名字用 element；密码类照样打码）。
+ * submit 的不读（按了回车，页面多半已经变了，读到的不是填进去的）；没有 text 返回空数组
+ */
+export async function readBackTyped(page: Page, input: Record<string, unknown>, code: string | undefined): Promise<string[]> {
+  if (typeof input.text !== "string" || input.submit === true) return []
+  const element = typeof input.element === "string" ? input.element.trim() : ""
+  const field: FilledField = { name: element || "输入框", type: "textbox", value: input.text, ...(typeof input.target === "string" ? { target: input.target } : {}) }
+  return readBackForm(page, [field], code)
 }

@@ -30,6 +30,19 @@ export const SUBAGENT_DROPPED_TOOL_IDS: readonly string[] = [...SUBAGENT_TOOL_ID
 /** 子快照里去掉的规则触发（5.1）：「agent 说做完了」（含三方验收）是对整个任务的；「花费超过 X」父按合计算，子 agent 另有上限 */
 export const SUBAGENT_DROPPED_RULE_TRIGGERS: readonly string[] = ["agent_done", "cost_over"]
 
+// ---------- 给父 agent 的几句话（系统提示、工具返回、叫醒消息共用） ----------
+
+/**
+ * 子 agent 交回的值怎么用（21.6.5 第 1 条）：就是汇总的依据，不重算、不重开网页核对；只有互相矛盾或缺了才查那一处或补拆。
+ * server 的系统提示「拆给子 agent」一节、subagent_start 的返回、叫醒消息、subagent_wait 的结果和工具说明都用这一句
+ */
+export const SUBAGENT_RESULTS_ARE_BASIS =
+  "子 agent 交回的值就是汇总的依据，不用重算，也不用重开网页核对；只有依据互相矛盾或缺了，才查那一处或补拆。"
+
+/** 写子目标（21.6.5 第 2 条）：照任务原来的要求写，不另加说明、核对类的交回字段（每个子 agent 都会照做，加起来比自己做还多） */
+export const SUBAGENT_GOAL_AS_ASKED =
+  "子目标照任务原来的要求写：任务要交回什么就写什么，不要另加说明、核对类的交回字段或要求（例如「说明怎么区分的」「另交依据」）。子 agent 交回时本来就带依据，加的要求每个子 agent 都会照做，加起来比你自己做还多。"
+
 // ---------- 上限（工具输入）和交回文字的长度 ----------
 
 /** 一次 subagent.start 最多拆几个（总数另有设置 subagent.maxPerRun） */

@@ -8,6 +8,8 @@ import {
   riskLabel,
   RUN_FINISH_TOOL_ID,
   RUN_NOT_DONE_TOOL_ID,
+  SUBAGENT_GOAL_AS_ASKED,
+  SUBAGENT_RESULTS_ARE_BASIS,
   SUBAGENT_START_TOOL_ID,
   WORK_DISPATCH_TOOL_ID,
   WORK_LIST_TOOL_ID,
@@ -84,9 +86,10 @@ export function subagentSection(snapshot: SessionSnapshot, toolNames: Map<string
     "- 不要拆：步骤有先后、后一步要用前一步的结果；一两步就能做完；要在同一个页面、同一个登录里连着操作。",
     browserLine,
     "- 写子目标：子 agent 看不到你的对话、你读过的网页和文件，只看到你写的目标、输入和给它的文件；写清做到什么算完、交回什么（字段写在 results 里，文件让它存到空间里）。",
+    `- ${SUBAGENT_GOAL_AS_ASKED}`,
     `- 这次运行同时最多 ${limits.maxParallel} 个子 agent 在跑，一共最多拆 ${limits.maxPerRun} 个。`,
-    `- 拆完先做不在子目标里的事（没有就直接用 ${wait} 等），交出去的不要自己再做一遍。`,
-    `- 收到结果后汇总：看各个子 agent 交回的依据、文件有没有互相矛盾、和目标对不对得上，不要逐个重做；有矛盾或缺的只查那一处，或补拆。子 agent 写的文件在你空间的 subs/<n>/ 下（只读）。`,
+    `- 拆完先做不在子目标里的事（没有就直接用 ${wait} 等），交出去的不要自己再做一遍；也不要为了写子目标先自己把其中一件做一遍。`,
+    `- 收到结果后汇总：${SUBAGENT_RESULTS_ARE_BASIS}不要逐个重做。子 agent 写的文件在你空间的 subs/<n>/ 下（只读）。`,
     "- 子 agent 报没办成、或交回的东西缺了的，看原因：补一个写得更具体的子 agent、自己做那一件，或者如实报没办成。不要把子 agent 没做到的说成做到了。",
     `- 子 agent 还没结束时不能报结果：先等完，或者用 ${cancel} 停掉不要的。有人让你提前继续时，子 agent 可能还没结束：先用 ${wait}（mode: none）看现状再决定。`,
   ]
@@ -267,7 +270,7 @@ export function buildSystemPrompt(
         toolNames.has("browser.wait_any")
           ? `- 点了按钮要等结果时用 ${toolNames.get("browser.wait_any")}，把可能的结果都列出来（结果出来了、「暂无数据」、报错提示），它返回出现的是哪个；不用做完再快照看。`
           : "",
-        "- browser_fill_form 的输出里有每个字段实际填进去的值（从页面上读回来的，密码类不显示），看它就知道填得对不对，不用为了核对再填一遍。",
+        "- browser_fill_form、browser_type（没有 submit 的）的输出里有实际填进去的值（从页面上读回来的，密码类不显示），看它就知道填得对不对，不用为了核对再填一遍、再读一遍。",
         "- 提交以后先看页面给的结果（成功或出错的提示）；没有明确失败的不要再提交一遍：会改数据的表单提交两次可能办两次。",
         "- 动作被弹窗挡住时，弹窗里有「我知道了」「关闭」这类无害的按钮，系统会点掉它再做一次；别的弹窗（按钮是「接受」「同意」这类）要你自己判断怎么处理。",
         allowVision

@@ -30,6 +30,7 @@ import {
   browserActionLabel,
   browserActionTag,
   hostOf,
+  isRunEnded,
   ANY_PROFILE_EVENT,
   leaseEventName,
   profileEventName,
@@ -56,7 +57,7 @@ import { judgePage, parseVisionAnswer, providerCaptchaNote, VISION_PROMPT, type 
 import { autoLogin, loadAccountPassword, loginModelId, type AutoLoginCaptcha } from "./auto-login.js"
 import { CAPTCHA_MAX_TRIES, solveCaptcha, type CaptchaResult, type CaptchaTry } from "./captcha.js"
 import { ClipboardTools, imageSize } from "./clipboard.js"
-import { readBackForm, type FilledField } from "./form-readback.js"
+import { readBackForm, readBackTyped, type FilledField } from "./form-readback.js"
 import {
   EXTRACT_DEFAULT_ROWS,
   EXTRACT_MAX_ROWS,
@@ -67,6 +68,7 @@ import {
   waitAnyOutcome,
   type ExtractInput,
 } from "./extract.js"
+import { ChromeStartAbortedError } from "./chrome.js"
 import { ProfileFullError, type BlockedNavigation, type BrowserInstance } from "./instance.js"
 import { accountForHost, busyProfileIds } from "./leases.js"
 import { getBrowserManager } from "./manager.js"
@@ -822,9 +824,21 @@ export class BrowserTools {
     return fail(`浏览器起不来：${message}`)
   }
 
+  /**
+   * 运行已经停掉了（docs/dev/sub-agents.md 21.6.5 第 3 条）：中止信号到了，或者库里已经是结束的状态。
+   * stop-watch 每秒才查一次，信号最多晚 1 秒到；起 Chrome 前、记「打开了 Chrome」前再直接查一次库
+   */
+  private async runStopped(): Promise<boolean> {
+    if (this.ctx.signal?.aborted) return true
+    const [row] = await this.ctx.db.select({ status: t.sessions.status }).from(t.sessions).where(eq(t.sessions.id, this.ctx.session.id))
+    return row ? isRunEnded(row.status) : false
+  }
+
   private async open(manager: NonNullable<ReturnType<typeof getBrowserManager>>, profileId: string): Promise<BrowserInstance> {
     const { db, session, snapshot } = this.ctx
     const fresh = !manager.forSession(session.id)
+    // 运行已经停掉了：不再起 Chrome（ensure 当起不来处理，gateway 看到已停掉不记结果）
+    if (fresh && (await this.runStopped())) throw new ChromeStartAbortedError()
     // 登记成功（没抛 ProfileFullError）就算分到了这个 Chrome：排队等 worker 空位时、起好以后都记下
     this.instance = await manager.acquireForSession({
       sessionId: session.id,
@@ -843,6 +857,13 @@ export class BrowserTools {
     })
     await this.assign(profileId)
     await this.instance.ensureMcp()
+    // 起好时运行已经停掉了（中止信号还没到）：刚起好的 Chrome 关掉，不记「打开了 Chrome」（「已停掉」后面不再有别的记录）
+    if (fresh && (await this.runStopped())) {
+      const started = this.instance
+      this.instance = undefined
+      await started.close({ writeBack: false, reason: "运行已经停掉了" }).catch(() => {})
+      throw new ChromeStartAbortedError()
+    }
     if (fresh)
       await appendEvent(db, session.id, {
         kind: "plan",
@@ -1010,6 +1031,11 @@ export class BrowserTools {
       const page = instance.currentPage()
       const fields = Array.isArray(args.fields) ? (args.fields as FilledField[]) : []
       if (page) lines.push(...(await timer.time("readback", () => readBackForm(page, fields, recorded.code)).catch(() => [])))
+    }
+    // type 也读回（密码类打码；submit 的不读）：以前只有「（没有返回内容）」，agent 再用按键、剪贴板读回核对一遍（21.6.5 第 5 条）
+    if (name === "browser_type" && !result.isError) {
+      const page = instance.currentPage()
+      if (page) lines.push(...(await timer.time("readback", () => readBackTyped(page, args, recorded.code)).catch(() => [])))
     }
     // 这次（或之前在后台）下载的文件已经存成运行的文件：告诉 agent（browser/downloads.ts）
     const downloads = (await timer.time("downloads", async () => instance.downloads?.collect(name, args))) ?? []

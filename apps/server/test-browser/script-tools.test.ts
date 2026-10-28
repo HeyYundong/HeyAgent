@@ -220,4 +220,35 @@ describe("browser.fill_form 读回实际的值（真 Chrome）", () => {
     expect(output, output).toContain("- 口令：已填（密码类，不显示）")
     expect(output).not.toContain("pin-SECRET-42")
   })
+
+  it("browser.type 也读回（sub-agents.md 21.6.5 第 5 条）：多行文字、页面改过的、密码框打码；submit 的不读", async () => {
+    useScript(
+      "test/type-readback",
+      new Script([
+        step([call("browser.navigate", { url: `${base}/form` })]),
+        step([call("browser.type", { element: "备注", target: "getByRole('textbox', { name: '备注' })", text: "第一行\n第二行" })]),
+        step([call("browser.type", { element: "编号", target: "getByRole('textbox', { name: '编号' })", text: "ab-1" })]),
+        step([call("browser.type", { element: "口令", target: "#pin", text: "pin-SECRET-43" })]),
+        step(finishWith("填好了")),
+      ])
+    )
+    const taskId = await createTask(ctx.db, { modelId: "test/type-readback", toolIds: ["browser"], ownerId: "u-wang" })
+    await ctx.db.update(t.tasks).set({ browserProfileIds: [profileId], allowedDomains: [] }).where(eq(t.tasks.id, taskId))
+    const res = await mutate(ctx.app, "engine.runNow", wang, { taskId })
+    if (!res.data) throw new Error(JSON.stringify(res.error))
+    const sessionId = res.data.sessionId as string
+    await waitFor(
+      async () => {
+        const current = await sessionRow(ctx.db, sessionId)
+        return current && ["done", "failed"].includes(current.status) && current.outcome ? current : undefined
+      },
+      { timeout: 120_000, what: `${sessionId} 结束` }
+    )
+    const outputs = (await eventsOf(ctx.db, sessionId)).filter((event) => event.toolId === "browser.type").map((event) => event.output ?? "")
+    expect(outputs).toHaveLength(3)
+    expect(outputs[0], outputs[0]).toContain('填进去的值（从页面上读回来的）：\n- 备注："第一行\\n第二行"')
+    expect(outputs[1], outputs[1]).toContain('- 编号："AB-1"（和要填的不一样）')
+    expect(outputs[2], outputs[2]).toContain("- 口令：已填（密码类，不显示）")
+    expect(outputs.join("\n")).not.toContain("pin-SECRET-43")
+  })
 })

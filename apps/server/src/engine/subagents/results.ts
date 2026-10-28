@@ -4,6 +4,7 @@ import {
   runOutcomeLabel,
   SUBAGENT_EVIDENCE_CHARS,
   SUBAGENT_FILES_LISTED,
+  SUBAGENT_RESULTS_ARE_BASIS,
   SUBAGENT_REVIEW_ITEM_CHARS,
   SUBAGENT_SUMMARY_CHARS,
   subagentStateLabel,
@@ -108,13 +109,12 @@ function countsText(rows: SubRunFacts[]): string {
   return `${rows.length} 个：${parts.join("，")}`
 }
 
-/** 交回给父的文字的最后一句（叫醒父的消息、subagent_wait 的结果）：只看依据、文件有没有矛盾，不要逐个重做（21.3 第 1 条） */
-export const SUBAGENT_RESULTS_TAIL =
-  "以上是子 agent 自报的结果，没有复核。汇总前看各个子 agent 交回的依据、文件有没有互相矛盾、和目标对不对得上；有矛盾或缺的只查那一处，或补拆，不要把交出去的事逐个重做。报没办成的、交回的东西缺了的照常处理。"
+/** 交回给父的文字的最后一句（叫醒父的消息、subagent_wait 的结果）：交回的值就是依据，只查矛盾和缺的，不要逐个重做（21.3 第 1 条、21.6.5 第 1 条） */
+export const SUBAGENT_RESULTS_TAIL = `以上是子 agent 交回的结果。${SUBAGENT_RESULTS_ARE_BASIS}不要把交出去的事逐个重做。报没办成的、交回的东西缺了的照常处理。`
 
 /**
  * 交回给父的文字：开头一句（几个、办成几个），每个子 agent 一段（结果、summary 前 1500 字、evidence 前 1000 字、交回的字段、文件路径；
- * 出错的写错误原因，被停掉的写谁停的、为什么），已经交回过的只写一行「R-12-3.1 办成（前面给过）」，最后一句 SUBAGENT_RESULTS_TAIL（自报、没复核；只看矛盾和缺的，不要逐个重做）。
+ * 出错的写错误原因，被停掉的写谁停的、为什么），已经交回过的只写一行「R-12-3.1 办成（前面给过）」，最后一句 SUBAGENT_RESULTS_TAIL（交回的值就是依据；只查矛盾和缺的，不要逐个重做）。
  * mode 决定开头那句（all：都结束了；any：有 N 个结束了、还有 M 个在做；none：现状）
  */
 export function subagentResultsText(rows: SubRunFacts[], mode: "all" | "any" | "none"): string {

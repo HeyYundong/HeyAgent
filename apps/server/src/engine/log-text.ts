@@ -118,7 +118,7 @@ export function describeToolInput(toolId: string | null, input: string | null, m
   return oneLine(clip(input, max))
 }
 
-/** 批的结果只留逐步的 ✓ / ✗ 那几行（后面的页面概况、快照不要） */
+/** 批的结果里逐步的 ✓ / ✗ 那几行（后面的页面概况不要；快照另由 batchSnapshotText 压过再给） */
 export function batchResultLines(output: string | null): string {
   if (!output) return ""
   const lines: string[] = []
@@ -140,15 +140,88 @@ export function compactJsonOutput(output: string): string {
   return `${output.slice(0, at)}${output.slice(at).replace(/\n[ \t]*/g, "")}`
 }
 
-/** 读数据的工具（复核要核对读到的每一条）：结果多给字数（总量在 reviewLog 里另有上限） */
-export const DATA_TOOLS = new Set(["browser.fetch", "browser.extract"])
+/** 读数据的工具（复核要核对读到的每一条）：结果多给字数（总量在 reviewLog 里另有上限）。browser.snapshot 的快照先压成文字行（compactSnapshot） */
+export const DATA_TOOLS = new Set(["browser.fetch", "browser.extract", "browser.snapshot", "browser.find", "browser.clipboard_read"])
 
-/** 一次工具调用的结果写成文字：批给逐步的 ✓ / ✗；别的给开头 max 字（排好版的 JSON 先压成一行再截） */
-export function describeToolOutput(toolId: string | null, output: string | null, max: number): string {
+/** 批的结果里附的页面快照从这一行起（gateway.ts 的 runBatch：「页面快照：」单独一行） */
+const BATCH_SNAPSHOT_MARK = "\n页面快照：\n"
+
+/** 批带了页面快照（agent 多半靠它读数据，docs/dev/sub-agents.md 21.6.5 第 4 条）：算进读数据的工具 */
+export const batchHasSnapshot = (output: string | null | undefined) => Boolean(output?.includes(BATCH_SNAPSHOT_MARK))
+
+/** 这条记录是不是读数据的（复核时结果多给字数）：读数据的工具，或带了页面快照的批 */
+export const readsData = (event: { toolId: string | null; output: string | null }) =>
+  DATA_TOOLS.has(event.toolId ?? "") || (event.toolId === "browser.batch" && batchHasSnapshot(event.output))
+
+/** 快照里不要的标记：ref、鼠标样式、焦点、标题级别 */
+const SNAPSHOT_NOISE = /\s*\[(?:ref|cursor|level)=[^\]]*\]|\s*\[active\]/g
+/** 输入类的角色：写成「名字=值」（填进去的值；勾选的带 [checked]）。只是容器、自己没有文字的（「- generic:」）整行不要 */
+const SNAPSHOT_FORM_ROLES = new Set(["textbox", "searchbox", "combobox", "spinbutton", "checkbox", "radio", "switch", "slider"])
+
+/**
+ * Playwright MCP 的页面快照（YAML 那种缩进的树）压成给复核看的文字行：去掉 ### Page 段、代码块标记、ref 等标记和只是容器的行，
+ * 每个元素只留文字（名字、值；输入框写「名字=值」），表格的一行（row）把各格用 | 连成一行。行之间用 ⏎ 连
+ */
+export function compactSnapshot(text: string): string {
+  const at = text.indexOf("### Snapshot")
+  const body = at >= 0 ? text.slice(at + "### Snapshot".length) : text
+  const nodes: { indent: number; role: string; text: string }[] = []
+  for (const raw of body.split("\n")) {
+    if (/^\s*```/.test(raw) || /^### /.test(raw) || !raw.trim()) continue
+    const match = /^(\s*)- (.*)$/.exec(raw)
+    const indent = match ? match[1]!.length : raw.length - raw.trimStart().length
+    const content = (match ? match[2]! : raw.trim()).replace(SNAPSHOT_NOISE, "")
+    if (content.startsWith("/url:") || /^- Page (URL|Title):/.test(raw.trim())) continue
+    const parts = /^([\w-]+)(?: "((?:[^"\\]|\\.)*)")?(.*)$/.exec(content)
+    if (!match || !parts) {
+      nodes.push({ indent, role: "text", text: content.replace(/^"|"$/g, "") })
+      continue
+    }
+    const role = parts[1]!
+    const name = (parts[2] ?? "").replace(/\\"/g, '"')
+    const rest = parts[3]!.trim()
+    const flags = rest.match(/\[[^\]]+\]/g)?.join("") ?? ""
+    const value = rest.replace(/\[[^\]]+\]/g, "").replace(/^:/, "").trim().replace(/^"|"$/g, "")
+    const words = SNAPSHOT_FORM_ROLES.has(role) ? `${name || role}=${value}${flags}` : [name, value].filter(Boolean).join(" ")
+    nodes.push({ indent, role, text: words })
+  }
+  const lines: string[] = []
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i]!
+    if (node.role === "row") {
+      const cells: string[] = []
+      let j = i + 1
+      for (; j < nodes.length && nodes[j]!.indent > node.indent; j++) if (nodes[j]!.text) cells.push(nodes[j]!.text)
+      const row = cells.length ? cells.join(" | ") : node.text
+      if (row) lines.push(row)
+      i = j - 1
+      continue
+    }
+    if (node.text) lines.push(node.text)
+  }
+  return lines.join(" ⏎ ")
+}
+
+/** 批的结果里附的页面快照，压成文字行（没有快照返回空串） */
+export function batchSnapshotText(output: string | null | undefined): string {
+  if (!output) return ""
+  const at = output.indexOf(BATCH_SNAPSHOT_MARK)
+  return at < 0 ? "" : compactSnapshot(output.slice(at + BATCH_SNAPSHOT_MARK.length))
+}
+
+/**
+ * 一次工具调用的结果写成文字：批给逐步的 ✓ / ✗，带了页面快照的再附压过的快照（最多 dataMax 字，agent 多半是从这里读到数据的）；
+ * browser.snapshot 的快照先压成文字行；别的给开头 max 字（排好版的 JSON 先压成一行再截）
+ */
+export function describeToolOutput(toolId: string | null, output: string | null, max: number, dataMax = max): string {
   if (toolId === "browser.batch") {
     const steps = batchResultLines(output)
-    if (steps) return clip(steps, Math.max(max, 1200))
+    if (steps) {
+      const snapshot = batchSnapshotText(output)
+      return `${clip(steps, Math.max(max, 1200))}${snapshot ? ` 最后的页面快照：${clip(snapshot, dataMax)}` : ""}`
+    }
   }
+  if (toolId === "browser.snapshot" && output) return clip(compactSnapshot(output), max)
   return oneLine(clip(output ? compactJsonOutput(output) : output, max))
 }
 
@@ -277,13 +350,15 @@ export function reviewLog(events: EventRow[], options: ReviewLogOptions): { line
   const items = foldLibrarySteps(events)
   const cut = Math.max(0, items.length - options.recent)
   // 详细的几条：填的值给全（例如提交的汇总有好几行），参数、结果各 300 字（批的参数 2000 字）。
-  // 读数据的工具（browser.fetch、browser.extract）的结果合计 DATA_OUTPUT_BUDGET 字，平分，每条 300～2000 字
+  // 读数据的工具（browser.fetch、browser.extract 等，见 readsData）的结果合计 DATA_OUTPUT_BUDGET 字，平分，每条 300～2000 字
   // （基准 E：接口读的 5 页只看得到每页第一条，复核把对的运行判成没办成）
-  const dataCount = items.slice(cut).filter((item) => !("placeholder" in item) && item.kind === "tool" && DATA_TOOLS.has(item.toolId ?? "")).length
+  // 带了页面快照的批、browser.snapshot、browser.find、browser.clipboard_read 也算（S5：agent 从批的快照里读到电话、评分，复核看不到，判成没办成）
+  const dataCount = items.slice(cut).filter((item) => !("placeholder" in item) && item.kind === "tool" && readsData(item)).length
   const dataMax = Math.min(DATA_OUTPUT_MAX, Math.max(300, Math.floor(DATA_OUTPUT_BUDGET / Math.max(1, dataCount))))
+  const resultMax = (event: EventRow) => (DATA_TOOLS.has(event.toolId ?? "") ? dataMax : 300)
   const detailed = (event: EventRow) =>
     event.kind === "tool"
-      ? `- #${toolNo.get(event.seq)} 调用 ${event.title}（${event.toolId ?? ""}）${tags(event)}：参数 ${describeToolInput(event.toolId, event.input, event.toolId === "browser.batch" ? 2000 : 600, 300)} → 结果 ${describeToolOutput(event.toolId, event.output, DATA_TOOLS.has(event.toolId ?? "") ? dataMax : 300) || "（没有输出）"}`
+      ? `- #${toolNo.get(event.seq)} 调用 ${event.title}（${event.toolId ?? ""}）${tags(event)}：参数 ${describeToolInput(event.toolId, event.input, event.toolId === "browser.batch" ? 2000 : 600, 300)} → 结果 ${describeToolOutput(event.toolId, event.output, resultMax(event), dataMax) || "（没有输出）"}`
       : `- ${event.kind === "rule" ? "规则" : "人"}：${event.title}${tags(event)}${event.detail ? `（${clip(event.detail, 200)}）` : ""}`
   // 更早的每条压成一行：较早的条数少时每行多给些（读到的电话、提交的内容别被截掉），多时少给，合计按 budget；
   // 读数据的工具结果给两倍（还在 budget 里）
@@ -293,7 +368,7 @@ export function reviewLog(events: EventRow[], options: ReviewLogOptions): { line
   const valueMax = Math.min(120, Math.max(VALUE_MAX, Math.floor(perLine / 8)))
   const compact = (event: EventRow) =>
     event.kind === "tool"
-      ? `- #${toolNo.get(event.seq)} ${event.toolId ?? event.title} ${mark(event)}${tags(event)} ${describeToolInput(event.toolId, event.input, event.toolId === "browser.batch" ? Math.max(600, perLine) : inputMax, valueMax)} → ${describeToolOutput(event.toolId, event.output, DATA_TOOLS.has(event.toolId ?? "") ? outputMax * 2 : outputMax) || "（没有输出）"}`
+      ? `- #${toolNo.get(event.seq)} ${event.toolId ?? event.title} ${mark(event)}${tags(event)} ${describeToolInput(event.toolId, event.input, event.toolId === "browser.batch" ? Math.max(600, perLine) : inputMax, valueMax)} → ${describeToolOutput(event.toolId, event.output, DATA_TOOLS.has(event.toolId ?? "") ? outputMax * 2 : outputMax, outputMax * 2) || "（没有输出）"}`
       : `- ${event.kind === "rule" ? "规则" : "人"}：${event.title}${tags(event)}${event.detail ? `（${oneLine(clip(event.detail, 80))}）` : ""}`
 
   const line = (each: (event: EventRow) => string) => (item: LogItem) => ("placeholder" in item ? item.placeholder : each(item))

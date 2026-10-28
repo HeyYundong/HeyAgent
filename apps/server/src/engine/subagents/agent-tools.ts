@@ -3,7 +3,7 @@
 // - subagent.wait「等子 agent」：all（默认）/ any 条件满足了直接返回结果，没满足就挂起等 subagent.all:<父> / subagent.any:<父>；none 只看现状；
 // - subagent.cancel「停掉子 agent」：停掉这次运行拆出去的几个（settle.ts 的 stopSubRunInTx），发 subagent.pump。
 // 只有父运行（kind = run、快照里有 subagent.start）能用；子快照里本来就没有这三个，处理函数里再挡一次。
-import { SUBAGENT_START_TOOL_ID, subagentWaitEvent, type builtinToolInputs } from "@heyagent/shared"
+import { SUBAGENT_RESULTS_ARE_BASIS, SUBAGENT_START_TOOL_ID, subagentWaitEvent, type builtinToolInputs } from "@heyagent/shared"
 import { eq } from "drizzle-orm"
 import type { z } from "zod"
 
@@ -73,7 +73,8 @@ export async function startFromAgent(ctx: ToolContext, input: StartInput): Promi
       output: [
         `拆出 ${started.length} 个子 agent（这次运行同时最多跑 ${settings.maxParallel} 个，多的排队）：`,
         ...started.map((run) => `- ${run.id}「${run.title}」`),
-        `这次运行一共拆了 ${total} 个，最多 ${settings.maxPerRun} 个。先做你自己能做的，然后用 subagent_wait 等结果。`,
+        `这次运行一共拆了 ${total} 个，最多 ${settings.maxPerRun} 个。`,
+        `接下来先做不在子目标里的事（没有就直接用 subagent_wait 等），交出去的不要自己再做一遍。${SUBAGENT_RESULTS_ARE_BASIS}`,
       ].join("\n"),
     }
   })

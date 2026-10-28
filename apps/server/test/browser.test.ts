@@ -525,6 +525,46 @@ describe("每个 Chrome 同一时间只给一个运行用", () => {
     }
   })
 
+  it("停的时候正在打开 Chrome：中止信号还没到、Chrome 已经起好，刚起好的关掉，「已取消」后面没有「打开了 Chrome」", async () => {
+    // sub-agents.md 21.6.5 第 3 条：stop-watch 每秒才查一次，Chrome 在取消后、信号到之前起好，open() 照样记「打开了 Chrome」
+    await ctx.db.insert(t.browserProfiles).values({ id: "br-stop-2", name: "停二" })
+    let release: (() => void) | undefined
+    let signalAbortedWhenStarted: boolean | undefined
+    const start = vi.spyOn(BrowserInstance.prototype, "start").mockImplementation(async (signal?: AbortSignal) => {
+      // 不理中止信号：等测试取消运行以后才「起好」
+      await new Promise<void>((resolve) => (release = resolve))
+      signalAbortedWhenStarted = signal?.aborted
+    })
+    const ensureMcp = vi.spyOn(BrowserInstance.prototype, "ensureMcp").mockResolvedValue({ client: {} } as Awaited<ReturnType<BrowserInstance["ensureMcp"]>>)
+    const closeSpy = vi.spyOn(BrowserInstance.prototype, "close")
+    try {
+      useScript("test/stop-open", new Script([step([call("browser.navigate", { url: "https://example.com/" })]), step([text("结束")])]))
+      const taskId = await createTask(ctx.db, { modelId: "test/stop-open", toolIds: ["browser"] })
+      await ctx.db.update(t.tasks).set({ browserProfileIds: ["br-stop-2"], allowedDomains: [] }).where(eq(t.tasks.id, taskId))
+      const id = (await mutate(ctx.app, "engine.runNow", wang, { taskId })).data.sessionId as string
+      await waitFor(async () => release, { what: "开始起 Chrome", timeout: 60_000 })
+      await cancelSessionImpl(ctx.db, { sessionId: id, actorId: "u-wang", actorName: "王悦" })
+      // 取消以后马上起好（信号多半还没到，靠查库）
+      release!()
+      await waitFor(async () => !getBrowserManager()!.forSession(id), { what: "Chrome 关掉" })
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      expect(signalAbortedWhenStarted).toBeDefined()
+      const closed = closeSpy.mock.calls.map(([options]) => options.reason)
+      expect(closed).toContain("运行已经停掉了")
+      expect(await ctx.db.select().from(t.browserInstances).where(eq(t.browserInstances.profileId, "br-stop-2"))).toEqual([])
+      const events = await eventsOf(ctx.db, id)
+      const cancelled = events.findIndex((event) => event.title === "已取消")
+      expect(cancelled).toBeGreaterThan(-1)
+      expect(events.slice(cancelled + 1).map((event) => event.title)).toEqual([])
+      expect(events.some((event) => event.title.startsWith("打开了 Chrome"))).toBe(false)
+      expect(events.some((event) => event.toolId === "browser.navigate")).toBe(false)
+    } finally {
+      start.mockRestore()
+      ensureMcp.mockRestore()
+      closeSpy.mockRestore()
+    }
+  })
+
   it("Chrome 一次都没起来的不钉住：第一个起失败、被别的运行拿走，下次用另一个空闲的（不排队等它）", async () => {
     // 21.3 第 2 条：以前起失败也算分到了，第一个被别的运行拿走后这次运行一直等它，另一个空着也不用
     const workerId = "w-pick-test"
