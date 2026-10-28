@@ -56,6 +56,7 @@ import { judgePage, parseVisionAnswer, providerCaptchaNote, VISION_PROMPT, type 
 import { autoLogin, loadAccountPassword, loginModelId, type AutoLoginCaptcha } from "./auto-login.js"
 import { CAPTCHA_MAX_TRIES, solveCaptcha, type CaptchaResult, type CaptchaTry } from "./captcha.js"
 import { ClipboardTools, imageSize } from "./clipboard.js"
+import { readBackForm, type FilledField } from "./form-readback.js"
 import {
   EXTRACT_DEFAULT_ROWS,
   EXTRACT_MAX_ROWS,
@@ -1004,6 +1005,12 @@ export class BrowserTools {
     // 补的说明放在 MCP 原文前面（原文的 ### 段可能被去掉）
     const lines: string[] = [...(unblocked ? [unblocked] : []), ...(hint ? [hint] : []), result.output]
     const raw = lines.length - 1
+    // fill_form：每个字段实际的值从页面上读回来（密码类打码），agent 看得到填进去的是什么，不用为了放心再填、再提交一遍
+    if (name === "browser_fill_form" && !result.isError) {
+      const page = instance.currentPage()
+      const fields = Array.isArray(args.fields) ? (args.fields as FilledField[]) : []
+      if (page) lines.push(...(await timer.time("readback", () => readBackForm(page, fields, recorded.code)).catch(() => [])))
+    }
     // 这次（或之前在后台）下载的文件已经存成运行的文件：告诉 agent（browser/downloads.ts）
     const downloads = (await timer.time("downloads", async () => instance.downloads?.collect(name, args))) ?? []
     await timer.time("record", () => this.record(name, Boolean(result.isError), instance.currentPage()?.url() ?? url))
@@ -1485,15 +1492,17 @@ export class BrowserTools {
     return this.instance?.network?.seq
   }
 
-  /** 一次浏览器工具调用结束：等一小会儿让这一步触发的请求记完，有新行就写文件；返回这一步记下的 seq 范围（没有就 undefined） */
+  /**
+   * 一次浏览器工具调用结束：等一小会儿让这一步触发的请求记完，有新行就写文件；返回这一步里网页发出的请求的 seq 范围（没有就 undefined）。
+   * seq 在发出时编：之前的步骤发出、这一步里才收完记下的（例如网页不读返回体、5 秒后才照拿到的记的）不算这一步
+   */
   async networkSettle(mark: number | undefined): Promise<{ first: number; last: number } | undefined> {
     const log = this.instance?.network
     if (!log) return undefined
     await log.drain(NETWORK_DRAIN_MS)
     await log.flush()
     // 调用前还没开 Chrome：这次开的，读完已有文件以后的都算这一步
-    const first = (mark ?? log.loadedSeq) + 1
-    return log.seq >= first ? { first, last: log.seq } : undefined
+    return log.stepRange(mark ?? log.loadedSeq)
   }
 
   /** gateway 关闭（session 结束、挂起、交接）：要保留就保留（等人处理验证码），否则写回登录态、关掉 Chrome、释放租约 */

@@ -86,8 +86,11 @@ export interface RoutineCheckInput {
   outputSchema: string | Record<string, unknown>
   /** 任务的工具 id（源运行快照里的 tools） */
   toolIds: string[]
-  /** 被派的任务：声明的参数、要交回的结果（输入输出格式要包含它们） */
-  dispatch?: { params: { name: string; required: boolean }[]; results: { name: string; required: boolean }[] }
+  /**
+   * 被派的任务：声明的参数、要交回的结果。inputSchema / outputSchema 由程序照声明生成（declaredRoutineSchemas），
+   * 固化员写的不算数（写成「见任务声明」也不算没过）
+   */
+  dispatch?: { params: { name: string; required: boolean; description?: string | null }[]; results: { name: string; required: boolean; description?: string | null }[] }
   /** 原来那次运行的输入（routineInputOf）：试跑、以后的运行都按 inputSchema 校验它，现在先对一遍 */
   sampleInput?: Record<string, unknown>
   /** 源快照的 browser.allowFetch（任务打开了「允许直接调网站接口」）：关着时脚本里不能用 ha.browser.fetch（19.6） */
@@ -184,6 +187,67 @@ export function parseJsonSchema(value: string | Record<string, unknown>, what: s
   }
   // 属性顺序记进 x-order：存进 jsonb 后属性按键长短重排，工具参数 p1、p2 和界面的输入表要照作者写的顺序（shared 的 SCHEMA_ORDER_KEY）
   return problems.length ? { problems } : { schema: withPropertyOrder(object), problems }
+}
+
+const SCALAR_TYPES = new Set(["string", "number", "integer", "boolean"])
+
+/** 固化员给这个字段写的类型：只认 string、number、integer、boolean（或它们的数组），别的当没写 */
+function modelType(schema: Record<string, unknown> | undefined, name: string): unknown {
+  const property = (schema?.properties as Record<string, Record<string, unknown>> | undefined)?.[name]
+  const type = property?.type
+  if (typeof type === "string") return SCALAR_TYPES.has(type) ? type : undefined
+  if (Array.isArray(type) && type.length && type.every((each) => typeof each === "string" && SCALAR_TYPES.has(each))) return type
+  return undefined
+}
+
+/** 脚本输入里系统给的两项（附件、附加说明）的写法：固化员没写、原来那次的输入里有时补上 */
+const SYSTEM_INPUTS: Record<string, Record<string, unknown>> = {
+  $attachments: {
+    type: "array",
+    description: "这次运行能读的附件",
+    items: { type: "object", properties: { id: { type: "string" }, name: { type: "string" }, mime: { type: "string" } } },
+  },
+  $note: { type: "string", description: "附加说明" },
+}
+
+/**
+ * 被派任务的输入、交回格式，由程序照声明直接生成（docs/dev/routine-library.md 18.6 第 2 条）：
+ * - 输入 = 声明的参数（都是 string，带声明的说明，必填的进 required），按声明的顺序（x-order）；固化员写的 schema 能解析、
+ *   里面有 $attachments / $note 的照它的接在后面，没写但原来那次的输入里有的补上（可选）；
+ * - 交回 = 声明的结果（带说明，必交的进 required）；类型照固化员写的（只认 string、number、integer、boolean），没写不限。
+ * 固化员写的别的都不看（写成一句话、漏了、多了都一样）
+ */
+export function declaredRoutineSchemas(
+  dispatch: NonNullable<RoutineCheckInput["dispatch"]>,
+  model: { inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown> },
+  sampleInput?: Record<string, unknown>
+): { inputSchema: Record<string, unknown>; outputSchema: Record<string, unknown> } {
+  const described = (base: Record<string, unknown>, description?: string | null) => (description?.trim() ? { ...base, description: description.trim() } : base)
+  const inputProperties: Record<string, unknown> = {}
+  const inputRequired: string[] = []
+  for (const param of dispatch.params) {
+    inputProperties[param.name] = described({ type: "string" }, param.description)
+    if (param.required) inputRequired.push(param.name)
+  }
+  const modelInput = (model.inputSchema?.properties ?? {}) as Record<string, unknown>
+  const modelRequired = Array.isArray(model.inputSchema?.required) ? (model.inputSchema!.required as unknown[]) : []
+  for (const name of Object.keys(SYSTEM_INPUTS)) {
+    const own = modelInput[name]
+    if (own && typeof own === "object" && !Array.isArray(own)) {
+      inputProperties[name] = own
+      if (modelRequired.includes(name)) inputRequired.push(name)
+    } else if (sampleInput && name in sampleInput) inputProperties[name] = SYSTEM_INPUTS[name]
+  }
+  const outputProperties: Record<string, unknown> = {}
+  const outputRequired: string[] = []
+  for (const result of dispatch.results) {
+    const type = modelType(model.outputSchema, result.name)
+    outputProperties[result.name] = described(type ? { type } : {}, result.description)
+    if (result.required) outputRequired.push(result.name)
+  }
+  const objectOf = (properties: Record<string, unknown>, required: string[]) =>
+    withPropertyOrder({ type: "object", properties, ...(required.length ? { required } : {}) })
+  return { inputSchema: objectOf(inputProperties, inputRequired), outputSchema: objectOf(outputProperties, outputRequired) }
 }
 
 /** 按 JSON Schema 校验一个值，不合格返回原因（几条） */
@@ -432,20 +496,15 @@ export function checkRoutine(input: RoutineCheckInput): RoutineCheckResult {
     if (item.fetch) fetchUsed()
   }
 
-  const inputParsed = parseJsonSchema(input.inputSchema, "输入格式（inputSchema）")
-  const outputParsed = parseJsonSchema(input.outputSchema, "交回的结果格式（outputSchema）")
+  let inputParsed = parseJsonSchema(input.inputSchema, "输入格式（inputSchema）")
+  let outputParsed = parseJsonSchema(input.outputSchema, "交回的结果格式（outputSchema）")
+  if (input.dispatch) {
+    // 被派的任务：两个格式由程序照声明生成，固化员写的只拿来取 $attachments / $note 和交回值的类型，写错了也不算没过
+    const declared = declaredRoutineSchemas(input.dispatch, { inputSchema: inputParsed.schema, outputSchema: outputParsed.schema }, input.sampleInput)
+    inputParsed = { schema: declared.inputSchema, problems: [] }
+    outputParsed = { schema: declared.outputSchema, problems: [] }
+  }
   problems.push(...inputParsed.problems, ...outputParsed.problems)
-  const propertiesOf = (schema: Record<string, unknown> | undefined) => Object.keys((schema?.properties as Record<string, unknown> | undefined) ?? {})
-  if (input.dispatch && inputParsed.schema) {
-    const names = propertiesOf(inputParsed.schema)
-    const absent = input.dispatch.params.filter((param) => !names.includes(param.name)).map((param) => param.name)
-    if (absent.length) problems.push(`被派的任务：输入格式要包含声明的参数「${absent.join("」「")}」`)
-  }
-  if (input.dispatch && outputParsed.schema) {
-    const names = propertiesOf(outputParsed.schema)
-    const absent = input.dispatch.results.filter((result) => !names.includes(result.name)).map((result) => result.name)
-    if (absent.length) problems.push(`被派的任务：交回的结果格式要包含声明的结果「${absent.join("」「")}」`)
-  }
   if (inputParsed.schema && input.sampleInput) {
     const issues = schemaProblems(inputParsed.schema, input.sampleInput)
     if (issues.length) problems.push(`原来那次运行的输入不符合输入格式（以后的运行会被当成输入不对）：${issues.join("；")}`)

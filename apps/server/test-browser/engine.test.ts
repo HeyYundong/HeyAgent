@@ -1,10 +1,14 @@
 // 真浏览器 + 假模型走完整的引擎：账号租约排队和释放、验证码 → 等人 → 处理完在同一个 Chrome 里继续、白名单拦截、文件上传、截图存档。
-import { and, eq } from "drizzle-orm"
-import { describeCompiledRule, type CompiledRule } from "@heyagent/shared"
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+// 每个 Chrome 配置同一时间只给一个运行用（2026-10-19 起）：一个用例失败留下没结束的运行时，afterEach 取消它们、关掉它们的 Chrome，
+// 不让后面的用例一直等这个 Chrome 到超时。
+import { and, eq, notInArray } from "drizzle-orm"
+import { describeCompiledRule, ENDED_RUN_STATUSES, type CompiledRule } from "@heyagent/shared"
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest"
 
 import type { BrowserManager } from "../src/browser/manager.js"
 import * as t from "../src/db/schema.js"
+import { releaseLeases } from "../src/browser/leases.js"
+import { cancelSessionImpl } from "../src/engine/control.js"
 import { saveFile } from "../src/files/service.js"
 import { call, createTask, eventsOf, Script, sessionRow, setupEngine, step, text, useScript, waitFor, waitStatus, type CallOptions, type EngineTestContext } from "../test/engine-helpers.js"
 import { login, mutate, query } from "../test/helpers.js"
@@ -52,22 +56,35 @@ afterAll(async () => {
   await site?.close()
 })
 
+/** 收尾：没结束的运行取消掉，还开着的运行 Chrome 关掉（写回登录态），一个用例失败不连累后面的 */
+afterEach(async () => {
+  const open = await ctx.db.select({ id: t.sessions.id }).from(t.sessions).where(notInArray(t.sessions.status, [...ENDED_RUN_STATUSES]))
+  for (const { id } of open) await cancelSessionImpl(ctx.db, { sessionId: id, actorId: "u-lin", actorName: "测试收尾" }).catch(() => {})
+  for (const instance of manager.list())
+    if (instance.kind === "session" && instance.sessionId) await manager.releaseSession(instance.sessionId, { reason: "测试收尾" }).catch(() => {})
+})
+
 describe("账号租约", () => {
-  it("同一个账号上限 1：第二个 session 打开平台网址时被拦下、挂起「等待浏览器」；第一个结束释放后叫醒它，接着做完", async () => {
+  // 账号挂在 Chrome 配置上，一个 Chrome 配置同一时间只给一个运行用，所以两个运行不会同时在同一个账号上开着 Chrome。
+  // 账号满了只会是别处还占着租约：例如持有它的运行所在的 worker 死了、租约还没过期。这里 A 先正常拿到、用完释放；
+  // 再模拟一个死掉的 worker 上的运行 X 占着（租约没过期）：B 打开平台网址被拦下、挂起；X 的租约释放后叫醒 B，接着做完
+  it("同一个账号上限 1：打开平台网址时拿到租约、结束时释放；别处占着时被拦下、挂起「等待浏览器」，释放后叫醒它，接着做完", async () => {
     const domain = "lease.localhost"
     const accountId = await createAccount(ctx.db, { profileId, domain, maxConcurrent: 1 })
-    let releaseFirst!: () => void
-    const firstMayFinish = new Promise<void>((resolve) => (releaseFirst = resolve))
-    useScript(
-      "test/lease-a",
-      new Script([
-        step([call("browser.navigate", { url: site.url(domain, "/") })]),
-        async () => {
-          await firstMayFinish
-          return step([text("A 做完了")])
-        },
-      ])
-    )
+    const leasesOf = () => ctx.db.select().from(t.accountLeases).where(eq(t.accountLeases.accountId, accountId))
+    useScript("test/lease-a", new Script([step([call("browser.navigate", { url: site.url(domain, "/") })]), step([text("A 做完了")])]))
+    const a = await runNow(await browserTask("test/lease-a"))
+    await waitStatus(ctx.db, a, "done", 60_000)
+    // A 打开平台网址时拿到了租约，结束时（先关资源再写「已完成」）释放了
+    const afterA = await leasesOf()
+    expect(afterA.map((lease) => lease.sessionId)).toEqual([a])
+    expect(afterA[0]!.releasedAt).toBeTruthy()
+
+    // 死掉的 worker 上的运行 X：还占着这个账号的租约（没过期），Chrome 早没了
+    const x = `R-LEASE-X-${Date.now()}`
+    const holderTask = await createTask(ctx.db, { modelId: "test/none", ownerId: "u-wang" })
+    await ctx.db.insert(t.sessions).values({ id: x, taskId: holderTask, status: "running", modelId: "test/none", startedAt: new Date() })
+    await ctx.db.insert(t.accountLeases).values({ accountId, sessionId: x, acquiredAt: new Date(), expiresAt: new Date(Date.now() + 10 * 60_000) })
     const scriptB = useScript(
       "test/lease-b",
       new Script([
@@ -76,8 +93,6 @@ describe("账号租约", () => {
         step([text("B 做完了")]),
       ])
     )
-    const a = await runNow(await browserTask("test/lease-a"))
-    await waitFor(async () => (await ctx.db.select().from(t.accountLeases).where(and(eq(t.accountLeases.accountId, accountId), eq(t.accountLeases.sessionId, a))))[0], { what: "A 拿到租约", timeout: 60_000 })
     const b = await runNow(await browserTask("test/lease-b"))
     const waiting = await waitStatus(ctx.db, b, "waiting", 60_000)
     expect(waiting.status).toBe("waiting")
@@ -85,19 +100,20 @@ describe("账号租约", () => {
     expect(run.data.waiting.what).toContain("等待浏览器")
     expect(scriptB.promptText(1)).toBe("[]")
     const usage = await query(ctx.app, "browser.accountStatus", wang)
-    expect(usage.data.find((each: { accountId: string }) => each.accountId === accountId)).toMatchObject({ used: 1, max: 1, sessionIds: [a], waiting: 1 })
-    // B 挂起时关掉了自己的 Chrome
+    expect(usage.data.find((each: { accountId: string }) => each.accountId === accountId)).toMatchObject({ used: 1, max: 1, sessionIds: [x], waiting: 1 })
+    // B 挂起时关掉了自己的 Chrome（Chrome 配置空出来了，等的是账号）
     await waitFor(async () => !manager.forSession(b), { what: "B 的 Chrome 关掉" })
-    releaseFirst()
-    await waitStatus(ctx.db, a, "done", 60_000)
+    // X 的租约释放（同 Chrome 关掉时的释放）：叫醒排队的 B
+    await ctx.db.update(t.sessions).set({ status: "failed", endedAt: new Date() }).where(eq(t.sessions.id, x))
+    await releaseLeases(ctx.db, x)
     await waitStatus(ctx.db, b, "done", 90_000)
     expect(scriptB.promptText(1)).toContain("等到浏览器了")
     const events = await eventsOf(ctx.db, b)
     expect(events.some((event) => event.kind === "resume" && event.title.includes("等到浏览器"))).toBe(true)
     // M3 起先关资源（写回、关 Chrome、释放租约）再写「已完成」：读到「已完成」时租约已经都释放了
-    const leases = await ctx.db.select().from(t.accountLeases).where(eq(t.accountLeases.accountId, accountId))
+    const leases = await leasesOf()
     expect(leases.every((lease) => lease.releasedAt)).toBe(true)
-    expect(leases.map((lease) => lease.sessionId).sort()).toEqual([a, b].sort())
+    expect(leases.map((lease) => lease.sessionId).sort()).toEqual([a, x, b].sort())
   })
 })
 

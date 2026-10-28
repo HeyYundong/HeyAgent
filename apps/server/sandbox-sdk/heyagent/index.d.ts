@@ -240,7 +240,12 @@ export interface Heyagent {
      * 定位写 "url=片段" 表示网址里包含这一段。timeout 单位是秒，默认 10，最多 60；等不到抛 StepError
      */
     waitAny<K extends string>(outcomes: Record<K, Target>, options?: { timeout?: number }): Promise<K>
-    /** 按定位读页面上的字（只读）。一行也没有不算出错：rows 是空数组 */
+    /**
+     * 按定位读页面上的字（只读）。一行也没有不算出错：rows 是空数组。
+     * 读表格按表头文字找列或行，不按第几行第几列：一行一个字段的表（左边是名、右边是值）读
+     * { list: "getByRole('row')", fields: { 名: "getByRole('cell').first()", 值: "getByRole('cell').last()" } }，再按「名」找那一行；
+     * 多列的表先读表头（{ list: "getByRole('row').first()", fields: { 状态: "getByRole('columnheader').nth(3)" } }），核对第几列是要的那一栏再读
+     */
     extract(args: ExtractArgs): Promise<ExtractResult>
     /**
      * 复制图片，相当于在图片上「右键 → 复制图片」（工具 browser.copy_image）：取原图（拿不到就截元素），转成 PNG 写进剪贴板，

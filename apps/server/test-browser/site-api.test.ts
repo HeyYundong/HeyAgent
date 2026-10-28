@@ -270,7 +270,8 @@ describe("agent 用 browser.fetch（真 Chrome）", () => {
       expect(line.seq).toBeGreaterThanOrEqual(navigate.trace!.network!.first)
       expect(line.seq).toBeLessThanOrEqual(navigate.trace!.network!.last)
     }
-    for (const event of fetches) expect(event.trace?.network).toBeUndefined()
+    // 工具自己发的不记；网页在打开页面那一步发出、过几秒才照拿到的记下的 /api/unread 也不会算进后面的 fetch 步骤（seq 在发出时编）
+    for (const event of fetches) expect(event.trace?.network, JSON.stringify(event.trace)).toBeUndefined()
   })
 
   it("白名单 localhost：从 localhost 调 api.localhost 可以；第三方主机不行", async () => {

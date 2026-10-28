@@ -1714,7 +1714,7 @@ curl -X POST http://<host>:8080/api/work-items/W-57/cancel -H "Authorization: Be
 
   | 字段 | 说明 |
   |---|---|
-  | `seq` | 这次运行里第几个，从 1 开始，请求收完时编；文件里按收完的先后排 |
+  | `seq` | 这次运行里第几个，从 1 开始，**网页发出请求时编**（2026-10-28 起；以前是收完时编）；最后没记下的（不是 JSON 的 GET、到了同一网址上限的……）号码空着；文件里按 `seq` 排 |
   | `at` | 发出的时间（ISO，带毫秒） |
   | `type` | `xhr` / `fetch` |
   | `method` `url` | 方法、完整网址（查询参数打码） |
@@ -1731,7 +1731,7 @@ curl -X POST http://<host>:8080/api/work-items/W-57/cancel -H "Authorization: Be
 
   到了上限，最后一行是 `{ "end": true, "skipped": n, "reason": "…" }`（`networkLogEndLineSchema`），之后不再记。
 
-- 和过程对上：浏览器工具（含 `browser.fetch`）调用期间收完的请求，过程记录写 `trace.network = { first, last }`（seq 范围，`EventTrace.network`）。两次调用之间收完的不进任何一步。
+- 和过程对上：浏览器工具（含 `browser.fetch`）调用期间**发出**的请求，过程记录写 `trace.network = { first, last }`（seq 范围，`EventTrace.network`）：调用结束时已经记下的，加上拿到了返回头、看样子会记的（写请求，或返回 JSON / 纯文字）。前一步发出、这一步里才收完记下的（例如网页不读返回体，拿到返回头 5 秒后才照拿到的记）号码在前面，不算这一步。两次调用之间发出的、调用结束时还没拿到返回头的不进任何一步。
 
 **HTTP 工具建议**
 

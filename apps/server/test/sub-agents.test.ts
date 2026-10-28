@@ -19,6 +19,7 @@ import { cancelFromAgent, startFromAgent, waitFromAgent } from "../src/engine/su
 import { recheckSubagentWaitAfterSuspend } from "../src/engine/subagents/notify.js"
 import { pumpSubagents } from "../src/engine/subagents/pump.js"
 import { SUBAGENT_RESULTS_TAIL, subagentResultsText, type SubRunFacts } from "../src/engine/subagents/results.js"
+import { bossFor, QUEUES, SCHEDULE_TZ } from "../src/engine/queue.js"
 import { familyCost } from "../src/engine/subagents/settle.js"
 import { sweepSubagents } from "../src/engine/subagents/sweep.js"
 import { listSubagents } from "../src/engine/subagents/view.js"
@@ -106,6 +107,9 @@ async function childReply(options: CallOptions) {
   return step(finishWith(`完成：${title}`))
 }
 
+/** 停掉以后才回来的那次回复花的钱（照记进运行的花费） */
+const LATE_REPLY_COST = 0.0042
+
 /** 停的测试：模型开始调的时间、被中止的时间、不理中止回来的时间（按标题） */
 const modelEntered = new Map<string, number>()
 const modelAborted = new Map<string, number>()
@@ -132,7 +136,7 @@ async function stopReply(title: string, options: CallOptions) {
     })
   else await new Promise((resolve) => setTimeout(resolve, 1500))
   modelReturned.set(title, Date.now())
-  return step([call("plan.set", { steps: ["接着做"] })])
+  return step([call("plan.set", { steps: ["接着做"] })], LATE_REPLY_COST)
 }
 
 let modelNo = 0
@@ -532,7 +536,7 @@ describe("失败和取消", () => {
     expect(second.error).toContain(`父运行 ${parent.row.id} 已经结束`)
   })
 
-  it("停掉父运行：子 agent 正在调的模型马上中止；停掉以后才回来的模型回复不记、不算钱；「已停掉」后面没有别的过程记录", async () => {
+  it("停掉父运行：子 agent 正在调的模型马上中止；停掉以后才回来的模型回复不记进过程、不算步数，花的钱照记（父的「含子 agent」也算）；「已停掉」后面没有别的过程记录", async () => {
     const { taskId } = await makeParentTask()
     const parent = await fakeParent(taskId)
     const tc = toolCtx(parent.row, parent.snapshot)
@@ -544,14 +548,21 @@ describe("失败和取消", () => {
     // 甲的模型调用很快被中止（轮询 1 秒一次），不等它调完（20 秒）
     const abortedAt = await waitFor(async () => modelAborted.get("停等甲"), { what: "甲的模型调用被中止", timeout: 5000 })
     expect(abortedAt - cancelledAt).toBeLessThan(3000)
-    // 乙的模型不理中止，停掉以后才回来
+    // 乙的模型不理中止，停掉以后才回来：这笔钱实际花了，照记
     await waitFor(async () => modelReturned.get("停慢乙"), { what: "乙的模型回来", timeout: 5000 })
-    await new Promise((resolve) => setTimeout(resolve, 800))
+    const late = await waitFor(async () => {
+      const row = await sessionRow(ctx.db, second)
+      return row && Number(row.costUsd) > 0 ? row : undefined
+    }, { what: "乙晚回来的那次回复记上花费", timeout: 5000 })
+    expect(Number(late.costUsd)).toBeCloseTo(LATE_REPLY_COST)
+    expect(late).toMatchObject({ tokensIn: 100, tokensOut: 20 })
+    expect(await familyCost(ctx.db, parent.row.id)).toBeCloseTo(Number(parent.row.costUsd) + LATE_REPLY_COST)
+    // 甲中止后没有回复，拿不到用量，不记
+    expect(Number((await sessionRow(ctx.db, first))!.costUsd)).toBe(0)
     for (const id of [first, second]) {
       const row = (await sessionRow(ctx.db, id))!
       expect(row.status).toBe("failed")
-      // 这一次模型调用没记花费、没算步数
-      expect(Number(row.costUsd)).toBe(0)
+      // 两个都没算步数
       expect(row.stepCount).toBe(0)
       const events = await eventsOf(ctx.db, id)
       const stop = events.findIndex((event) => event.title === "已停掉")
@@ -706,23 +717,60 @@ describe("演示数据", () => {
 
 // ---------- 清扫 ----------
 
+/**
+ * 清扫的测试自己调 sweepSubagents：先停掉 worker 每分钟的 work.sweep（它也调 sweepSubagents，会和这里抢着停、抢着叫醒，
+ * 负载高时这个测试因此不稳），等排着的、正在跑的 work.sweep 都做完（有期限），测完再排回去
+ */
+async function withoutCronSweep(work: () => Promise<void>) {
+  const boss = await bossFor(ctx.db)
+  await boss.unschedule(QUEUES.workSweep)
+  try {
+    await waitFor(
+      async () => {
+        const result = await ctx.db.execute<{ n: string }>(sql`select count(*) as n from pgboss.job where name = ${QUEUES.workSweep} and state in ('created', 'retry', 'active')`)
+        return Number(result.rows[0]?.n ?? 0) === 0
+      },
+      { what: "排着的 work.sweep 做完", timeout: 30_000 }
+    )
+    await work()
+  } finally {
+    await boss.schedule(QUEUES.workSweep, "* * * * *", {}, { tz: SCHEDULE_TZ })
+  }
+}
+
 describe("清扫", () => {
   it("父已结束的子运行停掉、漏了的叫醒补发、有排队的发 pump", async () => {
-    const { taskId } = await makeParentTask()
-    const ended = await fakeParent(taskId, { status: "failed", endedAt: new Date() })
-    const orphan = await fakeChild(ended.row.id, taskId, 1, { status: "running" })
-    const waiting = await fakeParent(taskId, { status: "waiting" })
-    await fakeChild(waiting.row.id, taskId, 1, { status: "done", extra: { outcome: "achieved", snapshot: subSnapshot(waiting.snapshot, waiting.row.id, 1, "甲") } })
-    await ctx.db.insert(t.sessionWaits).values({ sessionId: waiting.row.id, what: "等子 agent", triggerKind: "event", event: subagentWaitEvent(waiting.row.id, "all") })
-    const live = await fakeParent(taskId)
-    await setSetting(ctx.db, SETTING_KEYS.subagentMaxRunningGlobal, 1)
-    await fakeChild(live.row.id, taskId, 1, { status: "running" })
-    await fakeChild(live.row.id, taskId, 2, { status: "waiting", event: subagentQueueEvent(live.row.id) })
-    const result = await sweepSubagents(ctx.db)
-    expect(result.stopped).toContain(orphan)
-    expect(result.notified).toContain(waiting.row.id)
-    expect(result.pumped).toBe(true)
-    expect((await sessionRow(ctx.db, orphan))!.status).toBe("failed")
-    await waitStatus(ctx.db, waiting.row.id, "running")
+    await withoutCronSweep(sweepCase)
   })
 })
+
+/** 清扫那一例的内容（在 withoutCronSweep 里跑） */
+async function sweepCase() {
+  const { taskId } = await makeParentTask()
+  const ended = await fakeParent(taskId, { status: "failed", endedAt: new Date() })
+  const orphan = await fakeChild(ended.row.id, taskId, 1, { status: "running" })
+  const waiting = await fakeParent(taskId, { status: "waiting" })
+  await fakeChild(waiting.row.id, taskId, 1, { status: "done", extra: { outcome: "achieved", snapshot: subSnapshot(waiting.snapshot, waiting.row.id, 1, "甲") } })
+  await ctx.db.insert(t.sessionWaits).values({ sessionId: waiting.row.id, what: "等子 agent", triggerKind: "event", event: subagentWaitEvent(waiting.row.id, "all") })
+  const live = await fakeParent(taskId)
+  await setSetting(ctx.db, SETTING_KEYS.subagentMaxRunningGlobal, 1)
+  await fakeChild(live.row.id, taskId, 1, { status: "running" })
+  await fakeChild(live.row.id, taskId, 2, { status: "waiting", event: subagentQueueEvent(live.row.id) })
+  const result = await sweepSubagents(ctx.db)
+  expect(result.stopped).toContain(orphan)
+  expect(result.notified).toContain(waiting.row.id)
+  expect(result.pumped).toBe(true)
+  expect((await sessionRow(ctx.db, orphan))!).toMatchObject({ status: "failed", error: expect.stringContaining(`父运行 ${ended.row.id} 已经结束`) })
+  // 补发的叫醒到了：父运行等子 agent 的那条等待被事件叫醒、交回的子运行标了已交回。父运行醒来以后用的是假模型，
+  // 马上又会结束，所以不等它「执行中」（一闪而过，负载高时轮询看不到），看等待和交回
+  const fired = await waitFor(
+    async () => {
+      const [wait] = await ctx.db.select().from(t.sessionWaits).where(and(eq(t.sessionWaits.sessionId, waiting.row.id), sql`${t.sessionWaits.event} like 'subagent.%'`))
+      return wait && wait.status !== "waiting" ? wait : undefined
+    },
+    { what: "父运行被叫醒", timeout: 30_000 }
+  )
+  expect(fired).toMatchObject({ status: "fired", firedCause: "event" })
+  expect((await sessionRow(ctx.db, `${waiting.row.id}.1`))!.subResult?.deliveredAt).toBeTruthy()
+  expect((await sessionRow(ctx.db, waiting.row.id))!.status).not.toBe("waiting")
+}

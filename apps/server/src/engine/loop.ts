@@ -1174,18 +1174,22 @@ export async function runSession(
         return "failed"
       }
       lastInputTokens = result.tokensIn
-      // 调模型的时候运行被停掉了（中止信号还没到、模型先回来了）：回复不记、不算钱，直接停（21.3 第 4 条）
-      if (await gateway.stopped()) return "stopped"
+      // 用量和花费累计到 session（子运行的花费由父运行的「含子 agent」合计算进去，预算、上限都按它）
+      const usage = {
+        tokensIn: sql`${t.sessions.tokensIn} + ${result.tokensIn}`,
+        tokensOut: sql`${t.sessions.tokensOut} + ${result.tokensOut}`,
+        costUsd: sql`${t.sessions.costUsd} + ${result.costUsd}`,
+      }
+      // 调模型的时候运行被停掉了（中止信号还没到、模型先回来了）：回复不记进过程、不算步数，直接停（sub-agents.md 21.3 第 4 条）；
+      // 但这笔钱实际花了，用量和花费照记（中止后没回复的拿不到用量，不记）
+      if (await gateway.stopped()) {
+        await db.update(t.sessions).set(usage).where(eq(t.sessions.id, sessionId))
+        return "stopped"
+      }
 
-      // 用量和花费累计到 session
       await db
         .update(t.sessions)
-        .set({
-          tokensIn: sql`${t.sessions.tokensIn} + ${result.tokensIn}`,
-          tokensOut: sql`${t.sessions.tokensOut} + ${result.tokensOut}`,
-          costUsd: sql`${t.sessions.costUsd} + ${result.costUsd}`,
-          stepCount: sql`${t.sessions.stepCount} + 1`,
-        })
+        .set({ ...usage, stepCount: sql`${t.sessions.stepCount} + 1` })
         .where(eq(t.sessions.id, sessionId))
       const callNames = result.toolCalls.map((call) =>
         gateway!.label(call.toolName)

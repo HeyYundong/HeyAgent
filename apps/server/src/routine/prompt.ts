@@ -47,8 +47,12 @@ export const compileOutputSchema = z.object({
   reason: z.string().describe("为什么适合 / 不适合。不适合时写清是哪几步、为什么写不出固定步骤"),
   name: z.string().describe("固化流程的名字，十个字左右，说清做什么"),
   description: z.string().describe("给人看的步骤说明，一步一行（不要编号前缀以外的格式），写清每一步做什么、读什么、哪一步会真的改东西"),
-  inputSchema: z.string().describe('输入格式：JSON Schema（draft 2020-12）的 JSON 文字，最外层 {"type":"object", ...}。被派的任务 = 声明的参数（都是 string）；用附件的写 $attachments，用附加说明的写 $note'),
-  outputSchema: z.string().describe('交回的结果格式：JSON Schema 的 JSON 文字，最外层 {"type":"object", ...}。被派的任务 = 声明的结果；没有要交回的就写 {"type":"object","properties":{}}'),
+  inputSchema: z
+    .string()
+    .describe('输入格式：JSON Schema（draft 2020-12）的 JSON 文字，最外层 {"type":"object", ...}；用附件的写 $attachments，用附加说明的写 $note。被派的任务由程序照声明的参数生成，这里写 "" 就行（写了也以程序生成的为准）'),
+  outputSchema: z
+    .string()
+    .describe('交回的结果格式：JSON Schema 的 JSON 文字，最外层 {"type":"object", ...}；没有要交回的就写 {"type":"object","properties":{}}。被派的任务由程序照声明的结果生成，这里写 "" 就行（写了只取各字段的 type）'),
   code: z.string().describe('脚本：ES module，第一行 import ha from "heyagent"，export default async function run(input) { … }'),
   commits: z.array(z.string()).describe("哪几步会真的改东西（和脚本里 ha.commit 的说明一样），没有就给空数组"),
   assumptions: z.array(z.string()).describe("脚本做的假设：默认取第一条、每页 20 条、某个元素只能用 CSS 路径定位……没有就给空数组"),
@@ -103,7 +107,7 @@ interface Ha {
     handleDialog(args: { accept: boolean; promptText?: string }): Promise<unknown>
     /** 等页面出现其中一个（看得见的），返回是哪个名字。定位也可以写 "url=片段"（网址包含这一段）。默认 10 秒、最多 60 秒，超时抛 StepError */
     waitAny(outcomes: Record<string, Target>, options?: { timeout?: number }): Promise<string>
-    /** 按定位读页面上的字：list 是每一行的定位（不给 = 整页一行），fields 是行内每个字段的相对定位（读文字），{ target, attr } 取 HTML 属性（href、value；读文字不写 attr）。limit 默认 50、最多 500；一行也没有不算出错 */
+    /** 按定位读页面上的字：list 是每一行的定位（不给 = 整页一行），fields 是行内每个字段的相对定位（读文字），{ target, attr } 取 HTML 属性（href、value；读文字不写 attr）。limit 默认 50、最多 500；一行也没有不算出错。读表格按表头文字找列或行（先读表头 getByRole('columnheader') 核对第几列；一行一个字段的表读出名和值、按名找），不按第几行第几列 */
     extract(args: { list?: Target; fields: Record<string, Target | { target: Target; attr: string }>; limit?: number }): Promise<{ rows: Record<string, string>[]; total: number }>
     /** 复制图片（右键 → 复制图片，工具 browser.copy_image）：写进剪贴板、存成这次运行的文件。target 优先，坐标 x、y 要「允许看画面」 */
     copyImage(args: { element?: string; target?: Target; x?: number; y?: number }): Promise<{ fileId: string; width: number; height: number }>
@@ -166,12 +170,20 @@ export default async function run(input) {
   const seen = await ha.browser.waitAny({ found: "getByRole('row').nth(1)", empty: "getByText('暂无数据')", error: "getByRole('alert')" })
   if (seen === "error") return ha.fail("page", "查询后页面报错")
   if (seen === "empty") return notFound(input)
+  // 读表格按表头找列：先读表头，核对第 4、5 列是「状态」「更新时间」，对不上就停下（网站改了列的顺序）
+  const { rows: [header] } = await ha.browser.extract({
+    list: "getByRole('row').first()",
+    fields: { 状态: "getByRole('columnheader').nth(3)", 更新时间: "getByRole('columnheader').nth(4)" },
+  })
+  if (header?.状态 !== "状态" || header?.更新时间 !== "更新时间") return ha.fail("page", "订单列表的表头和以前不一样，找不到「状态」「更新时间」两列")
   const { rows } = await ha.browser.extract({
     list: "getByRole('row').nth(1)",
-    fields: { 状态: "getByRole('cell').nth(3)", 更新时间: "getByRole('cell').nth(4)" },
+    fields: { 单号: "getByRole('cell').nth(0)", 状态: "getByRole('cell').nth(3)", 更新时间: "getByRole('cell').nth(4)" },
   })
+  if (rows[0]?.单号 !== input.单号) return ha.fail("page", "列表第 1 行不是要查的单号")
   await ha.work.report({ data: { 状态: rows[0].状态 } })
-  return ha.finish({ outcome: "achieved", summary: \`\${input.单号}：\${rows[0].状态}\`, evidence: \`订单列表第 1 行：\${rows[0].状态}（\${rows[0].更新时间}）\` })
+  // evidence 只写脚本真的核对过的：核对了单号和表头，读的是「状态」那一栏
+  return ha.finish({ outcome: "achieved", summary: \`\${input.单号}：\${rows[0].状态}\`, evidence: \`订单列表第 1 行的单号是 \${input.单号}，「状态」一栏是 \${rows[0].状态}（更新时间 \${rows[0].更新时间}）\` })
 }
 \`\`\`
 
@@ -267,8 +279,8 @@ const RULES = [
   "3. 定位优先用录下来的代码（「录下的代码」）里按角色、文字、标签的写法：getByRole、getByText、getByLabel、getByPlaceholder。只有 CSS 路径的，照用，但写进 assumptions（网站改版最容易失效）。不要写快照里的 ref（e12 这种），下次就变了。",
   "4. 等待用 ha.browser.waitAny 列出所有可能的结果：结果页、「暂无数据」、报错提示都列出来，不要只等成功的那个；按返回的名字分开处理。",
   "5. 会真的改东西的动作（提交、保存、发送、删除、付款）前面一定先 await ha.commit(\"说明\")，说明写清是哪一步（循环里带上第几个）；做完要读回来核对，核对过了 await ha.verified(\"核对了什么\")。commits 列出这些说明。只读的步骤不要加 commit。",
-  "6. 输入：过程里标了「输入在这里」的位置，脚本里要用 input 的对应字段，不要把这次的值写死；页面上本来就有的固定文字照写。被派的任务：inputSchema = 声明的参数（都是 string，必填的放 required），outputSchema = 声明的结果，结果用 ha.work.report 交回。用附件的从 input.$attachments（id、name、mime）里取 id 给 ha.file.read；附加说明在 input.$note（可能没有）。",
-  "7. 结束一定调 ha.finish：办成写 achieved，summary 写做了什么、结果在哪，evidence 写依据：写出核对了什么、在哪看到的（例如「详情页标题和输入的名称一致，表格里状态一栏是…」），不能只写「查到了」「读取到…」。这个流程以后可能被别的任务当工具调，对方只看 evidence 决定信不信交回的值。查不到、确实办不成的写 not_achieved 和 reason。输入本身有问题（缺参数、格式不对、附件打不开）用 ha.fail(\"input\", 原因)；页面和预期不一样（找不到该有的东西、报错）用 ha.fail(\"page\", 原因)，系统会交给 agent 接着做。",
+  "6. 输入：过程里标了「输入在这里」的位置，脚本里要用 input 的对应字段，不要把这次的值写死；页面上本来就有的固定文字照写。被派的任务：inputSchema、outputSchema 由程序照声明的参数、结果生成（顺序、说明、必填都照声明），你不用写（写空字符串就行，写了也以程序生成的为准）；脚本里 input 的字段名就是声明的参数名，结果用 ha.work.report 交回，字段名照声明的结果。用附件的从 input.$attachments（id、name、mime）里取 id 给 ha.file.read；附加说明在 input.$note（可能没有）。",
+  "7. 结束一定调 ha.finish：办成写 achieved，summary 写做了什么、结果在哪，evidence 写依据：写出核对了什么、在哪看到的（例如「详情页标题和输入的名称一致，表格里状态一栏是…」），不能只写「查到了」「读取到…」。这个流程以后可能被别的任务当工具调，对方只看 evidence 决定信不信交回的值。evidence 只写脚本真的核对过的：没在脚本里比过的不要写成核对过（例如没读表头就不要写「电话一行显示…」）。读表格时按表头文字找对应的列或行，不按第几行第几列：一行一个字段的表（左边是名、右边是值）把每一行的名和值都读出来，按名找；多列的表先读表头，核对要的那一栏在第几列，对不上用 ha.fail(\"page\", 原因)（见例 1）。查不到、确实办不成的写 not_achieved 和 reason。输入本身有问题（缺参数、格式不对、附件打不开）用 ha.fail(\"input\", 原因)；页面和预期不一样（找不到该有的东西、报错）用 ha.fail(\"page\", 原因)，系统会交给 agent 接着做。",
   "8. 脚本每次都要走同样的路：要时间用 await ha.now()，不要用 Date、Math.random。",
   "9. 要看内容判断的那一步（「从搜索结果里挑和要求最符合的一家」「这条评价是不是差评」）用 await ha.judge({ question, data, choices })，其余步骤照固定步骤写（见例 5）。question 写清判断什么、按什么标准；data 放要看的内容（页面读到的字、表格的行）；尽量给 choices（编号、是 / 否、几个固定类别），给了选项答案只会在选项里，脚本按答案走不同的路。能写成明确规则的（「取第一条」「价格最低的」）不用 judge，直接写规则，写进 assumptions。只有每一步都要看内容判断、写不出固定步骤的，才说不适合：suitable = false，reason 写清是哪几步。",
   "10. ha.judge 的结果只用来选路（选哪一条、走哪个分支、做不做）：不要把 answer、reason 的文字原样填进会改东西的表单、消息、文件，也不要拿它当网址或定位；要填的值来自 input 或页面上读到的字（例如用 judge 选出编号，再从 extract 读到的那一行里取值）。没给选项的 answer 只是一段话，只能写进 ha.log、evidence 给人看。judge 每次都调模型，又慢又花钱：只在真要判断的地方用。",

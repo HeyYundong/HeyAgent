@@ -304,7 +304,7 @@ describe("程序检查", () => {
   const wrap = (body: string) => `import ha from "heyagent"\nexport default async function run(input) {\n${body}\n}`
 
   it("好的脚本过；记下用到的工具", () => {
-    const result = checkRoutine({ ...base, code: GOOD_CODE, dispatch: DISPATCH })
+    const result = checkRoutine({ ...base, code: GOOD_CODE })
     expect(result.problems).toEqual([])
     expect(result.usedTools).toEqual(["browser", "run.finish", "work.report"])
     // 属性顺序记进 x-order（jsonb 存进去会按键长短重排，p1、p2 要照作者写的顺序）
@@ -353,9 +353,58 @@ describe("程序检查", () => {
     expect(problemsOf(GOOD_CODE, { inputSchema: JSON.stringify({ type: "string" }) }).join()).toContain('"type": "object"')
     expect(problemsOf(GOOD_CODE, { outputSchema: JSON.stringify({ type: "object", properties: { a: { type: "nope" } } }) }).join()).toContain("不是合法的 JSON Schema")
     expect(problemsOf(GOOD_CODE, { outputSchema: JSON.stringify({ type: "object", required: "a" }) }).join()).toContain("required 要是字段名的数组")
-    expect(problemsOf(GOOD_CODE, { dispatch: DISPATCH, outputSchema: JSON.stringify({ type: "object", properties: {} }) }).join()).toContain("声明的结果「状态」")
-    expect(problemsOf(GOOD_CODE, { dispatch: DISPATCH, inputSchema: JSON.stringify({ type: "object", properties: { 编号: { type: "string" } } }) }).join()).toContain("声明的参数「单号」")
     expect(problemsOf(GOOD_CODE, { sampleInput: { 单号: 3 } }).join()).toContain("原来那次运行的输入不符合输入格式")
+  })
+
+  it("被派的任务：两个格式由程序照声明生成（顺序 x-order、说明、必填），固化员写成一句话、空着、漏了、多了都一样，不算没过", () => {
+    const dispatch = {
+      params: [
+        { name: "单号", description: "要查的单号", required: true },
+        { name: "工厂链接", description: "", required: false },
+        { name: "2号仓", description: "仓库编号", required: true },
+      ],
+      results: [
+        { name: "状态", description: "单子现在的状态", required: true },
+        { name: "件数", description: "", required: false },
+      ],
+    }
+    const declaredInput = {
+      type: "object",
+      properties: { 单号: { type: "string", description: "要查的单号" }, 工厂链接: { type: "string" }, "2号仓": { type: "string", description: "仓库编号" } },
+      required: ["单号", "2号仓"],
+      "x-order": ["单号", "工厂链接", "2号仓"],
+    }
+    const declaredOutput = { type: "object", properties: { 状态: { description: "单子现在的状态" }, 件数: {} }, required: ["状态"], "x-order": ["状态", "件数"] }
+    const sample = { 单号: "PSS-001", "2号仓": "W2" }
+    for (const [inputSchema, outputSchema] of [
+      ["见任务声明", "见任务声明"],
+      ["", ""],
+      ["{}", "{}"],
+      [JSON.stringify({ type: "object", properties: { 编号: { type: "number" } }, required: ["编号"] }), JSON.stringify({ type: "object", properties: { 别的: { type: "string" } } })],
+    ]) {
+      const result = checkRoutine({ ...base, code: GOOD_CODE, inputSchema: inputSchema!, outputSchema: outputSchema!, dispatch, sampleInput: sample })
+      expect(result.problems, inputSchema).toEqual([])
+      expect(result.inputSchema).toEqual(declaredInput)
+      expect(result.outputSchema).toEqual(declaredOutput)
+    }
+    // 固化员写对了交回值的类型：照它的（number、boolean 这类）；附件、附加说明照它写的接在后面
+    const typed = checkRoutine({
+      ...base,
+      code: GOOD_CODE,
+      dispatch,
+      sampleInput: sample,
+      inputSchema: JSON.stringify({ type: "object", properties: { $attachments: { type: "array", items: { type: "object" } }, 单号: { type: "string" } } }),
+      outputSchema: JSON.stringify({ type: "object", properties: { 状态: { type: "string" }, 件数: { type: "integer" } } }),
+    })
+    expect(typed.problems).toEqual([])
+    expect(typed.inputSchema).toMatchObject({ required: ["单号", "2号仓"], "x-order": ["单号", "工厂链接", "2号仓", "$attachments"] })
+    expect(typed.outputSchema).toEqual({ ...declaredOutput, properties: { 状态: { type: "string", description: "单子现在的状态" }, 件数: { type: "integer" } } })
+    // 固化员没写、原来那次的输入里有附件：补上（可选）
+    const withFiles = checkRoutine({ ...base, code: GOOD_CODE, dispatch, inputSchema: "见任务声明", outputSchema: "", sampleInput: { ...sample, $attachments: [{ id: "f-1", name: "a.csv", mime: "text/csv" }] } })
+    expect(withFiles.problems).toEqual([])
+    expect(withFiles.inputSchema).toMatchObject({ required: ["单号", "2号仓"], "x-order": ["单号", "工厂链接", "2号仓", "$attachments"] })
+    // 原来那次的输入还是要符合：少了必填的参数照样报
+    expect(checkRoutine({ ...base, code: GOOD_CODE, dispatch, inputSchema: "", outputSchema: "", sampleInput: { 单号: "PSS-001" } }).problems.join()).toContain("原来那次运行的输入不符合输入格式")
   })
 
   it("没有输入 / 没有结果时常见的写法（空串、{}、有 properties 没写 type）：当成对象，不算错", () => {
@@ -405,9 +454,9 @@ describe("固化的状态机（假固化员 + 假试跑结果）", () => {
 
     let version = await versionRow(data.versionId)
     expect(version).toMatchObject({ status: "testing", round: 1, name: "查单号的状态", code: GOOD_CODE, modelId: SOLIDIFIER, assumptions: ["默认取第一行"] })
-    // 固化员写的 schema 只有 type：声明的参数、结果的说明由程序补上（流程库给别的任务看的说明用它）
+    // 被派的任务：两个格式由程序照声明生成（说明、必填、顺序照声明；交回值的类型照固化员写的）
     expect(version.inputSchema).toEqual({ type: "object", properties: { 单号: { type: "string", description: "要查的单号" } }, required: ["单号"], "x-order": ["单号"] })
-    expect(version.outputSchema).toEqual({ type: "object", properties: { 状态: { type: "string", description: "单子现在的状态" } }, "x-order": ["状态"] })
+    expect(version.outputSchema).toEqual({ type: "object", properties: { 状态: { type: "string", description: "单子现在的状态" } }, required: ["状态"], "x-order": ["状态"] })
     expect(version.costUsd).toBeCloseTo(0.002)
     // 固化员拿到的：规矩、SDK、材料
     expect(model.promptText(0)).toContain("固化员")
@@ -441,6 +490,22 @@ describe("固化的状态机（假固化员 + 假试跑结果）", () => {
     // 通用的处理接口不处理这种事
     const resolved = await mutate(ctx.app, "engine.resolveHumanItem", wang, { itemId: item!.id, how: "approve" })
     expect(resolved.error?.message).toContain("routine.review")
+  })
+
+  it("被派的任务：固化员把两个格式写成「见任务声明」、空着：不多跑一轮，存下的就是照声明生成的（18.6 第 2 条）", async () => {
+    const taskId = await dispatchedTask()
+    const source = await sourceRun(taskId)
+    const { data } = await compile(source)
+    const model = useModel(SOLIDIFIER, [good({ inputSchema: "见任务声明", outputSchema: "" })])
+    await handleCompileJob(ctx.db, { versionId: data.versionId })
+    const version = await versionRow(data.versionId)
+    expect(version).toMatchObject({ status: "testing", round: 1 })
+    expect(version.testReport?.drafts ?? []).toEqual([])
+    expect(model.prompts).toHaveLength(1)
+    expect(version.inputSchema).toEqual({ type: "object", properties: { 单号: { type: "string", description: "要查的单号" } }, required: ["单号"], "x-order": ["单号"] })
+    expect(version.outputSchema).toEqual({ type: "object", properties: { 状态: { description: "单子现在的状态" } }, required: ["状态"], "x-order": ["状态"] })
+    // 提示词里写明这两项由程序生成
+    expect(model.promptText(0)).toContain("inputSchema 由程序照它生成，不用写")
   })
 
   it("程序检查没过就接着写；试跑没过回去再写（带上试跑的错误），第 3 轮过", async () => {
@@ -515,19 +580,20 @@ describe("固化的状态机（假固化员 + 假试跑结果）", () => {
     const taskId = await dispatchedTask()
     const source = await sourceRun(taskId)
     const { data } = await compile(source)
-    useModel(SOLIDIFIER, ["这不是 JSON", good({ code: "import fs from 'node:fs'" }), good({ inputSchema: "{" })])
+    // 被派的任务：inputSchema 写坏了不算没过（程序照声明生成），第 3 轮换成脚本里用 eval
+    useModel(SOLIDIFIER, ["这不是 JSON", good({ code: "import fs from 'node:fs'" }), good({ inputSchema: "{", code: GOOD_CODE.replace("await ha.browser.navigate", "eval('x'); await ha.browser.navigate") })])
     await handleCompileJob(ctx.db, { versionId: data.versionId })
     const version = await versionRow(data.versionId)
     expect(version).toMatchObject({ status: "failed", round: 3 })
     expect(version.failReason).toContain("写了 3 轮")
-    expect(version.failReason).toContain("不是合法的 JSON")
+    expect(version.failReason).toContain("不能用 eval")
     // 每一轮为什么没过都留着（基准 F：失败的版本 test_report 是空的，前两轮查不到）
     expect(version.testReport).toMatchObject({
       rounds: [],
       drafts: [
         { round: 1, error: expect.stringContaining("固化员（test/claude-solidifier）出错") },
         { round: 2, error: expect.stringContaining("程序检查没过") },
-        { round: 3, error: expect.stringContaining("不是合法的 JSON") },
+        { round: 3, error: expect.stringContaining("不能用 eval") },
       ],
     })
     expect(version.testReport!.drafts![1]!.error).toContain("node:fs")
