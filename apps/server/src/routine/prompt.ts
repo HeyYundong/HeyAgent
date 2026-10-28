@@ -5,6 +5,42 @@ import { readFileSync } from "node:fs"
 
 import { z } from "zod"
 
+/**
+ * 固化员建议建的 HTTP 工具（docs/dev/solidify.md 19.7），给模型的形状：字段都必填、没有自由的对象（严格模式）。
+ * compile.ts 的 normalizeHttpSuggestions 规整成 shared 的 HttpToolSuggestion（headers 数组 → 对象、body 空串 → 没有、
+ * params 按模板对齐并补 type: "string"、secrets 以模板为准、最多 HTTP_TOOL_SUGGESTIONS_MAX 条）存进 routine_versions.http_suggestions
+ */
+export const httpSuggestionOutputSchema = z.object({
+  name: z.string().describe("工具名，十个字左右，说清做什么"),
+  summary: z.string().describe("给模型看的一句话：做什么、什么时候用"),
+  reason: z.string().describe("为什么建议：是记录里的哪个接口、它用 token 认证所以 browser.fetch 调不了、建了以后有什么用"),
+  method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
+  url: z
+    .string()
+    .describe("完整的 http(s) 网址模板：每次不一样的部分写成 {参数名}；密钥（token、key）不写原文，写成 {{密钥名}}（大写字母、数字、下划线，例如 {{SHOP_API_KEY}}）"),
+  headers: z
+    .array(z.object({ name: z.string(), value: z.string() }))
+    .describe("要带的请求头，认证头的值写成 {{密钥名}}（例如 Bearer {{SHOP_API_TOKEN}}）；没有就给空数组"),
+  body: z.string().describe("请求体模板（JSON 文字，参数写 {参数名}）；没有就给空串"),
+  params: z.array(z.object({ name: z.string(), description: z.string(), required: z.boolean() })).describe("模板里每个 {参数名} 一项"),
+  secrets: z.array(z.string()).describe("模板里用到的 {{密钥名}}，主管要准备的"),
+  requestSeqs: z.array(z.number().int()).describe("依据：「网页调过的接口」里哪几个请求的 seq"),
+})
+export type HttpSuggestionOutput = z.infer<typeof httpSuggestionOutputSchema>
+
+/**
+ * 建议的数组：给模型的 JSON Schema 里是必填的数组（严格模式）；解析时宽一点：没给、不是数组的当空数组，
+ * 格式不对的那几条丢掉（建议不对不算没过，不为它多写一轮，19.7）
+ */
+const httpSuggestionsField = z
+  .preprocess(
+    (value) => (Array.isArray(value) ? value.filter((each) => httpSuggestionOutputSchema.safeParse(each).success) : []),
+    z.array(httpSuggestionOutputSchema)
+  )
+  .describe(
+    "建议主管建的 HTTP 工具：只给「网页调过的接口」里用 token 认证（有认证头、不带 cookie）、browser.fetch 调不了的接口，最多 5 条；没有这种接口（或者材料里没有接口）就给空数组"
+  )
+
 /** 给固化员的输出：字段都必填（有的厂商的严格模式不认可选字段）；两个 JSON Schema 写成 JSON 文字（严格模式不认自由的对象） */
 export const compileOutputSchema = z.object({
   suitable: z.boolean().describe("适不适合固化成脚本。个别步骤要看内容判断（「挑最像的一家」）的用 ha.judge，仍然适合；能写成明确规则的（「取第一条」）直接写规则；只有每一步都要看内容判断、写不出固定步骤的才不适合"),
@@ -16,26 +52,9 @@ export const compileOutputSchema = z.object({
   code: z.string().describe('脚本：ES module，第一行 import ha from "heyagent"，export default async function run(input) { … }'),
   commits: z.array(z.string()).describe("哪几步会真的改东西（和脚本里 ha.commit 的说明一样），没有就给空数组"),
   assumptions: z.array(z.string()).describe("脚本做的假设：默认取第一条、每页 20 条、某个元素只能用 CSS 路径定位……没有就给空数组"),
+  httpToolSuggestions: httpSuggestionsField,
 })
 export type CompileOutput = z.infer<typeof compileOutputSchema>
-
-/**
- * 固化员建议建的 HTTP 工具（docs/dev/solidify.md 19.5），给模型的形状：字段都必填、没有自由的对象（严格模式）。
- * B4 把它作为 httpToolSuggestions: z.array(...) 接进 compileOutputSchema，compile.ts 规整成 shared 的 HttpToolSuggestion
- * （headers 数组 → 对象、body 空串 → 没有、params 补 type: "string"、最多 HTTP_TOOL_SUGGESTIONS_MAX 条）存进 routine_versions.http_suggestions
- */
-export const httpSuggestionOutputSchema = z.object({
-  name: z.string().describe("工具名，十个字左右，说清做什么"),
-  summary: z.string().describe("给模型看的一句话：做什么、什么时候用"),
-  reason: z.string().describe("为什么建议：是记录里的哪个接口、它用 token 认证所以 browser.fetch 调不了、建了以后有什么用"),
-  method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
-  url: z.string().describe("网址模板：每次不一样的部分写成 {参数名}；密钥（token、key）不写原文，写成 {{密钥名}}"),
-  headers: z.array(z.object({ name: z.string(), value: z.string() })).describe("要带的请求头，认证头的值写成 {{密钥名}}（例如 Bearer {{接口令牌}}）；没有就给空数组"),
-  body: z.string().describe("请求体模板（JSON 文字，参数写 {参数名}）；没有就给空串"),
-  params: z.array(z.object({ name: z.string(), description: z.string(), required: z.boolean() })).describe("模板里每个 {参数名} 一项"),
-  secrets: z.array(z.string()).describe("模板里用到的 {{密钥名}}，主管要准备的"),
-  requestSeqs: z.array(z.number().int()).describe("依据：接口记录里哪几个请求的 seq"),
-})
 
 /** SDK 的类型说明文件（A 包写）：源码在 src/routine/、构建后在 dist/routine/，往上两级都是 apps/server */
 export const SDK_DTS_URL = new URL("../../sandbox-sdk/heyagent/index.d.ts", import.meta.url)
@@ -92,6 +111,8 @@ interface Ha {
     clipboardRead(args?: { copy?: boolean }): Promise<{ text?: string; table?: string[][]; fileId?: string }>
     /** 粘贴（browser.clipboard_paste）：text / table / fileId 三选一，写进剪贴板后在当前焦点处按 Ctrl+V。先 click 到要贴的位置 */
     clipboardPaste(args: { text?: string; table?: string[][]; fileId?: string }): Promise<unknown>
+    /** 直接调网站的接口（browser.fetch，任务要打开「允许直接调网站接口」）：先 navigate 打开这个网站的页面，带着浏览器的登录态发请求。url 写完整的网址；不能设 Cookie、Authorization；4xx、5xx 不抛错，看 status；会改东西的方法前面要有自己的 ha.commit */
+    fetch(args: { url: string; method?: "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE"; headers?: Record<string, string>; body?: string | Record<string, unknown> | unknown[]; as?: "auto" | "json" | "text"; csrf?: { header: string; from: "meta" | "cookie"; name: string } }): Promise<{ status: number; ok: boolean; contentType: string; bytes: number; json?: unknown; text?: string }>
   }
   file: {
     /** 读附件或文件：参数同 file.read（fileId 或 path；表格给 sheet、startRow、rows）。表格附件读成行 */
@@ -259,12 +280,52 @@ const RULES = [
   "16. agent 按坐标（x、y）做的操作（browser.mouse_click_xy、按坐标复制图片……），脚本里换成定位（target）：页面布局、窗口大小、内容一变，坐标就不对了。从前后的快照、录下的代码、图片的 alt 文字、元素的文字里找定位（例如 getByRole('img', { name: '大写字母 X' })、locator('img[alt=\"大写字母 X\"]')）；实在找不到定位的，照用坐标，写进 assumptions。",
   "17. 复制图片再贴到别处：const { fileId } = await ha.browser.copyImage({ element, target }) → ha.browser.click 点到要放的位置：点能接粘贴的那一层（输入框、可编辑区），照过程里 agent 点它时录下的定位写，不要换成外面的表格格子（cell），点外面焦点进不去、贴不进 → await ha.commit(\"贴第 n 张图\") → await ha.browser.clipboardPaste({ fileId }) → 先用 ha.browser.waitAny 等格子里出现图（页面加图要一会儿，马上读可能还没有；报错提示也列上），等到了再 ha.verified。粘贴会改页面上的内容，前面一定 ha.commit；一行行贴的写成循环，每一行前 commit。",
   "18. 读回核对（ha.verified 之前）看页面上稳定、看得见的东西：文字、图片的 alt、条数、有没有这个元素、提示语（「已保存」）。不要比对 src、href、id、class 这类属性值的格式或随机部分（刚贴进去的图 src 是 blob:，刷新以后才是 data:；id 每次不一样）。试跑走到第一次 ha.commit 就停，后面的核对没被试过：照过程里 agent 当时是怎么确认做成的来写（它看了哪一页、读到了什么），拿不准时宽一些（例如格子里有图就算贴上了），确实没做成才 ha.fail。改完以后页面要一会儿才变：先 waitAny 等结果出现（「已保存」、新的一行、图），等到了再读回核对；不要改完马上 extract 就下结论。",
-  "",
-  "只输出要求的 JSON。",
 ].join("\n")
 
-/** 系统提示：规矩 + SDK 说明（里面还没有 ha.judge 就补上）+ 5 个例子 */
-export function compileSystemPrompt(sdk = sdkDescription().text) {
+/**
+ * 直接调网站的接口（docs/dev/solidify.md 19.6）：材料里有「网页调过的接口」一节时才放进去，接在第 18 条后面。
+ * 读数据改用接口；会改东西的请求要看得到 agent 那次确实发了、每个前面一个 ha.commit；用 token 认证的写进 httpToolSuggestions（19.7）
+ */
+export const SITE_API_RULES = [
+  "19. 读数据（列表、翻页、搜索、详情）时，「网页调过的接口」里有对应的、返回 JSON 的接口，就改用接口直接读，比一页页点快得多：脚本先 ha.browser.navigate 打开这个网站的页面（登录态、同源都靠它），再用 ha.browser.fetch({ url, method, headers, body, csrf }) 读，url 写完整的 http(s) 网址（不认相对路径）。翻页按接口的页码 / 游标参数循环，看返回里的总数、有没有下一页、游标这类字段决定什么时候停，再设一个页数上限防止死循环。读出来的字段要和 agent 那次在页面上看到的对得上（同一条记录的名字、数量、状态）；对不上、拿不准的照页面读。",
+  "20. 只调「网页调过的接口」里列出的接口和参数：不要猜没记下来的接口、参数名、取值；参数的写法照记录（固定的照写，标了「输入在这里」的用 input，翻页的按页码 / 游标变）。",
+  "21. 会改东西的请求（POST、PUT、PATCH、DELETE）：只有材料里看得到 agent 那次在提交那一步确实发了它（「在哪一步」对得上 agent 点提交、保存的那次调用），才能改成直接调接口；每个请求前面各一个 await ha.commit(\"说明\")（一个 commit 不能管好几个请求，不然脚本会被系统停下），做完读回来核对（用接口或页面读都行）再 ha.verified。没把握就照页面点。",
+  "22. ha.browser.fetch 的请求头只写记录里网页设过的业务头（content-type、accept、x-requested-with 这类），不写 cookie、authorization、origin、referer（工具会拒绝）：登录态是浏览器自己带的 cookie。要 CSRF 的照记录里的 csrf 填参数 csrf: { header, from, name }，工具会在页面里读出 token 填上；不要自己去页面上读 token。",
+  "23. 每次都看 ha.browser.fetch 返回的 status：4xx、5xx 不抛错，ok 是 false。确实查不到（例如 404、返回空列表）按查不到走；401、403 用 ha.fail(\"page\", \"…多半登录过期了\")；别的不是 2xx 的 ha.fail(\"page\", …)。连不上、超时、接口要跳转会抛 StepError，系统交给 agent。返回里像密码、token 的字段已打码成 ••••，不能拿它当值用。",
+  "24. 用 token 认证的接口（「认证」写着用 token 认证：有认证头、不带 cookie）browser.fetch 调不了（不能设 Authorization）：脚本里照页面点；同时在 httpToolSuggestions 里建议主管建一个 HTTP 工具：网址写完整的模板，每次不一样的部分写 {参数名}，认证头的值写 {{密钥名}}（大写字母、数字、下划线，例如 Bearer {{SHOP_API_TOKEN}}），params 列出每个 {参数名}，secrets 列出每个 {{密钥名}}，requestSeqs 写依据的请求 seq。不要把记录里的值抄成密钥，打了码的 •••• 更不能抄。没有这种接口就给空数组。",
+].join("\n")
+
+/** 有接口时的例子：先打开页面，再按页码调接口读完所有页（业务只是举例） */
+export const SITE_API_EXAMPLE = `### 例 6：用记录里的接口翻页读列表（「网页调过的接口」里有 GET https://shop.example.com/api/items?kw=…&page=…&size=…）
+\`\`\`js
+import ha from "heyagent"
+
+export default async function run(input) {
+  // 先打开网站的页面：登录态、同源都靠它
+  await ha.browser.navigate({ url: "https://shop.example.com/items" })
+  const items = []
+  for (let page = 1; page <= 50; page++) {
+    const url = \`https://shop.example.com/api/items?kw=\${encodeURIComponent(input.关键词)}&page=\${page}&size=20\`
+    const res = await ha.browser.fetch({ url, headers: { accept: "application/json" } })
+    if (res.status === 401 || res.status === 403) return ha.fail("page", \`接口返回 \${res.status}，多半登录过期了\`)
+    if (!res.ok) return ha.fail("page", \`第 \${page} 页接口返回 \${res.status}\`)
+    const list = res.json?.data?.list ?? []
+    items.push(...list.map((item) => ({ 名称: item.name, 价格: String(item.price) })))
+    if (list.length < 20 || items.length >= (res.json?.data?.total ?? 0)) break
+  }
+  if (!items.length) return ha.finish({ outcome: "not_achieved", summary: \`搜不到「\${input.关键词}」\`, evidence: "接口返回空列表", reason: "没有搜索结果" })
+  await ha.file.save({ path: "out/items.json", content: JSON.stringify(items, null, 2) })
+  return ha.finish({ outcome: "achieved", summary: \`读了 \${items.length} 条\`, evidence: "接口 /api/items 每一页的返回，存在 out/items.json" })
+}
+\`\`\``
+
+/**
+ * 系统提示：规矩 + SDK 说明（里面还没有 ha.judge 就补上）+ 5 个例子。
+ * siteApi：材料里有「网页调过的接口」（19.6）时，再加第 19–24 条规矩和例 6
+ */
+export function compileSystemPrompt(sdk = sdkDescription().text, options: { siteApi?: boolean } = {}) {
   const withJudge = /\bjudge\s*[(<]/.test(sdk) ? sdk : [sdk, "", "// 另外还有（Heyagent 上）：", JUDGE_DTS].join("\n")
-  return [RULES, "", "## SDK（heyagent）的说明", "```ts", withJudge, "```", "", "## 例子（业务只是举例）", COMPILE_EXAMPLES].join("\n")
+  const rules = options.siteApi ? [RULES, SITE_API_RULES] : [RULES]
+  const examples = options.siteApi ? [COMPILE_EXAMPLES, "", SITE_API_EXAMPLE] : [COMPILE_EXAMPLES]
+  return [...rules, "", "只输出要求的 JSON。", "", "## SDK（heyagent）的说明", "```ts", withJudge, "```", "", "## 例子（业务只是举例）", ...examples].join("\n")
 }

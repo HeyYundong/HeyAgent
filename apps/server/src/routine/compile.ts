@@ -5,11 +5,20 @@
 // - 程序检查没过就在同一个任务里接着写下一轮（不用等什么），试跑没过回 drafting、再发一次 routine.compile。
 import { and, eq, inArray, max, sql } from "drizzle-orm"
 import {
+  HTTP_TOOL_SUGGESTIONS_MAX,
+  httpToolSuggestionSchema,
   isRunEnded,
+  moveSecrets,
   ROUTINE_MAX_ROUNDS,
   routineId as routineIdOf,
   routineTestReportSchema,
   routineVersionId as routineVersionIdOf,
+  scanHttpTemplate,
+  secretNameSchema,
+  SITE_SECRET_MASK,
+  snakeName,
+  syncHttpParams,
+  type HttpToolSuggestion,
   type RoutineTestReport,
   type RoutineTestRound,
 } from "@heyagent/shared"
@@ -22,7 +31,7 @@ import { callStructured, resolveModel, type ResolvedModel } from "../engine/mode
 import { notifyUsers } from "../engine/notify.js"
 import { sendRoutineCompile, type RoutineCompileJob } from "./jobs.js"
 import { buildMaterial, reportedData, type CompileMaterial } from "./material.js"
-import { compileOutputSchema, compileSystemPrompt, type CompileOutput } from "./prompt.js"
+import { compileOutputSchema, compileSystemPrompt, type CompileOutput, type HttpSuggestionOutput } from "./prompt.js"
 import { checkRoutine } from "./checks.js"
 import { evaluateTestRun, startTestRun, testFeedback } from "./test-run.js"
 
@@ -258,6 +267,87 @@ function innerCodeOf(text: string): string | undefined {
   }
 }
 
+// ---------- HTTP 工具建议（docs/dev/solidify.md 19.7） ----------
+
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+
+/**
+ * 固化员给的 HTTP 工具建议规整成存进库的样子（routine_versions.http_suggestions）。不对的去掉，不算程序检查没过：
+ * - 材料里没有记下的接口（knownSeqs 空）：一条都不要；依据的 seq 只留记录里有的，一个都不剩的去掉；
+ * - 网址要是完整的 http(s)；请求头数组变成对象，空的 body 去掉；
+ * - 密钥名照工具页的规矩（大写字母、数字、下划线）：能改成合规的（api_token → API_TOKEN）就改，改不了的（中文）去掉；
+ * - 模板里有 ••••（把打了码的值抄进来了）、有明文密钥（Bearer 后面是一串值）的去掉；
+ * - 参数按模板对齐（syncHttpParams），都是 string；secrets 以模板为准；同一个方法 + 网址只留一条；最多 HTTP_TOOL_SUGGESTIONS_MAX 条
+ */
+export function normalizeHttpSuggestions(raw: readonly HttpSuggestionOutput[], knownSeqs: readonly number[] | undefined): HttpToolSuggestion[] {
+  if (!knownSeqs?.length) return []
+  const known = new Set(knownSeqs)
+  const out: HttpToolSuggestion[] = []
+  const seen = new Set<string>()
+  for (const each of raw) {
+    if (out.length >= HTTP_TOOL_SUGGESTIONS_MAX) break
+    const name = clip(each.name.trim(), 100)
+    let url = each.url.trim()
+    if (!name || !/^https?:\/\/\S+$/i.test(url)) continue
+    let headers: Record<string, string> = {}
+    for (const header of each.headers) {
+      const key = header.name.trim()
+      if (key && !(key in headers)) headers[key] = header.value.trim()
+    }
+    let body = each.body.trim() ? each.body : undefined
+    const requestSeqs = [...new Set(each.requestSeqs.filter((seq) => known.has(seq)))].sort((a, b) => a - b)
+    if (!requestSeqs.length) continue
+
+    // 密钥名：不合规的能改就改，改不了整条不要
+    let bad = false
+    for (const secret of new Set(scanHttpTemplate({ url, headers, body }).filter((found) => found.kind === "secret").map((found) => found.name))) {
+      if (secretNameSchema.safeParse(secret).success) continue
+      const renamed = snakeName(secret)
+      if (!secretNameSchema.safeParse(renamed).success) {
+        bad = true
+        break
+      }
+      const pattern = new RegExp(`\\{\\{\\s*${escapeRegExp(secret)}\\s*\\}\\}`, "g")
+      const swap = (text: string) => text.replace(pattern, `{{${renamed}}}`)
+      url = swap(url)
+      headers = Object.fromEntries(Object.entries(headers).map(([key, value]) => [swap(key), swap(value)]))
+      body = body === undefined ? undefined : swap(body)
+    }
+    if (bad) continue
+    const headerText = Object.entries(headers)
+      .map(([key, value]) => `${key}: ${value}`)
+      .join("\n")
+    if ([url, headerText, body ?? ""].some((text) => text.includes(SITE_SECRET_MASK))) continue
+    if (moveSecrets({ url, headers: headerText, body: body ?? "" }).moved.length) continue
+    const key = `${each.method} ${url}`
+    if (seen.has(key)) continue
+
+    const spec = { url, ...(Object.keys(headers).length ? { headers } : {}), ...(body !== undefined ? { body } : {}) }
+    const declared = each.params
+      .map((param) => ({ name: param.name.trim(), type: "string" as const, required: param.required, description: param.description.trim() }))
+      .filter((param) => param.name)
+    const params = syncHttpParams(spec, declared).params.map((param) => ({
+      name: param.name,
+      type: "string" as const,
+      required: param.required ?? true,
+      ...(param.description ? { description: clip(param.description, 500) } : {}),
+    }))
+    const secrets = [...new Set(scanHttpTemplate(spec).filter((found) => found.kind === "secret").map((found) => found.name))]
+    const parsed = httpToolSuggestionSchema.safeParse({
+      name,
+      summary: clip(each.summary.trim(), 500),
+      reason: clip(each.reason.trim(), 1000),
+      http: { method: each.method, ...spec, params },
+      secrets,
+      requestSeqs,
+    })
+    if (!parsed.success) continue
+    seen.add(key)
+    out.push(parsed.data)
+  }
+  return out
+}
+
 const previousCode = (code: string) => (code ? `你上一轮写的脚本：\n\`\`\`js\n${code}\n\`\`\`` : "")
 
 /** 写脚本：最多写到第 ROUTINE_MAX_ROUNDS 轮，写出一版过了程序检查的就去试跑（或者直接交给人审核） */
@@ -281,7 +371,8 @@ async function draft(db: Db, loaded: Loaded) {
   } catch (error) {
     return fail(db, loaded, `固化用的模型 ${modelId} 用不了：${(error as Error).message}`)
   }
-  const system = compileSystemPrompt()
+  // 材料里有「网页调过的接口」才加第 19–24 条规矩和例 6（19.6）
+  const system = compileSystemPrompt(undefined, { siteApi: Boolean(material.networkSeqs?.length) })
   let problem = await previousProblem(db, version)
   let lastError = ""
 
@@ -311,6 +402,8 @@ async function draft(db: Db, loaded: Loaded) {
       code: output.code,
       commits: output.commits.map((each) => clip(each.trim(), 200)).filter(Boolean).slice(0, 50),
       assumptions: output.assumptions.map((each) => clip(each.trim(), 500)).filter(Boolean).slice(0, 50),
+      // 不对的建议去掉就是，不算没过（19.7）
+      httpSuggestions: normalizeHttpSuggestions(output.httpToolSuggestions, material.networkSeqs),
     }
     if (!output.suitable) {
       await db.update(t.routineVersions).set({ name: fields.name, description: fields.description }).where(eq(t.routineVersions.id, version.id))
@@ -323,6 +416,7 @@ async function draft(db: Db, loaded: Loaded) {
       toolIds: material.toolIds,
       ...(material.dispatch ? { dispatch: material.dispatch } : {}),
       sampleInput: material.input,
+      allowFetch: material.allowFetch,
     })
     const problems = [...check.problems]
     if (output.code.length > CODE_MAX) problems.push(`脚本太长（${output.code.length} 字，最多 ${CODE_MAX}）`)

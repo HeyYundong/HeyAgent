@@ -2,6 +2,8 @@
 // 只是第一道关，挡住明显不对的写法，让固化员早点改：真正的边界是沙箱（不能上网、碰不到库和密钥）和工具网关（每一步过规则、白名单）。
 // 所以这里宁可严一点：只许 import ha from "heyagent"，不许 eval / Function / require / 动态 import / process / globalThis，
 // 用到的工具都要在这个任务里（ha.judge 不是工具，用这次运行的执行模型，18.2），两个 JSON Schema 要像样，要有 export default 的函数。
+// ha.browser.fetch（直接调网站的接口，19.6）还要源快照打开了「允许直接调网站接口」。
+import { BROWSER_FETCH_TOOL } from "@heyagent/shared"
 import { parse, type Node } from "acorn"
 import { z } from "zod"
 
@@ -35,6 +37,8 @@ export const SDK_BROWSER_TOOLS: Readonly<Record<string, string>> = {
   copyImage: "browser.copy_image",
   clipboardRead: "browser.clipboard_read",
   clipboardPaste: "browser.clipboard_paste",
+  // 直接调网站的接口（docs/dev/solidify.md 19.5）：还要任务打开「允许直接调网站接口」（RoutineCheckInput.allowFetch）
+  fetch: BROWSER_FETCH_TOOL,
 }
 export const SDK_BROWSER_FUNCTIONS = Object.keys(SDK_BROWSER_TOOLS)
 
@@ -80,7 +84,12 @@ export interface RoutineCheckInput {
   dispatch?: { params: { name: string; required: boolean }[]; results: { name: string; required: boolean }[] }
   /** 原来那次运行的输入（routineInputOf）：试跑、以后的运行都按 inputSchema 校验它，现在先对一遍 */
   sampleInput?: Record<string, unknown>
+  /** 源快照的 browser.allowFetch（任务打开了「允许直接调网站接口」）：关着时脚本里不能用 ha.browser.fetch（19.6） */
+  allowFetch?: boolean
 }
+
+/** 用了 browser.fetch、任务没打开开关时的问题（ha.browser.fetch、ha.tool("browser.fetch") 都算） */
+export const FETCH_NOT_ALLOWED = "任务没打开「允许直接调网站接口」，脚本里不能用 ha.browser.fetch"
 
 export interface RoutineCheckResult {
   problems: string[]
@@ -210,8 +219,13 @@ export function checkRoutine(input: RoutineCheckInput): RoutineCheckResult {
     let haImports = 0
     let exportDefault: AnyNode | undefined
     const missing = new Set<string>()
+    // browser.fetch 要任务打开开关：只报一次
+    const fetchUsed = () => {
+      if (!input.allowFetch && !problems.includes(FETCH_NOT_ALLOWED)) problems.push(FETCH_NOT_ALLOWED)
+    }
     const need = (toolId: string, how: string) => {
       used.add(toolId)
+      if (toolId === BROWSER_FETCH_TOOL) fetchUsed()
       if (!toolAvailable(toolId, toolIds) && !missing.has(toolId)) {
         missing.add(toolId)
         problems.push(`${how} 要用工具 ${toolId}，这个任务里没有这个工具`)
@@ -284,6 +298,7 @@ export function checkRoutine(input: RoutineCheckInput): RoutineCheckResult {
           }
           // 浏览器工具在快照里只有组的 id：要求任务里有 browser
           need("browser", `ha.browser.${sub}（${toolId}）`)
+          if (toolId === BROWSER_FETCH_TOOL) fetchUsed()
         }
         if (top in SDK_NESTED) {
           const toolId = sub ? SDK_NESTED[top]![sub] : undefined
