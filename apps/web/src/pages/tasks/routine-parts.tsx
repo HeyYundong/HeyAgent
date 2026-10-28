@@ -2,9 +2,9 @@
 // 任务详情「固化流程」的「看脚本」弹窗、版本记录，和「等人处理」里的「审核固化流程」都用这里的组件，内容来自 routine.version。
 // 全部是 registry 组件的组合：Badge、Trace、CodeBlock（经 components/files 的 CodeView）、Table、Collapsible、Item；截图用已登记的 FileList。
 import * as React from "react"
-import { useQuery } from "@tanstack/react-query"
+import { useQueries, useQuery } from "@tanstack/react-query"
 import { diffLines } from "diff"
-import { ChevronDownIcon, ChevronRightIcon, CircleCheckIcon, CirclePauseIcon, CircleStopIcon, CircleXIcon, FlaskConicalIcon, GitCompareIcon, HourglassIcon, WorkflowIcon } from "lucide-react"
+import { BotIcon, ChevronDownIcon, ChevronRightIcon, CircleCheckIcon, CirclePauseIcon, CircleStopIcon, CircleXIcon, FlaskConicalIcon, GitCompareIcon, HourglassIcon, WorkflowIcon } from "lucide-react"
 import {
   routineStatusLabel,
   routineStopKindLabel,
@@ -53,6 +53,20 @@ export function VersionStatusBadge({ status, current = false }: { status: Routin
   return <Badge variant="ghost">{routineVersionStatusLabel.rejected}</Badge>
 }
 
+/** 运行办成后系统自动固化的那一版（docs/dev/solidify.md 17.1）；人点「固化成流程」的不加 */
+export function AutoBadge() {
+  return <Badge variant="outline"><BotIcon data-icon="inline-start" />自动固化</Badge>
+}
+
+/**
+ * 几版是不是自动固化的：routine.get 的版本列表不带 auto，逐版取 routine.version（和「看脚本」同一份缓存）。
+ * 返回自动固化的版本 id；没取到的当不是
+ */
+export function useAutoVersions(versionIds: string[]): Set<string> {
+  const results = useQueries({ queries: versionIds.map((id) => trpc.routine.version.queryOptions({ id })) })
+  return new Set(results.flatMap((result) => (result.data?.auto ? [result.data.id] : [])))
+}
+
 /** 「300 毫秒」「1.2 秒」「18 秒」「3.5 分钟」 */
 export function durationText(ms: number) {
   if (ms < 1000) return `${ms} 毫秒`
@@ -61,8 +75,12 @@ export function durationText(ms: number) {
   return `${(ms / 60_000).toFixed(1)} 分钟`
 }
 
-/** 脚本停下的原因：有原因写原因，没有写种类 */
-export const stopReasonText = (stop: RoutineStop) => stop.reason || routineStopKindLabel[stop.kind]
+/** 接着跑时才有的几种停下（第 17.2 节）：原因前面带上种类的中文名，看得出是接着跑出的事 */
+const RESUME_STOPS = new Set<RoutineStop["kind"]>(["replay_mismatch", "resume_lost", "rejected"])
+
+/** 脚本停下的原因：有原因写原因（接着跑的几种带上种类），没有写种类 */
+export const stopReasonText = (stop: RoutineStop) =>
+  !stop.reason ? routineStopKindLabel[stop.kind] : RESUME_STOPS.has(stop.kind) ? `${routineStopKindLabel[stop.kind]}：${stop.reason}` : stop.reason
 
 /** 固化试跑的运行 id 是 RT-<n>-v<版本>-t<轮>：取第几轮 */
 export const testRoundOf = (sessionId: string) => Number(/-t(\d+)$/.exec(sessionId)?.[1] ?? 0) || undefined
@@ -81,14 +99,27 @@ export function routineRunText(state: SessionRoutineState, sessionId: string, en
   }
   const head = `固化流程第 ${state.version} 版`
   if (state.state === "running") return `正在按${head}跑：第 ${state.steps + 1} 步`
-  if (state.state === "finished") return `按${head}跑：${state.steps} 步${state.ms !== undefined ? ` · ${durationText(state.ms)}` : ""} · 没调执行模型`
+  if (state.state === "suspended") {
+    const step = stop?.step ?? state.steps
+    return `${head}停在第 ${step} 步等人处理${stop ? `（${stopReasonText(stop)}）` : ""}${ended ? "" : "，处理完接着跑"}`
+  }
+  const took = `${state.steps} 步${state.ms !== undefined ? ` · ${durationText(state.ms)}` : ""}`
+  // 脚本报了办成、三方验收反问、agent 接着做的（第 17.3 节）：执行模型调过了，不能写「没调执行模型」
+  if (state.state === "finished" && state.agentAfter) return `按${head}跑：${took} · 脚本跑完了，验收反问后 agent 接着做`
+  if (state.state === "finished") return `按${head}跑：${took} · 没调执行模型`
   if (state.state === "fell_back") {
     const where = !stop ? "停下了" : stop.step === 0 ? `没跑（${stopReasonText(stop)}）` : `停在第 ${stop.step} 步（${stopReasonText(stop)}）`
     return `${head}${where}，${ended ? "agent 接着做完" : "agent 正在接着做"}`
   }
   if (stop?.kind === "input") return `${head}停在第 ${stop.step} 步：输入有问题（${stop.reason}），记没办成`
   if (stop?.kind === "cancelled") return `${head}跑到第 ${stop.step} 步时运行被取消`
-  return stop ? `${head}停在第 ${stop.step} 步：${routineStopKindLabel[stop.kind]}（${stopReasonText(stop)}）` : `${head}停下了`
+  return stop ? `${head}停在第 ${stop.step} 步：${routineStopKindLabel[stop.kind]}${stop.reason ? `（${stop.reason}）` : ""}` : `${head}停下了`
+}
+
+/** 停下等人后接着跑过的（第 17.2 节）：「等人处理后接着跑了 2 次（最近一次按记录跳过 5 步）」；没接着跑过是 undefined */
+export function routineResumeText(state: SessionRoutineState): string | undefined {
+  if (!state.resumes) return undefined
+  return `等人处理后接着跑了 ${state.resumes} 次${state.replayed !== undefined ? `（最近一次按记录跳过 ${state.replayed} 步）` : ""}`
 }
 
 // ---------- 输入和交回（从 JSON Schema 取字段名、说明） ----------

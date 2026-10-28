@@ -4,12 +4,14 @@
 // tasks.update 是整体替换：verifyModelId、浏览器的三项、桌面的两项（desktopIds、allowDesktopVision）、派活的三项（dispatch、dispatchFrom、cronSkipIfRunning）都要带上，不然会被清空。
 // 运行结果（docs/dev/run-outcome.md 5.4 节）：「完成」一组放三方验收模型和复核模型。复核一定做（2026-10-20 去掉了开关），复核模型必填，
 // 新任务和以前没选的旧任务都先填上默认复核模型；选了「交给三方验收」的规则时，验收通过的不再复核。
+// 固化（docs/dev/solidify.md 17.1）：「用哪些」里放「办成后自动固化」（跟默认 / 开 / 关，存 autoSolidify：null / true / false）和「固化时不试跑」（routineSkipTest），说明在 label 的「?」里。
 // 派活（docs/dev/dispatch.md 9.1 节）：「被派活」一组（参数、名额、谁能派活给它，第二期加自动重试，组件在 dispatch-fields.tsx，导入向导也用）；定时那里「上一次还没跑完就跳过」；选了内置工具「派活」时写能派给谁。
 import * as React from "react"
 import { Controller, useFieldArray, useForm, useWatch, type Control, type UseFormRegister } from "react-hook-form"
 import { PlayIcon, PlusIcon, XIcon } from "lucide-react"
 import {
   alwaysOnToolIds,
+  autoSolidifyDefault,
   BROWSER_TOOL_ID,
   can,
   checkpointKindLabel,
@@ -35,6 +37,7 @@ import { Input } from "@/components/ui/input"
 import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from "@/components/ui/input-group"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Spinner } from "@/components/ui/spinner"
+import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 
 import { useBrowsersQuery, useDesktopsQuery, useMemoriesQuery, useModels, useRulesQuery, useSkillsQuery, useStaffQuery, useTasksQuery, useToolName, useToolsQuery } from "@/lib/data"
@@ -234,6 +237,59 @@ export function DesktopFields({ control }: { control: Control<TaskInput> }) {
   )
 }
 
+/** 「办成后自动固化」三种：跟默认（null）/ 开（true）/ 关（false）。Select 的值只能是字符串，这里来回换 */
+const AUTO_SOLIDIFY_VALUES = { default: null, on: true, off: false } as const
+type AutoSolidifyChoice = keyof typeof AUTO_SOLIDIFY_VALUES
+const autoSolidifyChoice = (value: boolean | null | undefined): AutoSolidifyChoice => (value === true ? "on" : value === false ? "off" : "default")
+
+/** 固化的两项设置（docs/dev/solidify.md 17.1）：办成后自动固化、固化时不试跑。autoDefault = 没单独设时按什么（被派的、定时的开） */
+function SolidifyFields({ control, autoDefault }: { control: Control<TaskInput>; autoDefault: boolean }) {
+  const items = [
+    { value: "default", label: `跟默认（${autoDefault ? "开" : "关"}）` },
+    { value: "on", label: "开" },
+    { value: "off", label: "关" },
+  ]
+  return (
+    <>
+      <Controller
+        control={control}
+        name="autoSolidify"
+        render={({ field }) => (
+          <Field>
+            <FieldLabel htmlFor="task-autoSolidify" className="flex items-center gap-1">
+              办成后自动固化
+              <HelpTip>
+                普通运行办成后，系统自动把这次的做法写成固化流程的新一版：还没有固化流程时写第一版；脚本跑不通、agent 接着办成时修一版。写好照样要人审核才启用。
+                「跟默认」：被派的任务、定时任务开，别的关（这个任务现在是{autoDefault ? "开" : "关"}）。
+              </HelpTip>
+            </FieldLabel>
+            <Select items={items} value={autoSolidifyChoice(field.value)} onValueChange={(value) => value && field.onChange(AUTO_SOLIDIFY_VALUES[value as AutoSolidifyChoice])}>
+              <SelectTrigger id="task-autoSolidify" className="w-full"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {items.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </Field>
+        )}
+      />
+      <Controller
+        control={control}
+        name="routineSkipTest"
+        render={({ field }) => (
+          <Field orientation="horizontal" className="self-end">
+            <Switch id="task-routineSkipTest" checked={!!field.value} onCheckedChange={(on) => field.onChange(Boolean(on))} />
+            {/* 「?」放在 label 里：点 label 里的按钮不会切换开关（HTML 的 label 不转发交互元素上的点击） */}
+            <FieldLabel htmlFor="task-routineSkipTest" className="items-center gap-1">
+              固化时不试跑
+              <HelpTip>会自动存草稿的网站打开，固化时不试跑、直接交给你审核（写好、程序检查过了就交）。自动固化照它；手动「固化成流程」时「不试跑」默认勾上。</HelpTip>
+            </FieldLabel>
+          </Field>
+        )}
+      />
+    </>
+  )
+}
+
 const DEFAULT_CRON = "0 9 * * *"
 
 export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpenChange: (open: boolean) => void; task?: TaskDef }) {
@@ -269,12 +325,16 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
           dispatch: task.dispatch ? { ...task.dispatch, ...retriesOf(task.dispatch) } : null,
           dispatchFrom: task.dispatchFrom,
           cronSkipIfRunning: task.cronSkipIfRunning,
+          // 后端还没带这两项时（undefined）按没单独设、要试跑
+          autoSolidify: task.autoSolidify ?? null,
+          routineSkipTest: task.routineSkipTest ?? false,
         }
       : {
           title: "", goal: "", steps: [{ text: "", wait: false }], modelId: defaults.run, ownerId: user.id, schedule: null, enabled: true,
           memoryIds: [], skillIds: [], toolIds: [], ruleIds: [], browserProfileIds: [], allowedDomains: [], allowBrowserEvaluate: false, allowBrowserVision: false, desktopIds: [], allowDesktopVision: false, verifyModelId: "",
           reviewModelId: defaults.review ?? "",
           dispatch: null, dispatchFrom: [], cronSkipIfRunning: true,
+          autoSolidify: null, routineSkipTest: false,
         },
   })
   // 网址白名单在表单里是一段文字（每行一个），提交时拆成数组
@@ -448,6 +508,7 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
                     }} />
                   )}
                   {usesDesktop && <DesktopFields control={form.control} />}
+                  <SolidifyFields control={form.control} autoDefault={autoSolidifyDefault({ dispatch, schedule })} />
                   <Field data-invalid={!!modelClash} className="sm:col-span-2">
                     <FieldLabel htmlFor="task-model">模型</FieldLabel>
                     <Controller
