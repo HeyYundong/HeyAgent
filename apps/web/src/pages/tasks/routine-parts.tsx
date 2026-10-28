@@ -294,7 +294,7 @@ export function HttpSuggestions({ suggestions }: { suggestions: HttpToolSuggesti
                 {suggestion.requestSeqs.length > 0 && <span className="text-muted-foreground"> · 依据 network/requests.jsonl 第 {suggestion.requestSeqs.join("、")} 个请求</span>}
               </span>
             </ItemContent>
-            <ItemFooter className="flex-col items-stretch">
+            <ItemFooter className="min-w-0 flex-col items-stretch">
               <Folded label="看配置">
                 <CodeView code={JSON.stringify(suggestion.http, null, 2)} language="json" title="HTTP 工具配置" />
               </Folded>
