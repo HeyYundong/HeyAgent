@@ -119,6 +119,8 @@ export async function listTasks(db: Db, ids?: string[]): Promise<TaskDef[]> {
       cronSkipIfRunning: row.cronSkipIfRunning,
       autoSolidify: row.autoSolidify,
       routineSkipTest: row.routineSkipTest,
+      autoMemory: row.autoMemory,
+      autoMemoryLimit: row.autoMemoryLimit,
     })
   )
 }

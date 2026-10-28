@@ -174,6 +174,8 @@ const taskInputOf = (task: TaskDef): TaskInput => ({
   cronSkipIfRunning: task.cronSkipIfRunning ?? true,
   autoSolidify: task.autoSolidify ?? null,
   routineSkipTest: task.routineSkipTest ?? false,
+  autoMemory: task.autoMemory,
+  autoMemoryLimit: task.autoMemoryLimit,
 })
 
 async function loadTodoRow(ctx: ToolCtx, id: string) {
@@ -321,6 +323,8 @@ const TASK_LABELS: Partial<Record<keyof TaskInput, string>> = {
   cronSkipIfRunning: "上一次没跑完就跳过这次",
   autoSolidify: "办成后自动固化",
   routineSkipTest: "固化时不试跑",
+  autoMemory: "自动挑选记忆",
+  autoMemoryLimit: "自动挑的记忆最多几条",
 }
 
 function taskFormatter(names: Names) {
@@ -358,6 +362,7 @@ function taskFormatter(names: Names) {
       case "allowDesktopVision":
       case "cronSkipIfRunning":
       case "routineSkipTest":
+      case "autoMemory":
         return yesNo(Boolean(value))
       case "autoSolidify":
         return value === null || value === undefined ? "按默认（被派的、定时的任务开，别的关）" : yesNo(Boolean(value))

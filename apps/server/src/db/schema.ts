@@ -24,6 +24,7 @@ import {
 import {
   accountStatusSchema,
   GALLERY_EMBED_DIMENSIONS,
+  MEMORY_EMBED_DIMENSIONS,
   checkpointKindSchema,
   compareConfidenceSchema,
   compareStatusSchema,
@@ -557,6 +558,13 @@ export const tasks = pgTable(
     autoSolidify: boolean("auto_solidify"),
     /** 固化时不试跑（会自动存草稿的网站）：自动固化照它，手动固化的弹窗默认勾上 */
     routineSkipTest: boolean("routine_skip_test").notNull().default(false),
+    /**
+     * 自动挑选记忆（docs/dev/memory-retrieval.md 第 4 节）：运行开始时按这次要办的事从记忆库里再挑几条。
+     * 库里默认关（迁移前建的任务保持原样）；新建任务时 shared 的 taskInputSchema 默认开，总是显式写入
+     */
+    autoMemory: boolean("auto_memory").notNull().default(false),
+    /** 自动挑的最多几条（1～20） */
+    autoMemoryLimit: integer("auto_memory_limit").notNull().default(5),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -1029,6 +1037,9 @@ export const memories = pgTable(
     /** 最近一次被读到（运行开始时读入），M1 由引擎写 */
     lastUsedAt: ts("last_used_at"),
     lastUsedSessionId: text("last_used_session_id").references(() => sessions.id, { onDelete: "set null" }),
+    /** 最近一次算向量失败：原因和时间（后台隔 10 分钟再试；算成了清空）。改这两列会推 memories，记忆页的「算没算好」跟着刷新 */
+    embedError: text("embed_error"),
+    embedTriedAt: ts("embed_tried_at"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -1038,6 +1049,25 @@ export const memories = pgTable(
       sql`(${t.sourceKind} = 'human' and ${t.sourceById} is not null) or (${t.sourceKind} = 'agent' and ${t.sourceTaskId} is not null and ${t.sourceEvidence} is not null)`
     ),
   ]
+)
+
+/**
+ * 记忆的向量（docs/dev/memory-retrieval.md 第 2 节）：每个 embedding 模型一行，换模型时新旧并存，新模型全部算完才删旧的。
+ * content_hash = md5(适用于 + 换行 + 内容)（shared 的 memoryEmbedText）：和记忆现在的内容对不上 = 内容改过、要重算，挑选时不用它。
+ * 不建 HNSW：记忆最多几千条，精确算一遍只要几毫秒，还不会因为带着筛选条件漏掉结果。不推实时（行里有 1024 维向量，NOTIFY 太大）
+ */
+export const memoryEmbeddings = pgTable(
+  "memory_embeddings",
+  {
+    memoryId: text("memory_id")
+      .notNull()
+      .references(() => memories.id, { onDelete: "cascade" }),
+    modelId: text("model_id").notNull(),
+    contentHash: text("content_hash").notNull(),
+    embedding: vector("embedding", { dimensions: MEMORY_EMBED_DIMENSIONS }).notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.memoryId, t.modelId] }), index("memory_embeddings_model_id_idx").on(t.modelId)]
 )
 
 export const skills = pgTable("skills", {

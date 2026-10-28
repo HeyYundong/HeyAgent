@@ -9,6 +9,7 @@ import { canonicalLocale, canonicalTimeZone } from "./browsers.js"
 import { taskDispatchSchema } from "./dispatch.js"
 import { settingsAssistantInputSchema } from "./assistant.js"
 import { scanTemplate } from "./http-template.js"
+import { AUTO_MEMORY_DEFAULT, AUTO_MEMORY_LIMIT_DEFAULT, AUTO_MEMORY_LIMIT_MAX } from "./memory-retrieval.js"
 import { httpMethodSchema, httpParamSchema, httpSpecSchema, modelProviderKindSchema, riskSchema, skillStatusSchema, taskStepSchema, type ModelProviderKind } from "./schemas.js"
 import { TIME_ZONE } from "./time.js"
 
@@ -159,6 +160,15 @@ export const taskInputSchema = z.object({
   autoSolidify: z.boolean().nullable().default(null),
   /** 固化时不试跑（会自动存草稿的网站） */
   routineSkipTest: z.boolean().default(false),
+  /** 自动挑选记忆（docs/dev/memory-retrieval.md 第 4 节）：不传 = 开。改任务时要把原来的值带上，不然会变回默认 */
+  autoMemory: z.boolean().default(AUTO_MEMORY_DEFAULT),
+  /** 自动挑的最多几条 */
+  autoMemoryLimit: z
+    .number()
+    .int()
+    .min(1, "至少 1 条")
+    .max(AUTO_MEMORY_LIMIT_MAX, `最多 ${AUTO_MEMORY_LIMIT_MAX} 条`)
+    .default(AUTO_MEMORY_LIMIT_DEFAULT),
 })
 export type TaskInput = z.input<typeof taskInputSchema>
 export const taskUpdateSchema = taskInputSchema.extend({ id: z.string().min(1) })
