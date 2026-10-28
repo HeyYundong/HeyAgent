@@ -346,7 +346,7 @@ describe("重放日志（假网关）", () => {
       ["browser.click", 5],
       ["run.finish", 6],
     ])
-    expect(resumed.state).toMatchObject({ steps: 6, replayed: 6, logs: ["开始"] })
+    expect(resumed.state).toMatchObject({ steps: 6, replayed: 4, logs: ["开始"] })
     // 用的是上次记下的时间（wait.tool 的参数里也带着它，hash 才对得上）
     expect(resumed.bridge.finish?.summary).toBe(`found：已发货 @${recordedNow}`)
     expect(resumed.bridge.stopped).toBeUndefined()

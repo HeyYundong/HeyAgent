@@ -196,7 +196,7 @@ export const sessionRoutineStateSchema = z.object({
   agentAfter: z.boolean().optional(),
   /** 停下等人后接着跑了几次（第 17.2 节） */
   resumes: z.number().int().optional(),
-  /** 最近一次接着跑时，按日志跳过了几个请求 */
+  /** 最近一次接着跑时，按日志跳过了几步（工具调用；ha.commit、ha.log、ha.now 这些标记不算） */
   replayed: z.number().int().optional(),
   /** 固化试跑停下、跑完时截的图（试跑报告「停下时的截图」用）；普通运行没有 */
   screenshotFileId: z.string().optional(),

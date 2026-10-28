@@ -373,14 +373,13 @@ export class ToolBridge {
     if (this.replayEnded) return
     this.replayEnded = true
     if (!this.options.journal?.rows.length) return
+    // 「步」是工具调用（和过程里的 routineStep、界面上的 replayed 对得上）；ha.commit、ha.log、ha.now 这些标记也按记录处理，不算步
     const steps = this.state.steps
-    const replayed = this.state.replayed ?? 0
     await this.options.save(this.state)
     await this.options.event({
       kind: "plan",
-      // 「步」是工具调用（和过程里的 routineStep 对得上）；ha.log、ha.now 这些也按记录跳过，算在请求数里
-      title: steps ? `脚本接着跑：前 ${steps} 步按记录跳过，从第 ${steps + 1} 步接着做` : `脚本接着跑：从第 1 步接着做（前面 ${replayed} 个请求按记录跳过）`,
-      detail: `按重放日志跳过了 ${replayed} 个请求（不真做、不再记过程）。`,
+      title: steps ? `脚本接着跑：前 ${steps} 步按记录跳过，从第 ${steps + 1} 步接着做` : "脚本接着跑：从第 1 步接着做",
+      detail: `按重放日志跳过了 ${steps} 步（不真做、不再记过程）；中间的提交标记、记录、时间照上次的记录。`,
     })
   }
 
@@ -397,7 +396,6 @@ export class ToolBridge {
     if (prior) {
       const mismatched = await this.mismatch(prior, op, null, hash, { step: this.state.steps })
       if (mismatched) return mismatched
-      this.state.replayed = (this.state.replayed ?? 0) + 1
       const reply = await apply(true)
       return (prior.reply as Reply | null) ?? reply
     }

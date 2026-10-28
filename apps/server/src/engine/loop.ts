@@ -201,12 +201,9 @@ async function failSession(
     return { settled }
   })
   if (!failed) return
-  // 跑过固化流程的运行：试用、转正式、连续跑不通停用（routine/runtime/stats.ts）
-  await afterRunSettled(db, session.id)
-  // 固化试跑不通知负责人（固化没成功时由固化那边通知）
-  if (session.kind === "routine_test") return
-  if (failed.settled?.kind === "retry") return
-  if (snapshot) {
+  // 先通知负责人，再记固化流程的统计、看要不要自动固化（afterRunSettled）：失败的消息不该等这些。
+  // 固化试跑不通知负责人（固化没成功时由固化那边通知）；还会自动重试的这次不通知
+  if (session.kind !== "routine_test" && failed.settled?.kind !== "retry" && snapshot) {
     const retried = failed.settled?.kind === "failed" ? failed.settled.autoRetries : 0
     await notifyUsers(db, {
       userIds: [snapshot.task.ownerId],
@@ -217,6 +214,8 @@ async function failSession(
       sessionId: session.id,
     })
   }
+  // 跑过固化流程的运行：试用、转正式、连续跑不通停用；办成的看要不要自动固化（routine/after-run.ts）
+  await afterRunSettled(db, session.id)
 }
 
 /** 只回文字、没调 run.finish 时提醒一次的话（3.2） */

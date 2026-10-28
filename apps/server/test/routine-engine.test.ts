@@ -287,7 +287,7 @@ describe("接着跑（重放日志）", () => {
     const row = await waitOutcome(sessionId)
     expect(row.outcome).toBe("achieved")
     expect(script.prompts).toHaveLength(0)
-    expect(row.routine).toMatchObject({ state: "finished", steps: 3, resumes: 1, replayed: 2, logs: ["开始"] })
+    expect(row.routine).toMatchObject({ state: "finished", steps: 3, resumes: 1, replayed: 0, logs: ["开始"] })
     // 用的是记下的时间
     expect(row.routine?.stoppedAt).toBeUndefined()
     const events = await eventsOf(ctx.db, sessionId)
@@ -297,7 +297,7 @@ describe("接着跑（重放日志）", () => {
       ["file.read", 2],
       ["run.finish", 3],
     ])
-    expect(events.some((event) => event.title.startsWith("脚本接着跑：从第 1 步接着做（前面 2 个请求按记录跳过）"))).toBe(true)
+    expect(events.some((event) => event.title === "脚本接着跑：从第 1 步接着做")).toBe(true)
     // 跳过的 ha.log 不再记过程
     expect(events.some((event) => event.title === "流程记录：开始")).toBe(false)
     // 日志补上了这次的结果
@@ -335,7 +335,7 @@ describe("接着跑（重放日志）", () => {
     const row = await waitOutcome(sessionId)
     expect(row.outcome).toBe("achieved")
     expect(script.prompts).toHaveLength(1)
-    expect(row.routine).toMatchObject({ state: "fell_back", steps: 2, resumes: 1, replayed: 2, stoppedAt: { step: 2, kind: "interrupted", tool: "file.save" }, commits: [{ step: 1, label: "保存第 2 个" }] })
+    expect(row.routine).toMatchObject({ state: "fell_back", steps: 2, resumes: 1, replayed: 1, stoppedAt: { step: 2, kind: "interrupted", tool: "file.save" }, commits: [{ step: 1, label: "保存第 2 个" }] })
     const prompt = firstPromptText(script)
     expect(prompt).toContain("跑到第 2 步时 worker 重启了，脚本中断，不确定第 2 步做没做完（过了提交点「保存第 2 个」还没核对")
     expect(prompt).toContain("第 2 步「保存第 2 个」已经做了，可能已经生效")
@@ -405,7 +405,7 @@ describe("接着跑（重放日志）", () => {
     const row = await waitOutcome(sessionId)
     expect(row.outcome).toBe("achieved")
     expect(script.prompts).toHaveLength(0)
-    expect(row.routine).toMatchObject({ state: "finished", steps: 3, resumes: 1, replayed: 3, logs: ["准备付款", "没有上次的记录"] })
+    expect(row.routine).toMatchObject({ state: "finished", steps: 3, resumes: 1, replayed: 1, logs: ["准备付款", "没有上次的记录"] })
     expect(await ctx.db.select().from(t.files).where(and(eq(t.files.sessionId, sessionId), eq(t.files.path, "out/付款.txt")))).toHaveLength(1)
     expect(await scriptToolEvents(sessionId)).toEqual([
       ["file.read", 1],
@@ -438,9 +438,12 @@ describe("接着跑（重放日志）", () => {
       { turns: [step(finishWith("登录不了，记没办成", "not_achieved", "账号被锁了"))] }
     )
     const sessionId = await runNow(taskId)
-    await waitFor(async () => (await sessionRow(ctx.db, sessionId))?.routine?.state === "suspended", { what: "等人处理" })
-    const [item] = await ctx.db.select().from(t.humanItems).where(and(eq(t.humanItems.sessionId, sessionId), eq(t.humanItems.status, "open")))
-    await mutate(ctx.app, "engine.resolveHumanItem", wang, { itemId: item!.id, how: "reject", note: "账号被锁了" })
+    // 脚本状态先存成 suspended，要人办的事和挂起在后面的事务里才写：等那件事出来
+    const item = await waitFor(
+      async () => (await ctx.db.select().from(t.humanItems).where(and(eq(t.humanItems.sessionId, sessionId), eq(t.humanItems.status, "open"))))[0],
+      { what: "要人办的事" }
+    )
+    await mutate(ctx.app, "engine.resolveHumanItem", wang, { itemId: item.id, how: "reject", note: "账号被锁了" })
     const row = await waitOutcome(sessionId)
     expect(row.outcome).toBe("not_achieved")
     expect(script.prompts).toHaveLength(1)
