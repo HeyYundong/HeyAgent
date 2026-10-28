@@ -28,6 +28,7 @@ export const toolSourceLabel: Record<ToolSource, string> = {
   builtin: "内置",
   mcp: "MCP",
   http: "HTTP 接口",
+  routine: "流程",
 }
 
 export const riskLabel: Record<Risk, string> = {

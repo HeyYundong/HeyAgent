@@ -268,7 +268,9 @@ export interface DeriveSubSnapshotInput {
  *   （父的 autoMemory 是 pending 时不带：子运行不挑，只用手选的）；
  * - 工具去掉 SUBAGENT_DROPPED_TOOL_IDS，加 work.report；带了文件却没有 file.read 的加上 file.read、file.list；
  * - 规则去掉 SUBAGENT_DROPPED_RULE_TRIGGERS；
- * - 没有派活、派活目标、固化流程、附加说明；source = sub。
+ * - 库流程（snapshot.libraryRoutines，docs/dev/routine-library.md 6.2）和它们的工具一起抄（流程库设计 16.2 第 15 条）；
+ *   要用子 agent 没有的工具（SUBAGENT_DROPPED_TOOL_IDS）的，和调了它们的（传递），标 unavailable（subLibraryRoutines）；
+ * - 没有派活、派活目标、这个任务自己的固化流程（routine）、附加说明；source = sub。
  */
 export function deriveSubSnapshot(parent: SessionSnapshot, input: DeriveSubSnapshotInput): SessionSnapshot {
   const tools = parent.tools.filter((tool) => !SUBAGENT_DROPPED_TOOL_IDS.includes(tool.id))
@@ -284,6 +286,7 @@ export function deriveSubSnapshot(parent: SessionSnapshot, input: DeriveSubSnaps
     return typeof trigger?.type === "string" ? trigger.type : undefined
   }
   const autoMemory = parent.autoMemory?.status === "pending" ? undefined : parent.autoMemory
+  const libraryRoutines = parent.libraryRoutines && subLibraryRoutines(parent.libraryRoutines)
   const {
     dispatch: _dispatch,
     dispatchTargets: _dispatchTargets,
@@ -292,6 +295,7 @@ export function deriveSubSnapshot(parent: SessionSnapshot, input: DeriveSubSnaps
     subagentModelId,
     autoMemory: _autoMemory,
     sub: _sub,
+    libraryRoutines: _libraryRoutines,
     ...rest
   } = parent
   return {
@@ -304,6 +308,7 @@ export function deriveSubSnapshot(parent: SessionSnapshot, input: DeriveSubSnaps
     attachments,
     source: "sub",
     ...(autoMemory ? { autoMemory } : {}),
+    ...(libraryRoutines ? { libraryRoutines } : {}),
     sub: {
       parentSessionId: input.parentSessionId,
       n: input.n,
@@ -314,4 +319,28 @@ export function deriveSubSnapshot(parent: SessionSnapshot, input: DeriveSubSnaps
       fileIds: input.files.map((file) => file.id),
     },
   }
+}
+
+/**
+ * 子快照里的库流程：从父快照抄。requires.toolIds 里有子 agent 没有的工具（SUBAGENT_DROPPED_TOOL_IDS）的标 unavailable，
+ * 调了用不了的库流程的（requires.routines，按短名，传递）也标；原来就用不了的不动
+ */
+export function subLibraryRoutines(routines: NonNullable<SessionSnapshot["libraryRoutines"]>): NonNullable<SessionSnapshot["libraryRoutines"]> {
+  const next = routines.map((routine) => {
+    if (routine.unavailable) return routine
+    const dropped = routine.requires.toolIds.filter((id) => SUBAGENT_DROPPED_TOOL_IDS.includes(id))
+    return dropped.length ? { ...routine, unavailable: `子 agent 不能用要的工具「${dropped.join("」「")}」` } : routine
+  })
+  for (let changed = true; changed; ) {
+    changed = false
+    for (const [index, routine] of next.entries()) {
+      if (routine.unavailable) continue
+      const broken = next.find((other) => other.unavailable && routine.requires.routines.includes(other.slug))
+      if (broken) {
+        next[index] = { ...routine, unavailable: `它调的「${broken.name}」用不了：${broken.unavailable}` }
+        changed = true
+      }
+    }
+  }
+  return next
 }

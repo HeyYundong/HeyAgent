@@ -180,7 +180,8 @@ export type BrowserProfile = z.infer<typeof browserProfileSchema>
 
 // ---------- 工具 ----------
 
-export const toolSourceSchema = z.enum(["builtin", "mcp", "http"])
+/** routine：流程库里的流程（docs/dev/routine-library.md 4.1），id = routine.<短名>，只由流程库写，工具页不列 */
+export const toolSourceSchema = z.enum(["builtin", "mcp", "http", "routine"])
 export type ToolSource = z.infer<typeof toolSourceSchema>
 
 export const riskSchema = z.enum(["read", "write", "external", "money"])
@@ -245,6 +246,8 @@ export const toolSchema = z.object({
   source: toolSourceSchema,
   serverId: z.string().optional(),
   http: httpSpecSchema.optional(),
+  /** source = routine：库流程的编号 RT-<n> */
+  routineId: z.string().optional(),
   risk: riskSchema,
   /** 每个任务都自带（勾检查点、挂起等待、问人） */
   alwaysOn: z.boolean().optional(),

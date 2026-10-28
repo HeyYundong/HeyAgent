@@ -172,6 +172,7 @@
 | 步骤、检查点 | **空** | 步骤和检查点是父任务的；子 agent 只看子目标。检查点由父 agent 勾 |
 | 执行模型 | 任务里另选的「子 agent 用的模型」，没选就和父一样（第 16 节问题 6） | 「高级模型拆、便宜模型做」 |
 | 记忆、任务记忆、技能 | 同父 | 子 agent 做的就是这个任务的一部分 |
+| 库流程（`libraryRoutines`） | **一起抄**（流程库设计 `routine-library.md` 16.2 第 15 条），选了的库流程工具留在 `tools` 里。要用子 agent 没有的工具（`SUBAGENT_DROPPED_TOOL_IDS`，例如脚本里 `ha.tool("checkpoint.mark")`）的库流程标 `unavailable`「子 agent 不能用要的工具「…」」，调了它的（`requires.routines`，传递）标「它调的「…」用不了：…」；原来就用不了的不动（shared 的 `subLibraryRoutines`） | 子 agent 做的是这个任务的一部分，能用同样的流程；只是少了几个工具 |
 | 自动挑选记忆 | **沿用父挑好的，不重挑**：`memories`（含自动挑的、带相似度的）和 `autoMemory`（`done` / `skipped` / `failed`）原样抄；父的 `autoMemory` 还是 `pending`（不该出现：父在跑就已经挑过）时子快照不带 `autoMemory`，子运行只用手选的。子运行不改记忆的 `lastUsedAt`（开父运行时已经记过） | 兄弟之间系统提示一样（前缀缓存）；省一次 embedding；父挑的依据是整个任务，子目标只是其中一件 |
 | 工具 | 同父，去掉 `subagent.*`、`work.dispatch`、`work.list`、`session.wait`、`checkpoint.mark`；加上 `work.report`（交结构化结果） | 不能再拆、不能派活（派活归父）；要等几小时几天的事不归子 agent 管（报没办成写清在等什么，父决定） |
 | 规则 | 同父，去掉「agent 说做完了」（`agent_done`，含三方验收）和「花费超过 X」（`cost_over`） | 验收是对整个任务的；子 agent 另有上限，父按合计算 |
@@ -406,7 +407,7 @@
 
 ## 10. 数据和接口
 
-### 10.1 迁移（`apps/server/drizzle/0036_sub_agents.sql`，已生成；和「流程库」谁后合并谁改成 0037）
+### 10.1 迁移（`apps/server/drizzle/0037_sub_agents.sql`，已生成；排在流程库的 0036_routine_library 后面）
 
 ```sql
 ALTER TYPE "public"."session_kind" ADD VALUE 'sub';
@@ -558,7 +559,7 @@ ALTER TABLE "tasks" ADD COLUMN "subagent_model_id" text;
 
 ### 14.1 监工先做（骨架，已完成 2026-10-28）
 
-约定写在本文第 17 节（没有另开 `sub-agents-p1.md`）。shared 的类型和纯函数、迁移 0036、`db/schema.ts`、三个工具的定义和桩、`engine/subagents/` 空模块、`run-ended.ts`、队列、设置组的读写、任务的 `subagentModelId`、`sessions.subagents` 查询都已经在分支上，四项检查都过。
+约定写在本文第 17 节（没有另开 `sub-agents-p1.md`）。shared 的类型和纯函数、迁移 0037、`db/schema.ts`、三个工具的定义和桩、`engine/subagents/` 空模块、`run-ended.ts`、队列、设置组的读写、任务的 `subagentModelId`、`sessions.subagents` 查询都已经在分支上，四项检查都过。
 
 ### 14.2 后端（1 个开发者，约 3.5 天）
 
@@ -644,9 +645,9 @@ ALTER TABLE "tasks" ADD COLUMN "subagent_model_id" text;
 
 | 位置 | 内容 |
 |---|---|
-| `packages/shared/src/subagents.ts`（新）、`test/subagents.test.ts`（新） | 10.2 节列的全部；`deriveSubSnapshot` 是实现好的纯函数（5.1 那张表），测试 16 个：去掉 / 加上的工具、规则、模型、记忆沿用、`allowFetch` 原样、附件只读合并、事件名、名额判断、编号、工具输入的上限、能转成 JSON Schema |
+| `packages/shared/src/subagents.ts`（新）、`test/subagents.test.ts`（新） | 10.2 节列的全部；`deriveSubSnapshot` 是实现好的纯函数（5.1 那张表），测试 17 个：去掉 / 加上的工具、规则、模型、记忆沿用、库流程一起抄、`allowFetch` 原样、附件只读合并、事件名、名额判断、编号、工具输入的上限、能转成 JSON Schema |
 | `packages/shared/src/engine.ts`、`routine.ts`、`ids.ts`、`config.ts`、`schemas.ts`、`labels.ts`、`index.ts` | 10.2 节 |
-| `apps/server/src/db/schema.ts` + `drizzle/0036_sub_agents.sql` | `session_kind` 加 `sub`、`sessions.sub_result`、`tasks.subagent_model_id` |
+| `apps/server/src/db/schema.ts` + `drizzle/0037_sub_agents.sql` | `session_kind` 加 `sub`、`sessions.sub_result`、`tasks.subagent_model_id` |
 | `engine/tools/builtin-defs.ts` | 三个工具的中文名、说明；`subagent.start` 能在任务里选（启动时同步进 `tools` 表），另两个 `implied` |
 | `engine/tools/builtin.ts` | 三个处理函数转给 `subagents/agent-tools.ts`，现在回「拆给子 agent 还没做好（…），这次先自己做」（算工具出错） |
 | `engine/subagents/`（新） | `agent-tools.ts` `start.ts` `pump.ts` `notify.ts` `settle.ts` `results.ts` `sweep.ts` `view.ts`：签名和注释；`signal.ts` 已实现；`not-ready.ts` 是桩用的，做完删掉 |
@@ -683,3 +684,4 @@ ALTER TABLE "tasks" ADD COLUMN "subagent_model_id" text;
 | 12 | `NOT_FOR_AGENT_SCRIPTS` 挡 `subagent.*` | 那张表只管 `code.run` 的脚本；固化脚本同样不能调，改成所有模式都挡（已做） | 10.3 |
 | 13 | 写约定另开 `sub-agents-p1.md` | 写在本文第 17 节 | 14.1 |
 | 14 | 第 12 节第 2 条要做 | 派活第三期已经做了 | 第 12 节、10.3 |
+| 15 | 设计在流程库之前写的，没提库流程 | 子快照一起抄 `libraryRoutines`，子 agent 没有的工具要用到的标用不了（`subLibraryRoutines`，已实现、有测试）；迁移排在流程库 0036 后面，改成 0037 | 5.1、10.1、第 17 节 |

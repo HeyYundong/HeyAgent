@@ -1,5 +1,5 @@
 {
-  "id": "66fd961b-b128-41e7-8b3a-228a56c7225d",
+  "id": "37201733-5534-40b6-9baf-d58ebb5df4d7",
   "prevId": "26935e01-c0f5-4638-b036-05bafac8406e",
   "version": "7",
   "dialect": "postgresql",
@@ -4744,6 +4744,224 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.routine_calls": {
+      "name": "routine_calls",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigint",
+          "primaryKey": true,
+          "notNull": true,
+          "identity": {
+            "type": "always",
+            "name": "routine_calls_id_seq",
+            "schema": "public",
+            "increment": "1",
+            "startWith": "1",
+            "minValue": "1",
+            "maxValue": "9223372036854775807",
+            "cache": "1",
+            "cycle": false
+          }
+        },
+        "routine_id": {
+          "name": "routine_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "call_id": {
+          "name": "call_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "via": {
+          "name": "via",
+          "type": "routine_call_via",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "depth": {
+          "name": "depth",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "result": {
+          "name": "result",
+          "type": "routine_call_result",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "stop_kind": {
+          "name": "stop_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "stop_step": {
+          "name": "stop_step",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "stop_reason": {
+          "name": "stop_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "steps": {
+          "name": "steps",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "ms": {
+          "name": "ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "at": {
+          "name": "at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "routine_calls_routine_at_idx": {
+          "name": "routine_calls_routine_at_idx",
+          "columns": [
+            {
+              "expression": "routine_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "routine_calls_session_idx": {
+          "name": "routine_calls_session_idx",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "routine_calls_task_idx": {
+          "name": "routine_calls_task_idx",
+          "columns": [
+            {
+              "expression": "task_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "routine_calls_routine_id_routines_id_fk": {
+          "name": "routine_calls_routine_id_routines_id_fk",
+          "tableFrom": "routine_calls",
+          "tableTo": "routines",
+          "columnsFrom": [
+            "routine_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "routine_calls_session_id_sessions_id_fk": {
+          "name": "routine_calls_session_id_sessions_id_fk",
+          "tableFrom": "routine_calls",
+          "tableTo": "sessions",
+          "columnsFrom": [
+            "session_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "routine_calls_task_id_tasks_id_fk": {
+          "name": "routine_calls_task_id_tasks_id_fk",
+          "tableFrom": "routine_calls",
+          "tableTo": "tasks",
+          "columnsFrom": [
+            "task_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.routine_journal": {
       "name": "routine_journal",
       "schema": "",
@@ -4829,6 +5047,276 @@
           ]
         }
       },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.routine_library": {
+      "name": "routine_library",
+      "schema": "",
+      "columns": {
+        "routine_id": {
+          "name": "routine_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "slug": {
+          "name": "slug",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "title": {
+          "name": "title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "summary": {
+          "name": "summary",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "routine_library_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'listed'"
+        },
+        "published_version": {
+          "name": "published_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "requires": {
+          "name": "requires",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "risk": {
+          "name": "risk",
+          "type": "risk",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fail_streak": {
+          "name": "fail_streak",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "paused_reason": {
+          "name": "paused_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "published_by_id": {
+          "name": "published_by_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "published_at": {
+          "name": "published_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "routine_library_routine_id_routines_id_fk": {
+          "name": "routine_library_routine_id_routines_id_fk",
+          "tableFrom": "routine_library",
+          "tableTo": "routines",
+          "columnsFrom": [
+            "routine_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "routine_library_published_by_id_users_id_fk": {
+          "name": "routine_library_published_by_id_users_id_fk",
+          "tableFrom": "routine_library",
+          "tableTo": "users",
+          "columnsFrom": [
+            "published_by_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "routine_library_slug_unique": {
+          "name": "routine_library_slug_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "slug"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.routine_library_versions": {
+      "name": "routine_library_versions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigint",
+          "primaryKey": true,
+          "notNull": true,
+          "identity": {
+            "type": "always",
+            "name": "routine_library_versions_id_seq",
+            "schema": "public",
+            "increment": "1",
+            "startWith": "1",
+            "minValue": "1",
+            "maxValue": "9223372036854775807",
+            "cache": "1",
+            "cycle": false
+          }
+        },
+        "routine_id": {
+          "name": "routine_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "published_by_id": {
+          "name": "published_by_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "published_at": {
+          "name": "published_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "requires": {
+          "name": "requires",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "risk": {
+          "name": "risk",
+          "type": "risk",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "compat": {
+          "name": "compat",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "task_count": {
+          "name": "task_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        }
+      },
+      "indexes": {
+        "routine_library_versions_routine_idx": {
+          "name": "routine_library_versions_routine_idx",
+          "columns": [
+            {
+              "expression": "routine_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "published_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "routine_library_versions_routine_id_routine_library_routine_id_fk": {
+          "name": "routine_library_versions_routine_id_routine_library_routine_id_fk",
+          "tableFrom": "routine_library_versions",
+          "tableTo": "routine_library",
+          "columnsFrom": [
+            "routine_id"
+          ],
+          "columnsTo": [
+            "routine_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "routine_library_versions_published_by_id_users_id_fk": {
+          "name": "routine_library_versions_published_by_id_users_id_fk",
+          "tableFrom": "routine_library_versions",
+          "tableTo": "users",
+          "columnsFrom": [
+            "published_by_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
@@ -5012,6 +5500,12 @@
         },
         "approved_at": {
           "name": "approved_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "proven_at": {
+          "name": "proven_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
@@ -6109,12 +6603,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'run'"
-        },
-        "sub_result": {
-          "name": "sub_result",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
         },
         "routine": {
           "name": "routine",
@@ -7404,12 +7892,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "subagent_model_id": {
-          "name": "subagent_model_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "dispatch": {
           "name": "dispatch",
           "type": "jsonb",
@@ -7577,6 +8059,12 @@
           "notNull": true,
           "default": false
         },
+        "routine_id": {
+          "name": "routine_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "position": {
           "name": "position",
           "type": "integer",
@@ -7599,7 +8087,23 @@
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "tools_routine_id_idx": {
+          "name": "tools_routine_id_idx",
+          "columns": [
+            {
+              "expression": "routine_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "tools_server_id_mcp_servers_id_fk": {
           "name": "tools_server_id_mcp_servers_id_fk",
@@ -7607,6 +8111,19 @@
           "tableTo": "mcp_servers",
           "columnsFrom": [
             "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "tools_routine_id_routines_id_fk": {
+          "name": "tools_routine_id_routines_id_fk",
+          "tableFrom": "tools",
+          "tableTo": "routines",
+          "columnsFrom": [
+            "routine_id"
           ],
           "columnsTo": [
             "id"
@@ -7622,6 +8139,10 @@
         "tools_source_check": {
           "name": "tools_source_check",
           "value": "(\"tools\".\"source\" <> 'mcp' or \"tools\".\"server_id\" is not null) and (\"tools\".\"source\" <> 'http' or \"tools\".\"http\" is not null)"
+        },
+        "tools_routine_check": {
+          "name": "tools_routine_check",
+          "value": "\"tools\".\"source\"::text <> 'routine' or \"tools\".\"routine_id\" is not null"
         }
       },
       "isRLSEnabled": false
@@ -8385,6 +8906,33 @@
         "money"
       ]
     },
+    "public.routine_call_result": {
+      "name": "routine_call_result",
+      "schema": "public",
+      "values": [
+        "achieved",
+        "not_achieved",
+        "bad_input",
+        "stopped"
+      ]
+    },
+    "public.routine_call_via": {
+      "name": "routine_call_via",
+      "schema": "public",
+      "values": [
+        "tool",
+        "script"
+      ]
+    },
+    "public.routine_library_status": {
+      "name": "routine_library_status",
+      "schema": "public",
+      "values": [
+        "listed",
+        "paused",
+        "withdrawn"
+      ]
+    },
     "public.routine_mode": {
       "name": "routine_mode",
       "schema": "public",
@@ -8483,8 +9031,7 @@
       "schema": "public",
       "values": [
         "run",
-        "routine_test",
-        "sub"
+        "routine_test"
       ]
     },
     "public.skill_status": {
@@ -8520,7 +9067,8 @@
       "values": [
         "builtin",
         "mcp",
-        "http"
+        "http",
+        "routine"
       ]
     },
     "public.trigger_kind": {

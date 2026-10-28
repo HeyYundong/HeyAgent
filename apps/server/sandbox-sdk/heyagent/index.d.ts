@@ -19,6 +19,11 @@
 // agent 用 code.run（tools: true，language: node）跑的脚本也用这份 SDK（docs/dev/solidify.md 18.1）：脚本是普通程序（顶层直接写 await，
 // 不用 export default），跑完就退出，console.log 打的东西在 code.run 的 stdout 里；ha.input 是空的；不能用 ha.finish（跑完由 agent 决定怎么收尾）；
 // 要人审批的那一步不做，脚本停在它前面（抛 RoutineStop），agent 单独调用它；遇到验证码 / 登录页也停，运行挂起等人处理。
+//
+// 流程库（docs/dev/routine-library.md 5.6）：ha.routine("短名", 输入) 调库里的流程（任务要选了它）。库流程的代码在同一个沙箱、
+// 同一个工具桥里跑，里面的每一步照常过规则、审批、挂起，记进同一份重放日志；它的 ha.finish / ha.work.report 只收进返回值，
+// ha.fail 变成抛给你的 RoutineFailed（可以接住），ha.checkpoint.mark 不做。最多两层：库流程里还能调一层库流程，再往下不行。
+// 不能用 ha.tool("routine.xxx")，要用 ha.routine。
 
 /** 定位：Playwright 写法或选择器字符串（见文件开头） */
 export type Target = string
@@ -149,6 +154,22 @@ export interface FetchResult {
   text?: string
 }
 
+export interface RoutineResult {
+  /** 短名 */
+  routine: string
+  /** 库里的名字 */
+  name: string
+  /** 跑的是第几版（发布的那一版，开始运行时定下） */
+  version: number
+  /** 库流程报的结果：achieved 办成；not_achieved 没办成（例如查不到），不算出错，看 reason */
+  outcome: "achieved" | "not_achieved"
+  summary: string
+  evidence?: string
+  reason?: string
+  /** 库流程里 work.report 交回的数据（字段照库流程的「交回」） */
+  data: Record<string, string | number | boolean>
+}
+
 export interface ToolResult {
   /** 工具返回的文字 */
   text: string
@@ -165,11 +186,19 @@ export declare class Denied extends Error {
 export declare class RoutineStop extends Error {
   name: "RoutineStop"
 }
+/** 库流程主动停了（它调了 ha.fail）：input = 你给的输入有问题；page = 页面和它预期的不一样。可以接住，换个办法接着做 */
+export declare class RoutineFailed extends Error {
+  name: "RoutineFailed"
+  kind: "input" | "page"
+  /** 哪个库流程（短名） */
+  routine: string
+}
 
 export interface Heyagent {
   /**
    * 这次的输入（跑之前按 inputSchema 校验过）：派活参数原样放（例如 input.单号）；
-   * $attachments：这次运行能读的附件 [{ id, name, mime }]（用 ha.file.read({ fileId }) 读）；$note：附加说明
+   * $attachments：这次运行能读的附件 [{ id, name, mime }]（用 ha.file.read({ fileId }) 读）；$note：附加说明。
+   * 库流程的脚本被别的任务调的时候（agent 当工具调、脚本里 ha.routine），是调用方给的输入（同样按 inputSchema 校验过）
    */
   readonly input: Record<string, unknown> & {
     $attachments?: { id: string; name: string; mime: string }[]
@@ -283,9 +312,21 @@ export interface Heyagent {
    */
   judge(args: JudgeArgs): Promise<JudgeResult>
 
+  /**
+   * 调流程库里的流程（docs/dev/routine-library.md 5.6；任务要选了它）：slug 是短名（工具 id routine.<短名> 去掉前缀，例如 "order_status"），
+   * input 照它的输入格式写（附件给 $attachments: [{ id, name, mime }]，附加说明给 $note）。它报了结果就返回 RoutineResult，没办成不抛错，看 outcome。
+   * 进入那一步算一次工具调用（照常过规则：「调用流程『…』之前要审批」这类规则会停在这里）；里面的每一步也各算一次，过程里看得到。
+   * 出错：输入不合它的格式、里面一步工具出错没接住、它没报结果就结束了 → StepError；里面一步被规则拦下 → Denied；
+   * 它调了 ha.fail → RoutineFailed；里面要审批、要挂起、超过上限 → RoutineStop（接住也没用）。
+   * 只在库流程里有用的事（它自己的 ha.finish、work.report、检查点）不会影响你这次运行；它做的提交（ha.commit）算进你的，
+   * 试跑走到它里面的第一个提交就停。不要把它里面的步骤抄进你的脚本：网站改了，库流程修好以后你的脚本跟着好
+   */
+  routine(slug: string, input?: Record<string, unknown>): Promise<RoutineResult>
+
   StepError: typeof StepError
   Denied: typeof Denied
   RoutineStop: typeof RoutineStop
+  RoutineFailed: typeof RoutineFailed
 }
 
 declare const ha: Heyagent

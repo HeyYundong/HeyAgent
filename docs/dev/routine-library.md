@@ -1,8 +1,8 @@
 # 流程库：固化流程给多个任务共用、当工具调（设计，2026-10-28）
 
-> **状态：监工 2026-10-28 审过，第 15 节四条都按推荐做（用户 2026-10-28：设计过的都做完，交给监工定）。** 第三期第一批（直接调网站接口，`solidify.md` 第 19 节）合并以后，再写约定、派开发。
+> **状态：约定已写好（2026-10-28，分支 `worktree-agent-aed6bf0847665eb2a`，基于集成分支 1af8ae5）。** 监工 2026-10-28 审过，第 15 节四条都按推荐做（用户 2026-10-28：设计过的都做完，交给监工定）。约定写了什么、和原稿不一样的地方见第 16 节；A / B / C 三包按第 13 节并行做。
 > 来由：`solidify.md` 6.1 写过「给 agent 当工具」，第 13 节挪到第三期：「多个任务共用的流程库：像技能一样在配置页管理、建任务时选」。
-> 文中写「现在」的，都读分支 `worktree-solidify-design`（0d7652d）的代码确认过。
+> 文中写「现在」的，都读分支 `worktree-solidify-design`（0d7652d）的代码确认过；写约定时按 1af8ae5（直接调网站接口、派活第三期、记忆自动挑选已合入）又对了一遍，对不上的已改（第 16.2 节）。
 
 ## 0. 一页纸
 
@@ -57,7 +57,7 @@
 
 - 来源流程照旧有自己的启用版本（`routines.active_version`，试用 → 正式）。
 - 库里另记**发布的版本**（`routine_library.published_version`），两个可以不一样：来源任务在试用新的第 4 版，库里还是第 3 版。
-- **只收转过正式的版本**：这一版在来源任务上连着 3 次脚本直接办成过。`routine_versions` 加 `proven_at`（转正式的时间），`stats.ts` 转正式时写。没写过的版本（这个功能上线前转正式的）按 `routines.status = active` 且 `active_version` 是它补上（迁移里补）。
+- **只收转过正式的版本**：这一版在来源任务上连着 3 次脚本直接办成过。`routine_versions` 加 `proven_at`（转正式的时间），`routine/runtime/stats.ts` 的 `settleRoutineRun` 转正式时写。这个功能上线前转正式的，迁移里补：审计 `routine.promote` 记过的那一版，加上 `routines.status = active` 且 `active_version` 是它的（后者补上前者漏的；转过正式后又被停用、回到试用的版本，靠审计那条补）。
 - **发布新版本**：来源流程有更新的、转过正式的版本时，库的详情和来源任务的「固化流程」区块都提示「第 4 版已转正式，可以发布到流程库」，同时通知发布过的主管。不自动发布。
 - **回到以前的版本**：发布过的版本都能再发布（同「回到这一版」）。
 
@@ -86,8 +86,11 @@
 - **给模型的参数**（工具的 JSON Schema）按 `inputSchema` 转：
   - 普通参数原样（名字、类型、说明、必填）。
   - `$attachments` 换成 `attachments`：文件 id 的数组（调用方这次运行能读的文件）。工具执行前按调用方的空间展开成 `{ id, name, mime }`，脚本里照旧读 `ha.input.$attachments`。
-  - `$note` 换成 `note`：可选的一句话。
-  - 理由：几家模型的工具参数名不认 `$` 开头的。中文参数名派活已经在用，但都是放在 record 的值里；工具参数名直接是中文要在测试里用真模型验一次（第 12 节）。不认的话退回 `p1…pn` 加说明。
+  - `$note` 换成 `note`：一句话。
+  - 必填照 `inputSchema`（`$attachments`、`$note` 也是）。
+  - **参数名照 HTTP 工具的规矩**（`engine/tools/http.ts` 的 `httpParamKeys`）：英文、数字、下划线的原样；别的（中文、带 `$` 的）换成 `p<n>`（`n` 是它在 `inputSchema` 里的序号），说明前面写「参数名：单号」。换的名字和已有的撞了往后加 `_2`。
+  - 理由：几家模型的工具参数名只认英文、数字、下划线（Anthropic 的 `input_schema` 属性名有格式限制），HTTP 工具早就这样做了，不用再拿真模型验中文参数名。
+  - 纯函数：shared 的 `toolSchemaOf(inputSchema) → { jsonSchema, params }`；模型给的参数转回脚本的输入 `inputOfToolArgs(args, params, files)`（`files` 是调用方能读的文件，`attachments` 按它展开，不是调用方能读的报错）。
 - **没有声明输入的流程能进库**：工具参数是空对象，就是「把这段固定操作做一遍」（例如打开后台切到某个视图、导出今天的报表）。
 - **交回**：
   - 库流程里的 `ha.work.report({ data })` 不再写调用方的结果，收进这次调用的交回值；
@@ -96,8 +99,11 @@
 - 交回值（agent 在工具结果的文字和 `data` 里看到，脚本拿到返回值）：
 
 ```ts
+// shared 的 routineReturnSchema
 {
-  routine: string, version: number,
+  routine: string,      // 短名
+  name: string,         // 库里的名字
+  version: number,
   outcome: "achieved" | "not_achieved",
   summary: string, evidence?: string, reason?: string,
   data: Record<string, string | number | boolean>   // work.report 收来的
@@ -112,7 +118,8 @@
 
 - 发布时写一行：`id = routine.<短名>`、`source = routine`（`tool_source` 枚举加一项）、`routine_id`（新列）、`name` = 库里的名字、`summary`、`description`、`risk`。
 - 好处：任务选用就是 `task_tools`；规则的触发「调用 X 之前 / 之后」、规则翻译、助手改任务、快照都认它，不用另做一套。
-- 这一行只由流程库写：工具页不列它（工具页的读接口过滤掉 `source = routine`），工具的编辑、删除接口遇到它报「在流程页里改」。
+- 这一行只由流程库写：工具页不列它（`data/loaders.ts` 的 `listTools` 过滤掉 `source = routine`），工具的编辑、删除接口（`data/config/tools.ts` 的 `updateHttpTool`、`deleteTool`，助手的 `assistant/tools.ts` 改工具）遇到它报「这是流程库里的流程，在流程页里改」。
+- 一个库流程一行：`tools.routine_id` 唯一；`source = routine` 时 `routine_id` 非空（check 约束）。
 - **短名**：发布时填，英文小写、数字、下划线，例如 `order_status`；默认按名字 `slugOf`，转不出来用 `rt<n>`。**发布后不能改**：它就是工具 id，任务、规则、脚本都按它引用。
 - 给模型的名字：网关现有的 `safeName`，`routine.order_status` → `routine_order_status`。
 
@@ -154,9 +161,10 @@
 
 发布时用 `checks.ts` 的那套分析算，存进库的登记，任务弹窗和快照都用：
 
-- `toolIds`：`ha.browser.*` → 「浏览器」组，`ha.tool("…")` → 那个工具，`ha.file.*` 不算（读附件、存文件跟着自动带上的规矩走）；
-- 浏览器的开关：用了 `ha.browser.fetch` 要「允许直接调网站接口」（第三期第一批的 `allowBrowserFetch`），用了看画面的工具要「允许看画面」；
-- `routines`：脚本里 `ha.routine` 直接调的库流程；它们要的工具一并算进来（传递）。
+- `toolIds`：`ha.browser.*`、`ha.tool("browser.…")` → 「浏览器」组 `browser`（同 `checks.ts` 的 `GROUP_TOOLS`，桌面、图库、比物也按组），`ha.tool("…")` → 那个工具，`ha.file.*` 不算（读附件、存文件跟着自动带上的规矩走）；
+- 浏览器的开关 `browser { fetch?, vision? }`：用了 `ha.browser.fetch` 要「允许直接调网站接口」（任务的 `allowBrowserFetch`，快照里是 `browser.allowFetch`）；用了按坐标的工具（`copyImage` 写坐标、`ha.tool` 调坐标工具）要「允许看画面」（任务的 `allowBrowserVision`，快照 `browser.allowVision`）；
+- `routines`：脚本里 `ha.routine` 直接调的库流程（**短名**；第一个参数不是字面量算程序检查没过）；它们要的工具、开关一并算进 `toolIds` 和 `browser`（传递），`toolIds` 里不放 `routine.*`（调的库流程不用调用方任务选，跟着冻进快照）。
+- shared：`routineRequiresSchema`、`mergeRoutineRequires`（算传递）、`missingRoutineRequires`（任务缺什么：弹窗提示、快照的 `unavailable`）。
 
 ## 5. 在调用方的运行里怎么跑
 
@@ -174,8 +182,10 @@
 照 `code.run`（tools）的做法，网关里每个库流程一个工具，执行时：
 
 1. 参数按 JSON Schema 校验（网关现有的）；`attachments` 展开成 `$attachments`；再按 `inputSchema` 校验一次，不合格当场报错、不起沙箱。
-2. 起沙箱：代码目录放这个库流程（`routine.mjs`）、它调的库流程（`routines/<短名>.mjs`）、SDK。不挂出网代理，`/workspace` 只读（同固化脚本）。
-3. 起工具桥，新的 `mode = tool`。每一步 `gateway.call()`，调用 id `<这次的调用 id>-l<步>`，过程记录的 trace 带 `library`（5.7）。
+2. 起沙箱：代码目录放这个库流程（`routine.mjs`）、它调的库流程（`routines/<短名>.mjs`，shared 的 `libraryModulePath`；`routine/library/snapshot.ts` 的 `libraryModules` 收齐）、SDK。不挂出网代理，`/workspace` 只读（同固化脚本）。
+3. 起工具桥，新的 `mode = tool`。每一步 `gateway.call()`，调用 id `<这次的调用 id>-l<步>`，过程记录的 trace 带 `library`（5.7，`callId` = 这次的调用 id、`depth` 1）。
+   - 会改东西的 `browser.fetch`（`solidify.md` 19.5）照固化脚本的规矩：前面要有自己的 `ha.commit`，不然脚本停下（`script_error`）。库流程都是固化员写、人审过的脚本，`mode = tool` 和库流程嵌在 agent 的 `code.run` 里（请求带 `via`）时也照这条，只有 agent 自己写的那一层不要求。
+   - 试用期截图不做（库流程只收转过正式的，见 5.4）。
 4. 结局：
    - 报了结果（`ha.finish`）→ 工具结果是交回值（第 3 节）。`not_achieved`（例如查不到）不算出错，文字写清原因。
    - `ha.fail("input")` → 出错：「输入有问题：…（流程没改任何东西）」。
@@ -184,6 +194,7 @@
    - 里面某一步要人审批 → 停在它前面、不发起审批（同 `browser.batch`）。结果写「第 k 步 X 要人审批（规则…），没做：你单独调用这一步，再接着做后面的」。
 5. 上限：工具调用次数、时间用固化脚本的（`routineLimits`），时间还要压在这次运行剩下的时间里。
 6. 不记重放日志：worker 被杀时，引擎现有的「工具调用被中断」处理（`loop.ts`）照样补一条结果，agent 自己核对。
+7. 写一行调用记录（`routine/library/stats.ts` 的 `recordRoutineCall`，`via = tool`）。
 
 ### 5.3 规则、审批
 
@@ -200,7 +211,7 @@
 
 ### 5.5 跑不通：交回调用方的 agent
 
-格式照 `handoff.ts`（`solidify.md` 6.4），抽出共用的「步骤行」函数，按 `trace.library.callId` 取这次调用里的步骤：
+格式照 `handoff.ts`（`solidify.md` 6.4）。现在的 `routineStepLines` 只认 `trace ? 'routineStep'`；抽出共用的「步骤行」函数（输入是一组过程记录），按 `trace->'library'->>'callId'` 取这次调用里的步骤、按 `trace.library.step` 排：
 
 ```text
 流程「查订单状态」第 3 版做到第 5 步停下，没跑完：
@@ -215,7 +226,7 @@
 ```
 
 - 做过提交、没核对的写：「第 7 步『保存』已经点了，可能已经生效：先看页面核对，不要重复保存。」
-- `data` 里另给 `{ routine, version, steps, stoppedAt, commits }`，界面和固化材料用。
+- `data` 里另给 `{ routine, name, version, steps, stoppedAt, commits }`（shared 的 `routineToolStopDataSchema`），界面和固化材料用。
 
 ### 5.6 脚本里调：`ha.routine`
 
@@ -229,18 +240,19 @@ if (r.outcome !== "achieved") return ha.finish({ outcome: "not_achieved", summar
 
 **在同一个沙箱、同一个工具桥里跑**，不另起沙箱：
 
-1. **进入**：SDK 发 `tool` 请求，工具是 `routine.<短名>`、参数是输入。它像普通的一步一样走 `gateway.call()`（带 `inline: true`，执行只是记一条「开始跑流程『查订单状态』第 3 版」）：
+1. **进入**：SDK 发 `tool` 请求，工具是 `routine.<短名>`、参数是输入（脚本的写法：`$attachments` 是 `{ id, name, mime }`，不转），在库流程里调的还带 `via`。它像普通的一步一样走 `gateway.call()`（带 `inline: true`，执行只是记一条「开始跑流程『查订单状态』第 3 版」）：
    - 过规则：整个流程上的审批、拦下照常；
    - 记进重放日志、算一步；
-   - 先按 `inputSchema` 校验，不合格回 `step_error`。
-   - 回复里带要载入的文件 `routines/<短名>.mjs`。
+   - 先按 `inputSchema` 校验，不合格回 `step_error`；快照里没有、`unavailable` 的、层数超了、`via` 里已经有它（环）也回 `step_error`。
+   - 回复的 `data` 是 shared 的 `libraryEnterReplySchema`：`{ slug, name, version, module: "routines/<短名>.mjs", depth, input }`。
 2. **跑**：SDK 载入那个模块，在一个嵌套的上下文里（Node 的 `AsyncLocalStorage`）调它的 `run(input)`。在这个上下文里：
    - `ha.input` 是传进去的输入；
    - `ha.finish`、`ha.work.report` 只收进交回值，不发请求；`ha.checkpoint.mark` 不做；
    - `ha.fail(kind, reason)` 不让整个脚本停，变成抛给调用方的 `RoutineFailed`（带 `kind`），调用方可以接住；
-   - 其余请求（工具、commit、verified、log、now、judge）照常发给同一个工具桥，每个请求带上嵌套的路径（`via: ["order_status"]`），工具桥据此记 trace。
-3. **出来**：SDK 发新请求 `routine_end`（短名、结局、步数、出错时的原因）。工具桥记一条过程「流程『查订单状态』跑完：7 步 · 交回 状态=已发货」、写一行调用记录（6.5）。它也记进重放日志（和 commit、log 一样是标记）。
+   - 其余请求（工具、commit、verified、log、now、judge）照常发给同一个工具桥，每个请求带上嵌套的路径（`via: ["order_status"]`，从外到里的短名，shared 的 `bridgeViaSchema`），工具桥据此记 trace。
+3. **出来**：SDK 发新请求 `routine_end`（shared 的 `routineEndRequestSchema`：`slug`、`depth`、`end` = finished / failed / error、`steps`、报了结果的 `result`、`ha.fail` 的 `kind`、出错的 `error` 和 `name`、`via`）。工具桥记一条过程「流程『查订单状态』跑完：7 步 · 交回 状态=已发货」、写一行调用记录（6.5，`via = script`，步数以工具桥自己数的为准）。它也记进重放日志（和 commit、log 一样是标记）。
 4. 没调 `ha.finish` 就返回了 → 抛 `StepError`「库流程没报结果」。
+5. `RoutineFailed` 带 `kind`（input / page）和 `routine`（短名），`index.d.ts` 已写好。
 
 这样做，现在的规矩全都沿用：
 
@@ -248,6 +260,7 @@ if (r.outcome !== "achieved") return ha.finish({ outcome: "not_achieved", summar
 - **挂起**：照常挂起、接着跑。
 - **试跑**：里面的第一个 `ha.commit` 就是试跑的停点。注意：试跑现在会停在「风险不是只读的非浏览器工具」前面，进入库流程那一步要放行（只是进入，里面每一步再各自判断）。
 - **试用期截图、`ha.verified`、交接的话**：都是同一个工具桥里的事，库流程里的提交也算进调用方的 `commits`，标签前面加「流程『查订单状态』：」。
+- **会改东西的接口请求**（`solidify.md` 19.5）：「从上一个会改东西的请求以来新走过一个 `ha.commit`」照算，不分层：调用方脚本、库流程里的 `ha.commit` 都在同一份 `commits` 里。
 - 里面没接住的错一路抛到调用方的脚本；调用方也没接住，就按现在的规矩停在那一步，交接的话写「第 6 步（流程『查订单状态』第 5 步）」。
 
 ### 5.7 过程记录
@@ -264,7 +277,10 @@ library?: {
 }
 ```
 
+- 已写好：shared `routine.ts` 的 `libraryTraceSchema`，`eventTraceSchema.library`。
 - 脚本里调的，同一条记录同时有 `routineStep`（或 `scriptStep`）和 `library`：调用方脚本的第几步、库流程的第几步都看得到。
+- 进入库流程的那一步（`ha.routine`）是调用方的一步，不带 `library`；两层嵌套时 B 的进入是 A 的一步，带 A 的 `library`。界面按「B 里面的步骤的 `callId` = B 进入那一步的调用 id」套两层。
+- 浏览器动作照常带 `trace.network`（`solidify.md` 19.3）。
 - 复核的证据（`engine/log-text.ts`）：库流程那一段压成一行「流程『查订单状态』第 3 版：7 步，交回 …」，展开最近的几步，和 batch 的写法一样。
 
 ### 5.8 嵌套
@@ -286,10 +302,11 @@ library?: {
 
 `engine/sessions.ts` 冻快照时：
 
-- 选了的库流程，取发布的那一版，连同它调的库流程（传递）一起冻进 `snapshot.libraryRoutines`：短名、工具 id、名字、版本、脚本、两个 schema、commits、调了哪些。
+- 选了的库流程，取发布的那一版，连同它调的库流程（传递）一起冻进 `snapshot.libraryRoutines`（shared 的 `libraryRoutineSnapshotSchema`）：短名、工具 id、名字、「什么时候用」、版本、脚本、步骤说明、两个 schema、commits、`requires`、风险，`selected`（任务选了它 = true，网关给工具；只因为被调跟着冻进来的 = false，只在 `ha.routine` 里用）。代码在 `routine/library/snapshot.ts` 的 `freezeLibraryRoutines`。
 - **这次用不了的**（停用、撤下、缺要的工具、缺要的开关、它调的流程用不了）：仍冻进去，带 `unavailable: 原因`。网关不给这个工具，系统提示写一行原因（4.2）。
 - 调用方自己的固化脚本里 `ha.routine` 的流程：也要在任务里选上（同「用到的工具都在任务里」），才在 `libraryRoutines` 里。
-- `SnapshotTool` 加 `source: "routine"` 和 `routineId`。
+- `SnapshotTool` 加 `source: "routine"` 和 `routineId`（已写好，`sessions.ts` 已带上）。
+- 子 agent（`sub-agents.md`）从父运行的快照抄，`libraryRoutines` 一起抄。
 
 ### 6.3 权限
 
@@ -307,7 +324,7 @@ library?: {
 
 ### 6.5 成绩
 
-新表 `routine_calls`，每次调用（agent 调、脚本调都算）一行：调用方的运行、任务、调用 id、怎么调的（`tool` / `script`）、层数、版本、结局、停下的原因、步数、用时。
+新表 `routine_calls`，每次调用（agent 调、脚本调都算；两层嵌套时每层各一行）一行：调用方的运行、任务、调用 id、怎么调的（`tool` / `script`）、层数、版本、结局、停下的原因（`stop_kind`、停在库流程第几步 `stop_step`、说明 `stop_reason`）、步数、用时。
 
 - 结局：`achieved` / `not_achieved`（报了结果）、`bad_input`（输入不对、`ha.fail("input")`）、`stopped`（停下了，`stop_kind` 写原因）。
 - 详情页看最近 50 次：跑完几次（办成 / 没办成）、停下几次、平均用时；按调用的任务分开列；最近 5 次停下的原因，点进那次运行。
@@ -317,7 +334,7 @@ library?: {
 ### 6.6 连续跑不通自动停用
 
 - 库的登记上记 `fail_streak`：
-  - 停下的原因是 `step_error`、`page`、`script_error`、`timeout`、`limit` → +1。这几种多半是页面变了或脚本的毛病；
+  - 停下的原因是 `step_error`、`page`、`script_error`、`timeout`、`limit` → +1（shared 的 `LIBRARY_FAIL_STOP_KINDS`、`libraryStreakChange`）。这几种多半是页面变了或脚本的毛病；
   - 报了结果（办成、没办成都算）→ 清零；
   - 别的不动：被拦下、要审批、挂起、取消、输入不对。这些是调用方的配置、调用方给的输入，不怪流程。
 - 满 3 次自动停用，`paused_reason` 写清最近三次停在哪；通知来源任务负责人和发布的主管。
@@ -372,7 +389,7 @@ library?: {
   - 第一次发布：选来源任务（`Combobox`，只列有转过正式版本的任务）→ 版本（`Select`，只列转过正式的）→ 名字、短名（第一次发布才能填）、什么时候用（`Textarea`）。
   - 下面只读地列出：要的工具、风险、会改东西的步骤；新版本再列不兼容的改动和受影响的（`Alert` + 列表）、`Checkbox`「我知道这些任务会受影响」。
   - 程序检查不过（有环、层数超了、短名重了）在弹窗里写原因，按钮置灰。
-- **版本记录**：`Dialog` 里一张 `Table`：版本、发布的人、时间、当时在用几个任务；以前的版本能「回到这一版」（`AlertDialog` 确认，同样列受影响的）。
+- **版本记录**：`Dialog` 里一张 `Table`：版本、发布的人、时间、当时在用几个任务（数据是 `routineLibrary.get` 的 `publishes`）；以前的版本能「回到这一版」（`AlertDialog` 确认，同样列受影响的，走 `preview` + `publish`）。
 - **看脚本**：复用 `routine-parts.tsx` 的 `RoutineVersionView`。
 - 加载 `Skeleton`；空的时候 `Empty`：「还没有库里的流程。在任务的『固化流程』里转了正式的流程，主管可以发布到这里，给别的任务当工具用。」
 
@@ -396,51 +413,60 @@ library?: {
 - 工具页不列库流程（4.1）。规则页的工具选择里列出来，标「流程」。
 - 使用手册：新加 5.15「流程库」，5.14 末尾那句「还不能当工具给别的任务用」改掉；5.2 内置工具表后面加一句库流程在哪里选。
 
-## 10. 数据和接口
+## 10. 数据和接口（约定已写好）
 
-### 10.1 迁移（编号按合并时最新的来，第三期第一批之后，暂记 0034）
+### 10.1 迁移 `0036_routine_library.sql`
+
+编号：另一个人同时在写「子 agent」的约定，也会生成 0036，谁后合并谁改成 0037（改文件名、`_journal.json` 的 tag、重新生成 snapshot）。
 
 | 改动 | 内容 |
 |---|---|
-| 新表 `routine_library` | `routine_id`（主键，引用 `routines`，级联）、`slug`（唯一）、`title`、`summary`、`status`（枚举 `routine_library_status`：listed / paused / withdrawn）、`published_version`、`requires`（jsonb：`toolIds`、`browser { fetch?, vision? }`、`routines`）、`risk`、`fail_streak`、`paused_reason`、`published_by_id`、`published_at`、`created_at`、`updated_at`；推送触发器 |
-| 新表 `routine_library_versions` | 发布记录：`routine_id`、`version`、`published_by_id`、`published_at`、`requires`、`risk`、`compat`（jsonb：当时的不兼容改动） |
-| 新表 `routine_calls` | `id`（bigserial）、`routine_id`、`version`、`session_id`（调用方，级联）、`task_id`、`call_id`、`via`（tool / script）、`depth`、`result`（achieved / not_achieved / bad_input / stopped）、`stop_kind`、`steps`、`ms`、`at`；索引 (`routine_id`, `at`) |
-| `routine_versions` | 加 `proven_at`；迁移里给现在 `status = active` 的流程的 `active_version` 补上 |
-| `tools` | 加 `routine_id`（引用 `routines`）；`tool_source` 加 `routine`；check 约束：`source = routine` 时 `routine_id` 非空 |
+| 新表 `routine_library` | `routine_id`（主键，引用 `routines`，级联）、`slug`（唯一）、`title`、`summary`、`status`（枚举 `routine_library_status`：listed / paused / withdrawn，默认 listed）、`published_version`、`requires`（jsonb，`RoutineRequires`）、`risk`、`fail_streak`、`paused_reason`、`published_by_id`、`published_at`、`created_at`、`updated_at`；推送触发器（推 `routine_id`） |
+| 新表 `routine_library_versions` | 发布记录，每发布一次一行：`id`（identity）、`routine_id`（引用 `routine_library`，级联）、`version`、`published_by_id`、`published_at`、`requires`、`risk`、`compat`（jsonb，`RoutineCompatIssue[]`）、`task_count`（当时在用几个任务）；索引 (`routine_id`, `published_at`)；推送触发器 |
+| 新表 `routine_calls` | `id`（identity）、`routine_id`（引用 `routines`，级联）、`version`、`session_id`（调用方，级联）、`task_id`（级联）、`call_id`、`via`（枚举 `routine_call_via`：tool / script）、`depth`、`result`（枚举 `routine_call_result`：achieved / not_achieved / bad_input / stopped）、`stop_kind`、`stop_step`、`stop_reason`、`steps`、`ms`、`at`；索引 (`routine_id`, `at`)、(`session_id`)、(`task_id`, `at`)；推送触发器 |
+| `routine_versions` | 加 `proven_at`。迁移里补：审计里 `routine.promote` 记过的那一版（`detail.version`）取最近一次的时间；现在 `status = active` 的流程，`active_version` 那一版还没补上的取流程的 `updated_at` |
+| `tools` | 加 `routine_id`（引用 `routines`，级联，唯一）；`tool_source` 加 `routine`；check 约束 `tools_routine_check`：`source::text <> 'routine' or routine_id is not null`（转成 text 再比：同一个迁移事务里还不能用枚举的新值） |
+
+实时推送（`shared/live.ts`）：`routine_library` → `routineLibrary.list / get / candidates`、`routine.get`、`tasks.list`；`routine_library_versions` → `routineLibrary.get`；`routine_calls` → `routineLibrary.get / calls`；`task_tools` 多失效 `routineLibrary.list / get`。
 
 ### 10.2 shared
 
-- 新文件 `packages/shared/src/routine-library.ts`：状态和中文、`requires`、交回值、调用记录、接口的输入输出、`MAX_LIBRARY_DEPTH`、参数转换（`toolSchemaOf(inputSchema)`、`inputOfToolArgs`）、兼容性对比（`compareRoutineSchemas`，纯函数，前后端共用）。
-- `engine.ts`：`snapshot.libraryRoutines`；`SnapshotTool.source` 认 `routine`、加 `routineId`。
-- `routine.ts`：`EventTrace.library`；`routineVersion.provenAt`。
+| 在哪 | 有什么 |
+|---|---|
+| 新 `routine-library.ts` | 上限 `MAX_LIBRARY_DEPTH`（2）、`LIBRARY_PAUSE_AFTER_FAILS`（3）、`LIBRARY_STATS_WINDOW`（50）、`LIBRARY_RECENT_STOPS`（5）、`LIBRARY_DESCRIPTION_STEPS`（15）、`LIBRARY_CALLS_PAGE`（50）；短名 `routineSlugSchema`、`routineToolId`、`routineSlugOfToolId`、`isRoutineToolId`、`defaultRoutineSlug`、`libraryModulePath`；要的工具 `routineRequiresSchema`、`mergeRoutineRequires`、`missingRoutineRequires`、`routineBrowserFlagLabel`；参数 `toolSchemaOf`、`inputOfToolArgs`、`routineObjectSchema`；兼容 `compareRoutineSchemas`、`routineRequiresAdded`、`routineCompatIssueSchema`；交回 `routineReturnSchema`、`routineToolStopDataSchema`；快照 `libraryRoutineSnapshotSchema`；调用记录 `routineCallSchema`、via / result 和中文、`LIBRARY_FAIL_STOP_KINDS`、`libraryStreakChange`；工具桥协议 `bridgeViaSchema`、`libraryEnterReplySchema`、`routineEndRequestSchema`；接口的输入输出（10.3）。纯函数的测试在 `packages/shared/test/routine-library.test.ts` |
+| `routine.ts` | `routineLibraryStatusSchema` 和中文（放这里是因为 `routineSummarySchema.library` 要用）；`libraryTraceSchema`、`eventTraceSchema.library`；`routineVersionSchema.provenAt`；`routineSummarySchema` 加 `library`、`publishable`，`versions[].provenAt` |
+| `engine.ts` | `snapshot.libraryRoutines`；`SnapshotTool.routineId` |
+| `schemas.ts`、`labels.ts` | `toolSourceSchema` 加 `routine`（中文「流程」）；`toolSchema.routineId` |
 
-### 10.3 接口（tRPC `routineLibrary.*`）
+### 10.3 接口（tRPC `routineLibrary.*`，`trpc/routine-library-router.ts`，现在一律回 NOT_IMPLEMENTED「流程库还没做好」）
 
 | 接口 | 谁能用 | 输入 → 输出 |
 |---|---|---|
-| `list` | 登录即可 | → 每个：id、短名、名字、状态、发布的版本、在用几个任务、有没有可发布的新版本 |
-| `get` | 登录即可 | `{ routineId }` → 登记的全部、发布的那一版（不带脚本）、谁在用、最近 50 次成绩、最近 5 次停下 |
-| `candidates` | 主管 | → 能发布的：任务、流程、转过正式还没发布的版本 |
-| `preview` | 主管 | `{ routineId, version }` → 要的工具、风险、程序检查的结果、和现在发布的版本比的不兼容改动、受影响的任务和流程 |
+| `list` | 登录即可 | → `RoutineLibraryItem[]`：id、短名、工具 id、名字、状态、发布的版本、在用几个任务、有没有可发布的新版本（`newerVersion`）、`failStreak` |
+| `get` | 登录即可 | `{ routineId }` → `RoutineLibraryDetail`：登记的全部、来源任务、发布的那一版（不带脚本）、`newerVersions`、发布记录 `publishes`、谁在用（任务带最近一次调用；调它的库流程）、最近 50 次成绩（含按任务、最近 5 次停下的） |
+| `candidates` | 主管 | → `RoutineLibraryCandidate[]`：有转过正式版本的固化流程，已经在库里的带登记 |
+| `preview` | 主管 | `{ routineId, version, slug? }` → `RoutineLibraryPreview`：要的工具、风险、会改东西的步骤、生成的给模型的说明、程序检查的问题、和现在发布的版本比的不兼容改动、受影响的任务（缺什么）和流程 |
 | `publish` | 主管 | `{ routineId, version, slug?, title, summary, acceptBreaking? }` → `{ routineId, version }`。第一次发布要 `slug`；有不兼容改动要 `acceptBreaking`；回到以前的版本也用它 |
-| `update` | 主管 | `{ routineId, title, summary }`：改名字、说明（重写 `tools` 那一行，下一次运行生效） |
-| `setPaused` | 主管 | `{ routineId, paused }`；重新启用清零 `fail_streak` |
-| `withdraw` | 主管 | `{ routineId }`：有任务选用或别的流程调它时 `CONFLICT`，写清是哪些 |
-| `calls` | 登录即可 | `{ routineId, cursor? }` → 调用记录分页 |
+| `update` | 主管 | `{ routineId, title, summary }` → `{ routineId }`：改名字、说明（重写 `tools` 那一行，下一次运行生效） |
+| `setPaused` | 主管 | `{ routineId, paused }` → `{ routineId, status }`；重新启用清零 `fail_streak` |
+| `withdraw` | 主管 | `{ routineId }` → `{ routineId, status: "withdrawn" }`：有任务选用或别的流程调它时 `CONFLICT`，写清是哪些 |
+| `calls` | 登录即可 | `{ routineId, cursor?, taskId? }` → `{ items, nextCursor }`，新的在前 |
 
-`routine.get`（任务详情的区块）多带 `library: { slug, publishedVersion, status, usedBy } | null` 和 `publishable: number[]`。
+`routine.get`（任务详情的区块）多带 `library: { slug, toolId, title, publishedVersion, status, taskCount } | null` 和 `publishable: number[]`（现在先填 `null`、`[]`，B 包接上 `libraryOfRoutine`）；`versions[]` 和 `routine.version` 带 `provenAt`（已接好）。
 
 审计：`routine.library.publish`、`.update`、`.pause`、`.resume`、`.withdraw`、`.auto_pause`。
 
-### 10.4 代码
+### 10.4 代码（空壳已建好，只有签名和注释）
 
-| 在哪 | 做什么 |
-|---|---|
-| `routine/library/service.ts` | 读、发布、改、停用、撤下；写 `tools` 那一行和 `tool.description`（4.2） |
-| `routine/library/analyze.ts` | `requires`、风险、环和层数、兼容性（用 `checks.ts` 导出的分析） |
-| `routine/library/tool.ts` | 网关里库流程工具的执行：起沙箱、`mode = tool` 的工具桥、交回值、交接的话 |
-| `routine/library/stats.ts` | 写 `routine_calls`、`fail_streak`、自动停用、通知 |
-| `sandbox-sdk/heyagent/` | `ha.routine`、嵌套的上下文、`RoutineFailed`、`index.d.ts` |
+| 在哪 | 做什么 | 谁 |
+|---|---|---|
+| `routine/library/service.ts` | 读、发布、改、停用、撤下、调用记录；写 `tools` 那一行和发布记录；`libraryOfRoutine`（`routine.get` 用）；`libraryNotYet()` | B |
+| `routine/library/analyze.ts` | `analyzeLibraryCode`、`libraryRisk`、`findLibraryCycle`、`libraryDepthOf`、`analyzeForPublish`、`compatWithPublished`、`routineToolDescription`（4.2 的说明） | B |
+| `routine/library/tool.ts` | 网关里库流程工具的执行 `executeLibraryTool`：起沙箱、`mode = tool` 的工具桥、交回值、交接的话 | A |
+| `routine/library/stats.ts` | `recordRoutineCall`：写 `routine_calls`、`fail_streak`、自动停用、通知 | A |
+| `routine/library/snapshot.ts` | `freezeLibraryRoutines`（冻快照）、`libraryModules`（沙箱代码目录里的模块）、`libraryPromptSection`（系统提示一节） | A |
+| `trpc/routine-library-router.ts` | 接口，已接到 service.ts | 已写好 |
+| `sandbox-sdk/heyagent/index.d.ts` | `ha.routine`、`RoutineResult`、`RoutineFailed`，开头的说明 | 已写好；`index.js`、`launch.js` 由 A 实现 |
 
 ## 11. 安全
 
@@ -471,7 +497,9 @@ library?: {
   - `code.run`（tools）脚本循环调 `ha.routine`；
   - 两层能跑、三层报错、运行时的环报错；`ha.tool("routine.x")` 被拒。
 - **成绩**：每种结局记对；`fail_streak` 只算那五种；满 3 次自动停用、通知；报了结果清零。
-- **固化员**：材料里库流程那一步是一行（不展开里面的步骤）；程序检查认 `ha.routine`，任务没选的流程报错；提示词有这条规矩。
+- **固化员**：材料里库流程那一步是一行（不展开里面的步骤，里面发的接口请求归到这一行）；程序检查认 `ha.routine`，任务没选的流程报错、短名不是字面量报错；提示词有这条规矩。
+- **会改东西的接口请求**：库流程里 `POST` 的 `browser.fetch` 前面没有 `ha.commit` → 停下（agent 调、脚本调、嵌在 agent 的 `code.run` 里都一样）。
+- shared 的纯函数（已写好）：`packages/shared/test/routine-library.test.ts`。
 
 ### 12.2 浏览器测试（worker 镜像，真 Chrome + bwrap）
 
@@ -482,51 +510,72 @@ library?: {
 
 - 基准站点：场景 B 里「查一家」那一段做成库流程（来源任务只查一家），场景 B 整件事的任务选用它。
 - 量三件事：
-  - agent 会不会用它、参数填得对不对（中文参数名，见第 3 节）；
+  - agent 会不会用它、参数填得对不对（中文参数名换成了 `p<n>`，说明里写原名，见第 3 节：看模型会不会照说明填）；
   - 用时和 agent 自己做比；
   - 场景 B 的任务办成以后固化，固化员会不会写 `ha.routine` 循环。
 - `conventions.md` 第 0 节的业务词检查没有新的命中。
 
 ## 13. 分工和工作量
 
-监工先写约定（半天）：shared 的类型和纯函数、迁移、`routineLibrary` 路由的空壳、`EventTrace.library`、SDK 的 `index.d.ts` 里 `ha.routine` 的签名。三个包照着并行做，各在自己的 worktree 和私有库。
+监工的约定已写好（第 10 节、第 16 节）：shared 的类型和纯函数（带测试）、迁移 0036、`routineLibrary` 路由和 service 的空壳、A 包几个新文件的空壳、`EventTrace.library`、SDK 的 `index.d.ts`。三个包照着并行做，各在自己的 worktree 和私有库（迁移跑到 0036）。**约定（shared、迁移、`index.d.ts`）不要改，要改先说**；新加字段、新导出的函数可以，汇报里写清楚。
+
+互相依赖：
+
+- A、B 都不等对方：A 测试里直接往 `routine_library`、`tools`（`source = routine`）里写行造一个「已发布」的库流程；B 不需要运行时就能测发布、读、撤下。
+- C 只依赖接口的形状（shared 的 schema 已定），先用 fixture 造数据；接口回 NOT_IMPLEMENTED 时页面照常显示出错。fixture 要 A 的 `recordRoutineCall` 之前就能造调用记录：fixture 直接往 `routine_calls` 写行。
+- A 不用 B 的代码（运行时只读登记和快照）。B 也不用 A 的代码；自动停用在 A 的 `routine/library/stats.ts`，「可以发布」「来源流程停用」的通知在 B，文案各写各的。
+- 改同一个文件的地方：`routine/runtime/stats.ts` 只有 B 改；`routine/checks.ts` 只有 B 改；`engine/sessions.ts`、`gateway.ts`、`bridge.ts` 只有 A 改；`routine/service.ts` 只有 B 改。
+- 合并顺序：A、B 任意，C 最后（要两边的接口才看得到真数据）。三包都会碰 `shared/src/routine-library.ts` 时只许加，不许改已有的。
 
 ### 13.1 A 包：运行时（约 1.5 天，最重）
 
-- `sandbox-sdk/heyagent/`：`ha.routine`、`AsyncLocalStorage` 的嵌套上下文（`input`、`finish`、`work.report`、`fail`）、`RoutineFailed`、请求带 `via`；`launch.js` 认 `mode = tool`（顶层也按嵌套的规矩收交回值）。
-- `routine/runtime/bridge.ts`：`mode = tool`；进入（`routine.*` 工具带 `inline`）、`routine_end` 标记、记进日志；trace 的 `library`；试跑放行进入那一步；拒 `ha.tool("routine.*")`；层数和环。
-- `routine/runtime/run.ts`、`sandbox/code-run.ts`：代码目录里放 `routines/<短名>.mjs`。
-- `engine/gateway.ts`：`source = routine` 的工具条目、`inline` 选项。
-- 新 `routine/library/tool.ts`、`routine/library/stats.ts`。
-- `engine/sessions.ts`：冻 `libraryRoutines`、`unavailable`。
-- `engine/prompt.ts`：「固化好的流程」一节。
-- `routine/runtime/handoff.ts`：抽出按 `callId` 取步骤的函数。
-- `engine/log-text.ts`：复核证据里压成一行。
-- 测试：12.1 的快照、agent 调、脚本调、成绩；12.2 两条。
+| 文件 | 改什么 |
+|---|---|
+| `sandbox-sdk/heyagent/index.js` | `ha.routine`：发进入（`op: "tool"`，带 `via`）→ 按回复的 `module` 载入 → 在 `AsyncLocalStorage` 的嵌套上下文里调 `run(input)` → 发 `routine_end`；嵌套上下文里 `ha.input`、`ha.finish`、`ha.work.report` 只收进返回值，`ha.checkpoint.mark` 不发、`ha.fail` 变成 `RoutineFailed`；所有请求带 `via`；导出 `RoutineFailed` |
+| `sandbox-sdk/heyagent/launch.js` | 认 `mode = tool`（stdin 里多一个 `{ library: true }` 之类的标记，A 自己定）：顶层也按嵌套的规矩收交回值，跑完报给 `done` |
+| `routine/runtime/bridge.ts` | `mode = tool`；进入（`routine.*`，校验、层数、环、`inline`）、`routine_end` 标记、记进日志；trace 的 `library`（按 `via` 和自己数的步）；试跑放行进入那一步；拒 `ha.tool("routine.*")`（「用 ha.routine」）；`mode = tool` 和带 `via` 的请求也守 19.5 的「会改东西的 fetch 要自己的 commit」；`NOT_FOR_AGENT_SCRIPTS`（子 agent 也会加 `subagent.*`，合并时两边都留） |
+| `routine/runtime/run.ts`、`sandbox/code-run.ts` | 代码目录里放 `libraryModules(...)` 给的 `routines/<短名>.mjs` |
+| `routine/runtime/handoff.ts` | 抽出「按一组过程记录写步骤行」的函数；按 `trace.library.callId` 取一次调用的步骤 |
+| `engine/gateway.ts` | `source = routine` 的工具条目（`toolSchemaOf` 的 JSON Schema、`executeLibraryTool`）；`call()` 的 `inline`、`library` 选项；`unavailable` 的不给 |
+| `engine/sessions.ts` | 冻 `libraryRoutines`（`freezeLibraryRoutines`）；固化试跑也冻（试跑的脚本可能调库流程） |
+| `engine/prompt.ts` | 「固化好的流程」一节（`libraryPromptSection`），用不了的写一行原因 |
+| `engine/log-text.ts` | 复核证据里库流程那一段压成一行 |
+| 新 `routine/library/tool.ts`、`stats.ts`、`snapshot.ts` | 照空壳的签名实现 |
+| 测试 | 12.1 的快照、agent 调、脚本调、成绩；12.2 两条 |
 
 ### 13.2 B 包：库服务、固化员（约 1 天）
 
-- 新 `routine/library/service.ts`、`routine/library/analyze.ts`。
-- `routine/checks.ts`：导出用到的工具和库流程的分析；认 `ha.routine`（任务要选了它）。
-- `routine/runtime/stats.ts`：转正式时写 `proven_at`。
-- `routine/material.ts`、`routine/prompt.ts`：库流程那一步一行；规矩「过程里调了库流程的，脚本里用 `ha.routine` 调同一个，不要抄里面的步骤」。
-- `trpc/routine-library-router.ts`，`trpc/routine-router.ts` 的 `get` 多带 `library`。
-- `data/config/tools.ts`：工具页的读过滤掉 `source = routine`，编辑、删除拦住；`data/config/tasks.ts`：任务的读带出选了的流程（`toolIds` 里本来就有）。
-- 通知：可以发布、自动停用、来源流程停用。
-- 测试：12.1 的发布、固化员两组。
+| 文件 | 改什么 |
+|---|---|
+| 新 `routine/library/service.ts`、`analyze.ts` | 照空壳的签名实现；`libraryNotYet` 留着给没做的分支用，做完删掉 |
+| `routine/checks.ts` | 导出 AST 分析（给 `analyzeLibraryCode` 用）；`SDK_TOP` 认 `routine`：第一个参数要是字面量，`routine.<短名>` 要在任务的工具里（`toolIds`），不在报「任务没选流程『…』」；`ha.tool("routine.…")` 报「用 ha.routine」 |
+| `routine/runtime/stats.ts` | 转正式时写 `routine_versions.proven_at`；来源流程转正式、被自动停用时，库里有它的通知发布的主管（第 7 节） |
+| `routine/material.ts`、`routine/prompt.ts` | 材料里库流程那一步一行（不展开里面的步骤；里面发的接口请求在「网页调过的接口」一节里归到这一行，写「在流程『…』里发的」）；提示词的规矩「过程里调了库流程的，脚本里用 `ha.routine` 调同一个，不要抄里面的步骤、接口」 |
+| `routine/service.ts` | `getTaskRoutine` 接上 `libraryOfRoutine`（现在填的 `null`、`[]`） |
+| `trpc/routine-library-router.ts` | 已写好；要改输入输出先说 |
+| `data/loaders.ts` | `listTools` 过滤掉 `source = routine` |
+| `data/config/tools.ts`、`assistant/tools.ts` | 编辑、删除工具遇到 `source = routine` 报「这是流程库里的流程，在流程页里改」 |
+| `data/config/tasks.ts` | 任务保存不拦（6.1）；`toolIds` 里的 `routine.*` 照常存进 `task_tools` |
+| 通知 | 可以发布、自动停用（A 的 `stats.ts` 发）、来源流程停用 |
+| 测试 | 12.1 的发布、固化员两组 |
 
 ### 13.3 C 包：网页（约 1 天）
 
-- 新 `pages/routines/`（列表、详情、发布弹窗、版本记录），侧边栏加「流程」。
-- `pages/tasks/task-dialog.tsx`：「流程」选择和自动带工具；`task-detail.tsx`：配置区一行；`task-routine.tsx`：「在流程库里」一行和「发布到流程库」。
-- 运行过程：库流程的工具行、`TraceCollapsible` 按 `callId` 归步骤、审批卡的文案。
-- 规则页的工具选择列出流程。
-- fixture：`apps/server/src/seed/routine-library-fixture.ts`（一个来源任务、发布过两版、两个任务在用、有调用记录和停下的）。
-- 照 `ui-rules.md` 第 7 节检查一遍；暗色、窄屏看过。
+| 文件 | 改什么 |
+|---|---|
+| 新 `pages/routines/` | 列表、详情、发布弹窗（`preview` 随填随查）、版本记录（`get.publishes`）、调用记录；侧边栏「技能」后面加「流程」（lucide `WorkflowIcon`） |
+| `pages/tasks/task-dialog.tsx` | 「流程」`MultiPick`：选项是 `routineLibrary.list` 里 `listed` 的；选了自动勾 `requires.toolIds`，一行说明（`missingRoutineRequires`、`routineBrowserFlagLabel`）；存进同一个 `toolIds` |
+| `pages/tasks/task-detail.tsx` | 配置区「流程」一行；停用、用不了的 `Badge`（`ghost`）+ `Tooltip` |
+| `pages/tasks/task-routine.tsx` | 「在流程库里」一行（`routine.get` 的 `library`）；`publishable` 不空时主管「⋯ → 发布到流程库」、负责人一行提示 |
+| 运行过程（`run-detail.tsx`、`run-script.ts` 那一带） | 库流程的工具行；`TraceCollapsible` 按 `trace.library.callId` 归步骤，两层套两层；审批卡的文案 |
+| 规则页的工具选择 | 列出流程（`toolSourceLabel.routine` = 「流程」） |
+| 工具页 | B 过滤以后不用改；在那之前 `source = routine` 的行会出现在列表里，不用管 |
+| fixture | `apps/server/src/seed/routine-library-fixture.ts`：一个来源任务、发布过两版、两个任务在用、有调用记录和停下的（直接写表） |
+| 检查 | 照 `ui-rules.md` 第 7 节检查一遍；暗色、窄屏看过 |
 
 ### 13.4 监工收尾（半天）
 
-合并、跑全量和浏览器测试、真模型（12.3）、使用手册 5.15、`api.md` 新一节、本文加「实现记录」。
+合并（迁移撞号就改成 0037）、跑全量和浏览器测试、真模型（12.3）、使用手册 5.15、`api.md` 新一节、本文加「实现记录」。
 
 ## 14. 不做 / 以后
 
@@ -543,3 +592,32 @@ library?: {
 2. **库里的流程更新以后，用它的任务跟不跟着变**：建议跟着变，同技能（下一次运行用新版）。发布前列出不兼容的改动和受影响的任务，要勾确认。备选：每个任务钉住版本，自己点升级。
 3. **什么样的版本能进库**：建议只收在来源任务上转过正式（连着 3 次脚本直接办成）的版本。备选：审核启用过就能进，代价是还在试用的版本就给别的任务用了。
 4. **别的任务能不能「整件事先跑库里的流程」**（不只是当工具）：建议这一期不做。当工具调、派活给来源任务，已经能覆盖。
+
+## 16. 约定记录（2026-10-28）
+
+### 16.1 写了什么
+
+分支 `worktree-agent-aed6bf0847665eb2a`（基于集成分支 1af8ae5），一个提交：
+
+- shared：新 `routine-library.ts`（第 10.2 节）和测试 `test/routine-library.test.ts`；`routine.ts`（登记状态、`trace.library`、`provenAt`、`routine.get` 的 `library` / `publishable`）；`engine.ts`（`snapshot.libraryRoutines`、`SnapshotTool.routineId`）；`schemas.ts` / `labels.ts`（工具来源 `routine`「流程」、`toolSchema.routineId`）；`live.ts`（三张新表、`task_tools`）。
+- 数据库：`db/schema.ts` 三张新表、两个新列、三个新枚举、一个 check；迁移 `0036_routine_library.sql`（生成的 + 手写的回填和推送触发器）。
+- 服务器：`trpc/routine-library-router.ts`（接到 `routineLibrary`），空壳 `routine/library/{service,analyze,tool,stats,snapshot}.ts`；现有读写带上新字段：`routine/service.ts`（`provenAt`，`library: null`、`publishable: []`）、`engine/sessions.ts`（`routineId`）、`data/loaders.ts`（`routineId`）、`imports/catalog.ts`（工具来源的类型放宽成 `ToolSource`：导入的 AI 看得到库流程）。
+- SDK：`index.d.ts` 的 `ha.routine`、`RoutineResult`、`RoutineFailed`、开头的说明、`ha.input` 的说明。`index.js` 没动（A 包）。
+
+### 16.2 和原稿不一样的地方（按现在的代码改的）
+
+1. **工具参数名**（第 3 节）：原稿要拿真模型验中文参数名、不行再退回 `p1…pn`。HTTP 工具早就按 `^[A-Za-z0-9_]{1,64}$` 把别的名字换成 `p<n>`（`httpParamKeys`），这里照做，不再验。`$note` 原稿写「可选」，改成必填照 `inputSchema`。
+2. **浏览器开关的名字**（4.4、6.1）：任务上叫 `allowBrowserFetch` / `allowBrowserVision`，快照里是 `browser.allowFetch` / `browser.allowVision`；`requires.browser` 用 `fetch` / `vision`。
+3. **会改东西的接口请求要自己的 `ha.commit`**（19.5，原稿写在它之前）：现在只在 mode `run`、`test` 里判。库流程是固化脚本，`mode = tool` 和嵌在 agent 的 `code.run` 里（请求带 `via`）时也要判；`commits` 不分层（5.2、5.6）。
+4. **交接的话取步骤**（5.5）：现在的 `routineStepLines` 只认 `trace.routineStep`，要抽出来按 `trace.library.callId` 取。
+5. **固化员的材料**（12.1、13.2）：19.6 加了「网页调过的接口」一节，按 `trace.network` 对上步骤。库流程里的步骤不展开，它们发的请求归到库流程那一行，提示词加「不要抄里面的接口」。
+6. **调用记录多两列**（6.5、10.1）：`stop_step`、`stop_reason`。详情页「最近 5 次停下的：停在第几步、原因」和自动停用的原因要用，原稿只有 `stop_kind`。
+7. **发布记录**（9.1、10.1）：`routine_library_versions` 用自增 id（回到以前的版本会再发布同一版），多 `task_count`（版本记录写「当时在用几个任务」）；版本记录的数据放在 `routineLibrary.get` 的 `publishes`，不另开接口。
+8. **快照**（6.2）：加 `selected`，分清「任务选了的」（网关给工具）和「只因为被调跟着冻进来的」。
+9. **`routine.get` 的 `library`** 多 `toolId`、`title`，`usedBy` 改成 `taskCount`（区块里只显示几个任务在用）。
+10. **接口细节**（10.3）：`preview` 多 `slug`（弹窗随填随查短名）；`calls` 多 `taskId` 筛；`get` 多 `newerVersions`、`publishes`、`source`。
+11. **`tools` 的约束**：`routine_id` 唯一；check 用 `source::text` 比较（同一个迁移事务里不能用枚举的新值）。
+12. **`proven_at` 回填**：原稿只按「现在正式的启用版本」补，会漏「转过正式后又停用 / 回到试用」的版本，加了按审计 `routine.promote` 补。
+13. **迁移编号**：原稿暂记 0034，现在是 0036（和子 agent 的约定撞号，后合并的改 0037）。
+14. **工具页过滤的位置**：工具页的读是 `data/loaders.ts` 的 `listTools`，不是 `data/config/tools.ts`；助手改工具（`assistant/tools.ts`）也要拦。
+15. **子 agent**（`sub-agents.md`，同时在写约定）：子运行从父运行快照抄，`libraryRoutines` 一起抄；两边都改 `routine.ts`、`bridge.ts` 的 `NOT_FOR_AGENT_SCRIPTS`，合并时两边都留。

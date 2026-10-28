@@ -6,6 +6,7 @@ import { sessionDesktopSnapshotSchema } from "./desktop.js"
 import { workDelayMinutesSchema, workPrioritySchema } from "./dispatch.js"
 import { autoMemorySnapshotSchema, snapshotMemoryAutoSchema } from "./memory-retrieval.js"
 import { routineSnapshotSchema } from "./routine.js"
+import { libraryRoutineSnapshotSchema } from "./routine-library.js"
 import { snapshotSubSchema, subagentCancelInputSchema, subagentStartInputSchema, subagentWaitInputSchema } from "./subagents.js"
 import {
   checkpointKindSchema,
@@ -33,6 +34,8 @@ export const snapshotToolSchema = z.object({
   alwaysOn: z.boolean().optional(),
   serverId: z.string().optional(),
   http: httpSpecSchema.optional(),
+  /** source = routine（流程库，docs/dev/routine-library.md 6.2）：库流程的编号；脚本、两个 schema 在 snapshot.libraryRoutines 里 */
+  routineId: z.string().optional(),
 })
 export type SnapshotTool = z.infer<typeof snapshotToolSchema>
 
@@ -159,6 +162,11 @@ export const sessionSnapshotSchema = z.object({
   routine: routineSnapshotSchema.optional(),
   /** 子 agent（docs/dev/sub-agents.md 5.1）：子运行才有：父运行编号、第几个、子目标、输入、要交回的字段、给它读的文件。子快照由 shared 的 deriveSubSnapshot 从父快照派生 */
   sub: snapshotSubSchema.optional(),
+  /**
+   * 流程库（docs/dev/routine-library.md 6.2）：任务选了的库流程（发布的那一版）连同它们调的库流程（传递）。
+   * 用不了的也在，带 unavailable。没选库流程的运行、加这个字段之前开始的运行没有
+   */
+  libraryRoutines: z.array(libraryRoutineSnapshotSchema).optional(),
 })
 export type SessionSnapshot = z.infer<typeof sessionSnapshotSchema>
 

@@ -9,7 +9,8 @@ export const liveQueriesByTable: Record<string, string[]> = {
   tasks: ["tasks.list", "work.taskStats", "work.queueStats", "sessions.page"],
   task_memories: ["tasks.list"],
   task_skills: ["tasks.list"],
-  task_tools: ["tasks.list"],
+  // 选了哪些库流程：流程页的「几个任务在用」「谁在用」
+  task_tools: ["tasks.list", "routineLibrary.list", "routineLibrary.get"],
   task_rules: ["tasks.list"],
   task_memory_entries: ["taskMemory.list"],
   // 被派的运行状态变了，派活单的徽章（sessionStatus）和名额数跟着变。
@@ -41,6 +42,10 @@ export const liveQueriesByTable: Record<string, string[]> = {
   // 固化（docs/dev/solidify.md）：任务详情的「固化流程」、审核卡
   routines: ["routine.get", "tasks.list"],
   routine_versions: ["routine.get", "routine.version"],
+  // 流程库（docs/dev/routine-library.md）：登记、发布记录、调用记录（成绩）。库流程在 tools 里也有一行（tools.list 照常失效）
+  routine_library: ["routineLibrary.list", "routineLibrary.get", "routineLibrary.candidates", "routine.get", "tasks.list"],
+  routine_library_versions: ["routineLibrary.get"],
+  routine_calls: ["routineLibrary.get", "routineLibrary.calls"],
   desktops: ["desktops.list"],
   desktop_leases: ["desktops.list", "desktop.sessionDesktop"],
   // 系统开的桌面：虚拟机状态（开机中 → 开着……）、开着几台占多少内存

@@ -152,6 +152,8 @@ export async function buildSnapshot(
       risk: tool.risk,
       serverId: tool.serverId ?? undefined,
       http: tool.http ?? undefined,
+      // 流程库（docs/dev/routine-library.md 6.2）：库流程的工具。发布的那一版连同它调的库流程冻进 snapshot.libraryRoutines（A 包）
+      routineId: tool.routineId ?? undefined,
     })
   }
 

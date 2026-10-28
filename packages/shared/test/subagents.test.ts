@@ -91,6 +91,22 @@ describe("deriveSubSnapshot", () => {
   it("浏览器配置原样（含看画面、直接调接口）", () => {
     expect(derive().browser).toEqual(parent.browser)
   })
+  it("库流程一起抄；要子 agent 没有的工具的、调了它们的标用不了", () => {
+    const lib = (slug: string, toolIds: string[], routines: string[] = [], unavailable?: string) => ({
+      routineId: `RT-${slug}`, slug, toolId: `routine.${slug}`, name: slug, summary: "", version: 1, versionId: `RT-${slug}-v1`, description: "", code: "",
+      inputSchema: { type: "object" }, outputSchema: { type: "object" }, commits: [], requires: { toolIds, browser: {}, routines }, risk: "read" as const, selected: true,
+      ...(unavailable ? { unavailable } : {}),
+    })
+    expect(derive().libraryRoutines).toBeUndefined()
+    const sub = derive({ libraryRoutines: [lib("a", ["browser"]), lib("b", ["checkpoint.mark"]), lib("c", [], ["b"]), lib("d", [], ["c"]), lib("e", [], [], "停用了")] })
+    const by = new Map(sub.libraryRoutines!.map((each) => [each.slug, each.unavailable]))
+    expect(by.get("a")).toBeUndefined()
+    expect(by.get("b")).toContain("checkpoint.mark")
+    expect(by.get("c")).toContain("「b」用不了")
+    expect(by.get("d")).toContain("「c」用不了")
+    expect(by.get("e")).toBe("停用了")
+    expect(sessionSnapshotSchema.safeParse(sub).success).toBe(true)
+  })
   it("给它的文件并进附件（只读、去重），sub 里记下子目标", () => {
     const sub = derive({}, [{ id: "f-1", name: "任务附件.txt", mime: "text/plain", size: 1 }, { id: "f-9", name: "out/a.csv", mime: "text/csv", size: 3 }])
     expect(sub.attachments.map((each) => each.id)).toEqual(["f-1", "f-9"])

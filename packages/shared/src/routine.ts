@@ -47,7 +47,34 @@ export const routineModeLabel: Record<RoutineMode, string> = { off: "不用", fi
 export const sessionKindSchema = z.enum(["run", "routine_test", "sub"])
 export type SessionKind = z.infer<typeof sessionKindSchema>
 
+/**
+ * 流程库里的登记状态（docs/dev/routine-library.md 2.4）：listed 在库里 / paused 停用（主管停的，或连续 3 次跑不通自动停）/
+ * withdrawn 撤下（没有任务选用、也没有别的库流程调它时才能撤）。流程库的其余类型在 routine-library.ts；
+ * 这个放这里是因为任务详情的「固化流程」区块（routineSummarySchema.library）要用，routine-library.ts 又要引这个文件
+ */
+export const routineLibraryStatusSchema = z.enum(["listed", "paused", "withdrawn"])
+export type RoutineLibraryStatus = z.infer<typeof routineLibraryStatusSchema>
+export const routineLibraryStatusLabel: Record<RoutineLibraryStatus, string> = { listed: "在库里", paused: "停用", withdrawn: "撤下" }
+
 // ---------- 录：过程记录上的录制信息（session_events.trace） ----------
+
+/**
+ * 库流程里的一步（docs/dev/routine-library.md 5.7）：agent 调的（工具 routine.<短名>）、脚本里 ha.routine 调的，
+ * 里面每一步的过程记录都带它。脚本里调的同时还有 routineStep（或 scriptStep）：调用方脚本的第几步、库流程的第几步都看得到。
+ * 进入库流程的那一步本身（脚本里的 ha.routine）是调用方的一步，不带它；两层嵌套时，B 的进入是 A 的一步，带 A 的 library
+ */
+export const libraryTraceSchema = z.object({
+  /** 库流程的编号 RT-<n> */
+  routineId: z.string(),
+  version: z.number().int(),
+  /** 这个库流程里的第几步（从 1 开始；这次调用自己数） */
+  step: z.number().int().positive(),
+  /** 这次调用：agent 调 = 模型的工具调用 id；脚本调 = 进入那一步的调用 id（gateway.call 的 toolCallId）。界面、交接的话按它归步骤 */
+  callId: z.string(),
+  /** 1 = 直接调的；2 = 库流程里再调的（最多 MAX_LIBRARY_DEPTH） */
+  depth: z.number().int().positive(),
+})
+export type LibraryTrace = z.infer<typeof libraryTraceSchema>
 
 export const eventTraceSchema = z.object({
   /** Playwright MCP 输出的 `### Ran Playwright code`（快照 ref 已换成稳定定位，例如 getByRole('button', { name: '查询' })） */
@@ -66,6 +93,8 @@ export const eventTraceSchema = z.object({
    * 只有任务打开「允许直接调网站接口」、这一步里确实记了请求才有；固化员的材料按它把接口对上步骤
    */
   network: z.object({ first: z.number().int().positive(), last: z.number().int().positive() }).optional(),
+  /** 库流程里的一步（docs/dev/routine-library.md 5.7）：哪个库流程、第几版、里面第几步、哪次调用、第几层 */
+  library: libraryTraceSchema.optional(),
 })
 export type EventTrace = z.infer<typeof eventTraceSchema>
 
@@ -305,6 +334,8 @@ export const routineVersionSchema = z.object({
   createdBy: person.nullable(),
   approvedBy: person.nullable(),
   approvedAt: isoTime.nullable(),
+  /** 转正式的时间（试用期连着 3 次脚本直接办成；docs/dev/routine-library.md 2.2）：只有转过正式的版本能发布进流程库 */
+  provenAt: isoTime.nullable(),
   createdAt: isoTime,
   /** 待审核时的那件要人办的事 */
   humanItemId: z.string().nullable(),
@@ -344,9 +375,29 @@ export const routineSummarySchema = z.object({
       auto: z.boolean(),
       /** 这一版有几条 HTTP 工具建议（19.5；内容在 routine.version 里） */
       httpToolSuggestions: z.number().int().min(0),
+      /** 转正式的时间（没转过 = null）：版本记录上标「转过正式」，只有这样的版本能发布进流程库 */
+      provenAt: isoTime.nullable(),
       createdAt: isoTime,
     })
   ),
+  /**
+   * 流程库（docs/dev/routine-library.md 9.2）：发布进库过的（撤下了也有）= 登记的样子；没发布过 = null。
+   * 区块里写「在流程库里：routine.<短名> 第 3 版 · 6 个任务在用」，点了去流程页
+   */
+  library: z
+    .object({
+      slug: z.string(),
+      /** routine.<短名> */
+      toolId: z.string(),
+      title: z.string(),
+      publishedVersion: z.number().int(),
+      status: routineLibraryStatusSchema,
+      /** 选用它的任务有几个 */
+      taskCount: z.number().int().min(0),
+    })
+    .nullable(),
+  /** 转过正式、比库里发布的新（没发布过就是所有转过正式的）版本号，新的在前：主管看到「⋯ → 发布到流程库」，负责人看到「可以请主管发布」 */
+  publishable: z.array(z.number().int()),
 })
 export type RoutineSummary = z.infer<typeof routineSummarySchema>
 
