@@ -319,6 +319,8 @@ const TASK_LABELS: Partial<Record<keyof TaskInput, string>> = {
   desktopIds: "桌面",
   allowDesktopVision: "允许看桌面画面",
   cronSkipIfRunning: "上一次没跑完就跳过这次",
+  autoSolidify: "办成后自动固化",
+  routineSkipTest: "固化时不试跑",
 }
 
 function taskFormatter(names: Names) {
@@ -355,7 +357,10 @@ function taskFormatter(names: Names) {
       case "allowBrowserVision":
       case "allowDesktopVision":
       case "cronSkipIfRunning":
+      case "routineSkipTest":
         return yesNo(Boolean(value))
+      case "autoSolidify":
+        return value === null || value === undefined ? "按默认（被派的、定时的任务开，别的关）" : yesNo(Boolean(value))
       default:
         return str(value)
     }
@@ -637,6 +642,8 @@ export const TOOLS: Record<string, ToolDef> = {
           if (key === "allowBrowserVision" && value === false) continue
           if (key === "allowDesktopVision" && value === false) continue
           if (key === "cronSkipIfRunning" && value === true) continue
+          if (key === "autoSolidify" && value === null) continue
+          if (key === "routineSkipTest" && value === false) continue
         }
         fields.push({ label, after: clip(await format(key, value)) })
       }

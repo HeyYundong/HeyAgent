@@ -16,7 +16,7 @@ import {
 
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
-import { assertCan, audit, badRequest, conflict, nextNo, notFound, type WriteCtx } from "../data/config/common.js"
+import { assertCan, audit, badRequest, conflict, nextNo, notFound, type Tx, type WriteCtx } from "../data/config/common.js"
 import { createHumanItem, notifyAssignee } from "../engine/humans.js"
 import { callStructured, resolveModel, type ResolvedModel } from "../engine/model.js"
 import { notifyUsers } from "../engine/notify.js"
@@ -37,71 +37,139 @@ const taskLink = (taskId: string) => `#/tasks?id=${encodeURIComponent(taskId)}`
 
 /**
  * 运行详情「⋯ → 固化成流程」：已结束、办成的普通运行；任务负责人和主管。
- * 任务还没有固化流程就建一个（RT-<n>），再建一版（status = drafting），发 routine.compile
+ * 查完权限交给 compileFromSession；不试跑没传就按任务的「固化时不试跑」（17.1）
  */
 export async function startCompile(ctx: WriteCtx, input: { sessionId: string; skipTest?: boolean }): Promise<{ routineId: string; versionId: string }> {
   const [row] = await ctx.db
-    .select({ session: t.sessions, ownerId: t.tasks.ownerId })
+    .select({ ownerId: t.tasks.ownerId })
+    .from(t.sessions)
+    .innerJoin(t.tasks, eq(t.tasks.id, t.sessions.taskId))
+    .where(eq(t.sessions.id, input.sessionId))
+  if (!row) throw notFound("运行", input.sessionId)
+  assertCan(ctx.actor, "task.manage", { ownerId: row.ownerId }, "只有任务负责人和主管能把运行固化成流程")
+  const result = await compileFromSession(ctx.db, { sessionId: input.sessionId, skipTest: input.skipTest, createdById: ctx.actor.id, auto: false })
+  // 手动的不传 decide，不会跳过
+  if (!result.started) throw new Error(result.reason)
+  return { routineId: result.routineId, versionId: result.versionId }
+}
+
+type RoutineRow = typeof t.routines.$inferSelect
+type SessionRowForCompile = typeof t.sessions.$inferSelect
+
+/**
+ * 自动固化的判断（routine/auto.ts）：在锁住固化流程之后调，同一个任务的几次运行同时结束也只有一个能建版本。
+ * 返回 baseVersion（null = 固化第一版）就建；返回 skip 就整个事务回滚（刚建的空流程也不留），什么都不做
+ */
+export type CompileDecide = (
+  tx: Tx,
+  input: { routine: RoutineRow; created: boolean; session: SessionRowForCompile }
+) => Promise<{ baseVersion: number | null } | { skip: string }>
+
+export interface CompileFromSessionInput {
+  sessionId: string
+  /** 不试跑；没传按任务的「固化时不试跑」 */
+  skipTest?: boolean | undefined
+  /** 谁点的；自动固化是 null */
+  createdById: string | null
+  /** 运行办成后系统自动固化的（routine_versions.auto） */
+  auto: boolean
+  /** 自动固化的条件；手动的不传：有一版在走就报错，别的不限 */
+  decide?: CompileDecide
+}
+
+export type CompileFromSessionResult =
+  | { started: true; routineId: string; versionId: string; version: number; baseVersion: number | null }
+  | { started: false; reason: string }
+
+class SkipCompile extends Error {}
+
+/**
+ * 不查权限的固化入口（手动的 startCompile、自动的 maybeAutoSolidify 都走这里）：
+ * 运行要是已结束、办成的普通运行；任务还没有固化流程就建一个（RT-<n>），再建一版（status = drafting），发 routine.compile。
+ * 锁住固化流程那一行再查「有没有一版在走」，并发的两次只有一次建得成
+ */
+export async function compileFromSession(db: Db, input: CompileFromSessionInput): Promise<CompileFromSessionResult> {
+  const [row] = await db
+    .select({ session: t.sessions, skipTestDefault: t.tasks.routineSkipTest, title: t.tasks.title })
     .from(t.sessions)
     .innerJoin(t.tasks, eq(t.tasks.id, t.sessions.taskId))
     .where(eq(t.sessions.id, input.sessionId))
   if (!row) throw notFound("运行", input.sessionId)
   const { session } = row
-  assertCan(ctx.actor, "task.manage", { ownerId: row.ownerId }, "只有任务负责人和主管能把运行固化成流程")
   if (session.kind !== "run") throw badRequest("固化试跑的运行不能再固化")
   if (!isRunEnded(session.status)) throw badRequest("运行还没结束，结束后才能固化")
   if (session.outcome !== "achieved") throw badRequest("只有办成的运行能固化成流程")
   if (!session.snapshot) throw badRequest("这次运行没有快照（太老的运行），不能固化")
+  const skipTest = input.skipTest ?? row.skipTestDefault
 
-  return ctx.db.transaction(async (tx) => {
-    const lockRoutine = () => tx.select().from(t.routines).where(eq(t.routines.taskId, session.taskId)).for("update")
-    let [routine] = await lockRoutine()
-    if (!routine) {
-      // 并发点了两次：唯一索引挡住第二个，再读一次就是第一个建的
-      await tx
-        .insert(t.routines)
-        .values({ id: routineIdOf(await nextNo(tx, "routine_no_seq")), taskId: session.taskId, status: "trial" })
-        .onConflictDoNothing({ target: t.routines.taskId })
-      ;[routine] = await lockRoutine()
-    }
-    if (!routine) throw new Error("建固化流程失败")
-    const [busy] = await tx
-      .select({ version: t.routineVersions.version, status: t.routineVersions.status })
-      .from(t.routineVersions)
-      .where(and(eq(t.routineVersions.routineId, routine.id), inArray(t.routineVersions.status, [...IN_PROGRESS])))
-      .limit(1)
-    if (busy)
-      throw conflict(
-        busy.status === "review"
-          ? `第 ${busy.version} 版在等审核，先审核了它再固化`
-          : `第 ${busy.version} 版还在${busy.status === "drafting" ? "写脚本" : "试跑"}，等它写完、试跑完再固化`
-      )
-    const [last] = await tx.select({ n: max(t.routineVersions.version) }).from(t.routineVersions).where(eq(t.routineVersions.routineId, routine.id))
-    const version = (last?.n ?? 0) + 1
-    const versionId = routineVersionIdOf(routine.id, version)
-    // 源运行先跑过这个流程的脚本（停下后 agent 接着办成）：这一版是修那一版
-    const ran = session.routine
-    const baseVersion = ran && ran.mode === "run" && ran.routineId === routine.id ? ran.version : null
-    const [task] = await tx.select({ title: t.tasks.title }).from(t.tasks).where(eq(t.tasks.id, session.taskId))
-    await tx.insert(t.routineVersions).values({
-      id: versionId,
-      routineId: routine.id,
-      version,
-      status: "drafting",
-      name: task?.title ?? "",
-      sourceSessionId: session.id,
-      baseVersion,
-      skipTest: input.skipTest ?? false,
-      createdById: ctx.actor.id,
+  try {
+    return await db.transaction(async (tx) => {
+      const lockRoutine = () => tx.select().from(t.routines).where(eq(t.routines.taskId, session.taskId)).for("update")
+      let [routine] = await lockRoutine()
+      // 这次新建的流程（没有任何版本）；并发时别人先建好的不算
+      let created = false
+      if (!routine) {
+        // 并发点了两次：唯一索引挡住第二个，再读一次就是第一个建的
+        const inserted = await tx
+          .insert(t.routines)
+          .values({ id: routineIdOf(await nextNo(tx, "routine_no_seq")), taskId: session.taskId, status: "trial" })
+          .onConflictDoNothing({ target: t.routines.taskId })
+          .returning({ id: t.routines.id })
+        created = inserted.length > 0
+        ;[routine] = await lockRoutine()
+      }
+      if (!routine) throw new Error("建固化流程失败")
+      const [busy] = await tx
+        .select({ version: t.routineVersions.version, status: t.routineVersions.status })
+        .from(t.routineVersions)
+        .where(and(eq(t.routineVersions.routineId, routine.id), inArray(t.routineVersions.status, [...IN_PROGRESS])))
+        .limit(1)
+      if (busy) {
+        const message =
+          busy.status === "review"
+            ? `第 ${busy.version} 版在等审核，先审核了它再固化`
+            : `第 ${busy.version} 版还在${busy.status === "drafting" ? "写脚本" : "试跑"}，等它写完、试跑完再固化`
+        if (input.decide) throw new SkipCompile(message)
+        throw conflict(message)
+      }
+      let baseVersion: number | null
+      if (input.decide) {
+        const decided = await input.decide(tx, { routine, created, session })
+        if ("skip" in decided) throw new SkipCompile(decided.skip)
+        baseVersion = decided.baseVersion
+      } else {
+        // 源运行先跑过这个流程的脚本（停下后 agent 接着办成）：这一版是修那一版
+        const ran = session.routine
+        baseVersion = ran && ran.mode === "run" && ran.routineId === routine.id ? ran.version : null
+      }
+      const [last] = await tx.select({ n: max(t.routineVersions.version) }).from(t.routineVersions).where(eq(t.routineVersions.routineId, routine.id))
+      const version = (last?.n ?? 0) + 1
+      const versionId = routineVersionIdOf(routine.id, version)
+      await tx.insert(t.routineVersions).values({
+        id: versionId,
+        routineId: routine.id,
+        version,
+        status: "drafting",
+        name: row.title,
+        sourceSessionId: session.id,
+        baseVersion,
+        skipTest,
+        auto: input.auto,
+        createdById: input.createdById,
+      })
+      await audit(tx, input.createdById, "routine.compile", "routine_versions", versionId, {
+        sessionId: session.id,
+        ...(baseVersion !== null ? { baseVersion } : {}),
+        ...(skipTest ? { skipTest: true } : {}),
+        ...(input.auto ? { auto: true } : {}),
+      })
+      await sendRoutineCompile(db, tx, { versionId })
+      return { started: true as const, routineId: routine.id, versionId, version, baseVersion }
     })
-    await audit(tx, ctx.actor.id, "routine.compile", "routine_versions", versionId, {
-      sessionId: session.id,
-      ...(baseVersion !== null ? { baseVersion } : {}),
-      ...(input.skipTest ? { skipTest: true } : {}),
-    })
-    await sendRoutineCompile(ctx.db, tx, { versionId })
-    return { routineId: routine.id, versionId }
-  })
+  } catch (error) {
+    if (error instanceof SkipCompile) return { started: false, reason: error.message }
+    throw error
+  }
 }
 
 // ---------- routine.compile：往下走一步 ----------
@@ -321,8 +389,8 @@ async function afterTest(db: Db, loaded: Loaded) {
 }
 
 /** 试跑结果一句话（审核卡的通用内容、通知） */
-function testLine(round: RoutineTestRound | undefined, skipTest: boolean) {
-  if (skipTest) return "没有试跑（点固化时选了不试跑）"
+function testLine(round: RoutineTestRound | undefined, version: { skipTest: boolean; auto: boolean }) {
+  if (version.skipTest) return version.auto ? "没有试跑（任务设了固化时不试跑）" : "没有试跑（点固化时选了不试跑）"
   if (!round) return "试跑过了"
   const stop = round.stoppedAt
   const where = stop?.kind === "test_commit" ? `走到第 ${stop.step} 次调用、提交「${stop.label ?? ""}」前停下` : stop?.kind === "test_blocked" ? `走到对外发送的 ${stop.tool ?? "工具"} 前停下` : "脚本报了办成"
@@ -333,7 +401,7 @@ function testLine(round: RoutineTestRound | undefined, skipTest: boolean) {
 /** 交给人审核：待审核 + 给任务负责人一件「审核固化流程」 + 通知 */
 async function toReview(db: Db, loaded: Loaded, info: { name: string; description: string; assumptions: string[]; round?: RoutineTestRound }) {
   const { version } = loaded
-  const test = testLine(info.round, version.skipTest)
+  const test = testLine(info.round, version)
   const item = await db.transaction(async (tx) => {
     const moved = await tx
       .update(t.routineVersions)
@@ -344,7 +412,7 @@ async function toReview(db: Db, loaded: Loaded, info: { name: string; descriptio
     return createHumanItem(tx, {
       kind: "routine",
       title: `审核固化流程：${info.name}（第 ${version.version} 版）`,
-      summary: `「${loaded.taskTitle}」的固化流程${version.baseVersion !== null ? `（修第 ${version.baseVersion} 版）` : ""}写好了。${test}。看一下步骤和脚本，决定要不要启用。`,
+      summary: `「${loaded.taskTitle}」的固化流程${originOf(version)}写好了。${test}。看一下步骤和脚本，决定要不要启用。`,
       assigneeId: loaded.ownerId,
       taskId: loaded.taskId,
       sessionId: version.sourceSessionId,
@@ -352,6 +420,7 @@ async function toReview(db: Db, loaded: Loaded, info: { name: string; descriptio
       urgency: 4,
       detail: {
         sections: [
+          ...(version.auto ? [{ title: "自动固化", text: autoSourceText(version) }] : []),
           { title: "步骤", text: info.description || "（没写）" },
           { title: "试跑", text: test },
           ...(info.assumptions.length ? [{ title: "假设", text: info.assumptions.map((each) => `- ${each}`).join("\n") }] : []),
@@ -366,6 +435,18 @@ async function toReview(db: Db, loaded: Loaded, info: { name: string; descriptio
   if (item) await notifyAssignee(db, item)
 }
 
+/** 自动固化的版本在审核卡、通知里都写明（17.1） */
+const AUTO_LABEL = "运行办成后自动固化的"
+
+const autoSourceText = (version: VersionRow) =>
+  version.baseVersion !== null ? `第 ${version.baseVersion} 版跑不通、agent 接手办成以后自动修的` : "任务开着「办成后自动固化」，这次运行办成以后系统自动固化的"
+
+/** 标题后面的括号：自动固化、修第几版 */
+function originOf(version: VersionRow) {
+  const parts = [...(version.auto ? [AUTO_LABEL] : []), ...(version.baseVersion !== null ? [`修第 ${version.baseVersion} 版`] : [])]
+  return parts.length ? `（${parts.join("，")}）` : ""
+}
+
 /** 没成功：原因写清，通知任务负责人 */
 async function fail(db: Db, loaded: Loaded, reason: string) {
   const moved = await db
@@ -377,7 +458,7 @@ async function fail(db: Db, loaded: Loaded, reason: string) {
   await notifyUsers(db, {
     userIds: [loaded.ownerId],
     title: `固化没成功：${loaded.taskTitle}（第 ${loaded.version.version} 版）`,
-    body: reason,
+    body: loaded.version.auto ? `这一版是${AUTO_LABEL}${loaded.version.baseVersion !== null ? `（修第 ${loaded.version.baseVersion} 版）` : ""}。${reason}` : reason,
     link: taskLink(loaded.taskId),
     taskId: loaded.taskId,
     sessionId: loaded.version.sourceSessionId,

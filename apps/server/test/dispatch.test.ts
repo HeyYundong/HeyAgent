@@ -361,7 +361,11 @@ describe("5 处结束回写", () => {
     expect(failed.error).toContain("模型调用失败")
     expect(failed.result).toBeNull()
     expect(failed.log.at(-1)).toMatchObject({ kind: "run_ended", note: "failed", sessionId: failed.sessionId })
-    const notes = await ctx.db.select().from(t.notifications).where(eq(t.notifications.sessionId, failed.sessionId!))
+    // 通知在单结算的事务提交以后才写：等它出现（负载高时测试会先看到单变了）
+    const notes = await waitFor(async () => {
+      const rows = await ctx.db.select().from(t.notifications).where(eq(t.notifications.sessionId, failed.sessionId!))
+      return rows.length ? rows : undefined
+    }, { what: "失败通知" })
     expect(notes.map((note) => note.title)).toEqual([expect.stringContaining("运行失败")])
     // 人派的：运行算派的人开的，没有父运行
     expect(await sessionRow(ctx.db, failed.sessionId!)).toMatchObject({ createdById: "u-wang", parentSessionId: null })

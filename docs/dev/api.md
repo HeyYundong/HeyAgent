@@ -1515,7 +1515,7 @@ claude mcp add --transport http heyagent-compare http://<host>:8080/api/compare/
 |---|---|---|---|
 | `get` | query | 登录即可 | `{ taskId }` → `RoutineSummary \| null`：状态、开关、启用的版本、两个计数、停用原因、最近 20 次的成绩（`recent { runs, direct, fellBack, avgMs, agentAvgMs }`）、所有版本（不带脚本） |
 | `version` | query | 登录即可 | `{ id }` → `RoutineVersion`：一版的全部（步骤说明、脚本、两个 JSON Schema、试跑报告、审核结果、待审核时的 `humanItemId`） |
-| `compile` | mutation | 任务负责人、主管 | `{ sessionId, skipTest? }` → `{ routineId, versionId }`。只有已结束、结果办成的普通运行；同一个流程已经有一版在写、试跑或待审核 `CONFLICT`。源运行跑过脚本的，这一版记 `baseVersion`（修那一版） |
+| `compile` | mutation | 任务负责人、主管 | `{ sessionId, skipTest? }` → `{ routineId, versionId }`。只有已结束、结果办成的普通运行；同一个流程已经有一版在写、试跑或待审核 `CONFLICT`。源运行跑过脚本的，这一版记 `baseVersion`（修那一版）。`skipTest` 不传按任务的 `routineSkipTest` |
 | `review` | mutation | 同上 | `{ versionId, approve, reason? }`（不用要写理由）→ `{ versionId, status }`。只有待审核的；启用 = 这一版 approved、流程指向它、回到试用期、两个计数清零、开关 off 改成 first；不用 = rejected。都把那件「审核固化流程」处理掉 |
 | `setMode` | mutation | 同上 | `{ taskId, mode }` → `{ taskId, mode }`。打开要有启用的版本 |
 | `setPaused` | mutation | 同上 | `{ routineId, paused }` → `{ id, status }`。重新启用回到试用期 |
@@ -1527,6 +1527,12 @@ claude mcp add --transport http heyagent-compare http://<host>:8080/api/compare/
 
 - `drafting`：轮数 +1，用默认模型的 `solidify`（没有用 `plan`）读材料（`routine/material.ts`：精简的过程、输入位置、派活声明、修的版本带旧脚本和停下的原因），按 `routine/prompt.ts` 写脚本；不适合 → `failed`；程序检查（`routine/checks.ts`，acorn 解析）不过、模型出错 → 同一个任务里接着写下一轮；过了 → 选了不试跑的直接审核，否则 `testing` 并开试跑。最多 `ROUTINE_MAX_ROUNDS` = 3 轮。
 - `testing`：试跑的运行结束时（不管怎么结束，引擎都发）读它的 `sessions.routine`：停在 `test_commit` / `test_blocked`、或者报了办成都算过；要交回的结果和源运行一项一项对；过了 → `review`，给负责人一件「审核固化流程」；不过 → 不到 3 轮回 `drafting`，到了 `failed`。没成功都通知负责人。
+
+### 20.3.1 办成后自动固化（第二期，`routine/auto.ts`，开发说明 17.1）
+
+- 任务多两个字段（`tasks.create / update / get`、助手的 `create_task / update_task`）：`autoSolidify`（`boolean | null`，null = 按默认：被派的、定时的任务开，别的关，`autoSolidifyDefault`；不传 = null）、`routineSkipTest`（固化时不试跑，默认 false）。`tasks.update` 是整体替换，这两项也要带上；改了的写进审计 `task.update` 的 `changed`。
+- `routine_versions.auto`：运行办成后系统自动固化的（`created_by_id` 为空，审计 `routine.compile` 的 `actorId` 为空、`detail.auto = true`）。`RoutineVersion.auto`、`RoutineSummary.versions[].auto`。审核卡的摘要和通知写「运行办成后自动固化的」，`detail.sections` 多一节「自动固化」；没成功的通知开头写「这一版是运行办成后自动固化的」。
+- 运行结果定了以后（`afterRunSettled`）调 `maybeAutoSolidify`：普通运行、办成、任务的自动固化开着（按任务现在的设置）。没有固化流程或者还没有启用过的版本 → 第一版；有启用的版本：脚本直接办成不固化，`fell_back` 修那一版，流程停用着、这次只有 agent 修启用的那一版，别的不固化。跳过：有一版在写 / 试跑 / 待审核；24 小时内有过 `auto` 的版本；最近一版 rejected / failed 且 `updated_at` 不到 7 天。判断在锁住 `routines` 那一行以后做，并发只建一版；不试跑照任务的 `routineSkipTest`。人点的 `compile` 不受 24 小时、7 天的限制。
 
 ### 20.4 运行时（`routine/runtime/`、`sandbox-sdk/heyagent/`）
 
