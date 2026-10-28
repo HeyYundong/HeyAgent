@@ -232,6 +232,13 @@
       "when": 1793170432329,
       "tag": "0032_routine_resume",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1793192057511,
+      "tag": "0033_memory_retrieval",
+      "breakpoints": true
     }
   ]
 }
