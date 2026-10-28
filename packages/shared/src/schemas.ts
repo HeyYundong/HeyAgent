@@ -382,6 +382,8 @@ export const taskSchema = z.object({
   allowBrowserEvaluate: z.boolean(),
   /** 是否允许 agent 看画面（browser.look 截图发给模型 + 按坐标操作的工具） */
   allowBrowserVision: z.boolean(),
+  /** 是否允许直接调网站的接口（browser.fetch）、记网页发的请求（docs/dev/solidify.md 第 19 节） */
+  allowBrowserFetch: z.boolean(),
   /** 桌面：选了「桌面」工具时允许用哪些桌面；空 = 全部 */
   desktopIds: z.array(z.string()),
   /** 桌面：是否允许 agent 看画面（desktop.look 截图发给模型、desktop.snapshot 带截图） */

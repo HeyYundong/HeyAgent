@@ -53,6 +53,7 @@ import {
   type EventTrace,
   type AssistantProposalStatus,
   type HttpSpec,
+  type HttpToolSuggestion,
   type HumanDetail,
   type ImportPlan,
   type ImportReadStep,
@@ -536,6 +537,8 @@ export const tasks = pgTable(
     allowBrowserEvaluate: boolean("allow_browser_evaluate").notNull().default(false),
     /** 是否允许 agent 看画面（browser.look 截图发给模型 + 按坐标操作），默认不允许 */
     allowBrowserVision: boolean("allow_browser_vision").notNull().default(false),
+    /** 是否允许直接调网站的接口（browser.fetch）、记网页发的请求（docs/dev/solidify.md 第 19 节），默认不允许 */
+    allowBrowserFetch: boolean("allow_browser_fetch").notNull().default(false),
     /** 桌面：选了「桌面」工具时，允许用哪些桌面（desktops.id）；空表示不限 */
     desktopIds: text("desktop_ids").array().notNull().default(sql`'{}'::text[]`),
     /** 桌面：是否允许 agent 看画面（desktop.look、desktop.snapshot 带截图），默认不允许 */
@@ -1611,6 +1614,8 @@ export const routineVersions = pgTable(
     /** 哪几步会真的改东西（ha.commit 的说明） */
     commits: text("commits").array().notNull().default(sql`'{}'::text[]`),
     assumptions: text("assumptions").array().notNull().default(sql`'{}'::text[]`),
+    /** 固化员建议建的 HTTP 工具（docs/dev/solidify.md 19.5）：只是建议，审核卡上列出来，主管自己去工具页建 */
+    httpSuggestions: jsonb("http_suggestions").$type<HttpToolSuggestion[]>().notNull().default([]),
     /** 没成功的原因：不适合固化、程序检查没过、试跑几轮都没过、模型出错 */
     failReason: text("fail_reason"),
     /** 从哪次运行固化来的（修的版本：agent 接手办成的那次） */

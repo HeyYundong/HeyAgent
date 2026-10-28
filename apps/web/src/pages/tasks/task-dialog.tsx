@@ -317,6 +317,7 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
           allowedDomains: task.allowedDomains,
           allowBrowserEvaluate: task.allowBrowserEvaluate,
           allowBrowserVision: task.allowBrowserVision,
+          allowBrowserFetch: task.allowBrowserFetch,
           desktopIds: task.desktopIds,
           allowDesktopVision: task.allowDesktopVision,
           verifyModelId: task.verifyModelId ?? "",
@@ -331,7 +332,7 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
         }
       : {
           title: "", goal: "", steps: [{ text: "", wait: false }], modelId: defaults.run, ownerId: user.id, schedule: null, enabled: true,
-          memoryIds: [], skillIds: [], toolIds: [], ruleIds: [], browserProfileIds: [], allowedDomains: [], allowBrowserEvaluate: false, allowBrowserVision: false, desktopIds: [], allowDesktopVision: false, verifyModelId: "",
+          memoryIds: [], skillIds: [], toolIds: [], ruleIds: [], browserProfileIds: [], allowedDomains: [], allowBrowserEvaluate: false, allowBrowserVision: false, allowBrowserFetch: false, desktopIds: [], allowDesktopVision: false, verifyModelId: "",
           reviewModelId: defaults.review ?? "",
           dispatch: null, dispatchFrom: [], cronSkipIfRunning: true,
           autoSolidify: null, routineSkipTest: false,

@@ -139,6 +139,7 @@ function columns(input: TaskInput, modelId: string, verifyModelId: string | null
     allowedDomains: [...new Set(input.allowedDomains)],
     allowBrowserEvaluate: input.allowBrowserEvaluate,
     allowBrowserVision: input.allowBrowserVision,
+    allowBrowserFetch: input.allowBrowserFetch,
     desktopIds: [...new Set(input.desktopIds)],
     allowDesktopVision: input.allowDesktopVision,
     verifyModelId,

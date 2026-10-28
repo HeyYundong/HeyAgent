@@ -177,6 +177,7 @@ export async function buildSnapshot(
       allowedDomains: task.allowedDomains,
       allowEvaluate: task.allowBrowserEvaluate,
       allowVision: task.allowBrowserVision,
+      allowFetch: task.allowBrowserFetch,
     }
   }
 

@@ -164,6 +164,7 @@ const taskInputOf = (task: TaskDef): TaskInput => ({
   allowedDomains: task.allowedDomains,
   allowBrowserEvaluate: task.allowBrowserEvaluate,
   allowBrowserVision: task.allowBrowserVision,
+  allowBrowserFetch: task.allowBrowserFetch,
   desktopIds: task.desktopIds,
   allowDesktopVision: task.allowDesktopVision,
   verifyModelId: task.verifyModelId,
@@ -316,6 +317,7 @@ const TASK_LABELS: Partial<Record<keyof TaskInput, string>> = {
   allowedDomains: "网址白名单",
   allowBrowserEvaluate: "允许在网页里执行脚本",
   allowBrowserVision: "允许看画面",
+  allowBrowserFetch: "允许直接调网站接口",
   desktopIds: "桌面",
   allowDesktopVision: "允许看桌面画面",
   cronSkipIfRunning: "上一次没跑完就跳过这次",
@@ -355,6 +357,7 @@ function taskFormatter(names: Names) {
       case "enabled":
       case "allowBrowserEvaluate":
       case "allowBrowserVision":
+      case "allowBrowserFetch":
       case "allowDesktopVision":
       case "cronSkipIfRunning":
       case "routineSkipTest":
@@ -640,6 +643,7 @@ export const TOOLS: Record<string, ToolDef> = {
           if (key === "enabled" && value === true) continue
           if (key === "allowBrowserEvaluate" && value === false) continue
           if (key === "allowBrowserVision" && value === false) continue
+          if (key === "allowBrowserFetch" && value === false) continue
           if (key === "allowDesktopVision" && value === false) continue
           if (key === "cronSkipIfRunning" && value === true) continue
           if (key === "autoSolidify" && value === null) continue

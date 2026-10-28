@@ -117,6 +117,7 @@ function TaskForm({ plan, task, onSave }: { plan: ImportPlan; task: PlanTask; on
       allowedDomains: task.allowedDomains,
       allowBrowserEvaluate: false,
       allowBrowserVision: false,
+      allowBrowserFetch: false,
       verifyModelId: "",
       dispatch: task.dispatch ? { params: task.dispatch.params, maxRunning: task.dispatch.maxRunning, ...retriesOf(task.dispatch) } : null,
       dispatchFrom: task.dispatch?.fromKeys ?? [],

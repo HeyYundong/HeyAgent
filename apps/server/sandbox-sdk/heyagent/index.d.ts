@@ -121,6 +121,34 @@ export interface ClipboardContent {
   fileId?: string
 }
 
+export interface FetchArgs {
+  /** 完整的网址（https://…）。只能调当前页面同源的；任务设了网址白名单时，和当前页面落在同一条白名单里的也行 */
+  url: string
+  /** 默认 GET。GET、HEAD 只读；别的方法会改东西：前面要有自己的 ha.commit（每个会改东西的请求一个），不然不做、脚本停下 */
+  method?: "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE"
+  /** 请求头（照过程里网页发的写，例如 content-type、x-requested-with）。不能设 Cookie、Authorization、Host、Origin、Referer、Proxy-*、Sec-*：登录态由浏览器自己带 */
+  headers?: Record<string, string>
+  /** 请求体：字符串原样发；对象、数组按 JSON 发（没写 content-type 时补 application/json）。GET、HEAD 不能带 */
+  body?: string | Record<string, unknown> | unknown[]
+  /** 怎么读返回：auto（默认，content-type 带 json 的解析成 json，别的给 text）/ json / text */
+  as?: "auto" | "json" | "text"
+  /** CSRF：工具在页面里读出 token 填进这个请求头，值不经过脚本。from = meta（<meta name="name">）或 cookie（不是 HttpOnly 的） */
+  csrf?: { header: string; from: "meta" | "cookie"; name: string }
+}
+
+export interface FetchResult {
+  status: number
+  /** 2xx。4xx、5xx 不抛错，自己看 status（401、403 多半是登录过期了） */
+  ok: boolean
+  contentType: string
+  /** 返回体的字节数 */
+  bytes: number
+  /** 解析好的 JSON（像密码、token 这类字段的值换成了 ••••） */
+  json?: unknown
+  /** 不是 JSON 的文字 */
+  text?: string
+}
+
 export interface ToolResult {
   /** 工具返回的文字 */
   text: string
@@ -198,6 +226,12 @@ export interface Heyagent {
      * 粘贴会改页面上的内容：前面先 ha.commit
      */
     clipboardPaste(args: { text: string } | { table: string[][] } | { fileId: string }): Promise<string>
+    /**
+     * 直接调网站的接口（工具 browser.fetch，任务要打开「允许直接调网站接口」）：在当前页面里发请求，带着浏览器的登录态。
+     * 先 navigate 打开这个网站的一个页面（登录态、同源都靠它）。读列表、翻页、查详情时比一页页点快得多；
+     * 只调过程里记下的接口（network/requests.jsonl），不要猜。连不上、超时、接口要跳转（多半登录过期）抛 StepError
+     */
+    fetch(args: FetchArgs): Promise<FetchResult>
   }
 
   file: {

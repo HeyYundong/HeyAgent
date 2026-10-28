@@ -58,6 +58,11 @@ export const eventTraceSchema = z.object({
   /** agent 用 code.run（tools）写的脚本做的（第 18.1 节）：脚本里第几次调用、哪一次 code.run（模型的工具调用 id） */
   scriptStep: z.number().int().positive().optional(),
   scriptCallId: z.string().optional(),
+  /**
+   * 这一步做的时候网页发了哪几个请求（docs/dev/solidify.md 19.3）：network/requests.jsonl 里 seq 从 first 到 last。
+   * 只有任务打开「允许直接调网站接口」、这一步里确实记了请求才有；固化员的材料按它把接口对上步骤
+   */
+  network: z.object({ first: z.number().int().positive(), last: z.number().int().positive() }).optional(),
 })
 export type EventTrace = z.infer<typeof eventTraceSchema>
 
@@ -228,6 +233,37 @@ export type RoutineTestRound = z.infer<typeof routineTestRoundSchema>
 export const routineTestReportSchema = z.object({ rounds: z.array(routineTestRoundSchema) })
 export type RoutineTestReport = z.infer<typeof routineTestReportSchema>
 
+// ---------- 固化员建议建的 HTTP 工具（routine_versions.http_suggestions，docs/dev/solidify.md 19.5） ----------
+
+/**
+ * 一条建议：记下的接口用 token 认证（请求头里有 Authorization、X-API-Key 这类，不靠 cookie），browser.fetch 调不了，
+ * 主管可以在工具页照这个建一个 HTTP 工具，密钥写成 {{名字}}。只是建议，系统不自动建。
+ * http 和工具页的 HTTP 工具同一个形状（schemas.ts 的 httpSpecSchema；这里不引 schemas.ts，免得互相引用），参数都是 string
+ */
+export const httpToolSuggestionSchema = z.object({
+  /** 工具名（「查询订单详情」这类，十个字左右） */
+  name: z.string(),
+  /** 给模型看的一句话：做什么、什么时候用 */
+  summary: z.string(),
+  /** 为什么建议：哪个接口、为什么 browser.fetch 调不了、建了有什么用 */
+  reason: z.string(),
+  http: z.object({
+    method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
+    /** 网址模板：{参数} 由模型填，{{密钥名}} 是密钥的占位符 */
+    url: z.string(),
+    headers: z.record(z.string(), z.string()).optional(),
+    body: z.string().optional(),
+    params: z.array(z.object({ name: z.string(), type: z.literal("string"), required: z.boolean(), description: z.string().optional() })),
+  }),
+  /** 要主管准备的密钥名字（模板里 {{名字}} 的那些） */
+  secrets: z.array(z.string()),
+  /** 依据：network/requests.jsonl 里哪几个请求（seq） */
+  requestSeqs: z.array(z.number().int().positive()),
+})
+export type HttpToolSuggestion = z.infer<typeof httpToolSuggestionSchema>
+/** 一版最多几条建议 */
+export const HTTP_TOOL_SUGGESTIONS_MAX = 5
+
 // ---------- 接口的输出 ----------
 
 const person = z.object({ id: z.string(), name: z.string() })
@@ -247,6 +283,8 @@ export const routineVersionSchema = z.object({
   outputSchema: jsonSchemaObject,
   commits: z.array(z.string()),
   assumptions: z.array(z.string()),
+  /** 固化员建议建的 HTTP 工具（19.5）；没有是空数组 */
+  httpToolSuggestions: z.array(httpToolSuggestionSchema),
   /** 没成功的原因（不适合固化、程序检查没过、试跑 3 轮都没过） */
   failReason: z.string().nullable(),
   sourceSessionId: z.string().nullable(),
@@ -301,6 +339,8 @@ export const routineSummarySchema = z.object({
       sourceSessionId: z.string().nullable(),
       /** 运行办成后系统自动固化的（第 17.1 节），版本记录上标「自动固化」 */
       auto: z.boolean(),
+      /** 这一版有几条 HTTP 工具建议（19.5；内容在 routine.version 里） */
+      httpToolSuggestions: z.number().int().min(0),
       createdAt: isoTime,
     })
   ),

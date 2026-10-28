@@ -392,6 +392,8 @@ for (const [i, item] of rows.entries()) {
 
 ## 10. P3：直接调网站的接口
 
+> 最早的设想。第三期第一批的定稿见第 19 节，细节以那里为准。
+
 - **记接口**：编排器那条 CDP 连接听页面发出的 XHR / fetch，只记同源、在白名单里、返回 JSON 的。
   - 记方法、路径、参数名、状态码、返回的字段结构和开头 20 KB（隐藏密钥）。
   - 存成这次运行的文件 `network/requests.jsonl`，固化员读它。
@@ -921,68 +923,421 @@ P1 验收：
 
 **没验证的**：真模型会不会照系统提示写循环脚本、固化员会不会用好 `ha.judge`。测试的模型都是假的，`.env` 里的 OpenRouter key 过期了。
 
-## 19. 第三期第一批：直接调网站的接口（草稿，2026-10-28）
+## 19. 第三期第一批：直接调网站的接口（2026-10-28 定稿）
 
-用户 2026-10-28 换了 OpenRouter key，回「你继续吧」：先用真模型验第一、二期，再照第 10 节和给用户的建议做第三期。第二批（流程库、把流程当工具给别的任务用）等真模型验过固化的效果再做。
+用户 2026-10-28 换了 OpenRouter key，回「你继续吧」：先用真模型验第一、二期（第 20 节），再照第 10 节和给用户的建议做第三期。第二批（流程库、把流程当工具给别的任务用）等这一批验过再做。
 
-### 19.1 开关
+这一批做四件事：
 
-- 任务加 `allowBrowserFetch`（界面「允许直接调网站接口」），默认关，和「允许执行脚本」「允许看画面」放在一起。
-- 冻进 `snapshot.browser.allowFetch`。关着时没有 `browser.fetch` 这个工具，也不记接口。
+1. 运行时记下网页自己调的接口（XHR / fetch），存成运行文件 `network/requests.jsonl`；
+2. 新工具 `browser.fetch`：在当前页面里带着浏览器的登录态调网站的接口，agent 和脚本都能用；
+3. 固化员看到这些接口时，读数据改用接口：从一页页点变成直接取；
+4. 要 token 的接口（`browser.fetch` 调不了），固化员建议主管建一个 HTTP 工具。只建议，不自动建。
 
-### 19.2 哪些网址能调（`browser.fetch` 和记接口用同一条）
+### 19.1 开关和快照
 
-- 先要打开过这个网站的页面：只能在当前标签页的页面里发。
-- 任务没设白名单：只能调和当前页面同源的（协议、主机、端口都一样）。
-- 设了白名单：目标主机和当前页面的主机要落在同一条白名单里。例如白名单 `example.com`，从 `www.example.com` 调 `api.example.com` 可以。不引入公共后缀表。
-- 平台账号的租约照「打开网址」的规矩：调平台域名下的网址也要有这个账号的租约。
+- 任务加 `allowBrowserFetch`（界面「允许直接调网站接口」），默认关。放在「允许在网页里执行脚本」「允许看画面」下面。
+- 表：`tasks.allow_browser_fetch`（boolean，默认 false，迁移 0033）。
+- 开始运行时冻进 `snapshot.browser.allowFetch`（老快照没有 = 关）。
+- 关着时：没有 `browser.fetch` 这个工具，也不记接口。
+- 助手改任务时认这个字段（`allowBrowserFetch`，已接好）。
 
-### 19.3 记接口（编排器那一侧，`browser/instance.ts`）
+### 19.2 能调哪些网址
 
-- 开关开着时，编排器自己的 CDP 连接对每个页面 `Network.enable`，只看 XHR / Fetch、按 19.2 能调的、返回 JSON 的请求。
-- 每个请求一行，追加进这次运行的文件 `network/requests.jsonl`（只读目录，和 `downloads/` 一样）：
-  - 时间、方法、网址（查询参数原样，按这次运行的密钥打码）；
-  - 请求头只记名字（`content-type` 记值）；
-  - 请求体开头 2 KB（打码）；
-  - 状态码、返回的 content-type、返回 JSON 的字段结构、开头 20 KB（打码）。
-- 上限：一次运行 500 个请求、2 MB，到了就不再记，最后一行写「后面的没记」。
+`browser.fetch` 和记接口用同一条规矩（`fetchTargetAllowed(target, pageUrl, allowedDomains)`）：
+
+- **要有页面**：只在当前标签页（`instance.frontPage()`）的主 frame 里发。页面不是 http(s)（空白页、出错页）就报错：「先用 browser.navigate 打开这个网站的页面」。
+- **网址**：必须是完整的 http(s) 网址。不认相对路径：规则（`url_not_allowed`）、白名单、过程记录看到的都是真正的目标。
+- **任务没设白名单**：只能调和当前页面同源的（协议、主机、端口都一样）。
+- **设了白名单**：目标的主机和当前页面的主机要落在同一条白名单里（`hostMatches(目标, d) && hostMatches(页面, d)`）。
+  - 例如白名单 `example.com`：从 `www.example.com` 调 `api.example.com` 可以；白名单是 `www.example.com` 时就不行。
+  - 不引入公共后缀表：白名单是主管填的，填多宽就放多宽。
+- **账号租约**：调之前过 `instance.checkNavigation(目标)`，和「打开网址」同一个函数：白名单 + 平台域名的账号租约。租约满了照 navigate 的处理（`blockedOutcome`）。
+- **跳转**：`redirect: "manual"`。接口要跳转就算出错，不跟过去：
+  - 跳去的地方可能不在白名单里，POST 的 307 还会把请求体带过去；
+  - 接口跳转多半是登录过期（跳到登录页），出错文字写「接口要跳转（多半登录过期了）：先用 browser.navigate 打开网站的页面看看」。
+
+### 19.3 记接口
+
+**在哪记**：编排器自己的 CDP 连接（`browser/instance.ts` 的 `watchPage`）。开关开着时，对每个页面再 `Network.enable`（`maxResourceBufferSize` 5 MB、`maxTotalBufferSize` 20 MB），由新的 `browser/network-log.ts` 处理事件。
+
+**记哪些**：
+
+- 只看 `type` 是 XHR、Fetch 的请求。预检（OPTIONS）、文档、脚本、图片都不看。
+- 目标按 19.2 能调的才记（同源，或和页面落在同一条白名单里）。第三方的统计、广告接口自然就不记了。
+- GET、HEAD：只记返回 JSON 的（content-type 带 `json`，或者 `text/plain` 但解析得了）。
+- 别的方法：都记，返回不是 JSON 也记。这是会改东西的请求，固化员最要看。
+- `browser.fetch` 自己发的不记（过程记录里有）：工具执行期间，方法和网址对得上的那一个跳过。
+- 跟着跳转的请求只记最后一跳。
+
+**上限**（常量在 `packages/shared/src/site-api.ts`）：
+
+- 一次运行最多 500 个请求、文件最大 2 MB；
+- 同一个方法 + 网址（含参数）最多记 3 次，免得轮询的接口占满名额；
+- 请求体记开头 2 KB，返回体记开头 20 KB；
+- 到了上限，最后写一行 `{ "end": true, "skipped": n, "reason": "…" }`，之后不再记。
+
+**一行的格式**：`networkRequestLineSchema`（shared）：
+
+```json
+{"seq":12,"at":"2026-10-28T09:12:03.512Z","type":"fetch","method":"GET",
+ "url":"https://shop.example.com/api/items?page=2&size=20","page":"https://shop.example.com/items",
+ "headers":["accept","x-requested-with"],"auth":{"cookie":true,"headers":[]},
+ "status":200,"responseType":"application/json","bytes":18342,
+ "shape":"{ code: number, data: { list: [{ id: number, name: string, price: number, … }], total: number } }",
+ "responseBody":"{\"code\":0,\"data\":{…","responseOmitted":0,"ms":184}
+```
+
+- `seq`：这次运行里第几个，从 1 开始。
+- `headers`：网页设的请求头，只记名字（小写、排好序），值一律不记。
+- `auth.cookie`：实际发出去的请求带没带 cookie（`requestWillBeSentExtraInfo` 的头里有没有 `cookie`）。
+- `auth.headers`：像认证的请求头名字：`authorization`、`x-api-key`、`api-key`、名字里有 `token` 或 `auth` 的（名字里有 `csrf`、`xsrf` 的不算）。
+- `csrf`：请求头名字里有 `csrf`、`xsrf` 时，看它的值等于页面里哪个 `<meta name>` 的 content，或者哪个 cookie 的值（`Network.getCookies`），认出来就写 `{ header, from, name }`，认不出不写。值不记。
+- `shape`：返回 JSON 的字段结构，像 TypeScript 的写法。数组只看第一项，最多 6 层、每层 40 个键，多的写 `…`。
+- `status` 是 0：没拿到返回（连不上、被取消），原因写在 `error`。
+
+**打码**（`SITE_SECRET_KEYS`）：
+
+- 字段名（JSON 的键、查询参数、表单参数）去掉 `_` `-`、不分大小写以后，正好是 `password`、`token`、`accesstoken`、`apikey`、`sessionid`、`csrf` 这些的，值换成 `••••`。
+- 只认整个名字，不用 `maskSecretFields` 的「名字里含 token」：`nextPageToken`、`pageToken`、`tokenCount` 这类要留着，翻页要用。
+- 请求头只记名字。cookie、`Set-Cookie` 不记。
+
+**存在哪**：
+
+- 这次运行的文件，`files.kind = "network"`，名字 `requests.jsonl`，在空间里是 `network/requests.jsonl`。
+- `network/` 是只读目录，和 `downloads/` 一样（`RESERVED_SPACE_DIRS` 已加）。
+- 行先攒在内存里。每次浏览器工具调用结束、网关关闭时，有新行就整份覆盖写一次（新 blob、同一行 files，同 `writeSpaceFile` 的覆盖写法）。
+- Chrome 换了、进程重启以后接着记：先读已有的文件，`seq` 接着编。
+
+**和过程对上**：浏览器工具（含 `browser.fetch`）调用期间记下的请求，网关在过程记录的 `trace.network = { first, last }` 里写上 seq 的范围。
+
+- 两次调用之间发的（轮询、页面自己刷新）不进任何一步，固化员按时间看。
+- 这样固化员不用拿时间去猜「是哪一步之后发的」。
 
 ### 19.4 新工具 `browser.fetch`
 
-- 输入：`{ url, method?: GET, headers?, body?: string | object, as?: "json" | "text" }`。
-- 在当前页面的隔离环境（`Page.createIsolatedWorld` + `Runtime.evaluate`）里发 `fetch(..., { credentials: "include" })`：页面脚本改不了 `fetch`，也看不到参数和结果。
-- 超时 30 秒；返回体最多 5 MB。
-- 风险等级 `external`，和别的浏览器动作一样。
-- GET、HEAD 是只读；别的方法算「会改东西」：
-  - 试跑停在它前面（同 `test_commit`）；
-  - 固化脚本里前面要有 `ha.commit`（程序检查）；
-  - agent 用的照常过规则。
-- 给模型的输出：状态码、content-type，JSON 排好版截到 8 KB，文本截到 8 KB，全文存成「工具输出全文」。
-- 给脚本的 `data`：`{ status, contentType, json?, text? }`，按这次运行的密钥打码。
-- 过程记录的 `trace.code` 写成 `await page.evaluate(() => fetch(...))` 的样子，给固化员看。
+**定义**（`BrowserTools.entries()`，开关开着才有）：
 
-### 19.5 SDK 和固化员
+- id `browser.fetch`，名字「浏览器：调网站接口」，属于「浏览器」这一组。
+- 风险 `external`，和别的浏览器动作一样。规则里按风险、按工具、按网址（`url_not_allowed` 读 `input.url`）的都管得到。
+- 不能放进 `browser.batch`（加进 `NOT_BATCHABLE`）。要连着调几十次：agent 用 `code.run`（tools），固化脚本本来就是循环。
 
-- SDK 加 `ha.browser.fetch({ url, method?, headers?, body? }) → { status, json?, text? }`，`index.d.ts` 写清楚。
-- 材料：把 `network/requests.jsonl` 按「方法 + 路径」归成接口列表：参数名、哪几个参数每次不一样、返回的字段结构、是在哪一步之后发的（按时间对上过程）。
-- 提示词：
-  - 读列表、翻页、查详情，过程里看得到返回 JSON 的接口时，可以先打开一次页面（登录态、同源），再用 `ha.browser.fetch` 直接读，比一页页点快得多。
-  - 会改东西的请求，只有 agent 那次运行确实是通过这个接口改的（过程里看得到）才能照做，前面 `ha.commit`，做完读回核对。
-  - 记录里没有的接口不要猜。
-- HTTP 工具建议：接口用 token 认证（请求头里有 `Authorization`、`X-API-Key` 这类名字，不靠 cookie）的，输出里给 `httpToolSuggestions`（名称、方法、网址模板、参数、认证头的名字），审核卡上列出来，说明「主管可以在工具页建一个 HTTP 工具，密钥写成 `{{名字}}`」。不自动建。
+**输入**（`browserFetchInputSchema`）：
 
-### 19.6 界面
+```ts
+{
+  url: string                // 完整的 http(s) 网址
+  method?: "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE"   // 默认 GET
+  headers?: Record<string, string>
+  body?: string | object | array   // 对象、数组按 JSON 发；没写 content-type 时补 application/json；GET、HEAD 不能带
+  as?: "auto" | "json" | "text"    // 默认 auto：content-type 带 json 的解析成 JSON
+  csrf?: { header: string; from: "meta" | "cookie"; name: string }
+}
+```
 
-- 任务弹窗：「允许直接调网站接口」开关，旁边「?」说明。
-- 运行过程：`browser.fetch` 一行写方法、网址、状态码。
-- 审核卡：「HTTP 工具建议」一节。
-- 空间文件：`network/requests.jsonl` 按表格显示（时间、方法、网址、状态）。
+- **不许设的请求头**（`fetchHeaderForbidden`）：Cookie、Authorization、Host、Proxy-*；另外 Origin、Referer、Content-Length、Connection、Sec-*。
+  - 后面这几个浏览器本来就不让页面设，设了会被悄悄丢掉；直接报错，免得 agent 以为设上了。
+- **CSRF**：给了 `csrf`，工具在页面里读出 token 填进那个请求头。
+  - token 的值不经过模型、脚本，也不进过程记录、重放日志。
+  - 记接口时认出来的 `csrf` 照抄就行。
+  - 读不到（没有这个 meta / cookie）算出错。
 
-### 19.7 分工（真模型验过以后开始）
+**怎么发**：
 
-- **A4（运行时）**：19.1–19.4，`browser/*`、`engine/*`、SDK、工具桥试跑。测试：同源和白名单规则、隔离环境、记接口的上限和打码，以及浏览器测试——本地站点有分页的 JSON 接口，agent（假模型）调 `browser.fetch` 读 30 页。
-- **B4（固化员）**：19.5，`routine/{material,prompt,checks}.ts`，测试。
-- **C4（界面）**：19.6，fixture。
+- 在页面的隔离环境里发：`Page.createIsolatedWorld` + `Runtime.callFunctionOn`，同 `browser/clipboard.ts` 的 `callIsolated`。
+  - 页面脚本改不了这里的 `fetch`，也看不到参数和结果。
+  - origin 还是页面的 origin，cookie 照常带（`credentials: "include"`）。
+- `redirect: "manual"`；超时 30 秒；返回体一边读一边数，超过 5 MB 就停、算出错。
+- 不是文字的返回（图片、文件）：只给大小，不给内容。要文件用下载。
+
+**算不算出错**：
+
+- 4xx、5xx 不算出错：`data.ok = false`，脚本按 `status` 走不同的路（404 = 查不到）。
+- 401、403：输出里多一行提示「多半登录过期了，先用 browser.navigate 打开网站的页面看看要不要登录」。
+- 下面这些算出错（脚本里是 `StepError`）：没有页面、网址不让调、连不上、超时、跨域被拦、接口要跳转、返回体太大、CSRF 读不到。
+
+**给模型的输出**：
+
+- 第一行固定格式，界面靠它显示状态码：
+
+  ```text
+  GET https://shop.example.com/api/items?page=2 → 200 application/json（17.9 KB，184 毫秒）
+  ```
+
+- 下面是返回体：JSON 排好版，文本原样，都按 `SITE_SECRET_KEYS` 打码，最多 20 万字（`FETCH_OUTPUT_MAX_CHARS`）。
+- 网关照常只给模型开头 8000 字，多的存成 `tool-outputs/` 里的全文。
+
+**给脚本的 `data`**（`browserFetchDataSchema`）：`{ status, ok, contentType, bytes, json?, text? }`，同样打码。
+
+**过程记录**：
+
+- `trace.urlBefore` 写发请求的页面；
+- `trace.network` 照 19.3；
+- 不写 `trace.code`：固化员看的是这次调用的参数，比一段代码清楚。
+
+**给 agent 的系统提示**（`engine/prompt.ts` 浏览器那段，开关开着时加）：
+
+- 可以用 browser.fetch 带着登录态直接调网站的接口，读列表、翻页、查详情比一页页点快：先 navigate 打开网站的页面，再调。
+- 网页自己调过的接口记在 `network/requests.jsonl`（方法、网址、返回的字段结构），可以先 `file.read` 看一眼。
+- 不能设 Cookie、Authorization。要 CSRF 的照记录里的 `csrf` 填。
+- 会改东西的请求照常过规则；没把握就照页面点。
+
+### 19.5 工具桥、SDK 和重放
+
+**SDK**：
+
+- `ha.browser.fetch(args) → FetchResult`。`index.d.ts` 已写好（约定）；`index.js` 由 A4 加，同 `extract`，返回 `data`。
+- 程序检查的 `SDK_BROWSER_TOOLS` 加 `fetch: "browser.fetch"`（B4）。
+
+**会改东西的请求要先 `ha.commit`**：
+
+- 在工具桥里判（`bridge.ts` 的 `tool()`），不靠程序检查：脚本里的 `method` 可以是变量，静态看不准。
+- 规矩：固化脚本（mode `run`、`test`）里，`browser.fetch` 的方法不是 GET、HEAD 时，从上一个会改东西的 fetch 以来要有一个新的 `ha.commit`。每个会改东西的请求各有自己的提交点。
+- 不合规矩：不做这一步，脚本停下（`script_error`，原因「第 k 步 POST …：会改东西的接口请求前面要有自己的 ha.commit，没做」）。
+  - 停下而不是抛 `StepError`：这是脚本写错了，不能让脚本接住了接着跑。
+  - 普通运行因此交给 agent，试跑这一轮算没过，交回固化员改。
+- 试跑走到 `ha.commit` 本来就停（`test_commit`），所以试跑永远不会真发会改东西的请求。
+- agent 写的脚本（mode `agent`）不要求：agent 自己在管。
+- 试用期 `ha.commit` 前照常截图存证；过了提交点再出错，交接的话照常写「可能已经生效」。
+
+**重放日志**：
+
+- `browser.fetch` 和别的工具一样记进 `routine_journal`，重放时回记下的结果。
+- 例外：结果太大的（`reply` 序列化后超过 256 KB）只记 `{ ok, text 开头, dataOmitted: true }`。
+  - 重放到这一步时，只读的（GET、HEAD）真做一次，会改东西的照 `atStop` 的规矩交给 agent。
+  - 免得一页 5 MB 的列表把日志表撑大。
+
+### 19.6 固化员
+
+**材料**（`routine/material.ts`）：源运行有 `network/requests.jsonl` 而且源快照 `allowFetch` 开着，才加一节「网页调过的接口」：
+
+- **归类**：按「方法 + 路径模板」。
+  - 路径里的数字、UUID、16 位以上的十六进制、又长又杂的段换成 `{id}`；
+  - 查询参数按名字排序。
+- **每个接口一段**：
+  - 调了几次；
+  - 状态码；
+  - 在哪几步里发的：按 `trace.network` 对上过程里的 #序号；对不上的写时间。
+  - 参数：每个参数取最多 3 个不同的值，标出是固定的还是每次不一样；值等于这次输入的，标「输入在这里」，同 3.3。
+  - 请求体：开头 1 KB；
+  - 认证：cookie / 哪些认证头，有 `csrf` 的照抄出来；
+  - 返回结构 `shape`，加一个返回体样例（开头 1 KB）。
+- **预算**：最多 40 个接口、合计 1.2 万字。会改东西的、被调得多的排在前面，超了写「还有 n 个接口没列」。
+- 网页内容当数据，接口返回的也一样。
+
+**提示词**（`routine/prompt.ts`）：新的规矩只在材料里有接口时才放进去。
+
+1. 读数据（列表、翻页、搜索、详情）时，材料里有对应接口、返回 JSON 的：
+   - 脚本先 `navigate` 打开这个网站的页面（登录态、同源都靠它），再用 `ha.browser.fetch` 直接读；
+   - 翻页按接口的页码 / 游标参数循环；
+   - 读出来的字段要和 agent 那次页面上看到的对得上。
+2. 只调材料里列出的接口和参数，不要猜没记下来的。
+3. 会改东西的请求（POST、PUT、PATCH、DELETE）：
+   - 只有材料里看得到 agent 那次在提交那一步确实发了它，才能改成直接调接口；
+   - 每个请求前面一个 `ha.commit`，做完读回来核对（用接口或页面读都行）；
+   - 没把握就照页面点。
+4. 请求头只写材料里记下的业务头（content-type、x-requested-with 这类），不写 cookie、authorization；CSRF 照材料里的 `csrf` 填 `csrf` 参数。
+5. 检查 `status`：不是 2xx 时，按情况 `ha.fail("page", …)`；401、403 写「多半登录过期了」。
+6. 用 token 认证的接口（`auth.headers` 里有认证头，`auth.cookie` 是 false）：
+   - `browser.fetch` 调不了，脚本里照页面点；
+   - 同时写进 `httpToolSuggestions`（19.7）。
+
+**程序检查**（`routine/checks.ts`）：
+
+- 用了 `ha.browser.fetch`，源快照要 `browser.allowFetch` 是开的：`RoutineCheckInput` 加 `allowFetch`。
+- 关着就不过：「任务没打开『允许直接调网站接口』，脚本里不能用 ha.browser.fetch」。
+
+### 19.7 HTTP 工具建议
+
+**什么时候给**：记下的接口用 token 认证（请求头里有 Authorization、X-API-Key 这类，不靠 cookie）。
+
+- 这种接口 `browser.fetch` 调不了，Authorization 不许设。
+- 而且一般是给程序调的，配成 HTTP 工具最稳。
+- 没有这种接口就给空数组。
+
+**固化员的输出**：`compileOutputSchema` 加 `httpToolSuggestions: z.array(httpSuggestionOutputSchema)`（`routine/prompt.ts` 已定义）：
+
+- 名字、一句话说明、理由；
+- 方法、网址模板（`{参数}`、`{{密钥名}}`）；
+- 请求头数组、请求体模板（空串 = 没有）；
+- 参数清单、要准备的密钥名；
+- 依据：哪几个请求的 seq。
+
+**规整**（`compile.ts`），存进 `routine_versions.http_suggestions`（`HttpToolSuggestion[]`，迁移 0033）：
+
+- 请求头数组变成对象，空的 body 去掉，参数都补 `type: "string"`；
+- 按 `http-template.ts` 的 `syncHttpParams` 对齐参数和模板；
+- 模板里的 `{{名字}}` 和 `secrets` 要对得上，`secrets` 以模板为准；
+- 网址不是 http(s) 的、模板里出现 `••••` 的（把打了码的值抄进去了）去掉；
+- 最多 5 条（`HTTP_TOOL_SUGGESTIONS_MAX`）。
+- 建议不对不算程序检查没过，去掉就是，不为它多写一轮。
+
+**接口**：
+
+- `routine.version` 带上 `httpToolSuggestions`（已接好）；
+- `routine.get` 的版本列表带每版的条数（`httpToolSuggestions: number`，已接好）。
+
+**不自动建**：
+
+- 建 HTTP 工具要主管准备密钥，还要决定风险等级、给哪些任务用。
+- 界面只列出来，配置用 `CodeBlock` 显示，自带复制按钮。
+- 主管照着在工具页建。
+
+### 19.8 界面（C4）
+
+全部用 registry 组件，不加自定义组件。区块标题下不放说明，说明放「?」。
+
+- **任务弹窗**：「允许看画面」下面加一个 `Checkbox`「允许直接调网站接口」。
+  - 写法和旁边两个一样（`Field orientation="horizontal"` + `FieldDescription`），导入向导里同样不显示（`hideEvaluate`）。
+  - 说明：「agent 和固化流程可以带着登录态直接调网站自己用的接口，读列表、翻页快得多；运行时会记下网页调的接口，给固化用。只能调当前网站的；会改东西的请求照常过规则。」
+- **任务详情**：配置里加一行「接口」：「允许直接调网站接口」/「不允许直接调网站接口」。
+- **运行过程**：`browser.fetch` 那一行。
+  - 方法用 `Badge`（`outline`）；网址只显示路径和参数（`truncate`，`title` 看全文）；
+  - 状态码从输出第一行的 `→ 200` 取：2xx 用 `outline`，4xx、5xx 用 `destructive`，出错的照常显示错误。
+- **审核卡**（`sessions/human-routine.tsx`）和「看脚本」弹窗（`tasks/task-routine.tsx`）：有建议时加一节「HTTP 工具建议」。
+  - 「?」写：「这些接口用 token 认证，直接调接口用不了。主管可以在工具页照着建 HTTP 工具，密钥写成 {{名字}}；系统不会自动建。」
+  - 每条一个 `Item`（`outline`）：标题是名字 + 方法 `Badge`；描述是网址模板（等宽字）和理由；一行「要准备的密钥：…」。
+  - 折叠的 `CodeBlock`（JSON，就是 `http` 那一段，自带复制）。
+  - 组件写在 `tasks/routine-parts.tsx`（`HttpSuggestions`），两处共用。
+- **固化流程区块**：启用的那一版有建议时，加一行「第 n 版建议建 k 个 HTTP 工具（在『看脚本』里）」。
+- **空间文件**：`network/requests.jsonl`（`kind = network`，或者第一行能按 `networkLogLineSchema` 解析）在 `FileViewer` 里按表格显示。
+  - `Tabs`（`line`）分「表格」「原文」；
+  - 表格（`Table`）：序号、时间（时:分:秒）、方法、网址（路径和参数，`truncate`）、状态、返回类型、大小；
+  - 点一行，表格下面用 `CodeBlock` 显示这一行的 JSON（排好版）；
+  - 最后一行是 `end` 时，表格下面一行 `text-muted-foreground`：「后面还有 n 个请求没记：原因」。
+- **fixture**（`seed/routine-fixture.ts`）：
+  - 一个打开了开关的任务；
+  - 一次运行：有 `browser.fetch` 的 GET 200、POST 403 两行，和一份 `network/requests.jsonl`（20 行，最后一行 `end`）；
+  - 一版待审核的流程，带 2 条 HTTP 工具建议。
+
+### 19.9 安全
+
+| 担心的事 | 怎么防 |
+|---|---|
+| 把数据发到别的网站 | 只能调同源，或和页面落在同一条白名单里（19.2）；规则的 `url_not_allowed` 看得到 `url`；不跟跳转；平台域名照样要租约 |
+| 登录态外泄 | 不许设 Cookie、Authorization；cookie 由浏览器自己带，工具、脚本、模型都拿不到；CSRF 的值在页面里读、直接填进请求头；记录里请求头只有名字；返回里像密钥的字段打码 |
+| 页面脚本偷看、篡改 | 在隔离环境里发，页面改不了 `fetch`，也看不到参数和结果 |
+| 脚本悄悄改东西 | 会改东西的请求风险是 external，规则照管；固化脚本里每个都要先 `ha.commit`（工具桥判），试跑停在提交前，试用期截图 |
+| 接口返回里夹带指令（注入） | 和网页内容一样当数据；固化员只用记下来的接口；每一版都要人启用 |
+| 记录太大、记了不该记的 | 开关开着才记；只记能调的主机；500 个 / 2 MB / 同一网址 3 次；请求体 2 KB、返回体 20 KB；打码 |
+| HTTP 工具建议带出密钥 | 建议只写 `{{名字}}`；模板里出现 `••••` 的去掉；不自动建，主管自己准备密钥 |
+| 跑太久、太大 | 一次 30 秒、5 MB；脚本照旧最多 1000 次调用、10 分钟 |
+
+和「允许在网页里执行脚本」比：那个能在页面里做任何事（包括发请求），`browser.fetch` 只能发请求，网址、请求头都受管，每次都有记录。只想让 agent 读接口，开这个不开那个。
+
+### 19.10 不做（以后再说）
+
+- **借页面自己的 Authorization**：网站把 token 放在 localStorage、自己加 Authorization 头的，`browser.fetch` 调不了，只能照页面点或建 HTTP 工具。
+  - 可以做成「照抄页面最近一次发给这个主机的认证头」，值不出浏览器。
+  - 但这等于把页面的令牌交给 agent 随便用，先不做，看实际有多少这种网站。
+- **CSRF token 只在某个接口的返回里**：打码以后脚本拿不到，照页面点。
+- **WebSocket、Server-Sent Events**：不记，也不能调。
+- **一键把 HTTP 工具建议建成工具**：等用户用过几次再说。
+
+### 19.11 测试计划
+
+**A4**：
+
+- 单元：
+  - `fetchTargetAllowed`：同源、不同端口、白名单同一条 / 不同条、页面是空白页；
+  - `fetchHeaderForbidden`、输入校验（GET 带 body）；
+  - 打码：`SITE_SECRET_KEYS` 打、`nextPageToken` 不打，查询参数、表单参数、JSON 嵌套；
+  - `shape`：数组、嵌套、深度和键数上限；
+  - 记接口：只记 JSON 的 GET、写请求全记、同一网址 3 次、500 个 / 2 MB 上限和 `end` 行、`seq` 接着编；
+  - 工具桥：
+    - 会改东西的 fetch 前面没有 commit → 停（`script_error`），run 和 test 都是；
+    - 有 commit 的照做；
+    - 两个写请求共用一个 commit → 第二个停；
+    - agent 的脚本不要求；
+    - 结果太大的重放：GET 重做、POST 交给 agent。
+- 浏览器测试（`test-browser/`，真 Chrome，本地站点）：站点要有登录 cookie、`/api/items?page=n` 分页 JSON 接口、带 CSRF meta 的 `POST /api/items`、一个 302 到登录页的接口、`api.localhost` 子域名上的接口（Chrome 把 `*.localhost` 解析到本机）、一个第三方主机的统计请求。
+  - agent（假模型）`navigate` 后调 `browser.fetch` 读 30 页，每页对得上；
+  - 白名单 `localhost`：从 `localhost` 调 `api.localhost` 可以；不设白名单时不行；调第三方主机不行；
+  - 页面脚本改了 `window.fetch`（记下调用），工具照常发，页面什么都没看到；
+  - `csrf: { from: "meta" }` 的 POST 成功，过程记录、日志里没有 token 的值；
+  - 302 的接口报错，写着登录过期的提示；设 `Authorization` 被拒；
+  - `network/requests.jsonl`：记了页面自己的 XHR，密码字段打了码，统计请求没记，`csrf` 认出来了，过程记录的 `trace.network` 对得上；
+  - 固化脚本：`ha.browser.fetch` 读 30 页跑通；POST 前没有 `ha.commit` 时停下交给 agent。
+
+**B4**：
+
+- 单元：
+  - 材料：路径模板归类、参数固定 / 变化、输入标注、按 `trace.network` 对上步骤、预算截断、没打开开关不给；
+  - 提示词：有接口才放新规矩；
+  - 程序检查：`ha.browser.fetch` 要 `allowFetch`；
+  - 建议的规整：请求头数组变对象、参数和模板对齐、`{{}}` 和 `secrets` 对齐、`••••` 的去掉、最多 5 条；
+  - 状态机：建议存进版本、`routine.version` 返回。
+- 真模型：监工合并后做（第 20 节的基准）。
+  - 基准 B 的站点加分页 JSON 接口，打开开关，agent 办一次 → 固化 → 照脚本跑 3 遍；
+  - 看脚本是不是改用接口、用时和第 20 节比；
+  - 再加一个只用 token 认证的接口，看固化员给不给建议。
+
+**C4**：
+
+- `npx tsc -b`、`npm run lint`、`npm run build`；
+- fixture 起服务，浅色、暗色、窄屏看四处：任务弹窗、运行过程、审核卡 / 看脚本、空间文件的表格；
+- 第 7 节的检查清单。
+
+### 19.12 约定（已写好，在分支上）
+
+| 文件 | 内容 |
+|---|---|
+| `packages/shared/src/site-api.ts`（新） | `BROWSER_FETCH_TOOL`；方法、只读方法、`isWriteMethod`；超时、大小上限；不许设的请求头 `fetchHeaderForbidden`；`fetchCsrfSchema`；输入 `browserFetchInputSchema`；给脚本的 `browserFetchDataSchema`；打码 `SITE_SECRET_KEYS` / `siteSecretKey`；`NETWORK_LOG_PATH` 和记接口的上限；一行的格式 `networkRequestLineSchema`、`networkLogEndLineSchema`、`networkLogLineSchema` |
+| `packages/shared/src/routine.ts` | `eventTraceSchema.network`；`httpToolSuggestionSchema`、`HTTP_TOOL_SUGGESTIONS_MAX`；`RoutineVersion.httpToolSuggestions`；`RoutineSummary.versions[].httpToolSuggestions`（条数） |
+| `packages/shared` 其余 | 任务输入 `allowBrowserFetch`（默认 false）、任务 `allowBrowserFetch`；快照 `browser.allowFetch`（默认 false）；运行文件 `kind` 加 `network` |
+| `apps/server/drizzle/0033_site_api.sql` | `tasks.allow_browser_fetch`（默认 false）、`routine_versions.http_suggestions`（jsonb，默认 `[]`） |
+| `apps/server/src` | 读写任务（`data/config/tasks.ts`、`data/loaders.ts`）、快照（`engine/sessions.ts`）、助手（`assistant/tools.ts`、`prompt.ts`）带上开关；`routine/service.ts` 返回建议；`files/service.ts`：`FileKind`、运行文件的种类、只读目录加 `network`；`routine/prompt.ts`：`httpSuggestionOutputSchema`（还没接进 `compileOutputSchema`） |
+| `apps/server/sandbox-sdk/heyagent/index.d.ts` | `FetchArgs`、`FetchResult`、`ha.browser.fetch`（`index.js` 还没有） |
+| `apps/web/src` | 任务弹窗的表单值、导入向导的默认值带上 `allowBrowserFetch`（勾选框还没有）；文件种类的名字「网页请求」 |
+
+### 19.13 分工
+
+三个包可以同时开始，互不等。各在自己的 worktree 和私有库里，守 15.5 的规矩。
+
+**A4（运行时）**，只改这些：
+
+- `browser/instance.ts`（`InstanceInit` 加 `recordNetwork`，`watchPage` 里接上记录）；
+- `browser/manager.ts`（起 Chrome 时按快照传 `recordNetwork`）；
+- 新 `browser/network-log.ts`（记接口、写文件）；
+- 新 `browser/site-api.ts`（`fetchTargetAllowed`、打码、`shape`、在隔离环境里发请求）；
+- `browser/tools.ts`（`browser.fetch` 的定义和执行、`NOT_BATCHABLE`、调用期间的 `trace.network`）；
+- `engine/gateway.ts`（`trace.network` 写进过程记录、网关关闭时写文件）；
+- `engine/prompt.ts`（19.4 的系统提示；只读目录的说明加 `network/`）；
+- `engine/tools/builtin-defs.ts`、`packages/shared/src/engine.ts`（`file.save` / `file.list` 说明里的只读目录加 `network/`）；
+- `files/service.ts`（覆盖写 network 文件的小函数）；
+- `routine/runtime/bridge.ts`（19.5 的 commit 规矩、大结果的重放）；
+- `sandbox-sdk/heyagent/index.js`（`ha.browser.fetch`），`index.d.ts` 要改先说；
+- 测试和 `test-browser/` 的本地站点。
+
+**B4（固化员）**，只改这些：
+
+- `routine/material.ts`、`routine/prompt.ts`（`compileOutputSchema` 接上建议、规矩）、`routine/checks.ts`（`fetch`、`allowFetch`）、`routine/compile.ts`（传 `allowFetch`、规整、存建议）；
+- 测试。
+- 依赖：jsonl 的格式、`trace.network` 照约定。测试自己造 jsonl 文件和过程记录，不用等 A4。
+
+**C4（界面）**，只改这些：
+
+- `apps/web/src`：`pages/tasks/task-dialog.tsx`、`task-detail.tsx`、`run-detail.tsx`（必要时 `run-script.ts`）、`routine-parts.tsx`、`task-routine.tsx`、`pages/sessions/human-routine.tsx`、`components/files/index.tsx`；
+- `apps/server/src/seed/routine-fixture.ts`。
+- 依赖：输出第一行的格式（19.4）、jsonl 的格式、`RoutineVersion.httpToolSuggestions`，都已约定。用 fixture 做，不用等 A4、B4。
+
+**合并顺序**：C4、B4、A4，A4 的浏览器测试在合并后的分支上再跑一遍。然后监工做 19.11 的真模型验收、更新使用手册和接口文档。
+
+### 19.14 和草稿不一样的地方
+
+- **网址要写完整的**：草稿没说。相对路径的话，规则、白名单、过程记录看到的都不是真正的目标。
+- **加了 `csrf` 参数**：草稿是脚本先用 `extract` 读 meta 再填请求头。改成工具在页面里读、直接填：token 的值不经过脚本、不进过程记录和重放日志；还能读 cookie 里的（双提交的网站）。`extract` 读 meta 的写法照样能用，提示词教 `csrf`。
+- **不许设的请求头多了几个**：Origin、Referer、Content-Length、Connection、Sec-*。浏览器本来就会悄悄丢掉，直接报错更清楚。
+- **会改东西的请求每个要自己的 `ha.commit`**：草稿是「前面有 `ha.commit`」。一次 commit 后连发 30 个 POST 的话，截图存证、「可能已经生效」的交接都对不上。不合规矩时停下（`script_error`）而不是抛错，脚本接不住。
+- **打码按整个字段名**：草稿是「按这次运行的密钥打码」。浏览器这边没有我们的密钥，真正要防的是网站返回的 token、密码。现有的 `maskSecretFields` 按「名字里含 token」会把 `nextPageToken` 也打掉，翻页就断了。
+- **会改东西的请求不管返回什么都记**；GET 只记 JSON 的。同一网址最多记 3 次。
+- **对上步骤用 `trace.network`**：草稿是按时间对。现在调用期间的请求直接记 seq 范围，准。
+- **不写 `trace.code`**：固化员看参数就够了。
+- **4xx、5xx 不算出错，跳转算出错**。
+- **输出不在工具里截到 8 KB**：网关本来就截到 8000 字并存全文。工具给到 20 万字，全文能用 `file.read` 读。
+- **给 agent 的系统提示也提 `network/requests.jsonl`**：agent 自己办事时也能先看网页调过哪些接口。
+- **重放日志不存太大的结果**：只读的重做一次。
+- **`RoutineSummary` 只带条数**：内容在 `routine.version` 里，不在任务详情的接口里放大段配置。
 
 ## 20. 真模型验收（2026-10-28）
 

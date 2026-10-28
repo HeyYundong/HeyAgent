@@ -35,6 +35,7 @@ const KIND_LABEL: Record<SessionFile["kind"], string> = {
   upload: "刚上传",
   download: "浏览器下载",
   clipboard: "剪贴板",
+  network: "网页请求",
 }
 
 export type ShownFile = Pick<SessionFile, "id" | "name" | "mime" | "size" | "url"> & Partial<Pick<SessionFile, "kind" | "scope" | "path" | "createdAt" | "updatedAt">>

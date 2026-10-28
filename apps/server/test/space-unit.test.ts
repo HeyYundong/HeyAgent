@@ -368,7 +368,7 @@ describe("workspace 的同步和对比", () => {
     expect(reads).toBe(3)
     expect(await readFile(join(dirs.workspace, "state/progress.json"), "utf8")).toBe('{"done":1}')
     expect(await readFile(join(dirs.ro, "attachments/报价.xlsx"), "utf8")).toBe("xlsx")
-    expect(prepared.readonlyDirs.map((dir) => dir.name)).toEqual(["attachments", "downloads", "screenshots", "tool-outputs", "clipboard"])
+    expect(prepared.readonlyDirs.map((dir) => dir.name)).toEqual(["attachments", "downloads", "screenshots", "tool-outputs", "clipboard", "network"])
     expect([...prepared.before.keys()].sort()).toEqual(["scripts/a.py", "state/progress.json"])
 
     // 模拟代码跑了一次：改一个、touch 一个、删一个、新建几个、建符号链接、在 node_modules 里装包
@@ -401,7 +401,7 @@ describe("workspace 的同步和对比", () => {
     expect(reads).toBe(1) // 只有 state 变了；附件没变不重写
     const left = readdirSync(dirs.workspace).sort()
     // 空目录留着（scripts/ 里的文件被删了，目录还在）
-    expect(left).toEqual(["attachments", "clipboard", "d", "downloads", "node_modules", "out", "screenshots", "scripts", "state", "tool-outputs"])
+    expect(left).toEqual(["attachments", "clipboard", "d", "downloads", "network", "node_modules", "out", "screenshots", "scripts", "state", "tool-outputs"])
     expect(existsSync(join(dirs.workspace, "out/result.csv"))).toBe(false)
     expect(existsSync(join(dirs.workspace, "out/link"))).toBe(false)
     expect(existsSync(join(dirs.workspace, "scripts/a.py"))).toBe(false)

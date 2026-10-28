@@ -19,6 +19,24 @@ export const compileOutputSchema = z.object({
 })
 export type CompileOutput = z.infer<typeof compileOutputSchema>
 
+/**
+ * 固化员建议建的 HTTP 工具（docs/dev/solidify.md 19.5），给模型的形状：字段都必填、没有自由的对象（严格模式）。
+ * B4 把它作为 httpToolSuggestions: z.array(...) 接进 compileOutputSchema，compile.ts 规整成 shared 的 HttpToolSuggestion
+ * （headers 数组 → 对象、body 空串 → 没有、params 补 type: "string"、最多 HTTP_TOOL_SUGGESTIONS_MAX 条）存进 routine_versions.http_suggestions
+ */
+export const httpSuggestionOutputSchema = z.object({
+  name: z.string().describe("工具名，十个字左右，说清做什么"),
+  summary: z.string().describe("给模型看的一句话：做什么、什么时候用"),
+  reason: z.string().describe("为什么建议：是记录里的哪个接口、它用 token 认证所以 browser.fetch 调不了、建了以后有什么用"),
+  method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
+  url: z.string().describe("网址模板：每次不一样的部分写成 {参数名}；密钥（token、key）不写原文，写成 {{密钥名}}"),
+  headers: z.array(z.object({ name: z.string(), value: z.string() })).describe("要带的请求头，认证头的值写成 {{密钥名}}（例如 Bearer {{接口令牌}}）；没有就给空数组"),
+  body: z.string().describe("请求体模板（JSON 文字，参数写 {参数名}）；没有就给空串"),
+  params: z.array(z.object({ name: z.string(), description: z.string(), required: z.boolean() })).describe("模板里每个 {参数名} 一项"),
+  secrets: z.array(z.string()).describe("模板里用到的 {{密钥名}}，主管要准备的"),
+  requestSeqs: z.array(z.number().int()).describe("依据：接口记录里哪几个请求的 seq"),
+})
+
 /** SDK 的类型说明文件（A 包写）：源码在 src/routine/、构建后在 dist/routine/，往上两级都是 apps/server */
 export const SDK_DTS_URL = new URL("../../sandbox-sdk/heyagent/index.d.ts", import.meta.url)
 

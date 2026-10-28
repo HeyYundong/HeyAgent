@@ -1,0 +1,2 @@
+ALTER TABLE "routine_versions" ADD COLUMN "http_suggestions" jsonb DEFAULT '[]'::jsonb NOT NULL;--> statement-breakpoint
+ALTER TABLE "tasks" ADD COLUMN "allow_browser_fetch" boolean DEFAULT false NOT NULL;

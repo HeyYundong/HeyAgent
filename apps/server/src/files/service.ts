@@ -16,10 +16,11 @@ import { LocalDiskStorage, sha256Hex, type FileStorage } from "./storage.js"
  * compare：比物的两张图（归 comparisons 管，删记录时没人再用就一起删）；
  * import：要导入的 zip 包（归 imports 管，放弃导入时一起删；里面可能有明文密钥，只有主管能下载）；
  * download：agent 在浏览器里下载的文件（browser/downloads.ts，属于那次运行）；
- * clipboard：浏览器剪贴板工具存的（复制的网页图片、读到的剪贴板图片和长内容，browser/clipboard.ts，属于那次运行）
+ * clipboard：浏览器剪贴板工具存的（复制的网页图片、读到的剪贴板图片和长内容，browser/clipboard.ts，属于那次运行）；
+ * network：记下的网页请求 network/requests.jsonl（docs/dev/solidify.md 19.3，属于那次运行，一次运行一个，记的过程中覆盖写）
  */
 export type FileKind =
-  "upload" | "attachment" | "artifact" | "tool_output" | "screenshot" | "gallery" | "gallery_thumb" | "import" | "compare" | "download" | "clipboard"
+  "upload" | "attachment" | "artifact" | "tool_output" | "screenshot" | "gallery" | "gallery_thumb" | "import" | "compare" | "download" | "clipboard" | "network"
 export type FileRow = typeof t.files.$inferSelect
 
 let storageInstance: { root: string; storage: FileStorage } | undefined
@@ -180,7 +181,7 @@ export async function readFileData(row: FileRow): Promise<Buffer> {
   return fileStorage().get(row.storagePath)
 }
 
-const SESSION_FILE_KINDS = ["attachment", "artifact", "tool_output", "screenshot", "upload", "download", "clipboard"]
+const SESSION_FILE_KINDS = ["attachment", "artifact", "tool_output", "screenshot", "upload", "download", "clipboard", "network"]
 
 const toSessionFile = (
   row: FileRow,
@@ -215,7 +216,7 @@ export async function listSessionFiles(
 // ---------- Session 空间（docs/dev/session-space.md 第 2 节） ----------
 
 /** 别的来源在空间里的固定目录（只读）；agent 写的文件不能用这几个开头 */
-export const RESERVED_SPACE_DIRS = ["attachments", "downloads", "screenshots", "tool-outputs", "clipboard"] as const
+export const RESERVED_SPACE_DIRS = ["attachments", "downloads", "screenshots", "tool-outputs", "clipboard", "network"] as const
 const DIR_BY_KIND: Record<string, (typeof RESERVED_SPACE_DIRS)[number]> = {
   attachment: "attachments",
   upload: "attachments",
@@ -223,6 +224,7 @@ const DIR_BY_KIND: Record<string, (typeof RESERVED_SPACE_DIRS)[number]> = {
   screenshot: "screenshots",
   tool_output: "tool-outputs",
   clipboard: "clipboard",
+  network: "network",
 }
 const spaceDirOf = (kind: string) => DIR_BY_KIND[kind] ?? "attachments"
 
@@ -261,7 +263,7 @@ export function normalizeSpacePath(raw: string): string {
   }
   if ((RESERVED_SPACE_DIRS as readonly string[]).includes(segments[0]!.toLowerCase()))
     throw new SpacePathError(
-      `${segments[0]}/ 是只读的保留目录（${RESERVED_SPACE_DIRS.map((dir) => `${dir}/`).join(" ")}放附件、下载、截图和工具输出全文），换一个路径，例如 out/${segments.slice(1).join("/") || "result.txt"}`
+      `${segments[0]}/ 是只读的保留目录（${RESERVED_SPACE_DIRS.map((dir) => `${dir}/`).join(" ")}放附件、下载、截图、工具输出全文、剪贴板和记下的网页请求），换一个路径，例如 out/${segments.slice(1).join("/") || "result.txt"}`
     )
   return path
 }

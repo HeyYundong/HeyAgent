@@ -141,6 +141,11 @@ export const taskInputSchema = z.object({
   allowBrowserEvaluate: z.boolean().default(false),
   /** 是否允许 agent 看画面：browser.look 截当前画面发给模型、按坐标点击拖动（Playwright MCP 的 --caps vision），默认不允许 */
   allowBrowserVision: z.boolean().default(false),
+  /**
+   * 是否允许直接调网站的接口（docs/dev/solidify.md 第 19 节）：打开后多一个工具 browser.fetch（带着浏览器的登录态调网页自己用的接口），
+   * 运行时记下网页发的 XHR / fetch 请求（network/requests.jsonl，给固化员看）。默认不允许
+   */
+  allowBrowserFetch: z.boolean().default(false),
   /** 选了「桌面」工具时允许用哪些桌面；空 = 全部桌面都能用 */
   desktopIds: ids.default([]),
   /** 是否允许 agent 看桌面画面：desktop.look 截图发给模型、desktop.snapshot 带截图，默认不允许 */
