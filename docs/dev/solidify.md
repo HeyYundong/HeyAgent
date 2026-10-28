@@ -893,3 +893,30 @@ P1 验收：
   - 浏览器测试：agent 用 `code.run`（`tools`）在真 Chrome 上录 5 行表单。
 - **B3（固化）**：固化员提示词和程序检查认 `ha.judge`；材料带上 agent 脚本的原文；测试。
 - **C3（界面）**：过程里 `scriptStep` 的「脚本」标签；判断事件的显示；`code.run` 工具汇总的显示。
+
+### 18.5 实现记录（2026-10-28）
+
+约定 9941ffe；B3 c69c376、C3 a6db9a6、A3 197bfe6，分别合并；合并后的收尾 c4b1a74。
+
+**和上面说的不一样的地方**
+
+- **A3（运行时）**：
+  - 网关的 `call()` 没有锁，可以重入。code.run 执行期间，脚本经工具桥调 `call()` 直接进来，不会死锁。会死锁的只有脚本里再调 `code.run`（code.run 按运行排队），所以工具桥直接拒绝。
+  - 脚本停在要挂起的一步时，那一步自己已经过了调工具后的钩子。code.run 的结果带着 signals、facts 再过一遍钩子，「遇到验证码」的规则动作会做两遍、检查点会记两遍。所以网关跑 code.run 的钩子时去掉 signals，facts 换成 code.run 自己写回文件的（`ToolOutcome.nested`）。
+  - `ha.commit` / `ha.verified` 在 agent 的脚本里只记在工具桥内存里，不写 `sessions.routine`；`ha.log` 记一条过程「脚本记录：…」。
+  - judge 没答出来的那条过程 kind 是 `error`，标题「流程判断没答出来：…」。固化流程里的判断过程不带 trace，因为它不算工具步。
+  - 判断：有选项时比对容忍前后空白、引号、句末标点，返回选项原文。
+  - SDK 的连接只在有请求等回复时 ref，agent 的脚本跑完就能退出。CommonJS 的脚本要写 `require("heyagent").default`，系统提示只教 `import`。
+- **B3（固化员）**：
+  - 脚本原文单独放一节，不放进过程：过程超过 6 万字时 `clipBlocks` 会省略中间段落。
+  - 用 `file` 跑的，按过程里之前的 file.save 和之后的 file.edit 推出当时的内容；推不出来就读运行结束时空间里的文件，注明可能不是当时的版本。
+  - 程序检查顺带认 `ha.StepError`、`ha.Denied`、`ha.RoutineStop`（以前写 `instanceof ha.StepError` 会被报「SDK 里没有」）。
+- **C3（界面）**：
+  - 脚本做的步骤用 `TraceCollapsible` 收在那次 code.run 下面，超过 8 步默认收起。还没等到 code.run 的单独成组：脚本还在跑的带 shimmer，中途被打断的写「没等到运行代码的结果」。
+  - 判断一行：`ScaleIcon` + `Badge`「判断」+ 问题 → 答案，下面一行理由；窄屏再写一遍问题全文。
+- **监工合并时改的**：
+  - code.run 带 tools 的那条记录也写 `scriptCallId`（它自己的调用 id，没有 `scriptStep`），界面按 id 归步骤。C3 原来按前后顺序猜，碰上中途被打断的脚本加一个没调工具的脚本会配错。B3 的材料已经认这个 id。
+  - 界面按 A3 实际的格式拆工具汇总：`--- 脚本调的工具 ---` 后面几行，工具次数用「、」隔开，停下单独一行。只在 code.run 带 tools 时拆。fixture 也换成实际的格式。
+  - 固化脚本里不能用带工具的 code.run：脚本本身就能调工具，两层工具桥会让过程记录和接着跑都对不上。
+
+**没验证的**：真模型会不会照系统提示写循环脚本、固化员会不会用好 `ha.judge`。测试的模型都是假的，`.env` 里的 OpenRouter key 过期了。

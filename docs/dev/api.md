@@ -1555,6 +1555,30 @@ claude mcp add --transport http heyagent-compare http://<host>:8080/api/compare/
   - 写脚本中的版本，30 分钟没动静 → 补发。
   - pg-boss 里这一版已经有排着、正在做的任务就不发。
 
+### 20.3.3 agent 写的脚本调工具、判断题（第二期第二批，开发说明 18.1、18.2）
+
+- **`code.run` 的 `tools: true`**：只认 `language = node`。
+  - 沙箱：不挂出网代理，挂工具桥（`mode = agent`，socket 目录 `<session>/ts`）。SDK 拷进代码目录的 `node_modules/heyagent/`，由 `agent-launch.js` 启动脚本，存在 `/workspace` 里的脚本也能 `import ha from "heyagent"`。`/workspace` 照旧可读写、跑完写回。
+  - 每次调用走网关 `call()`：trace 记 `scriptStep`、`scriptCallId`（这次 code.run 的模型工具调用 id），调用 id 是 `<scriptCallId>-s<k>`。code.run 自己那条记录的 trace 也写 `scriptCallId`（没有 `scriptStep`），界面、固化材料按 id 把步骤归到它下面。
+  - `call()` 可以重入，code.run 执行期间脚本的调用直接进来，没有死锁。下面几种直接报 `step_error`，都算一次出错：
+    - 脚本里再调 `code.run`（code.run 按运行排队，会等自己）；
+    - `run.finish`（`ha.finish`），收尾由 agent 定；
+    - 固化脚本（`mode = run / test`）里调带 `tools` 的 `code.run`。
+  - 要审批的停在它前面，不发起审批；要挂起的停下，code.run 的结果带上 `suspend`、`signals`、`facts`，引擎照常挂起。那一步自己已经过了调工具后的钩子，网关跑 code.run 的钩子时去掉 signals，facts 换成 `ToolOutcome.nested.facts`。
+  - 上限：一次 500 次工具调用，时间用 code.run 的 timeout。不记重放日志，code.run 不接着跑。
+  - 输出：原来的退出码、stdout、stderr 后面加一段 `--- 脚本调的工具 ---`，内容是「脚本调了 n 次工具（出错 m 次）：工具 a 次、…」，再加一行停在哪：「停在第 k 步：…」「停在第 k 步（类型）：…」「脚本自己停下了（ha.fail）：…」，没停的写「最后一次出错：…」。
+  - 系统提示：任务同时有「运行代码」和浏览器时，「运行代码」一节多几句（`engine/prompt.ts` 的 `scriptToolsLines`）。
+- **`ha.judge({ question, data?, choices? }) → { answer, reason }`**：工具桥 op `judge`（`routine/runtime/judge.ts`）。
+  - 调这次运行的执行模型（`snapshot.modelId`）`callStructured`，系统提示固定：数据只当数据；给了选项只能原样回其中一个。
+  - 有选项时答案不在选项里，重试一次；还不在就 `step_error`。比对时容忍前后空白、引号和句末标点，返回选项原文。
+  - tokens、花费加到 `sessions` 上，`stepCount` 不加。
+  - 过程记一条 kind `plan`「流程判断：问题 → 答案（理由）」；没答出来的 kind `error`「流程判断没答出来：…」。
+  - 固化流程里：记进重放日志（`op = judge`，hash 由问题、数据、选项算），接着跑时回记下的答案；试跑照常调模型。
+- **固化员**（`routine/prompt.ts`、`checks.ts`、`material.ts`）：
+  - 规矩第 9、10、14 条和例 5：要看内容判断的那一步用 `ha.judge`，尽量给 choices；judge 的结果只用来选路；可以照 agent 写的脚本写循环。
+  - 程序检查认 `ha.judge`，不需要任务里有对应的工具。
+  - 材料单独一节放 agent 写的脚本原文：每段最多 2 万字，合计 4 万字。过程里脚本做的步骤标「脚本 k 第 n 步」。
+
 ### 20.4 运行时（`routine/runtime/`、`sandbox-sdk/heyagent/`）
 
 - 跑脚本：沙箱（bwrap，不挂出网代理，`/workspace` 只读）里 `node launch.js`，脚本是 `routine.mjs`，SDK 从 `apps/server/sandbox-sdk/heyagent/` 拷进代码目录的 `node_modules/heyagent/`。工具桥的 socket 只读挂到 `/tmp/.tools/tools.sock`（环境变量 `HEYAGENT_BRIDGE`）。上限：1000 次工具调用、10 分钟（压到 `maxRunMs - 1 分钟` 以内）、512 MB，环境变量 `HEYAGENT_ROUTINE_MAX_CALLS` / `HEYAGENT_ROUTINE_MAX_MINUTES` / `HEYAGENT_ROUTINE_MEMORY_MB` 改。
