@@ -9,9 +9,9 @@ import { and, asc, desc, eq, sql } from "drizzle-orm"
 
 import type { Db } from "../../db/client.js"
 import * as t from "../../db/schema.js"
-import { QUEUES, sendInTx, workPumpJobOptions, type Tx } from "../queue.js"
+import type { Tx } from "../queue.js"
 import { sendWorkDoneInTx } from "./notify.js"
-import { sendPumpInTx } from "./signal.js"
+import { sendPumpAtInTx, sendPumpInTx } from "./signal.js"
 
 export interface SettleOutcome {
   /** done = 运行正常结束（单怎么记看 outcome）；failed = 运行出错、取消、人判失败 */
@@ -150,9 +150,8 @@ export async function writeSettled(
         { status: "queued", result: null, error, failKind: null, outcome: null, outcomeReason: null, notBefore, autoRetries: retry, finishedAt: null },
         [ended, { at: now.toISOString(), kind: "retry_scheduled", retry, notBefore: notBefore.toISOString(), note: error }]
       )
-      // 到点再领：发一个延迟的 work.pump。work.pump 是 stately（同一个 singletonKey 最多排一个），
-      // 延迟的那个要用自己的 key，不然它排在那里时，别的即时 work.pump 会被合并掉；兜底还有每分钟的清扫（只看到点的）
-      await sendInTx(db, tx, QUEUES.workPump, { taskId: item.taskId }, { ...workPumpJobOptions(item.taskId), singletonKey: `${item.taskId}@${notBefore.toISOString()}`, startAfter: notBefore })
+      // 到点再领：发一个延迟的 work.pump（signal.ts 的 sendPumpAtInTx）；兜底还有每分钟的清扫（只看到点的）
+      await sendPumpAtInTx(db, tx, item.taskId, notBefore)
       return { kind: "retry", retry, retries, notBefore, error }
     }
   }

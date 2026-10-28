@@ -15,6 +15,7 @@ import { sweepRoutines } from "../routine/sweep.js"
 import type { Db } from "../db/client.js"
 import { cleanupSessionSandbox, sweepSandboxDirs, sweepThrottled } from "../sandbox/code-run.js"
 import * as t from "../db/schema.js"
+import { notifyBudgetOnce } from "./dispatch/budget.js"
 import { onWorkNotify } from "./dispatch/notify.js"
 import { pumpTask } from "./dispatch/pump.js"
 import { sweepWork } from "./dispatch/sweep.js"
@@ -249,7 +250,14 @@ export async function startEngineWorker(
   await boss.work<{ taskId: string }>(
     QUEUES.workPump,
     { ...polling, localConcurrency: 2 },
-    async ([job]) => job && (await pumpTask(db, job.data.taskId))
+    async ([job]) => {
+      if (!job) return
+      const result = await pumpTask(db, job.data.taskId)
+      // 第三期：今天的花费到了上限，没开新运行：领单的事务已经提交，当天第一次就通知负责人（通知失败不让 work.pump 重试）
+      if (result.budgetHit)
+        await notifyBudgetOnce(db, job.data.taskId, result.budgetHit).catch((error) => console.warn(`[work] ${job.data.taskId} 花费上限的通知没发出去`, error))
+      return result
+    }
   )
   await boss.work(QUEUES.workSweep, polling, async () => sweepWork(db))
   // 派活：单最终结束时叫醒等 work.done:<单号> 的运行（第二期）

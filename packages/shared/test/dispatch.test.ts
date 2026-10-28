@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest"
 import {
   eventValueText,
   readEventPath,
+  reservedEventPrefix,
   taskDispatchSchema,
   workApiCreateInputSchema,
   workItemFromEvent,
@@ -80,6 +81,10 @@ describe("任务配置和接口输入的校验", () => {
     expect(taskDispatchSchema.safeParse({ ...base, events: [{ event: "order.created" }] }).success).toBe(true)
     expect(taskDispatchSchema.safeParse({ ...base, events: [{ event: "a" }, { event: "a" }] }).success).toBe(false)
     expect(taskDispatchSchema.safeParse({ ...base, events: [{ event: "work.done:W-1" }] }).success).toBe(false)
+    // 子 agent 的事件（docs/dev/sub-agents.md 第 12 节第 2 条）也是平台自己用的
+    expect(taskDispatchSchema.safeParse({ ...base, events: [{ event: "subagent.all:R-1" }] }).success).toBe(false)
+    expect(reservedEventPrefix("desktop:D-1")).toBe("desktop:")
+    expect(reservedEventPrefix("my.browser.event")).toBeNull()
     expect(taskDispatchSchema.safeParse({ ...base, events: [{ event: "a", params: { 不存在: "x" } }] }).success).toBe(false)
     expect(taskDispatchSchema.safeParse({ params: noDedupe.params, maxRunning: 1, events: [{ event: "a" }] }).success).toBe(false)
     expect(taskDispatchSchema.safeParse({ params: noDedupe.params, maxRunning: 1, events: [{ event: "a", keyPath: "id" }] }).success).toBe(true)

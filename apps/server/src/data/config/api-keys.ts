@@ -53,6 +53,8 @@ export async function deleteApiKey(ctx: WriteCtx, input: { id: string }) {
 
 export interface ApiKeyUser {
   apiKeyId: string
+  /** 密钥的名字（派活第三期：单的处理记录、第一条消息里写「外部系统（密钥「名字」）」） */
+  apiKeyName: string
   user: { id: string; name: string; email: string; isAdmin: boolean }
 }
 
@@ -60,7 +62,7 @@ export interface ApiKeyUser {
 export async function verifyApiKey(db: Db, key: string): Promise<ApiKeyUser | undefined> {
   if (!key.startsWith(KEY_PREFIX)) return undefined
   const [row] = await db
-    .select({ id: t.apiKeys.id, lastUsedAt: t.apiKeys.lastUsedAt, user: t.users })
+    .select({ id: t.apiKeys.id, name: t.apiKeys.name, lastUsedAt: t.apiKeys.lastUsedAt, user: t.users })
     .from(t.apiKeys)
     .innerJoin(t.users, eq(t.users.id, t.apiKeys.createdById))
     .where(eq(t.apiKeys.sha256, sha256(key)))
@@ -68,5 +70,5 @@ export async function verifyApiKey(db: Db, key: string): Promise<ApiKeyUser | un
   if (!row.lastUsedAt || Date.now() - row.lastUsedAt.getTime() > TOUCH_MS) {
     await db.update(t.apiKeys).set({ lastUsedAt: sql`now()` }).where(eq(t.apiKeys.id, row.id))
   }
-  return { apiKeyId: row.id, user: { id: row.user.id, name: row.user.name, email: row.user.email, isAdmin: row.user.role === "admin" } }
+  return { apiKeyId: row.id, apiKeyName: row.name, user:{ id: row.user.id, name: row.user.name, email: row.user.email, isAdmin: row.user.role === "admin" } }
 }

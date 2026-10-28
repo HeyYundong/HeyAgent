@@ -7,10 +7,11 @@ import type { Auth } from "../auth.js"
 import { verifyApiKey } from "../data/config/api-keys.js"
 import type { Db } from "../db/client.js"
 
-/** 认出来的调用方：密钥调用算密钥的创建人（apiKeyId 有值），cookie 是登录的人 */
+/** 认出来的调用方：密钥调用算密钥的创建人（apiKeyId、apiKeyName 有值），cookie 是登录的人。name 是人的名字（派活的处理记录、不办了的原因用） */
 export interface ApiCaller {
-  user: Actor
+  user: Actor & { name: string }
   apiKeyId?: string
+  apiKeyName?: string
 }
 
 /** 认人：Bearer 密钥优先，没带才看 cookie。认不出时 reason 说清楚 */
@@ -19,11 +20,11 @@ export async function authenticateRequest(deps: { db: Db; auth: Auth }, req: Req
   if (bearer) {
     const key = await verifyApiKey(deps.db, bearer)
     if (!key) return { reason: "API 密钥不对，或者已经删了（在「设置」→「API 密钥」里看）" }
-    return { user: key.user, apiKeyId: key.apiKeyId }
+    return { user: key.user, apiKeyId: key.apiKeyId, apiKeyName: key.apiKeyName }
   }
   const session = await deps.auth.api.getSession({ headers: req.headers })
   if (!session?.user) return { reason: "请先登录，或者在 Authorization: Bearer 里带上 API 密钥" }
-  return { user: { id: session.user.id, isAdmin: session.user.role === "admin" } }
+  return { user: { id: session.user.id, isAdmin: session.user.role === "admin", name: session.user.name } }
 }
 
 /** 返回给外部的地址要完整（经过反向代理时看 X-Forwarded-*） */

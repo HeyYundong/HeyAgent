@@ -51,8 +51,22 @@ export function workNotBefore(input: { notBefore?: string | null; delayMinutes?:
 
 // ---------- 第三期：外部事件自动派单 ----------
 
-/** 平台自己用的事件名前缀：外部事件不能用（派活方等结果、等浏览器、等桌面，这些不经过外部事件接口） */
-export const RESERVED_EVENT_PREFIXES = ["work.done:", "browser.", "desktop:"] as const
+/**
+ * 平台自己用的事件名前缀：外部事件不能用（派活方等结果、等浏览器、等桌面、等子 agent，这些由系统自己叫醒，不经过外部事件接口）。
+ * 任务上「收到事件就派一张」保存时拒；外部事件接口（POST /api/events）和控制台手动触发也拒（docs/dev/sub-agents.md 第 12 节第 2 条）
+ */
+export const RESERVED_EVENT_PREFIXES = ["work.done:", "browser.", "desktop:", "subagent."] as const
+
+/** 每种保留前缀是平台拿来等什么的（拒绝时说清原因） */
+export const reservedEventPurpose: Record<(typeof RESERVED_EVENT_PREFIXES)[number], string> = {
+  "work.done:": "派活方等派出去的单结束",
+  "browser.": "运行等浏览器空出来",
+  "desktop:": "运行等桌面空出来",
+  "subagent.": "运行等子 agent 办完",
+}
+
+/** 事件名用了哪个保留前缀；没用返回 null */
+export const reservedEventPrefix = (name: string) => RESERVED_EVENT_PREFIXES.find((prefix) => name.startsWith(prefix)) ?? null
 
 /**
  * 被派任务上的一条「收到事件就派一张」：外部系统 POST /api/events（或主管在控制台手动触发）的事件名完全一样（区分大小写）时，

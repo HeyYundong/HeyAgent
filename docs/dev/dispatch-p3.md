@@ -200,7 +200,7 @@ curl "http://<host>:8080/api/work-items?task=T-1042&key=ORD-1018-0012" -H "Autho
 | 任务关了「可以被派活」 | 配置在 `dispatch` 里，关了就没了，不会派 |
 | 任务停用 | 照样接单、先排着 |
 | 撞了每天 / 排队上限 | `rejected`，同上通知 |
-| 事件名用了 `work.done:`、`browser.`、`desktop:` 开头 | 保存任务时就拒（`RESERVED_EVENT_PREFIXES`）。这几种是平台内部的事件，本来也不经过 `fireEventImpl` |
+| 事件名用了 `work.done:`、`browser.`、`desktop:`、`subagent.` 开头 | 保存任务时就拒（`RESERVED_EVENT_PREFIXES`）。这几种是平台内部的事件，系统自己叫醒不经过 `fireEventImpl`；外部发来的（事件接口、控制台手动触发）`fireEventImpl` 一律拒（400，第 12 节） |
 | 令牌不对、没配令牌 | 现在的 401，一个都不派 |
 | 同一个事件既叫醒了在等的运行、又配了派单 | 两件事都做，互不影响 |
 
@@ -451,3 +451,43 @@ shared（已写好 `packages/shared/test/dispatch.test.ts`，11 个用例）：�
 - **批量接口**：一次一张；外部系统一次推很多就并发调（去重、上限都在库里保证）。
 - **按密钥限定能派给哪些任务**：现在用任务上的开关管；真要细分，再给密钥加「用途 / 任务」。
 - **跨任务的优先级**、**按小时的花费上限**。
+
+---
+
+## 12. 实现记录（后端，2026-10-28）
+
+按第 9.1 节做完，第 11 节三条按推荐。测试 `apps/server/test/dispatch-p3.test.ts`（28 个用例，第 8 节后端那些全覆盖），shared 的 `dispatch.test.ts` 加了子 agent 前缀的用例。接口说明写在 `docs/dev/api.md` 16.9 节和第 7 节。
+
+**按文件**
+
+- `engine/dispatch/signal.ts`：新 `sendPumpAtInTx(db, tx, taskId, at)`（`singletonKey = <任务>@<时间>`、`startAfter`）；`settle.ts` 的自动重试改用它。
+- `engine/dispatch/dispatch.ts`：`createItemsInTx` 按 1.4 节扩展（`NewWorkItem.priority / notBefore`、`CreateOptions.apiKeyId / apiKeyName / fromEvent`、`created` 的 `note` 写来源、被拒结果带 `limit`；新单马上能领的发即时的 `work.pump`，定了时间的按时间各发一个延迟的）；`ifExists = update` 改优先级、给了才改时间；新 `notifyOwnerOnceToday`（「当天一次」的通知，撞每天上限、花费上限、事件派单没派成三处共用）；`describeItem` 写定了时间、优先级；agent 派单返回的「新建」行改用 `describeItem`。
+- `engine/dispatch/manage.ts`：`dispatchByHuman` 接优先级、时间；`updateWorkParams` 改优先级、时间（等自动重试的 `CONFLICT`）；新 `dispatchByApi`、`cancelWorkItemByApi`（`lockItem` 多一个 `viaApi`：任务要开着 `allowApi`）。
+- `engine/dispatch/events.ts`：`dispatchFromEvent` 和通知。
+- `engine/dispatch/pump.ts`：领单顺序、花费上限（`budgetHit`）、快照的 `fromApi` / `fromEvent`。
+- 新 `engine/dispatch/budget.ts`：`notifyBudgetOnce`；`engine/worker-runtime.ts` 的 `work.pump` 拿到 `budgetHit` 后调它。
+- `work/service.ts`：`QUEUE_ORDER`（领单和名次共用）、`dispatchSpentToday`、`budgetReached`；`listWorkItems` 接 `key`；两个 stats 的 `spentTodayUsd`；`WorkError` 加 `TOO_MANY_REQUESTS`（接口 429；tRPC 也有这个码）。
+- `work/routes.ts`：四个接口。`lib/api-auth.ts` 的 `ApiCaller` 带上人名和密钥名（`verifyApiKey` 多返回 `apiKeyName`）。
+- `engine/sessions.ts`：第一条消息、「运行开始」事件的来源和「来自外部系统」那句。
+- `trpc/work-router.ts`：去掉 `notYetP3`。
+- `seed/work-fixture.ts`：演示数据补了 api / event 派的单、高优先级排队、定了时间的、一个设了 $0.5 上限并且今天已经花了 $0.76 的任务；派活给的那个任务开了 `allowApi`、配了事件 `item.created`。
+
+**另加：外部事件挡平台内部的事件名**（监工审子 agent 设计时定的，`sub-agents.md` 第 12 节第 2 条）
+
+- shared `RESERVED_EVENT_PREFIXES` 加了 `subagent.`（约定加法），另加 `reservedEventPurpose`、`reservedEventPrefix(name)`。任务的「收到事件就派一张」保存时也就拒 `subagent.`。
+- `engine/control.ts` 新 `assertExternalEventName`，`fireEventImpl` 第一步调它：用了 `work.done:` / `browser.` / `desktop:` / `subagent.` 开头的，抛 `EngineError("BAD_REQUEST")`，文字写是哪个前缀、平台拿它等什么、为什么不能发。webhook 回 400（`engine/http.ts` 接住），控制台 `engine.fireEvent` 包了 `engineCall`，回 `BAD_REQUEST`。什么都不做（不叫醒、不触发待办、不派单、不记 `event.fire` 审计）。
+- 核对过：`fireEventImpl` 只有这两个调用方（`engine/http.ts`、`trpc/engine-router.ts`）。系统自己叫醒都不经过它：派活单结束是 `notify.ts` 的 `onWorkNotify`（直接 `waitsForEvent` + `resume`），浏览器 / 桌面空出来是 `browser/leases.ts`、`desktop/leases.ts` 直接 `resume`；测试里 `onWorkNotify` 照样叫醒等 `work.done:` 的运行。
+
+**取舍、和说明不一样的地方**
+
+1. **HTTP 接口用 cookie 调时也要能算出去重键**（2.1 节说 cookie 调用「和控制台完全一样」）：控制台「派一张」在任务没有去重参数时每次都算新的一件事；接口这边不论密钥还是 cookie 都要求 `key` / `Idempotency-Key`，保持 2.3 节「重复提交是幂等的」这条对接口的承诺一致。`via`、权限、不要求 `allowApi` 仍和控制台一样。
+2. **花费上限只在「有到点的排队单」时才算挡住**：花到上限但没有排队的单（例如运行结束时发的 `work.pump`），不返回 `budgetHit`、不通知；有排队的才通知「排队的 N 张明天 0 点以后接着办」。
+3. **`queueStats` 只给设了上限的任务算 `spentTodayUsd`**（没设的写 0，省一次聚合）；`taskStats` 照实算。页面只在有上限时显示花费，不受影响。
+4. **`ifExists = update` 遇到等自动重试的单不改时间**（静默不改，别的照改），和 `work.updateParams` 拒绝改时间的含义一致。
+5. 判断「等自动重试」用 `autoRetries > 0`（不看 `notBefore` 到没到），和 `workWaitKind` 一致；所以重试到点、还没被领的单也不能改时间。
+6. `WorkError` 加了 `TOO_MANY_REQUESTS`；`ApiCaller.user` 多了 `name`，`ApiKeyUser` 多了 `apiKeyName`——都是加法。
+
+**没解决 / 要注意的**
+
+- 网页：运行详情「手动触发事件」按钮（`run-actions.tsx` 的 `FireEventButton`）对在等 `browser.` / `desktop:` / `work.done:` 的运行现在点了会报错（`BAD_REQUEST`，文字说清原因）。网页可以用 `reservedEventPrefix(event)` 判断，这几种不显示按钮。
+- 演示数据的花费上限任务，两次运行在 80、45 分钟前开始：刚过 0 点（上海时间）插的话算在昨天，看不到「到了上限」。

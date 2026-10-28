@@ -1,8 +1,23 @@
 // 派活页的演示数据（开发、测试用，不进正式环境）：一个「巡检」任务派活给一个「处理一张单」的任务，
 // 十来张派活单覆盖各种状态（排队、在办的四种、办完、重办后办完、没办成、不办了）和人派的。
 // 第二期加了：带结构化结果（work.report）的办完、agent 报办不成，以及另一个配了自动重试 2 次的被派任务（等重试、重试用完）。
+// 第三期加了：外部系统（API 密钥）派的、外部事件派的、高优先级排队的、定了时间的，以及一个设了每天花费上限、今天已经花到了的被派任务。
 // 运行（sessions）只插页面要的几列，没有快照和消息，不能「继续」，只用来看。
-import { manualSessionId, taskId as makeTaskId, workItemId, workReportLine, type TaskDispatch, type WorkFailKind, type WorkLogEntry, type WorkReportValue } from "@heyagent/shared"
+import { createHash, randomBytes } from "node:crypto"
+
+import {
+  apiKeyId as makeApiKeyId,
+  manualSessionId,
+  taskId as makeTaskId,
+  WORK_PRIORITY_RANK,
+  workItemId,
+  workReportLine,
+  type TaskDispatch,
+  type WorkFailKind,
+  type WorkLogEntry,
+  type WorkPriority,
+  type WorkReportValue,
+} from "@heyagent/shared"
 import { asc, eq, sql } from "drizzle-orm"
 
 import type { Db } from "../db/client.js"
@@ -13,8 +28,8 @@ const nextNo = async (db: Db, seq: string) => Number((await db.execute<{ n: stri
 /** 几分钟前（负数 = 几分钟后） */
 const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000)
 
-/** 插入演示数据，返回 { 派活的任务, 被派的任务, 配了自动重试的被派任务, 派活单 id } */
-export async function insertWorkFixtures(db: Db): Promise<{ patrolId: string; workerId: string; checkerId: string; itemIds: string[] }> {
+/** 插入演示数据，返回 { 派活的任务, 被派的任务, 配了自动重试的被派任务, 设了花费上限的被派任务, 派活单 id } */
+export async function insertWorkFixtures(db: Db): Promise<{ patrolId: string; workerId: string; checkerId: string; budgetId: string; itemIds: string[] }> {
   const [admin] = await db.select({ id: t.users.id }).from(t.users).where(eq(t.users.role, "admin")).orderBy(asc(t.users.createdAt)).limit(1)
   if (!admin) throw new Error("库里还没有主管账号：先灌演示数据（pnpm db:seed）或在页面上设置管理员")
   const [model] = await db.select({ id: t.models.id }).from(t.models).where(eq(t.models.kind, "chat")).orderBy(asc(t.models.priceIn)).limit(1)
@@ -27,6 +42,16 @@ export async function insertWorkFixtures(db: Db): Promise<{ patrolId: string; wo
       { name: "商品图", description: "商品主图网址；不填就从搜品单里取", required: false, dedupe: false },
     ],
     maxRunning: 1,
+    // 第三期：外部系统能用 API 密钥派活；收到事件 item.created 就派一张（单号取 data.no，30 分钟后办，优先级高）
+    allowApi: true,
+    events: [{ event: "item.created", params: { 单号: "no" }, priority: "high", delayMinutes: 30 }],
+  }
+  // 第三期：设了每天花费上限 $0.5、今天已经花了 $0.62 的被派任务（排队的单明天 0 点以后办）
+  const budgetDispatch: TaskDispatch = {
+    results: [],
+    params: [{ name: "编号", description: "要处理的编号", required: true, dedupe: true }],
+    maxRunning: 1,
+    dailyBudgetUsd: 0.5,
   }
   // 第二期：配了自动重试的被派任务（没办成自动再试 2 次，隔 10 分钟）
   const checkDispatch: TaskDispatch = {
@@ -39,7 +64,19 @@ export async function insertWorkFixtures(db: Db): Promise<{ patrolId: string; wo
   const patrolId = makeTaskId(await nextNo(db, "task_no_seq"))
   const workerId = makeTaskId(await nextNo(db, "task_no_seq"))
   const checkerId = makeTaskId(await nextNo(db, "task_no_seq"))
+  const budgetId = makeTaskId(await nextNo(db, "task_no_seq"))
   await db.insert(t.tasks).values([
+    {
+      id: budgetId,
+      title: "处理一个编号（每天最多花 $0.5）",
+      goal: "按编号把这件事办完",
+      steps: [],
+      ownerId: admin.id,
+      enabled: true,
+      modelId,
+      reviewModelId: modelId,
+      dispatch: budgetDispatch,
+    },
     {
       id: patrolId,
       title: "巡检后台里没完成的搜品单，派给「处理一张搜品单」",
@@ -97,16 +134,26 @@ export async function insertWorkFixtures(db: Db): Promise<{ patrolId: string; wo
   }
   const itemIds: string[] = []
 
+  // 第三期：外部系统用的 API 密钥（演示用，原文没人知道，不能真的拿来调）
+  const demoKeyId = makeApiKeyId(await nextNo(db, "api_key_no_seq"))
+  const demoKey = `hk_${randomBytes(24).toString("base64url")}`
+  await db.insert(t.apiKeys).values({ id: demoKeyId, name: "外部系统 X 同步", hint: demoKey.slice(-4), sha256: createHash("sha256").update(demoKey, "utf8").digest("hex"), createdById: admin.id })
+
   type Spec = {
     no: string
-    /** 被派的任务：默认「处理一张搜品单」；checker = 配了自动重试的那个 */
-    task?: "checker"
+    /** 被派的任务：默认「处理一张搜品单」；checker = 配了自动重试的那个；budget = 设了花费上限的那个 */
+    task?: "checker" | "budget"
     status: (typeof t.workItems.$inferInsert)["status"]
     ago: number
     from?: 0 | 1
     human?: boolean
-    /** 运行：状态、开始于几分钟前、结束于几分钟前；report = 这次运行用 work.report 报过结果；retry = 结束后排队等第几次自动重试 */
-    runs?: { status: (typeof t.sessions.$inferInsert)["status"]; start: number; end?: number; error?: string; wait?: string; report?: boolean; retry?: number }[]
+    /** 第三期：外部系统（API 密钥）派的、外部事件派的 */
+    via?: "api" | "event"
+    priority?: WorkPriority
+    /** 第三期：派的时候说了过多久再办：几分钟后 */
+    scheduleIn?: number
+    /** 运行：状态、开始于几分钟前、结束于几分钟前；report = 这次运行用 work.report 报过结果；retry = 结束后排队等第几次自动重试；cost = 花了多少美元 */
+    runs?: { status: (typeof t.sessions.$inferInsert)["status"]; start: number; end?: number; error?: string; wait?: string; report?: boolean; retry?: number; cost?: number }[]
     result?: string
     /** work.report 报的结构化结果 */
     data?: Record<string, WorkReportValue>
@@ -176,29 +223,46 @@ export async function insertWorkFixtures(db: Db): Promise<{ patrolId: string; wo
       failKind: "error",
       autoRetries: 2,
     },
+    // 第三期：外部系统派的（排队，高优先级，排在前面两张之前）、外部事件派的（定了 30 分钟后办）、外部系统派的已经办完
+    { no: "PSS-1016-0037", status: "queued", ago: 5, via: "api", priority: "high" },
+    { no: "PSS-1016-0038", status: "queued", ago: 3, via: "event", priority: "high", scheduleIn: 27 },
+    { no: "PSS-1016-0039", status: "queued", ago: 2, human: true, priority: "low", scheduleIn: 118 },
+    { no: "PSS-1016-0026", status: "done", ago: 200, via: "api", runs: [{ status: "done", start: 190, end: 170 }], result: "已办完，结果写回了外部系统要的字段。", data: { 件数: 2 } },
+    // 第三期：花费上限的任务今天已经花了 $0.76（上限 $0.5）：两张办完，两张排队等明天
+    { no: "N-0001", task: "budget", status: "done", ago: 90, via: "api", runs: [{ status: "done", start: 80, end: 60, cost: 0.38 }], result: "办完了。" },
+    { no: "N-0002", task: "budget", status: "done", ago: 50, via: "event", runs: [{ status: "done", start: 45, end: 20, cost: 0.38 }], result: "办完了。" },
+    { no: "N-0003", task: "budget", status: "queued", ago: 15, via: "api" },
+    { no: "N-0004", task: "budget", status: "queued", ago: 8, via: "event", priority: "high" },
   ]
 
   for (const spec of specs) {
     const id = workItemId(await nextNo(db, "work_item_no_seq"))
     itemIds.push(id)
-    const target = spec.task === "checker" ? checkerId : workerId
-    const fromSessionId = spec.human ? null : patrolRuns[spec.from ?? 0]!
-    const log: WorkLogEntry[] = [{ at: minutesAgo(spec.ago).toISOString(), kind: "created", ...(spec.human ? { byId: admin.id } : {}) }]
+    const target = spec.task === "checker" ? checkerId : spec.task === "budget" ? budgetId : workerId
+    const external = Boolean(spec.via)
+    const fromSessionId = spec.human || external ? null : patrolRuns[spec.from ?? 0]!
+    const source = spec.via === "api" ? `外部系统（密钥「外部系统 X 同步」）` : spec.via === "event" ? "外部事件「item.created」" : undefined
+    const log: WorkLogEntry[] = [
+      { at: minutesAgo(spec.ago).toISOString(), kind: "created", ...(spec.human || spec.via === "api" ? { byId: admin.id } : {}), ...(source ? { note: source } : {}) },
+    ]
     await db.insert(t.workItems).values({
       id,
       taskId: target,
       key: spec.no,
-      title: `搜品单 ${spec.no}${spec.human ? "（试一张）" : ""}`,
-      params: { 单号: spec.no },
+      title: spec.task === "budget" ? `编号 ${spec.no}` : `搜品单 ${spec.no}${spec.human ? "（试一张）" : ""}`,
+      params: spec.task === "budget" ? { 编号: spec.no } : { 单号: spec.no },
       status: spec.status,
-      via: spec.human ? "human" : "agent",
-      fromTaskId: spec.human ? null : patrolId,
+      via: spec.via ?? (spec.human ? "human" : "agent"),
+      priority: WORK_PRIORITY_RANK[spec.priority ?? "normal"],
+      fromTaskId: spec.human || external ? null : patrolId,
       fromSessionId,
-      fromUserId: spec.human ? admin.id : null,
+      fromUserId: spec.human || spec.via === "api" ? admin.id : null,
+      apiKeyId: spec.via === "api" ? demoKeyId : null,
+      fromEvent: spec.via === "event" ? "item.created" : null,
       createdAt: minutesAgo(spec.ago),
       error: spec.error ?? null,
       failKind: spec.status === "failed" ? (spec.failKind ?? "error") : null,
-      notBefore: spec.retryIn !== undefined ? minutesAgo(-spec.retryIn) : null,
+      notBefore: spec.retryIn !== undefined ? minutesAgo(-spec.retryIn) : spec.scheduleIn !== undefined ? minutesAgo(-spec.scheduleIn) : null,
       autoRetries: spec.autoRetries ?? 0,
       result:
         spec.result || spec.data
@@ -231,7 +295,7 @@ export async function insertWorkFixtures(db: Db): Promise<{ patrolId: string; wo
         triggeredBy: "dispatch",
         startedAt: minutesAgo(each.start),
         endedAt: each.end !== undefined ? minutesAgo(each.end) : null,
-        costUsd: each.status === "done" ? 0.38 : 0.05,
+        costUsd: each.cost ?? (each.status === "done" ? 0.38 : 0.05),
         error: each.error ?? null,
         workItemId: id,
         parentSessionId: fromSessionId,
@@ -266,5 +330,5 @@ export async function insertWorkFixtures(db: Db): Promise<{ patrolId: string; wo
       })
       .where(eq(t.workItems.id, id))
   }
-  return { patrolId, workerId, checkerId, itemIds }
+  return { patrolId, workerId, checkerId, budgetId, itemIds }
 }
