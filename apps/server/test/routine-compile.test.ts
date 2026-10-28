@@ -307,7 +307,10 @@ describe("程序检查", () => {
     const result = checkRoutine({ ...base, code: GOOD_CODE, dispatch: DISPATCH })
     expect(result.problems).toEqual([])
     expect(result.usedTools).toEqual(["browser", "run.finish", "work.report"])
-    expect(result.inputSchema).toEqual(JSON.parse(INPUT_SCHEMA))
+    // 属性顺序记进 x-order（jsonb 存进去会按键长短重排，p1、p2 要照作者写的顺序）
+    expect(result.inputSchema).toEqual({ ...JSON.parse(INPUT_SCHEMA), "x-order": ["单号"] })
+    const ordered = checkRoutine({ ...base, code: GOOD_CODE, inputSchema: '{"type":"object","properties":{"工厂链接":{"type":"string"},"单号":{"type":"string"},"q":{"type":"string"}},"required":["单号"]}' })
+    expect(ordered.inputSchema?.["x-order"]).toEqual(["工厂链接", "单号", "q"])
     expect(checkRoutine({ ...base, code: wrap(`await ha.tool("http-erp", { q: input.单号 }); await ha.commit("保存"); await ha.verified("好"); await ha.log("x"); await ha.now()`) }).problems).toEqual([])
   })
 
@@ -402,7 +405,7 @@ describe("固化的状态机（假固化员 + 假试跑结果）", () => {
 
     let version = await versionRow(data.versionId)
     expect(version).toMatchObject({ status: "testing", round: 1, name: "查单号的状态", code: GOOD_CODE, modelId: SOLIDIFIER, assumptions: ["默认取第一行"] })
-    expect(version.inputSchema).toEqual(JSON.parse(INPUT_SCHEMA))
+    expect(version.inputSchema).toEqual({ ...JSON.parse(INPUT_SCHEMA), "x-order": ["单号"] })
     expect(version.costUsd).toBeCloseTo(0.002)
     // 固化员拿到的：规矩、SDK、材料
     expect(model.promptText(0)).toContain("固化员")

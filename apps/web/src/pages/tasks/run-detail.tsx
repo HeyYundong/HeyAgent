@@ -4,6 +4,8 @@
 // 派活：meta 前面写怎么开始的（派活触发写清哪张单、谁派的）；被派来的加「派来的活」，派过活的加「派出去的活」（docs/dev/dispatch.md 9.4 节）。
 // 子 agent（docs/dev/sub-agents.md 11.1，run-subagents.tsx）：拆过的父运行在「结果」后加「子 agent」区块、花费写「含子 agent」；
 // 子运行 meta 写「第 2 个子 agent · 父运行 R-12-3」，检查点的位置换成「子目标」，不显示改结果、总结、固化（结果是子 agent 自报的，不复核）。
+// 流程库（docs/dev/routine-library.md 9.3）：库流程里的步骤（trace.library）按 callId 收在调它的那一行下面（run-script.ts 的 nestLibrary），两层的再套一层；
+// agent 调的那一行写「流程『…』第 3 版」+「库流程」，下面一行结局（跑完 · 7 步 · 4.8 秒 · 交回 …，或停在第几步、交回 agent）。
 // 运行代码（code.run）的步骤单独显示：语言、代码、退出码、stdout / stderr（格式见 docs/dev/session-space.md 3.2）；解析不了就退回通用的输入 / 输出。
 // 不带页面级布局和返回链接，放进任何 768px 宽的抽屉都能用（任务页、Session 页的抽屉都直接放它）。
 // 传进来的 run 是 sessions.list 的摘要（不带过程）：标题、检查点、验收先显示；过程按 id 另取（sessions.get），取到前是骨架屏。
@@ -24,12 +26,12 @@ import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Spinner } from "@/components/ui/spinner"
 import { Trace, TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigger, TraceDescription, TraceIcon, TraceLine, TraceTitle } from "@/components/ui/trace"
-import { can, eventTimeText, fmtDateTime, isReviewing, isRunEnded, outcomeOf, outcomeReasonOf, SUB_SOURCE_LABEL, WORK_DISPATCH_TOOL_ID } from "@heyagent/shared"
+import { can, eventTimeText, fmtDateTime, isReviewing, isRoutineToolId, isRunEnded, outcomeOf, outcomeReasonOf, SUB_SOURCE_LABEL, WORK_DISPATCH_TOOL_ID } from "@heyagent/shared"
 import type { RunEvent, RunEventKind, SessionSummary, TaskDef, Verification } from "@heyagent/shared"
 
 import { CodeView } from "@/components/files"
 import { MarkdownView } from "@/components/markdown"
-import { useHumanItems, useModels, useSessionQuery, useStaffName, useToolName } from "@/lib/data"
+import { useHumanItems, useModels, useRoutineLibraryQuery, useSessionQuery, useStaffName, useToolName } from "@/lib/data"
 import { useAction } from "@/lib/mutations"
 import { href } from "@/lib/router"
 import { useMe } from "@/lib/session"
@@ -49,7 +51,8 @@ import { RunMemorySection } from "./run-memory"
 import { RunOutcomeSection } from "./run-outcome"
 import { canSolidify, isRoutineTest, RoutineRunLine, SolidifyDialog } from "./run-routine"
 import { costText, isQueuedSubRun, isSubRun, SubagentsSection, SubGoalSection, SubRunSource } from "./run-subagents"
-import { CODE_RUN_TOOL_ID, fetchCallOf, groupScriptEvents, isErrorStep, judgeOf, parseToolsSummary, TOOLS_MARK } from "./run-script"
+import { stopReasonText } from "./routine-parts"
+import { CODE_RUN_TOOL_ID, fetchCallOf, groupScriptEvents, isErrorStep, judgeOf, libraryResultText, libraryStepCount, nestLibrary, parseToolsSummary, TOOLS_MARK, type EventItem, type LibraryGroup, type LibraryNode } from "./run-script"
 
 const EVENT_ICON: Record<RunEventKind, LucideIcon> = { plan: ListTreeIcon, think: BrainIcon, tool: WrenchIcon, checkpoint: FlagIcon, rule: ShieldIcon, wait: PauseIcon, resume: PlayIcon, human: UserIcon, verify: ScanSearchIcon, done: CircleCheckIcon, error: TriangleAlertIcon }
 
@@ -164,28 +167,58 @@ function EventsSkeleton({ count }: { count: number }) {
   )
 }
 
-/** 过程：agent 用 code.run（tools）写的脚本做的步骤收成一组，放在那次 code.run 下面（还在跑的单独一组） */
+/** 库流程编号 → 短名、名字（流程库没取到时都是 undefined，照样能归组，只是不按工具 id 核对） */
+function useLibraryNames() {
+  const library = useRoutineLibraryQuery().data
+  return React.useMemo(() => {
+    const byId = new Map((library ?? []).map((entry) => [entry.routineId, entry]))
+    return { slugOf: (routineId: string) => byId.get(routineId)?.slug, titleOf: (routineId: string) => byId.get(routineId)?.title }
+  }, [library])
+}
+
+/** 过程：agent 用 code.run（tools）写的脚本做的步骤收成一组，放在那次 code.run 下面（还在跑的单独一组）；库流程里的步骤收在调它的那一行下面 */
 function EventList({ events, run }: { events: RunEvent[]; run: SessionSummary }) {
-  const items = React.useMemo(() => groupScriptEvents(events), [events])
+  const { slugOf } = useLibraryNames()
+  const nodes = React.useMemo(() => nestLibrary<EventItem>(groupScriptEvents(events), (item) => (item.kind === "event" ? item.event : undefined), 1, slugOf), [events, slugOf])
   const lastSeq = run.status === "running" ? events.at(-1)?.seq : undefined
   return (
     <Trace className="gap-3">
-      {items.map((item) => item.kind === "script" ? (
-        <ScriptSteps key={`script-${item.steps[0]!.seq}`} steps={item.steps} run={run} lastSeq={lastSeq} pending />
-      ) : item.script ? (
-        <div key={item.event.seq} className="flex flex-col gap-1">
-          <EventRow event={item.event} run={run} running={item.event.seq === lastSeq} />
-          <ScriptSteps steps={item.script} run={run} lastSeq={lastSeq} />
-        </div>
-      ) : (
-        <EventRow key={item.event.seq} event={item.event} run={run} running={item.event.seq === lastSeq} />
-      ))}
+      {nodes.map((node) => {
+        if (node.kind === "library") return <LibrarySteps key={`library-${node.group.callId}`} group={node.group} run={run} lastSeq={lastSeq} pending />
+        const { item } = node
+        if (item.kind === "script") return <ScriptSteps key={`script-${item.steps[0]!.seq}`} steps={item.steps} run={run} lastSeq={lastSeq} pending />
+        if (!item.script && !node.library) return <EventRow key={item.event.seq} event={item.event} run={run} running={item.event.seq === lastSeq} />
+        return (
+          <div key={item.event.seq} className="flex flex-col gap-1">
+            <EventRow event={item.event} run={run} running={item.event.seq === lastSeq} library={node.library} />
+            {item.script && <ScriptSteps steps={item.script} run={run} lastSeq={lastSeq} />}
+            {node.library && <LibrarySteps group={node.library} run={run} lastSeq={lastSeq} />}
+          </div>
+        )
+      })}
     </Trace>
   )
 }
 
+/** 一串步骤（脚本的、库流程的）：库流程里的步骤收在进入它的那一行下面 */
+function StepNodes({ nodes, run, lastSeq }: { nodes: LibraryNode<RunEvent>[]; run: SessionSummary; lastSeq?: number }) {
+  return nodes.map((node) => {
+    if (node.kind === "library") return <LibrarySteps key={`library-${node.group.callId}`} group={node.group} run={run} lastSeq={lastSeq} pending />
+    const step = node.item
+    if (!node.library) return <EventRow key={step.seq} event={step} run={run} running={step.seq === lastSeq} />
+    return (
+      <div key={step.seq} className="flex flex-col gap-1">
+        <EventRow event={step} run={run} running={step.seq === lastSeq} library={node.library} />
+        <LibrarySteps group={node.library} run={run} lastSeq={lastSeq} />
+      </div>
+    )
+  })
+}
+
 /** 一次 code.run 的脚本做的步骤：缩进一层、能收起；步骤多（超过 8 步）默认收起。pending = 还没等到那次 code.run 的结果（脚本还在跑，或者中断了） */
 function ScriptSteps({ steps, run, lastSeq, pending = false }: { steps: RunEvent[]; run: SessionSummary; lastSeq?: number; pending?: boolean }) {
+  const { slugOf } = useLibraryNames()
+  const nodes = React.useMemo(() => nestLibrary(steps, (step) => step, 1, slugOf), [steps, slugOf])
   const errors = steps.filter(isErrorStep).length
   const live = pending && lastSeq !== undefined && steps.some((step) => step.seq === lastSeq)
   return (
@@ -199,12 +232,42 @@ function ScriptSteps({ steps, run, lastSeq, pending = false }: { steps: RunEvent
       </TraceCollapsibleTrigger>
       <TraceCollapsibleContent>
         <Trace className="gap-2">
-          {steps.map((step) => <EventRow key={step.seq} event={step} run={run} running={step.seq === lastSeq} />)}
+          <StepNodes nodes={nodes} run={run} lastSeq={lastSeq} />
         </Trace>
       </TraceCollapsibleContent>
     </TraceCollapsible>
   )
 }
+
+/** 一次库流程调用里的步骤：缩进一层、能收起，超过 8 步默认收起；里面再调的库流程再套一层。pending = 没认到调它的那一行（还在跑，或者中断了） */
+function LibrarySteps({ group, run, lastSeq, pending = false }: { group: LibraryGroup; run: SessionSummary; lastSeq?: number; pending?: boolean }) {
+  const { titleOf } = useLibraryNames()
+  const all = flatSteps(group.steps)
+  const count = libraryStepCount(group)
+  const errors = all.filter(isErrorStep).length
+  const live = lastSeq !== undefined && all.some((step) => step.seq === lastSeq)
+  const name = `流程「${titleOf(group.routineId) ?? group.routineId}」第 ${group.version} 版`
+  return (
+    <TraceCollapsible defaultOpen={live || count <= 8} className="pl-5.5">
+      <TraceCollapsibleTrigger>
+        <TraceLine status={live ? "running" : undefined}>
+          <TraceIcon><WorkflowIcon /></TraceIcon>
+          <TraceTitle>{pending ? (live ? `${name}在跑，已经做了 ${count} 步` : `${name}做的 ${count} 步（没等到结果）`) : `${name}做的 ${count} 步`}</TraceTitle>
+          {errors > 0 && <TraceDescription>出错 {errors} 次</TraceDescription>}
+        </TraceLine>
+      </TraceCollapsibleTrigger>
+      <TraceCollapsibleContent>
+        <Trace className="gap-2">
+          <StepNodes nodes={group.steps} run={run} lastSeq={lastSeq} />
+        </Trace>
+      </TraceCollapsibleContent>
+    </TraceCollapsible>
+  )
+}
+
+/** 一组库流程步骤摊平（连同里面再调的库流程的步骤） */
+const flatSteps = (nodes: LibraryNode<RunEvent>[]): RunEvent[] =>
+  nodes.flatMap((node) => (node.kind === "library" ? flatSteps(node.group.steps) : [node.item, ...(node.library ? flatSteps(node.library.steps) : [])]))
 
 /** 过程里几类 M3 的事件加个小标签，一眼分清：规则命中、agent 写下步骤、上下文压缩、验收 */
 function eventTag(event: RunEvent): { label: string; variant: "outline" | "secondary"; icon?: LucideIcon } | undefined {
@@ -218,8 +281,9 @@ function eventTag(event: RunEvent): { label: string; variant: "outline" | "secon
   return undefined
 }
 
-function EventRow({ event, run, running }: { event: RunEvent; run: SessionSummary; running: boolean }) {
+function EventRow({ event, run, running, library }: { event: RunEvent; run: SessionSummary; running: boolean; library?: LibraryGroup }) {
   const toolName = useToolName()
+  const { titleOf } = useLibraryNames()
   // 没办成的运行：结束事件（kind = done）用感叹号，不用打勾
   const outcome = outcomeOf(run)
   const Icon = event.kind === "done" && outcome && outcome !== "achieved" ? CircleAlertIcon : EVENT_ICON[event.kind]
@@ -262,8 +326,14 @@ function EventRow({ event, run, running }: { event: RunEvent; run: SessionSummar
     )
   }
   const tag = eventTag(event)
-  const RowIcon = tag?.icon ?? Icon
+  // 调库流程的那一行（agent 调的工具、脚本里 ha.routine 进入的那一步）
+  const routineCall = event.kind === "tool" && isRoutineToolId(event.toolId ?? "")
+  const RowIcon = routineCall ? WorkflowIcon : (tag?.icon ?? Icon)
   const scriptStep = event.trace?.scriptStep
+  const inLibrary = event.trace?.library
+  const routineTitle = routineCall ? `流程「${toolName(event.toolId!)}」${library ? `第 ${library.version} 版` : ""}` : undefined
+  // agent 调的（工具结果在这一行）：下面一行写结局；脚本里进入的那一步只是进入，结局在后面「跑完」那一条
+  const routineResult = routineCall && !scriptStep && !event.trace?.routineStep && !inLibrary ? libraryResultText(event, library ? libraryStepCount(library) : 0, stopReasonText) : undefined
   // 直接调网站接口：方法、路径和参数（悬停看完整网址）、状态码（2xx outline，4xx、5xx destructive）；出错的（没拿到返回）照常标出
   const fetchCall = fetchCallOf(event)
   const fetchFailed = !!fetchCall && isErrorStep(event)
@@ -272,6 +342,7 @@ function EventRow({ event, run, running }: { event: RunEvent; run: SessionSummar
       <TraceIcon><RowIcon /></TraceIcon>
       {routineBadge}
       {scriptStep && <Badge variant="outline"><CodeIcon data-icon="inline-start" />脚本</Badge>}
+      {routineCall && <Badge variant="secondary">库流程</Badge>}
       {tag && <Badge variant={tag.variant}>{tag.label}</Badge>}
       {fetchCall ? (
         <>
@@ -280,7 +351,7 @@ function EventRow({ event, run, running }: { event: RunEvent; run: SessionSummar
           {fetchCall.status !== undefined && <Badge variant={fetchCall.status >= 400 ? "destructive" : "outline"}>{fetchCall.status}</Badge>}
           {fetchFailed && <Badge variant="destructive">出错</Badge>}
         </>
-      ) : <TraceTitle>{scriptStep ? `第 ${scriptStep} 步 · ${event.title}` : event.title}</TraceTitle>}
+      ) : <TraceTitle>{scriptStep ? `第 ${scriptStep} 步 · ${routineTitle ?? event.title}` : (routineTitle ?? event.title)}</TraceTitle>}
       <TraceDescription>{at}</TraceDescription>
       {meta && <TraceDescription className="hidden sm:inline">· {meta}</TraceDescription>}
     </TraceLine>
@@ -296,12 +367,13 @@ function EventRow({ event, run, running }: { event: RunEvent; run: SessionSummar
     )
   }
   const codeRun = event.toolId === CODE_RUN_TOOL_ID ? parseCodeRunInput(event.input) : undefined
-  return (
+  const row = (
     <TraceCollapsible>
       <TraceCollapsibleTrigger>{line}</TraceCollapsibleTrigger>
       <TraceCollapsibleContent className="flex flex-col gap-2 text-xs">
         <span>工具：{toolName(event.toolId ?? "")}（{event.toolId}）{meta && ` · ${meta}`}</span>
         {event.trace?.routineStep && <span className="text-muted-foreground">固化流程的脚本做的第 {event.trace.routineStep} 步</span>}
+        {inLibrary && <span className="text-muted-foreground">流程「{titleOf(inLibrary.routineId) ?? inLibrary.routineId}」第 {inLibrary.version} 版里的第 {inLibrary.step} 步{inLibrary.depth > 1 ? `（第 ${inLibrary.depth} 层）` : ""}</span>}
         {scriptStep && <span className="text-muted-foreground">agent 写的脚本（运行代码）做的第 {scriptStep} 步</span>}
         {event.detail && <span>{event.detail}</span>}
         {codeRun ? <CodeRunView call={codeRun} output={event.output} /> : (
@@ -314,6 +386,13 @@ function EventRow({ event, run, running }: { event: RunEvent; run: SessionSummar
         {event.trace?.urlAfter && event.trace.urlAfter !== event.trace.urlBefore && <span className="break-all text-muted-foreground">做完到了 {event.trace.title ? `「${event.trace.title}」 ` : ""}{event.trace.urlAfter}</span>}
       </TraceCollapsibleContent>
     </TraceCollapsible>
+  )
+  if (!routineResult) return row
+  return (
+    <div className="flex flex-col gap-0.5">
+      {row}
+      <p className={routineResult.failed ? "pl-5.5 text-xs text-destructive" : "pl-5.5 text-xs text-muted-foreground"}>{routineResult.text}</p>
+    </div>
   )
 }
 

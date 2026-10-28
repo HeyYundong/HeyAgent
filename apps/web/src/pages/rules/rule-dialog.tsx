@@ -1,11 +1,12 @@
 // 新建 / 编辑规则：名称、触发条件（一两句话）、命中后怎么办、提到的工具（可多选，可不选）。表单：React Hook Form + shared 的 ruleInputSchema。
 // M3：保存后接着翻译（rules.compile），在同一个弹窗里显示「系统理解为……」，人点「确认生效」（rules.confirm）才生效；
 // 翻译不进去的显示原因，可以回去改文字再试。改了文字时旧版本继续执行，直到新文字翻译并确认。
+// 流程库（docs/dev/routine-library.md 9.4）：「提到的工具」里也列库里的流程（工具 id routine.<短名>），标「流程」。
 import * as React from "react"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { Controller, useForm } from "react-hook-form"
 import { ArrowLeftIcon, CircleSlashIcon, HistoryIcon, LanguagesIcon, ShieldCheckIcon } from "lucide-react"
-import { ruleInputSchema, type RuleCompileResult, type RuleInput, type RuleRef } from "@heyagent/shared"
+import { isRoutineToolId, ruleInputSchema, toolSourceLabel, type RuleCompileResult, type RuleInput, type RuleRef } from "@heyagent/shared"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
@@ -17,7 +18,7 @@ import { Input } from "@/components/ui/input"
 import { Spinner } from "@/components/ui/spinner"
 import { Textarea } from "@/components/ui/textarea"
 
-import { useToolName, useToolsQuery } from "@/lib/data"
+import { useRoutineLibraryQuery, useToolName, useToolsQuery } from "@/lib/data"
 import { useAction } from "@/lib/mutations"
 import { navigate } from "@/lib/router"
 import { trpc } from "@/lib/trpc"
@@ -34,8 +35,11 @@ interface RuleDialogProps {
 type Stage = { step: "edit" } | { step: "compiling"; id: string } | { step: "result"; id: string; result: RuleCompileResult }
 
 export function RuleDialog({ rule, onClose }: RuleDialogProps) {
-  const toolName = useToolName()
-  const toolIds = (useToolsQuery().data?.tools ?? []).map((tool) => tool.id)
+  const name = useToolName()
+  // 库流程不在工具页：从流程库取（撤下的没有工具，不列），名字后面标「流程」
+  const routines = (useRoutineLibraryQuery().data ?? []).filter((entry) => entry.status !== "withdrawn")
+  const toolIds = [...(useToolsQuery().data?.tools ?? []).filter((tool) => tool.source !== "routine" && !isRoutineToolId(tool.id)).map((tool) => tool.id), ...routines.map((entry) => entry.toolId)]
+  const toolName = (id: string) => (isRoutineToolId(id) ? `${name(id)}（${toolSourceLabel.routine}）` : name(id))
   const anchor = useComboboxAnchor()
   const form = useForm<RuleInput>({
     resolver: zodResolver(ruleInputSchema),

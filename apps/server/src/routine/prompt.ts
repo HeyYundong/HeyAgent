@@ -336,13 +336,21 @@ export function compileExamples(workReport: boolean): string {
 }
 
 /**
- * 系统提示：规矩 + SDK 说明（里面还没有 ha.judge 就补上）+ 5 个例子。
- * siteApi：材料里有「网页调过的接口」（19.6）时，再加第 19–24 条规矩和例 6。
- * workReport：任务有没有 work.report 工具（被派的任务才有）；false 时例子里不写 ha.work.report。不给当有（照旧）
+ * 流程库（docs/dev/routine-library.md 13.2）：任务选了库流程、过程里调过库流程时才放进去，接在最后一条规矩后面（编号跟着排）。
+ * 过程里调库流程的那一行不展开，脚本里照样用 ha.routine 调同一个，不要抄里面的步骤、接口
  */
-export function compileSystemPrompt(sdk = sdkDescription().text, options: { siteApi?: boolean; workReport?: boolean } = {}) {
+export const libraryRule = (no: number) =>
+  `${no}. 过程里调了流程库里的流程的（标「流程库里的流程」的那一行，工具 routine.<短名>），脚本里用 await ha.routine("短名", 输入) 调同一个，输入的名字照「任务选的库流程」写（agent 调时换过名的参数换回原名），交回值是 { outcome, summary, reason, data }：先看 outcome 再用 data。不要把它里面的步骤、它发的接口请求（「网页调过的接口」里写着「在流程『…』里发的」）抄出来自己做，也不要用 ha.tool("routine.…")。它停下、报错会抛错，按别的步骤一样处理（不用 try/catch 吞掉）。`
+
+/**
+ * 系统提示：规矩 + SDK 说明（里面还没有 ha.judge 就补上）+ 5 个例子。
+ * siteApi：材料里有「网页调过的接口」（19.6）时，再加第 19–24 条规矩和例 6；
+ * workReport：任务有没有 work.report 工具（被派的任务才有）；false 时例子里不写 ha.work.report。不给当有（照旧）；
+ * library：任务选了库流程、过程里调过库流程时，再加一条「用 ha.routine 调同一个」（第 19 或 25 条）
+ */
+export function compileSystemPrompt(sdk = sdkDescription().text, options: { siteApi?: boolean; workReport?: boolean; library?: boolean } = {}) {
   const withJudge = /\bjudge\s*[(<]/.test(sdk) ? sdk : [sdk, "", "// 另外还有（Heyagent 上）：", JUDGE_DTS].join("\n")
-  const rules = options.siteApi ? [RULES, SITE_API_RULES] : [RULES]
+  const rules = [RULES, ...(options.siteApi ? [SITE_API_RULES] : []), ...(options.library ? [libraryRule(options.siteApi ? 25 : 19)] : [])]
   const examples = compileExamples(options.workReport ?? true)
   const allExamples = options.siteApi ? [examples, "", SITE_API_EXAMPLE] : [examples]
   return [...rules, "", "只输出要求的 JSON。", "", "## SDK（heyagent）的说明", "```ts", withJudge, "```", "", "## 例子（业务只是举例）", ...allExamples].join("\n")

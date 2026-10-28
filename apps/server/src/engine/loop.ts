@@ -552,7 +552,7 @@ async function suspendForApproval(
   calls: ModelToolCall[],
   done: GatewayResult,
   approvedRuleIds: readonly string[],
-  routine?: { name: string; step: number }
+  routine?: { name: string; step: number; library?: { name: string; step: number } }
 ): Promise<boolean> {
   const approval = done.approval!
   const input = maskSecretFields(JSON.stringify(approval.input ?? {}, null, 2))
@@ -560,7 +560,10 @@ async function suspendForApproval(
     input.length > 4000
       ? `${input.slice(0, 4000)}\n…（参数太长，只显示开头）`
       : input
-  const where = routine ? `固化流程「${routine.name}」第 ${routine.step} 步` : ""
+  // 脚本调的库流程里的一步（docs/dev/routine-library.md 9.3）：再写是库流程的第几步
+  const where = routine
+    ? `固化流程「${routine.name}」第 ${routine.step} 步${routine.library ? `（流程「${routine.library.name}」第 ${routine.library.step} 步）` : ""}`
+    : ""
   const title = routine ? `审批工具调用：${done.toolName}（${where}）` : `审批工具调用：${done.toolName}`
   const summary = routine
     ? `${approval.reason}这是${where}。批准就执行这一步、脚本接着跑，拒绝就把理由告诉 agent、由 agent 接着做。`
@@ -926,6 +929,7 @@ export async function runSession(
           const ok = await suspendForApproval(db, live, snapshot, [], result.approval.result, result.approval.approvedRuleIds, {
             name: routine.name,
             step: result.approval.step,
+            ...(result.approval.library ? { library: result.approval.library } : {}),
           })
           return ok ? "suspended" : "stopped"
         }

@@ -5,6 +5,13 @@
 // 没有依赖，普通 ESM；跑脚本时拷进沙箱代码目录的 node_modules/heyagent/。
 // agent 用 code.run（tools: true）写的脚本也用它（docs/dev/solidify.md 18.1，由 agent-launch.js 启动）：脚本是普通程序，跑完就退出，
 // 所以连接只在有请求等回复时才拦着进程退出（ref / unref）。
+// 流程库（docs/dev/routine-library.md 5.6）：ha.routine("短名", 输入) 调库里的流程。进入是一次 tool 请求（routine: true），
+// 工具桥回 { slug, name, version, module, depth, input }；SDK 载入代码目录里的 module，在 AsyncLocalStorage 的嵌套上下文里调它的 run(input)。
+// 上下文里：ha.input 是传进去的输入；ha.finish、ha.work.report 只收进交回值；ha.checkpoint.mark 不做（记一句）；ha.fail 变成抛给调用方的
+// RoutineFailed；其余请求照常发，带上嵌套的路径 via（从外到里的短名）。跑完发 routine_end。
+// agent 调库流程（工具桥 mode = tool，launch.js 的 stdin 带 library）：顶层就在一个「根」上下文里跑（via 是空的，工具桥补上），
+// 报结果、交回、ha.fail 一样只收下来，跑完由 launch.js 报给 done。
+import { AsyncLocalStorage } from "node:async_hooks"
 import { createConnection } from "node:net"
 
 /** 工具出错（定位找不到、超时……）：脚本可以自己接住，比如可有可无的弹窗；没接住就交给 agent */
@@ -30,6 +37,21 @@ export class RoutineStop extends Error {
     this.name = "RoutineStop"
   }
 }
+
+/** 库流程主动停了（它调了 ha.fail）：input = 给的输入有问题；page = 页面和它预期的不一样。调用方可以接住 */
+export class RoutineFailed extends Error {
+  constructor(message, kind, routine) {
+    super(message)
+    this.name = "RoutineFailed"
+    this.kind = kind
+    this.routine = routine
+  }
+}
+
+/** 库流程的嵌套上下文：{ slug, name, version, depth, path, input, report, finish?, checkpointNoted?, root? } */
+const scope = new AsyncLocalStorage()
+/** RoutineFailed 是哪一层抛的（同一个短名的两层不会同时在，按对象认） */
+const failedFrame = new WeakMap()
 
 let socket
 let buffer = ""
@@ -90,11 +112,16 @@ function onReply(reply) {
 
 function request(op, payload = {}, force = false) {
   if (stopped && !force) return Promise.reject(new RoutineStop(stopped))
+  const frame = scope.getStore()
+  // 库流程报了结果以后，它里面再调的不做（同顶层 ha.finish 以后）
+  if (frame?.finish && !force) return Promise.reject(new StepError(`库流程「${frame.name ?? frame.slug}」已经报了结果（ha.finish），后面的调用不再做`))
+  // 嵌套的路径：库流程里发的请求都带上（payload 里写了的以它为准，routine_end 要写上一层的）
+  const via = frame?.path?.length ? { via: frame.path } : {}
   const id = nextId++
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject })
     try {
-      connect().write(`${JSON.stringify({ id, op, ...payload })}\n`)
+      connect().write(`${JSON.stringify({ id, op, ...via, ...payload })}\n`)
       holdOpen()
     } catch (error) {
       pending.delete(id)
@@ -103,7 +130,11 @@ function request(op, payload = {}, force = false) {
   })
 }
 
-const callTool = (tool, args) => request("tool", { tool, input: args ?? {} })
+const callTool = (tool, args) => {
+  const frame = scope.getStore()
+  if (frame) frame.steps++
+  return request("tool", { tool, input: args ?? {} })
+}
 /** 有结构化结果给结构化结果，没有给文字 */
 const valueOf = (result) => (result.data !== undefined ? result.data : result.text)
 const act = (tool) => async (args) => valueOf(await callTool(tool, args))
@@ -111,7 +142,7 @@ const act = (tool) => async (args) => valueOf(await callTool(tool, args))
 const ha = {
   /** 这次的输入（按 inputSchema 校验过）：派活参数、$attachments（附件 id、名字、类型）、$note（附加说明） */
   get input() {
-    return input
+    return scope.getStore()?.input ?? input
   },
   browser: {
     navigate: act("browser.navigate"),
@@ -167,8 +198,29 @@ const ha = {
     read: act("file.read"),
     save: act("file.save"),
   },
-  checkpoint: { mark: act("checkpoint.mark") },
-  work: { report: act("work.report") },
+  checkpoint: {
+    async mark(args) {
+      const frame = scope.getStore()
+      if (!frame) return valueOf(await callTool("checkpoint.mark", args))
+      // 库流程的检查点是来源任务的，调用方那里不认：不做，第一次记一句
+      if (!frame.checkpointNoted) {
+        frame.checkpointNoted = true
+        await request("log", { text: `流程「${frame.name ?? frame.slug}」里的检查点不算（只在来源任务上算）` })
+      }
+      return "库流程里的检查点不算，没有勾"
+    },
+  },
+  work: {
+    async report(args) {
+      const frame = scope.getStore()
+      if (!frame) return valueOf(await callTool("work.report", args))
+      // 库流程交回的数据收进这次调用的交回值，不写调用方的结果
+      const data = args?.data && typeof args.data === "object" ? args.data : {}
+      for (const [key, value] of Object.entries(data))
+        if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") frame.report[key] = value
+      return "已收进库流程的交回值"
+    },
+  },
   /** 任务里的任何别的工具（HTTP、MCP、比物、图库、SDK 没有包装的浏览器工具 browser.xxx……）：{ text, data } */
   async tool(id, args) {
     const result = await callTool(id, args)
@@ -184,12 +236,35 @@ const ha = {
   },
   /** 主动停：input = 输入本身有问题（记没办成，不交 agent）；page = 页面和预期不一样（交给 agent） */
   async fail(kind, reason) {
+    const frame = scope.getStore()
+    if (frame) {
+      // 库流程里：不让整个脚本停，抛给调用方（可以接住）
+      const error = new RoutineFailed(String(reason ?? ""), kind === "input" ? "input" : "page", frame.slug)
+      failedFrame.set(error, frame)
+      throw error
+    }
     await request("fail", { kind, reason: String(reason ?? "") })
     throw new RoutineStop(String(reason ?? ""))
   },
-  /** 结束：报结果（run.finish），照常按硬规则核、复核。之后的调用一律停 */
+  /** 结束：报结果（run.finish），照常按硬规则核、复核。之后的调用一律停。库流程里只收进交回值 */
   async finish(result) {
-    await callTool("run.finish", result)
+    const frame = scope.getStore()
+    if (!frame) {
+      await callTool("run.finish", result)
+      return
+    }
+    if (frame.finish) throw new StepError(`库流程「${frame.name ?? frame.slug}」已经报了结果（ha.finish）`)
+    const { outcome, summary, evidence, reason } = result ?? {}
+    if (outcome !== "achieved" && outcome !== "not_achieved") throw new StepError("ha.finish 的 outcome 要写 achieved 或 not_achieved")
+    if (typeof summary !== "string" || !summary.trim()) throw new StepError("ha.finish 要写 summary（做了什么、结果是什么）")
+    if (outcome === "not_achieved" && !(typeof reason === "string" && reason.trim()))
+      throw new StepError("outcome = not_achieved 时要写 reason：拿到了什么、缺了什么、为什么")
+    frame.finish = {
+      outcome,
+      summary: summary.trim(),
+      ...(typeof evidence === "string" && evidence.trim() ? { evidence: evidence.trim() } : {}),
+      ...(typeof reason === "string" && reason.trim() ? { reason: reason.trim() } : {}),
+    }
   },
   /** 记一条过程给人看 */
   async log(text) {
@@ -209,12 +284,88 @@ const ha = {
     })
     return result.data
   },
+  /** 调流程库里的流程（docs/dev/routine-library.md 5.6），返回 { routine, name, version, outcome, summary, evidence?, reason?, data } */
+  async routine(slug, args) {
+    const parent = scope.getStore()
+    const parentPath = parent?.path ?? []
+    if (parent) parent.steps++
+    const entered = await request("tool", { tool: `routine.${String(slug ?? "")}`, input: args ?? {}, routine: true })
+    const info = entered.data ?? {}
+    const frame = {
+      slug: String(info.slug ?? slug),
+      name: String(info.name ?? slug),
+      version: Number(info.version ?? 0),
+      depth: Number(info.depth ?? parentPath.length + 1),
+      path: [...parentPath, String(info.slug ?? slug)],
+      input: info.input && typeof info.input === "object" ? info.input : {},
+      report: {},
+      steps: 0,
+    }
+    const end = async (payload) => {
+      try {
+        await request("routine_end", { slug: frame.slug, depth: frame.depth, steps: frame.steps, ...payload, via: parentPath }, true)
+      } catch {
+        // 工具桥已经停了：停下的那一层由工具桥自己记
+      }
+    }
+    let run
+    try {
+      const module = await import(new URL(`../../${String(info.module ?? "")}`, import.meta.url).href)
+      run = module.default
+      if (typeof run !== "function") throw new Error("库流程的脚本没有 export default async function run(input)")
+    } catch (error) {
+      await end({ end: "error", error: String(error?.message ?? error).slice(0, 2000), name: "Error" })
+      throw new StepError(`载入不了流程「${frame.name}」：${error?.message ?? error}`)
+    }
+    try {
+      await scope.run(frame, () => run(frame.input))
+    } catch (error) {
+      if (error instanceof RoutineFailed && failedFrame.get(error) === frame) {
+        await end({ end: "failed", kind: error.kind, error: error.message.slice(0, 2000) })
+        throw error
+      }
+      await end({ end: "error", error: String(error?.message ?? error).slice(0, 2000), name: String(error?.name ?? "Error") })
+      throw error
+    }
+    if (!frame.finish) {
+      await end({ end: "error", error: "库流程没报结果（没调 ha.finish）就结束了", name: "NoFinish" })
+      throw new StepError(`流程「${frame.name}」没报结果（没调 ha.finish）就结束了`)
+    }
+    const result = { routine: frame.slug, name: frame.name, version: frame.version, ...frame.finish, data: { ...frame.report } }
+    await end({ end: "finished", result })
+    return result
+  },
   StepError,
   Denied,
   RoutineStop,
+  RoutineFailed,
 }
 
 export default ha
+
+/**
+ * launch.js 用（agent 调库流程，工具桥 mode = tool）：在「根」上下文里跑库流程，收下它报的结果、交回的数据、ha.fail。
+ * 返回给 done 的 routine：{ end: finished | failed | error, finish?, data, kind?, error?, name?, steps }
+ */
+export async function __runLibraryRoot(slug, fn) {
+  const frame = { slug: String(slug ?? ""), depth: 1, path: [], input, report: {}, steps: 0, root: true }
+  try {
+    await scope.run(frame, () => fn(frame.input))
+  } catch (error) {
+    if (error instanceof RoutineFailed && failedFrame.get(error) === frame)
+      return { end: "failed", kind: error.kind, error: error.message.slice(0, 2000), data: { ...frame.report }, steps: frame.steps }
+    return {
+      end: "error",
+      error: String(error?.message ?? error).slice(0, 2000),
+      name: String(error?.name ?? "Error"),
+      ...(error?.stack ? { stack: String(error.stack).slice(0, 4000) } : {}),
+      data: { ...frame.report },
+      steps: frame.steps,
+    }
+  }
+  if (!frame.finish) return { end: "error", error: "库流程没报结果（没调 ha.finish）就结束了", name: "NoFinish", data: { ...frame.report }, steps: frame.steps }
+  return { end: "finished", finish: frame.finish, data: { ...frame.report }, steps: frame.steps }
+}
 
 /** launch.js 用：设好输入 */
 export function __start(value) {

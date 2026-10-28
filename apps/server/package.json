@@ -26,6 +26,7 @@
     "dev:subagent-fixture": "tsx --conditions=@heyagent/source src/seed/subagent-fixture-cli.ts",
     "dev:import-fixture": "tsx --conditions=@heyagent/source src/seed/import-fixture-cli.ts",
     "dev:routine-fixture": "tsx --conditions=@heyagent/source src/seed/routine-fixture-cli.ts",
+    "dev:routine-library-fixture": "tsx --conditions=@heyagent/source src/seed/routine-library-fixture-cli.ts",
     "dev:notify": "tsx --conditions=@heyagent/source src/scripts/dev-notify.ts",
     "kek:rotate": "tsx --conditions=@heyagent/source src/scripts/kek-rotate.ts"
   },

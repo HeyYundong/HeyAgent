@@ -11,6 +11,7 @@ import {
   routineStopKindLabel,
   routineVersionId,
   routineVersionStatusLabel,
+  schemaPropertyNames,
   type HttpToolSuggestion,
   type RoutineStatus,
   type RoutineStop,
@@ -128,11 +129,12 @@ interface SchemaField {
 /** 脚本输入里系统自带的两项（routineInputOf）：附件和附加说明 */
 const BUILTIN_INPUT: Record<string, string> = { $attachments: "附件", $note: "附加说明" }
 
-/** JSON Schema 顶层的字段：名字、说明、必不必填 */
+/** JSON Schema 顶层的字段：名字、说明、必不必填；按 x-order 排（作者写的顺序，老数据照存的顺序） */
 export function schemaFields(schema: Record<string, unknown>): SchemaField[] {
   const properties = schema.properties && typeof schema.properties === "object" ? (schema.properties as Record<string, unknown>) : {}
   const required = Array.isArray(schema.required) ? schema.required.filter((each): each is string => typeof each === "string") : []
-  return Object.entries(properties).map(([name, value]) => {
+  return schemaPropertyNames(schema).map((name) => {
+    const value = properties[name]
     const spec = value && typeof value === "object" ? (value as Record<string, unknown>) : {}
     return {
       name,

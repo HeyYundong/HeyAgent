@@ -3,9 +3,10 @@
 //   那条 code.run 的 trace 也写了同一个 scriptCallId，按 id 把步骤收在它下面；还没等到 code.run 的（脚本还在跑、中途被打断）单独成组；
 // - 判断事件：kind = plan、标题「流程判断：问题 → 答案（理由）」，拆成问题、答案、理由；
 // - code.run 输出末尾「--- 脚本调的工具 ---」那一段（服务端 sandbox/code-run.ts 的 formatScriptTools）拆成几段；
-// - browser.fetch 那一行的方法、网址、状态码（第 19 节）。
-import { BROWSER_FETCH_TOOL } from "@heyagent/shared"
-import type { RunEvent } from "@heyagent/shared"
+// - browser.fetch 那一行的方法、网址、状态码（第 19 节）；
+// - 库流程（docs/dev/routine-library.md 5.7、9.3）：里面的步骤带 trace.library，按 callId 收到调它的那一行下面（两层的再套一层）。
+import { BROWSER_FETCH_TOOL, isRoutineToolId, routineReturnSchema, routineToolId, routineToolStopDataSchema } from "@heyagent/shared"
+import type { RoutineToolStopData, RunEvent } from "@heyagent/shared"
 
 export const CODE_RUN_TOOL_ID = "code.run"
 
@@ -52,6 +53,152 @@ export function groupScriptEvents(events: RunEvent[]): EventItem[] {
 
 /** 工具调用出错（网关记的标题是「工具名（出错）」） */
 export const isErrorStep = (event: RunEvent) => event.kind === "error" || /（出错）$|· 出错$/.test(event.title)
+
+// ---------- 库流程（docs/dev/routine-library.md 5.7、9.3） ----------
+
+/** 一次库流程调用做的步骤（trace.library.callId 相同的），里面再调的库流程套在 steps 里 */
+export interface LibraryGroup {
+  callId: string
+  routineId: string
+  version: number
+  depth: number
+  /** agent 调的（工具 routine.<短名>，步骤先记、工具那一行跑完才记，在步骤后面）；脚本里 ha.routine 调的（进入那一步在步骤前面） */
+  via: "tool" | "script"
+  steps: LibraryNode<RunEvent>[]
+}
+
+/** 过程里的一项：原来的一项（带上它的库流程步骤），或一组没认到「进入」那一行的库流程步骤 */
+export type LibraryNode<T> = { kind: "item"; item: T; library?: LibraryGroup } | { kind: "library"; group: LibraryGroup }
+
+const isRoutineCall = (event: RunEvent | undefined) => event?.kind === "tool" && isRoutineToolId(event.toolId ?? "")
+
+/**
+ * 按 trace.library 把库流程里的步骤收到调它的那一行下面（这一层是第 depth 层）：
+ * - 这一层的步骤按 callId 分组；更深一层的（库流程里再调的）跟着它所在的那组走，下一层再分；
+ * - 组的主人：这一层里 trace.libraryCall.callId 等于组的 callId 的那一行 routine.* 工具调用（agent 调的工具那一行、
+ *   脚本里 ha.routine 进入那一步；「流程『…』跑完」那一条也带 libraryCall，但不是工具调用，照普通一项放在后面）；
+ * - 没有 libraryCall 的老数据按位置认：脚本调的（步骤同时带 routineStep / scriptStep，或者第 2 层）是第一步前面最近的一行
+ *   routine.* 工具调用，agent 调的是最后一步后面第一行（工具调用跑完才记）。slugOf：知道库流程编号对应的短名时，只认工具 id 对得上的那一行。
+ * 认不到的组单独成一项（没等到结果、中途断了）
+ */
+export function nestLibrary<T>(items: T[], eventOf: (item: T) => RunEvent | undefined, depth = 1, slugOf?: (routineId: string) => string | undefined): LibraryNode<T>[] {
+  const groups = new Map<string, { group: Omit<LibraryGroup, "steps">; events: RunEvent[]; first: number; last: number }>()
+  const member = new Map<number, string>()
+  let current: string | undefined
+  items.forEach((item, index) => {
+    const library = eventOf(item)?.trace?.library
+    if (!library || library.depth < depth) {
+      current = undefined
+      return
+    }
+    const key = library.depth === depth ? library.callId : current
+    if (!key) return
+    current = key
+    const event = eventOf(item)!
+    const found = groups.get(key)
+    if (found) {
+      found.events.push(event)
+      found.last = index
+    } else {
+      const scripted = depth > 1 || event.trace?.routineStep !== undefined || event.trace?.scriptStep !== undefined
+      groups.set(key, { group: { callId: key, routineId: library.routineId, version: library.version, depth, via: scripted ? "script" : "tool" }, events: [event], first: index, last: index })
+    }
+    member.set(index, key)
+  })
+  // 认主人：先按 libraryCall.callId 对上
+  const owner = new Map<number, string>()
+  const claimed = new Set<number>()
+  const byCall = new Map<string, number>()
+  items.forEach((item, index) => {
+    const event = eventOf(item)
+    const callId = event?.trace?.libraryCall?.callId
+    if (callId && isRoutineCall(event) && !member.has(index) && !byCall.has(callId)) byCall.set(callId, index)
+  })
+  for (const key of groups.keys()) {
+    const found = byCall.get(key)
+    if (found === undefined) continue
+    owner.set(found, key)
+    claimed.add(found)
+  }
+  // 老数据（没有 libraryCall）按位置认；带 libraryCall 的那一行是别的调用的，不抢
+  const fits = (index: number, routineId: string) => {
+    const event = eventOf(items[index]!)
+    if (!isRoutineCall(event) || event!.trace?.libraryCall || member.has(index) || claimed.has(index)) return false
+    const slug = slugOf?.(routineId)
+    return !slug || event!.toolId === routineToolId(slug)
+  }
+  const ownedKeys = new Set(owner.values())
+  for (const [key, entry] of groups) {
+    if (ownedKeys.has(key)) continue
+    let found: number | undefined
+    if (entry.group.via === "script") {
+      for (let at = entry.first - 1; at >= 0 && found === undefined; at--) if (fits(at, entry.group.routineId)) found = at
+    } else {
+      for (let at = entry.last + 1; at < items.length && found === undefined; at++) if (fits(at, entry.group.routineId)) found = at
+    }
+    if (found !== undefined) {
+      owner.set(found, key)
+      claimed.add(found)
+    }
+  }
+  const build = (key: string): LibraryGroup => {
+    const entry = groups.get(key)!
+    return { ...entry.group, steps: nestLibrary(entry.events, (event) => event, depth + 1, slugOf) }
+  }
+  const out: LibraryNode<T>[] = []
+  const placed = new Set<string>()
+  const owned = new Set(owner.values())
+  items.forEach((item, index) => {
+    const key = member.get(index)
+    if (key) {
+      if (owned.has(key) || placed.has(key)) return
+      placed.add(key)
+      out.push({ kind: "library", group: build(key) })
+      return
+    }
+    const mine = owner.get(index)
+    out.push({ kind: "item", item, ...(mine ? { library: build(mine) } : {}) })
+  })
+  return out
+}
+
+/** 一组库流程步骤一共几步（不算里面再调的库流程的步骤） */
+export const libraryStepCount = (group: LibraryGroup) =>
+  group.steps.filter((node) => node.kind === "item" && node.item.kind === "tool").length
+
+/** 库流程工具那一行（agent 调的）的结局：工具结果里有交回值（routineReturnSchema）或停下的 data（routineToolStopDataSchema）就按它写，不然看出没出错 */
+export function libraryResultText(event: RunEvent, steps: number, stopText: (stop: RoutineToolStopData["stoppedAt"]) => string): { text: string; failed: boolean } {
+  const took = [`${steps} 步`, event.ms !== undefined ? (event.ms >= 1000 ? `${(event.ms / 1000).toFixed(1)} 秒` : `${event.ms} 毫秒`) : ""].filter(Boolean).join(" · ")
+  const json = jsonIn(event.output)
+  const returned = routineReturnSchema.safeParse(json)
+  if (returned.success) {
+    const data = Object.entries(returned.data.data).slice(0, 3).map(([key, value]) => `${key}=${value}`).join("、")
+    const outcome = returned.data.outcome === "achieved" ? "" : ` · 没办成${returned.data.reason ? `（${returned.data.reason}）` : ""}`
+    return { text: `跑完${outcome} · ${took}${data ? ` · 交回 ${data}` : ""}`, failed: false }
+  }
+  const stopped = routineToolStopDataSchema.safeParse(json)
+  if (stopped.success) return { text: `停在第 ${stopped.data.stoppedAt.step} 步：${stopText(stopped.data.stoppedAt)}，交回 agent`, failed: true }
+  if (isErrorStep(event)) {
+    const first = event.output?.split("\n").find((line) => line.trim()) ?? ""
+    return { text: `停下了，交回 agent${first ? `：${first.replace(/^出错[：:]\s*/, "")}` : ""}`, failed: true }
+  }
+  return { text: `跑完 · ${took}`, failed: false }
+}
+
+/** 输出里的 JSON：整段是 JSON，或者最后一行 / 第一个「{」到最后一个「}」是 JSON */
+function jsonIn(text: string | undefined): unknown {
+  if (!text) return undefined
+  const tries = [text, text.split("\n").at(-1) ?? "", text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1)]
+  for (const each of tries) {
+    if (!each.trim().startsWith("{")) continue
+    try {
+      return JSON.parse(each)
+    } catch {
+      // 换下一种
+    }
+  }
+  return undefined
+}
 
 // ---------- 判断事件 ----------
 

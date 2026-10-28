@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query"
 import {
   allModels,
+  isRoutineToolId,
   modelName,
   runNow,
   staffName,
@@ -46,10 +47,14 @@ export function useStaffName() {
   return (id: string | undefined) => staffName(staff ?? [], id)
 }
 
-/** 按 id 显示工具名（原型 toolName(id)） */
+/** 流程库（docs/dev/routine-library.md）：在库里的、停用的、撤下的 */
+export const useRoutineLibraryQuery = () => useQuery(trpc.routineLibrary.list.queryOptions())
+
+/** 按 id 显示工具名（原型 toolName(id)）。库流程（routine.<短名>）工具页不列，名字按流程库里的 */
 export function useToolName() {
   const tools = useToolsQuery().data?.tools
-  return (id: string) => toolName(tools ?? [], id)
+  const library = useRoutineLibraryQuery().data
+  return (id: string) => (isRoutineToolId(id) && library?.find((entry) => entry.toolId === id)?.title) || toolName(tools ?? [], id)
 }
 
 /** 模型服务和默认模型，加上按 id 显示模型名（原型 modelName(id)） */

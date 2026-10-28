@@ -4,13 +4,16 @@
 // - 别的（脚本报了没办成、输入有问题、取消）不动计数；
 // - 脚本报了办成、三方验收反问、agent 接着做的（agentAfter，docs/dev/solidify.md 17.3）：不算直接办成，也不算交给 agent，不动计数。
 // 试用期的运行每次结束都通知负责人结果（办成也发）。只算运行开始时冻的那一版还是启用版本的情况：中途换了版本，旧版的结果不算到新版上。
+// 流程库（docs/dev/routine-library.md 2.2、第 7 节）：转正式时记下这一版的 proven_at（只有转过正式的版本能发布进库）；
+// 库里有这个流程时，转正式通知发布过的主管「可以发布」，自动停用通知他们「库里的多半也跑不通了」。
 import { ROUTINE_PAUSE_AFTER_FALLBACKS, ROUTINE_TRIAL_RUNS, routineStopKindLabel, runOutcomeLabel } from "@heyagent/shared"
-import { eq } from "drizzle-orm"
+import { and, eq, isNull } from "drizzle-orm"
 
 import type { Db } from "../../db/client.js"
 import * as t from "../../db/schema.js"
 import { notifyUsers, sessionLink } from "../../engine/notify.js"
 import { writeAudit } from "../../engine/records.js"
+import { notifyLibraryPublishable, notifyLibrarySourcePaused } from "../library/service.js"
 
 const seconds = (ms: number | undefined) => `${((ms ?? 0) / 1000).toFixed(1)} 秒`
 
@@ -44,13 +47,19 @@ export async function settleRoutineRun(db: Db, sessionId: string): Promise<void>
         .update(t.routines)
         .set({ directStreak, fallbackStreak: 0, ...(promote ? { status: "active" as const } : {}) })
         .where(eq(t.routines.id, routine.id))
-      if (promote)
+      if (promote) {
+        // 转正式的时间：流程库只收转过正式的版本（回到试用、再转正式的不覆盖第一次的时间）
+        await tx
+          .update(t.routineVersions)
+          .set({ provenAt: new Date() })
+          .where(and(eq(t.routineVersions.routineId, routine.id), eq(t.routineVersions.version, state.version), isNull(t.routineVersions.provenAt)))
         await writeAudit(tx, {
           action: "routine.promote",
           targetTable: "routines",
           targetId: routine.id,
           detail: { version: state.version, directStreak, sessionId },
         })
+      }
       return promote ? ("promoted" as const) : undefined
     }
     const fallbackStreak = routine.fallbackStreak + 1
@@ -84,6 +93,16 @@ export async function settleRoutineRun(db: Db, sessionId: string): Promise<void>
       title: `${task.title}：固化流程「${name}」转正式`,
       body: `第 ${state.version} 版试用期连着 ${ROUTINE_TRIAL_RUNS} 次脚本直接办成，转为正式。以后只在没办成、交给 agent 时通知你。`,
       push: false,
+    })
+  if (change === "promoted") await notifyLibraryPublishable(db, { routineId: state.routineId, version: state.version, taskId: session.taskId, taskTitle: task.title })
+  if (change === "paused")
+    await notifyLibrarySourcePaused(db, {
+      routineId: state.routineId,
+      version: state.version,
+      taskId: session.taskId,
+      taskTitle: task.title,
+      reason: `最近一次停在第 ${state.stoppedAt?.step ?? state.steps} 步：${state.stoppedAt?.reason ?? "原因不明"}`,
+      sessionId: session.id,
     })
   if (change === "paused")
     await notifyUsers(db, {

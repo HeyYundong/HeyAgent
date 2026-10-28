@@ -1,6 +1,6 @@
 // 流程库的 tRPC 接口（docs/dev/routine-library.md 10.3）：流程页（列表、详情、发布弹窗、版本记录、调用记录）。
 // 读：list、get、calls（登录即可）；主管：candidates、preview、publish、update、setPaused、withdraw（service.ts 里查 config.manage）。
-// 现在 service.ts 是空壳，一律回 NOT_IMPLEMENTED「流程库还没做好」；B 包实现。
+// 实现在 routine/library/service.ts（权限也在那里查）。
 import {
   routineCallsPageSchema,
   routineLibraryCallsInputSchema,

@@ -688,7 +688,7 @@ ALTER TABLE "tasks" ADD COLUMN "subagent_model_id" text;
 
 ## 19. 实现记录（后端，2026-10-28）
 
-按第 14.2 节做完，第 16 节七条按推荐；监工另定的「父运行在等子 agent 时点『立即继续』照常放行，系统提示写明可以先 `subagent_wait`（none）看现状」也做了。接口变化见 `docs/dev/api.md` 第 22 节。
+按第 14.2 节做完，第 16 节七条按推荐；监工另定的「父运行在等子 agent 时点『立即继续』照常放行，系统提示写明可以先 `subagent_wait`（none）看现状」也做了。接口变化见 `docs/dev/api.md` 第 23 节。
 
 **怎么落的**
 
@@ -726,7 +726,10 @@ ALTER TABLE "tasks" ADD COLUMN "subagent_model_id" text;
 
 三个分支合并没有冲突。合完改的：
 
-1. **等待提示的文案**：网页 `WaitingAlert` 照后端的 `waiting.what` 拼，父运行等子 agent 写「session 已挂起，在等子 agent（还有 N 个没结束）」，排队的子运行写「session 已挂起，在排队（等前面的子 agent 做完）」（原来是网页自己写的「在排队：等别的子 agent 让出名额」），都只有括号、没有两个冒号；会话列表那列是「在等：子 agent（还有 N 个没结束）」。排队的说明改成「子 agent 同时跑的个数有上限（每次运行、全系统各有一个上限……）」，因为也可能是全系统的名额满了。第 11.1、14.3 节和使用手册 5.15 同步。
+1. **等待提示的文案**：网页 `WaitingAlert` 照后端的 `waiting.what` 拼，父运行等子 agent 写「session 已挂起，在等子 agent（还有 N 个没结束）」，排队的子运行写「session 已挂起，在排队（等前面的子 agent 做完）」（原来是网页自己写的「在排队：等别的子 agent 让出名额」），都只有括号、没有两个冒号；会话列表那列是「在等：子 agent（还有 N 个没结束）」。排队的说明改成「子 agent 同时跑的个数有上限（每次运行、全系统各有一个上限……）」，因为也可能是全系统的名额满了。第 11.1、14.3 节和使用手册 5.16（原 5.15，流程库合进来后让给流程库）同步。
 2. **去掉轮询**：`run-subagents.tsx` 里每 5 秒重取 `sessions.subagents` 去掉，靠实时推送（后端在 `live.ts` 的 `sessions` 一行加的失效）。
 3. **父运行的摘要跟着子运行变**：只失效 `sessions.subagents` 时，区块标题「3 / 4 结束 · 花费」、进度条和 meta 的「含子 agent」取的是父运行的 `sessions.get`（按 id 失效，推来的是子运行的 id），子 agent 结束了父运行详情不跟着变。shared `liveTargets` 加一条：`sessions` 表推来的 id 是子运行编号（`parseSubSessionId`）时，父运行的 `sessions.get` 也失效；加了测试。用演示数据在开着的页面上改子运行的状态和花费，区块和标题都跟着变了。
 4. **演示数据**：`dev:subagent-fixture` 在空库上先灌数据、还没起过服务时，`tools` 表里没有内置工具，任务没选上「拆给子 agent」（编辑弹窗看不到「子 agent 用的模型」）。现在先 `syncBuiltinTools` 再选上（同 `routine-fixture`）。
+5. **和流程库的实现对上**（合进 e7cbab5 时）：流程库冻的 `snapshot.libraryRoutines`（`routine/library/snapshot.ts`）每项带 `selected`（任务选的 / 跟着冻进来的）、`unavailable`（用不了的原因）、`requires`（要的工具不含每个任务自带的、`work.report`、`checkpoint.mark`）。子快照照抄这个数组，`selected`、冻好的版本、代码都不变；网关照旧：`selected` 又用得了的给模型一个工具 `routine_<短名>`，跟着冻进来的只进隐藏条目给 `ha.routine` 用，`unavailable` 的都不给、系统提示「固化好的流程」一节写原因。`subLibraryRoutines` 只多标两种用不了：`requires.toolIds` 里有子 agent 没有的工具（`SUBAGENT_DROPPED_TOOL_IDS`，原因写工具的中文名，从父快照的 `tools` 取，例如「子 agent 不能用要的工具『派活』」），以及调了用不了的库流程的（传递）。测试：`test/library-runtime.test.ts`「子 agent」：父任务选了库流程，子 agent 用 `routine_<短名>` 调到（交回值、过程记录、调用记录记在子运行上）；要「派活」的和调它的在父运行用得了、在子运行标用不了。
+   - 没拦的一种：库流程里面用 `session.wait` 挂起（`session.wait` 是每个任务自带的，不进 `requires`），在子运行里那一步会因为子 agent 没有这个工具报错，库流程停下交回给子 agent 自己接着做；不另外标用不了。
+6. 使用手册的节号：流程库占 5.15，子 agent 改成 5.16（目录、5.2 内置工具表、第 6、8 节里的引用一起改）；接口文档流程库是第 22 节，子 agent 改成第 23 节。

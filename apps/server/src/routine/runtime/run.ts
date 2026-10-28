@@ -6,14 +6,14 @@
 // 这里只跑脚本、定结局；接下来怎么收尾（报结果、交给 agent、挂起、审批）由引擎（engine/loop.ts）做。
 // 接着跑（docs/dev/solidify.md 17.2）：停下等人以后、进程中途被杀以后，从头再跑一遍脚本，工具桥按 routine_journal 重放。
 // 审批被拒绝、日志里有浏览器动作而这次运行的 Chrome 已经不在了：不重放，直接停下交给 agent。
+// 流程库（docs/dev/routine-library.md 5.6）：代码目录里另放快照里用得了的库流程（routines/<短名>.mjs），脚本里 ha.routine 调；
+// 每次调用（每一层）写一行 routine_calls（试跑不记）。
 import { cp, mkdir, rm, writeFile } from "node:fs/promises"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
 import { routineStopKindLabel, type RoutineSnapshot, type SessionRoutineState, type SessionSnapshot } from "@heyagent/shared"
 import { asc, eq } from "drizzle-orm"
-import { z } from "zod"
-
 import { getBrowserManager } from "../../browser/manager.js"
 import type { Db } from "../../db/client.js"
 import * as t from "../../db/schema.js"
@@ -32,8 +32,12 @@ import {
   type SandboxRunResult,
 } from "../../sandbox/runner.js"
 import { prepareWorkspace, saveManifest, sessionDirs } from "../../sandbox/workspace.js"
-import { ToolBridge, type BridgeGateway, type BridgeJournal, type JournalRow } from "./bridge.js"
+import { libraryModules } from "../library/snapshot.js"
+import { recordRoutineCall } from "../library/stats.js"
+import { checkRoutineInput, ToolBridge, type BridgeGateway, type BridgeJournal, type BridgeRoutineCall, type JournalRow } from "./bridge.js"
 import { judgeForRun } from "./judge.js"
+
+export { checkRoutineInput }
 
 const num = (name: string, fallback: number) => {
   const value = Number(process.env[name])
@@ -69,6 +73,23 @@ let deps = defaultDeps
 export function setRoutineSandboxDeps(patch: Partial<RoutineSandboxDeps> | undefined) {
   deps = patch ? { ...defaultDeps, ...patch } : defaultDeps
 }
+/** 现在用的沙箱（库流程当工具跑时也用它，routine/library/tool.ts） */
+export const routineSandboxDeps = () => deps
+
+/** 代码目录里放库流程的模块（routines/<短名>.mjs） */
+export async function writeLibraryModules(codeDir: string, modules: { path: string; code: string }[]) {
+  for (const module of modules) {
+    const file = join(codeDir, module.path)
+    await mkdir(dirname(file), { recursive: true })
+    await writeFile(file, module.code)
+  }
+}
+
+/** 调用记录的写法（调用方的运行、任务补上）：工具桥每一层库流程结束时调 */
+export const callRecorder =
+  (db: Db, session: Pick<SessionRow, "id" | "taskId">) =>
+  (call: BridgeRoutineCall): Promise<void> =>
+    recordRoutineCall(db, { ...call, sessionId: session.id, taskId: session.taskId }).then(() => undefined)
 
 /** SDK 的源目录（src/routine/runtime → apps/server/sandbox-sdk；dist 下同样的深度） */
 export const SDK_DIR = fileURLToPath(new URL("../../../sandbox-sdk/heyagent/", import.meta.url))
@@ -107,7 +128,7 @@ export interface RoutineRunResult {
   /** 要挂起：普通运行照常挂起（state = suspended），处理完接着跑；试跑照常挂起，继续后从头跑 */
   suspend?: { plan: SuspendPlan; output: string }
   /** 要人审批（普通运行，state = suspended）：引擎生成「审批工具调用」；这一步没做 */
-  approval?: { result: GatewayResult; step: number; approvedRuleIds: string[] }
+  approval?: { result: GatewayResult; step: number; approvedRuleIds: string[]; library?: { name: string; step: number } }
   /** worker 要退出（signal）：脚本被杀，sessions.routine 还是 running，下次进来按日志接着跑 */
   aborted?: boolean
 }
@@ -155,23 +176,6 @@ function browserLost(rows: JournalRow[], current: string | undefined): string | 
   if (!current) return "等人处理期间这次运行的 Chrome 已经关了（过了保留时间，或者 worker 重启了），页面不是上次的样子，脚本不能按记录接着跑"
   if (last && last !== current) return `这次运行的 Chrome 换了（上次 ${last}，现在 ${current}），页面不是上次的样子，脚本不能按记录接着跑`
   return undefined
-}
-
-/** 输入按 inputSchema 校验：不合格返回原因；schema 是空的、写得解析不了（程序检查管）就不校验 */
-export function checkRoutineInput(schema: Record<string, unknown>, input: Record<string, unknown>): string | undefined {
-  if (Object.keys(schema).length === 0) return undefined
-  let validator: z.ZodType
-  try {
-    validator = z.fromJSONSchema(schema as Parameters<typeof z.fromJSONSchema>[0])
-  } catch {
-    return undefined
-  }
-  const parsed = validator.safeParse(input)
-  if (parsed.success) return undefined
-  return parsed.error.issues
-    .slice(0, 5)
-    .map((issue) => `${issue.path.join(".") || "输入"}：${issue.message}`)
-    .join("；")
 }
 
 const seconds = (ms: number) => `${(ms / 1000).toFixed(1)} 秒`
@@ -303,6 +307,7 @@ export async function runRoutineScript(ctx: RoutineRunContext): Promise<RoutineR
     await mkdir(join(codeDir, "node_modules"), { recursive: true })
     await mkdir(toolsDir, { recursive: true })
     await writeFile(join(codeDir, "routine.mjs"), routine.code)
+    await writeLibraryModules(codeDir, libraryModules(snapshot))
     await cp(SDK_DIR, join(codeDir, "node_modules", "heyagent"), { recursive: true })
     const entries = await listSpace(db, session.id, snapshot.attachments.map((file) => file.id))
     prepared = await prepareWorkspace(dirs, entries, (entry) => readFileData(entry.row))
@@ -335,6 +340,8 @@ export async function runRoutineScript(ctx: RoutineRunContext): Promise<RoutineR
     browserInstanceId: () => getBrowserManager()?.forSession(session.id)?.id,
     // ha.judge：用这次运行的执行模型（试跑照常调；普通运行接着跑时按日志回记下的答案）
     judge: (request, trace) => judgeForRun({ db, session, snapshot, ...(ctx.signal ? { signal: ctx.signal } : {}) }, request, trace),
+    ...(snapshot.libraryRoutines?.length ? { library: { routines: snapshot.libraryRoutines } } : {}),
+    recordCall: callRecorder(db, session),
   })
   // 脚本一直不调工具时也能停：定时看运行有没有被取消
   const watcher = setInterval(() => {
@@ -370,6 +377,8 @@ export async function runRoutineScript(ctx: RoutineRunContext): Promise<RoutineR
     await bridge.idle()
     await bridge.close()
   }
+  // 还没出来的库流程（停下了、脚本出错）：各记一行调用记录。worker 要退出的不记（下次进来按日志接着跑）
+  if (!(ctx.signal?.aborted && !bridge.stopped)) await bridge.settleFrames()
 
   // worker 要退出：不定结局，sessions.routine 留在 running，下次进来按日志接着跑
   if (ctx.signal?.aborted && !bridge.stopped) return { state, aborted: true }

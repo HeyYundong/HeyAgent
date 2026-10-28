@@ -5,6 +5,9 @@
 // - agent 运行中用 code.run（tools）写的脚本（18.1）：原文完整给（每个最多 2 万字），它做的步骤标「脚本 k 第 n 步」。
 // - 任务打开了「允许直接调网站接口」、运行记下了网页调的接口（network/requests.jsonl，19.3）：加一节「网页调过的接口」，
 //   按「方法 + 路径模板」归类，每个接口写调了几次、在哪一步、参数（固定 / 每次不一样 / 输入在这里）、认证、返回结构和样例（19.6）。
+// - 流程库（docs/dev/routine-library.md 12.1、16.2 第 5 条）：调了库流程的（agent 调的工具 routine.<短名>、脚本里的 ha.routine），
+//   那一次是一行，里面的步骤（trace.library）不展开；里面网页发的接口请求在「网页调过的接口」里归到这一行（「在流程『…』里发的」）。
+//   任务选了库流程时另写一节「任务选的库流程」：输入、交回、会不会改东西，固化员照它写 ha.routine。
 // 模型的思考过程不给（只看做了什么）；网页、文件、工具输出里写给 AI 的话一律当数据，提示词里交代（prompt.ts）。
 import { and, asc, desc, eq, inArray } from "drizzle-orm"
 import {
@@ -19,6 +22,11 @@ import {
   type SessionSnapshot,
   type SnapshotTool,
   type TaskDispatch,
+  isRoutineToolId,
+  routineObjectSchema,
+  routineSlugOfToolId,
+  toolSchemaOf,
+  type LibraryRoutineSnapshot,
 } from "@heyagent/shared"
 
 import type { Db } from "../db/client.js"
@@ -294,7 +302,7 @@ export function agentScriptsSection(scripts: AgentScript[], budget = AGENT_SCRIP
   let used = 0
   for (const script of [...scripts].reverse()) {
     const ran = script.event ? (isToolError(script.event) ? "，code.run 报了出错" : "，code.run 跑完了") : ""
-    const head = `### 脚本 ${script.no}${script.file ? `（空间文件 ${script.file}）` : ""}：调了 ${script.steps.filter((step) => step.kind === "tool").length} 次工具${ran}`
+    const head = `### 脚本 ${script.no}${script.file ? `（空间文件 ${script.file}）` : ""}：调了 ${script.steps.filter((step) => step.kind === "tool" && !step.trace?.library).length} 次工具${ran}`
     let body: string
     if (script.sameAs) body = `和脚本 ${script.sameAs} 一字不差。`
     else if (script.code === undefined) body = `（没有原文：${script.note ?? "参数里没有 code"}）`
@@ -357,6 +365,70 @@ function agentScriptBlock(script: AgentScript, n: number) {
 const contextLine = (event: EventRow, tag = "") =>
   `- ${tag || contextLabel[event.kind] || event.kind}：${event.title}${event.detail ? `（${oneLine(clip(event.detail, 300))}）` : ""}`
 
+// ---------- 流程库（docs/dev/routine-library.md 5.7、12.1） ----------
+
+/** 库流程里的一步（trace.library）：材料里不展开，归到调它的那一行 */
+const inLibrary = (event: Pick<EventRow, "trace">) => Boolean(event.trace?.library)
+
+/** 脚本里 input 的键怎么写在对象字面量里：{ 单号: … }、{ "$note": … } */
+const objectKey = (key: string) => (/^[\p{L}_][\p{L}\p{N}_]*$/u.test(key) ? key : JSON.stringify(key))
+
+/**
+ * 调库流程的那几行（工具 routine.<短名>：agent 调的、脚本里 ha.routine 进入的）→ 里面的步骤（trace.library）。
+ * 里面的步骤按 callId 分组（第 2 层的归到它前面最近的第 1 层那一组）；agent 调的，工具那一行是做完才记的，里面的步骤在它前面；
+ * 脚本进入的（带 routineStep / scriptStep），里面的步骤在它后面。按这个就近对上（同一个库流程）
+ */
+export function libraryCalls(events: EventRow[], routines: readonly Pick<LibraryRoutineSnapshot, "slug" | "routineId">[] = []): Map<number, EventRow[]> {
+  const groups: { callId: string; routineId: string; steps: EventRow[]; claimed: boolean }[] = []
+  let current: (typeof groups)[number] | undefined
+  for (const event of events) {
+    const library = event.trace?.library
+    if (!library) continue
+    if (library.depth > 1 && current) {
+      current.steps.push(event)
+      continue
+    }
+    current = groups.find((group) => group.callId === library.callId)
+    if (!current) {
+      current = { callId: library.callId, routineId: library.routineId, steps: [], claimed: false }
+      groups.push(current)
+    }
+    current.steps.push(event)
+  }
+  const out = new Map<number, EventRow[]>()
+  for (const event of events) {
+    if (event.kind !== "tool" || !event.toolId || !isRoutineToolId(event.toolId) || inLibrary(event)) continue
+    const slug = routineSlugOfToolId(event.toolId)
+    const routineId = routines.find((each) => each.slug === slug)?.routineId
+    const matches = (group: (typeof groups)[number]) => !group.claimed && (!routineId || group.routineId === routineId)
+    const entered = Boolean(event.trace?.routineStep || event.trace?.scriptStep)
+    const group = entered
+      ? groups.find((each) => matches(each) && each.steps[0]!.seq > event.seq)
+      : groups.filter((each) => matches(each) && each.steps.at(-1)!.seq < event.seq).at(-1)
+    if (!group) continue
+    group.claimed = true
+    out.set(event.seq, group.steps)
+  }
+  return out
+}
+
+/** 调库流程的那一行：照普通工具写，加上是哪个库流程、里面几步不展开、脚本里怎么调（agent 调的参数名换回 inputSchema 里的） */
+function routineBlock(event: EventRow, n: number, values: { label: string; value: string }[], inner: EventRow[] | undefined, routine: LibraryRoutineSnapshot | undefined, tag = "") {
+  const slug = routineSlugOfToolId(event.toolId ?? "") ?? event.toolId ?? ""
+  const steps = inner?.filter((step) => step.kind === "tool").length
+  const what = `流程库里的流程${routine ? `「${routine.name}」第 ${routine.version} 版` : ""}：一次调用跑完${steps !== undefined ? `，里面 ${steps} 步不展开` : "，里面的步骤不展开"}`
+  const params = routine ? toolSchemaOf(routine.inputSchema).params : []
+  const keys = params.map((param) => `${objectKey(param.name)}: …`)
+  const renamed = params.filter((param) => param.key !== param.name)
+  const entered = Boolean(event.trace?.routineStep || event.trace?.scriptStep)
+  return [
+    toolBlock(event, n, values, `${tag}（${what}）`),
+    `  脚本里这样调：await ha.routine(${JSON.stringify(slug)}, { ${keys.join(", ")} })${
+      !entered && renamed.length ? `；agent 调时的参数名对应：${renamed.map((param) => `${param.key} = ${param.name}`).join("、")}` : ""
+    }`,
+  ].join("\n")
+}
+
 /**
  * 过程压成一段段：工具调用带序号；别的几种一行；agent 的脚本放在它那次 code.run 的位置，后面跟它做的步骤。
  * numbering：给了就记下每条过程记录（seq）在材料里的 #序号（「网页调过的接口」按它写在哪一步）
@@ -365,9 +437,15 @@ export function compactLog(
   events: EventRow[],
   values: { label: string; value: string }[],
   scripts: AgentScript[] = collectAgentScripts(events),
-  numbering?: Map<number, number>
+  numbering?: Map<number, number>,
+  routines: readonly LibraryRoutineSnapshot[] = []
 ): string[] {
   const blocks: string[] = []
+  // 库流程（routine.<短名>）那一行里面的步骤不展开
+  const inner = libraryCalls(events, routines)
+  const routineOf = (event: EventRow) => routines.find((each) => each.slug === routineSlugOfToolId(event.toolId ?? ""))
+  const block = (event: EventRow, n: number, tag = "") =>
+    event.toolId && isRoutineToolId(event.toolId) ? routineBlock(event, n, values, inner.get(event.seq), routineOf(event), tag) : toolBlock(event, n, values, tag)
   const number = (event: EventRow | undefined, n: number) => {
     if (event) numbering?.set(event.seq, n)
     return n
@@ -384,20 +462,27 @@ export function compactLog(
     if (script) {
       blocks.push(agentScriptBlock(script, number(script.event, ++n)))
       for (const step of script.steps) {
+        if (inLibrary(step)) continue
         const tag = `脚本 ${script.no} 第 ${step.trace?.scriptStep} 步`
-        if (step.kind === "tool") blocks.push(toolBlock(step, number(step, ++n), values, `（${tag}）`))
+        if (step.kind === "tool") blocks.push(block(step, number(step, ++n), `（${tag}）`))
         else blocks.push(contextLine(step, tag))
       }
       if (script.event) continue
     }
-    if (event.trace?.scriptStep) continue
+    if (event.trace?.scriptStep || inLibrary(event)) continue
     if (event.kind === "tool") {
-      blocks.push(toolBlock(event, number(event, ++n), values))
+      blocks.push(block(event, number(event, ++n)))
       continue
     }
     // 固化脚本里的判断（「流程判断：……」）也给：看得出那一步是怎么选的
     if (CONTEXT_KINDS.has(event.kind) || event.trace?.routineStep || event.title.startsWith("流程判断")) blocks.push(contextLine(event))
   }
+  // 库流程里面的步骤：序号记成调它的那一行（「网页调过的接口」按它写在哪一步）
+  if (numbering)
+    for (const [seq, steps] of inner) {
+      const at = numbering.get(seq)
+      if (at !== undefined) for (const step of steps) numbering.set(step.seq, at)
+    }
   return blocks
 }
 
@@ -538,12 +623,21 @@ function bodyMarks(body: string, type: string | undefined, values: { label: stri
 /** 一个请求在过程里的哪一步：调用期间发的写 #n（trace.network 对上）；两次调用之间发的写在哪一步之后、时间 */
 type StepRef = (line: NetworkRequestLine) => string
 
-/** 按过程记录的 trace.network 和材料里的 #序号，造出「在哪一步」 */
-export function stepRefs(events: Pick<EventRow, "seq" | "at" | "toolId" | "trace">[], numbering: Map<number, number>): StepRef {
+/**
+ * 按过程记录的 trace.network 和材料里的 #序号，造出「在哪一步」。库流程里面的步骤发的（trace.library）写「在流程『…』里发的」，
+ * libraryNames 是库流程编号 → 名字
+ */
+export function stepRefs(
+  events: Pick<EventRow, "seq" | "at" | "toolId" | "trace">[],
+  numbering: Map<number, number>,
+  libraryNames: ReadonlyMap<string, string> = new Map()
+): StepRef {
   const numbered = events.filter((event) => numbering.has(event.seq))
   const ranges = numbered.filter((event) => event.trace?.network)
   return (line) => {
     const within = ranges.find((event) => event.trace!.network!.first <= line.seq && line.seq <= event.trace!.network!.last)
+    const library = within?.trace?.library
+    if (within && library) return `#${numbering.get(within.seq)}（在流程「${libraryNames.get(library.routineId) ?? library.routineId}」里发的，${within.toolId ?? ""}）`
     if (within) return `#${numbering.get(within.seq)} ${within.toolId ?? ""}`.trim()
     const at = Date.parse(line.at)
     const time = Number.isNaN(at) ? line.at : new Date(at).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })
@@ -681,6 +775,7 @@ const isPointerXy = (toolId: string) => /^browser\.mouse_/.test(toolId)
 
 /** 一个工具在脚本里怎么调 */
 export function sdkCallOf(toolId: string): string {
+  if (isRoutineToolId(toolId)) return `ha.routine(${JSON.stringify(routineSlugOfToolId(toolId) ?? toolId)}, { … })（流程库里的流程，不能用 ha.tool 调，见「任务选的库流程」）`
   if (toolId === "browser.batch") return "脚本里不用：一步一步调（批里的每一步过程里各有一条）"
   if (LOOK_TOOLS.has(toolId)) return "agent 看页面用的，脚本里不用：等结果用 ha.browser.waitAny，读字用 ha.browser.extract"
   return BROWSER_WRAPPERS.get(toolId) ?? SDK_CALLS[toolId] ?? `ha.tool(${JSON.stringify(toolId)}, { … })`
@@ -763,6 +858,28 @@ function finishOf(events: EventRow[]): { outcome?: string; summary?: string; evi
   return undefined
 }
 
+/** 「任务选的库流程」一节：每个库流程的输入、交回、会不会改东西（固化员照它写 ha.routine）；没选的返回空串 */
+export function librarySection(routines: readonly LibraryRoutineSnapshot[]): string {
+  const selected = routines.filter((routine) => routine.selected)
+  if (!selected.length) return ""
+  const lines = selected.map((routine) => {
+    const input = routineObjectSchema(routine.inputSchema)
+    const output = routineObjectSchema(routine.outputSchema)
+    const inputs = input.names.map((name) => `${name}${input.required.includes(name) ? "（必填）" : ""}`)
+    return [
+      `- ${routine.toolId}「${routine.name}」第 ${routine.version} 版${routine.unavailable ? `（这次用不了：${routine.unavailable}）` : ""}：${clip(routine.summary, 200)}`,
+      `  脚本里：const r = await ha.routine(${JSON.stringify(routine.slug)}, { ${input.names.map((name) => `${objectKey(name)}: …`).join(", ")} })`,
+      `  输入：${inputs.join("、") || "不用输入"}；交回 r.data：${output.names.join("、") || "没有固定字段"}（r.outcome 是 achieved / not_achieved，r.summary、r.reason 是说明）`,
+      `  ${routine.commits.length ? `会改东西：${routine.commits.join("；")}` : "只读，不改东西"}`,
+    ].join("\n")
+  })
+  return [
+    "## 任务选的库流程（脚本里用 ha.routine 调）",
+    "流程库里固化好的流程，这个任务选了它们。过程里调过它们的（标「流程库里的流程」的那一行），脚本里照样用 ha.routine 调同一个，不要把里面的步骤、接口抄出来自己做。",
+    ...lines,
+  ].join("\n")
+}
+
 export interface CompileMaterial {
   /** 给固化员的那条消息（不含这一轮的反馈） */
   text: string
@@ -780,6 +897,8 @@ export interface CompileMaterial {
   allowFetch: boolean
   /** 材料里有「网页调过的接口」一节时：记下的请求的 seq（提示词加第 19–24 条；HTTP 工具建议的依据要在里面，19.7） */
   networkSeqs?: number[]
+  /** 任务选了库流程，或者过程里调过库流程：提示词加「用 ha.routine 调同一个」的规矩（docs/dev/routine-library.md 13.2） */
+  library: boolean
 }
 
 /** 源运行记下的接口（network/requests.jsonl）：files.kind = network，一次运行一个（覆盖写，取最新的那一行） */
@@ -878,7 +997,11 @@ export async function buildMaterial(
         `要交回的结果（用 ha.work.report 交，outputSchema = 这些字段）：\n${dispatch.results.map((result) => `- ${result.name}${result.required ? "（必交）" : "（可选）"}${result.description ? `：${result.description}` : ""}`).join("\n") || "（没有声明）"}`,
       ].join("\n")
     )
-  parts.push(toolsSection(snapshot.tools, events))
+  // 库流程里面的步骤不算这次运行「用过的子工具」：脚本里调库流程，不自己做那些步骤
+  const libraryRoutines = snapshot.libraryRoutines ?? []
+  parts.push(toolsSection(snapshot.tools, events.filter((event) => !inLibrary(event))))
+  const library = librarySection(libraryRoutines)
+  if (library) parts.push(library)
   if (snapshot.browser)
     parts.push(
       `## 浏览器\n能用的 Chrome 配置：${snapshot.browser.profiles.map((profile) => `${profile.id}（${profile.name}）`).join("、") || "（没有）"}\n网址白名单：${snapshot.browser.allowedDomains.join("、") || "（不限）"}`
@@ -896,12 +1019,13 @@ export async function buildMaterial(
   if (scripts.length) parts.push(agentScriptsSection(scripts))
   const numbering = new Map<number, number>()
   parts.push(
-    `## 这次运行的过程（按时间顺序；「输入在这里」是系统标出来的，脚本里这些位置要用输入，不要写死）\n${clipBlocks(compactLog(events, values, scripts, numbering)).join("\n") || "（没有记录）"}`
+    `## 这次运行的过程（按时间顺序；「输入在这里」是系统标出来的，脚本里这些位置要用输入，不要写死）\n${clipBlocks(compactLog(events, values, scripts, numbering, libraryRoutines)).join("\n") || "（没有记录）"}`
   )
   // 任务打开了「允许直接调网站接口」、记下了网页调的接口（19.6）
   const allowFetch = snapshot.browser?.allowFetch === true
   const network = allowFetch ? await readNetworkLog(db, session.id) : undefined
-  const apis = network ? networkSection(network, values, stepRefs(events, numbering)) : ""
+  const libraryNames = new Map(libraryRoutines.map((routine) => [routine.routineId, routine.name]))
+  const apis = network ? networkSection(network, values, stepRefs(events, numbering, libraryNames)) : ""
   if (apis) parts.push(apis)
   const result: string[] = []
   if (finish) result.push(`run.finish：${finish.outcome ?? ""} ${clip(finish.summary, 1000)}${finish.evidence ? `\n依据：${clip(finish.evidence, 1000)}` : ""}`)
@@ -954,5 +1078,6 @@ export async function buildMaterial(
     ...(report ? { report } : {}),
     allowFetch,
     ...(apis && network ? { networkSeqs: network.requests.map((line) => line.seq) } : {}),
+    library: libraryRoutines.some((routine) => routine.selected) || events.some((event) => event.kind === "tool" && Boolean(event.toolId && isRoutineToolId(event.toolId))),
   }
 }

@@ -286,7 +286,8 @@ export function deriveSubSnapshot(parent: SessionSnapshot, input: DeriveSubSnaps
     return typeof trigger?.type === "string" ? trigger.type : undefined
   }
   const autoMemory = parent.autoMemory?.status === "pending" ? undefined : parent.autoMemory
-  const libraryRoutines = parent.libraryRoutines && subLibraryRoutines(parent.libraryRoutines)
+  const toolNames = new Map(parent.tools.map((tool) => [tool.id, tool.name]))
+  const libraryRoutines = parent.libraryRoutines && subLibraryRoutines(parent.libraryRoutines, toolNames)
   const {
     dispatch: _dispatch,
     dispatchTargets: _dispatchTargets,
@@ -322,13 +323,17 @@ export function deriveSubSnapshot(parent: SessionSnapshot, input: DeriveSubSnaps
 }
 
 /**
- * 子快照里的库流程：从父快照抄。requires.toolIds 里有子 agent 没有的工具（SUBAGENT_DROPPED_TOOL_IDS）的标 unavailable，
+ * 子快照里的库流程：从父快照抄（selected、冻好的版本都不变；网关照 selected 给工具、没选的只给 ha.routine 用）。
+ * requires.toolIds 里有子 agent 没有的工具（SUBAGENT_DROPPED_TOOL_IDS）的标 unavailable（工具名从 toolNames 取，父快照的 tools；取不到写 id），
  * 调了用不了的库流程的（requires.routines，按短名，传递）也标；原来就用不了的不动
  */
-export function subLibraryRoutines(routines: NonNullable<SessionSnapshot["libraryRoutines"]>): NonNullable<SessionSnapshot["libraryRoutines"]> {
+export function subLibraryRoutines(
+  routines: NonNullable<SessionSnapshot["libraryRoutines"]>,
+  toolNames?: ReadonlyMap<string, string>
+): NonNullable<SessionSnapshot["libraryRoutines"]> {
   const next = routines.map((routine) => {
     if (routine.unavailable) return routine
-    const dropped = routine.requires.toolIds.filter((id) => SUBAGENT_DROPPED_TOOL_IDS.includes(id))
+    const dropped = routine.requires.toolIds.filter((id) => SUBAGENT_DROPPED_TOOL_IDS.includes(id)).map((id) => toolNames?.get(id) ?? id)
     return dropped.length ? { ...routine, unavailable: `子 agent 不能用要的工具「${dropped.join("」「")}」` } : routine
   })
   for (let changed = true; changed; ) {

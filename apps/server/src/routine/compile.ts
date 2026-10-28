@@ -383,8 +383,9 @@ async function draft(db: Db, loaded: Loaded) {
   } catch (error) {
     return fail(db, loaded, `固化用的模型 ${modelId} 用不了：${(error as Error).message}`)
   }
-  // 材料里有「网页调过的接口」才加第 19–24 条规矩和例 6（19.6）；任务没有 work.report（不是被派的）时例子里不写 ha.work.report
-  const system = compileSystemPrompt(undefined, { siteApi: Boolean(material.networkSeqs?.length), workReport: material.toolIds.includes("work.report") })
+  // 材料里有「网页调过的接口」才加第 19–24 条规矩和例 6（19.6）；任务没有 work.report（不是被派的）时例子里不写 ha.work.report；
+  // 选了 / 调过库流程才加「用 ha.routine 调」那一条
+  const system = compileSystemPrompt(undefined, { siteApi: Boolean(material.networkSeqs?.length), workReport: material.toolIds.includes("work.report"), library: material.library })
   let problem = await previousProblem(db, version)
   let lastError = ""
   // 没到试跑就没过的几轮：原因存进 test_report.drafts（没成功的版本查得到每一轮为什么没过）
