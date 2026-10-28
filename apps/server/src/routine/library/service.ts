@@ -9,7 +9,6 @@
 // 审计：routine.library.publish / .update / .pause / .resume / .withdraw（自动停用 .auto_pause 在 stats.ts）。
 // 通知（7）：来源流程有新的转正式版本（可以发布）、来源流程被自动停用（「库里的第 3 版多半也跑不通了」），runtime/stats.ts 调；
 // 库流程自己连续跑不通自动停用的通知在 stats.ts（A 包）。
-import { TRPCError } from "@trpc/server"
 import { and, asc, desc, eq, gt, inArray, isNotNull, like, lt, sql } from "drizzle-orm"
 import {
   LIBRARY_CALLS_PAGE,
@@ -39,9 +38,6 @@ import type { Db } from "../../db/client.js"
 import * as t from "../../db/schema.js"
 import { notifyUsers } from "../../engine/notify.js"
 import { analyzeForPublish, analyzeLibraryCode, compatWithPublished, defaultLibrarySummary, routineToolDescription } from "./analyze.js"
-
-/** 还没做好（A 包的空壳还在用；A 包实现完以后没人用就删掉） */
-export const libraryNotYet = () => new TRPCError({ code: "NOT_IMPLEMENTED", message: "流程库还没做好（docs/dev/routine-library.md）" })
 
 /** 流程页的链接（通知用） */
 export const libraryLink = (routineId: string) => `#/routines?id=${encodeURIComponent(routineId)}`
@@ -116,6 +112,7 @@ export async function listLibrary(db: Db): Promise<RoutineLibraryItem[]> {
       slug: entry.slug,
       toolId: routineToolId(entry.slug),
       title: entry.title,
+      summary: entry.summary,
       status: entry.status,
       publishedVersion: entry.publishedVersion,
       taskCount: entry.status === "withdrawn" ? 0 : (counts.get(routineToolId(entry.slug)) ?? 0),

@@ -24,6 +24,7 @@ import {
   type RoutineCompatIssue,
   type RoutineRequires,
   type RoutineStopKind,
+  withPropertyOrder,
 } from "@heyagent/shared"
 import { and, eq, inArray, like, sql } from "drizzle-orm"
 
@@ -305,8 +306,9 @@ export async function insertRoutineLibraryFixtures(db: Db): Promise<{ routines: 
         name: spec.title,
         description: each.description,
         code: each.code,
-        inputSchema: each.inputSchema,
-        outputSchema: each.outputSchema,
+        // 同固化员写的：属性顺序记进 x-order（jsonb 存进去会按键长短重排）
+        inputSchema: withPropertyOrder(each.inputSchema),
+        outputSchema: withPropertyOrder(each.outputSchema),
         commits: each.commits,
         assumptions: ["工厂的店铺、询盘页不用另外登录（Chrome 配置里登着 1688）"],
         round: 1,
@@ -401,6 +403,8 @@ export async function insertRoutineLibraryFixtures(db: Db): Promise<{ routines: 
   const A = ids.A!
   const B = ids.B!
   const lib = (routineId: string, version: number, step: number, callId: string, depth: number): { library: LibraryTrace } => ({ library: { routineId, version, step, callId, depth } })
+  /** 调库流程本身的那一条（agent 调的工具那一行、脚本里进入那一步、「跑完」那一条）：libraryCall.callId = 里面步骤的 library.callId */
+  const callOf = (routineId: string, version: number, callId: string): Pick<EventTrace, "libraryCall"> => ({ libraryCall: { callId, routineId, version } })
   const quoteRow = (factory: number) => ({ 报价: ["¥12.50", "¥11.80", "¥13.20"][factory]!, 起订量: [500, 1000, 300][factory]!, 交期: ["15 天", "20 天", "12 天"][factory]! })
 
   /** A 第 2 版里的步骤（从 at 秒开始）：进 B → B 的两步 → B 跑完 → 打开店铺 → 点「询价记录」→ 读报价。stopAt = 停在 A 的第几步（出错） */
@@ -408,10 +412,10 @@ export async function insertRoutineLibraryFixtures(db: Db): Promise<{ routines: 
     const url = FACTORY_URLS[factory]!
     const bCall = `${callId}-l1`
     const list: EventSpec[] = [
-      { at, kind: "tool", title: "开始跑流程「打开 1688 询盘页」第 1 版", toolId: routineToolId("login_inbox"), input: {}, output: "进入流程「打开 1688 询盘页」第 1 版", ms: 5, trace: { ...extra(1), ...lib(A, 2, 1, callId, 1) } },
+      { at, kind: "tool", title: "开始跑流程「打开 1688 询盘页」第 1 版", toolId: routineToolId("login_inbox"), input: {}, output: "进入流程「打开 1688 询盘页」第 1 版", ms: 5, trace: { ...extra(1), ...lib(A, 2, 1, callId, 1), ...callOf(B, 1, bCall) } },
       { at: at + 1, kind: "tool", title: "打开 1688 询盘页", toolId: "browser.navigate", input: { url: INBOX_URL }, output: `### Page\n- URL: ${INBOX_URL}\n- Title: 询盘列表`, ms: 1_400, trace: { ...extra(2), ...lib(B, 1, 1, bCall, 2), code: `await page.goto('${INBOX_URL}');`, urlAfter: INBOX_URL, title: "询盘列表" } },
       { at: at + 2, kind: "tool", title: "等询盘列表出来", toolId: "browser.wait_any", input: { outcomes: { list: "getByRole('heading', { name: '询盘列表' })" } }, output: "出现了：list", ms: 300, trace: { ...extra(3), ...lib(B, 1, 2, bCall, 2) } },
-      { at: at + 2, kind: "plan", title: "流程「打开 1688 询盘页」跑完：2 步 · 交回 —", trace: { ...extra(3), ...lib(A, 2, 1, callId, 1) } },
+      { at: at + 2, kind: "plan", title: "流程「打开 1688 询盘页」跑完：2 步 · 交回 —", trace: { ...extra(3), ...lib(A, 2, 1, callId, 1), ...callOf(B, 1, bCall) } },
       { at: at + 4, kind: "tool", title: "打开工厂店铺", toolId: "browser.navigate", input: { url }, output: `### Page\n- URL: ${url}\n- Title: 工厂店铺`, ms: 1_600, trace: { ...extra(4), ...lib(A, 2, 2, callId, 1), code: `await page.goto('${url}');`, urlAfter: url, title: "工厂店铺" } },
     ]
     if (stopAt === 3) {
@@ -456,9 +460,9 @@ export async function insertRoutineLibraryFixtures(db: Db): Promise<{ routines: 
       { at: 1, kind: "plan", title: "按任务步骤开始", detail: "3 个步骤", tokensIn: 5_200, tokensOut: 210 },
       { at: 4, kind: "think", title: "两家工厂都要查报价，先用固化好的流程查第一家", tokensIn: 6_900, tokensOut: 160 },
       ...quoteSteps(first, 6, 0, none),
-      { at: 13, kind: "tool", title: "查 1688 工厂的报价和起订量", toolId: routineToolId("supplier_quote"), input: { p1: FACTORY_URLS[0], p2: "硅胶折叠收纳篮" }, output: `流程「查 1688 工厂的报价和起订量」第 2 版跑完：办成 · ${returned(0).summary}\n${JSON.stringify(returned(0))}`, ms: 6_400, tokensIn: 8_100, tokensOut: 140 },
+      { at: 13, kind: "tool", title: "查 1688 工厂的报价和起订量", toolId: routineToolId("supplier_quote"), input: { p1: FACTORY_URLS[0], p2: "硅胶折叠收纳篮" }, output: `流程「查 1688 工厂的报价和起订量」第 2 版跑完：办成 · ${returned(0).summary}\n${JSON.stringify(returned(0))}`, ms: 6_400, tokensIn: 8_100, tokensOut: 140, trace: callOf(A, 2, first) },
       ...quoteSteps(second, 16, 1, none, 3),
-      { at: 27, kind: "tool", title: "查 1688 工厂的报价和起订量（出错）", toolId: routineToolId("supplier_quote"), input: { p1: FACTORY_URLS[1], p2: "硅胶折叠收纳篮" }, output: `${handoff}\n${JSON.stringify(stopData)}`, ms: 9_200, tokensIn: 9_400, tokensOut: 120 },
+      { at: 27, kind: "tool", title: "查 1688 工厂的报价和起订量（出错）", toolId: routineToolId("supplier_quote"), input: { p1: FACTORY_URLS[1], p2: "硅胶折叠收纳篮" }, output: `${handoff}\n${JSON.stringify(stopData)}`, ms: 9_200, tokensIn: 9_400, tokensOut: 120, trace: callOf(A, 2, second) },
       { at: 40, kind: "tool", title: "看页面快照", toolId: "browser.snapshot", input: {}, output: "- tablist: 店铺首页 / 报价单 / 联系方式", ms: 500, tokensIn: 12_300, tokensOut: 260 },
       { at: 52, kind: "tool", title: "点「报价单」", toolId: "browser.click", input: { element: "报价单标签", ref: "e22" }, output: "已点击", ms: 700, tokensIn: 13_100, tokensOut: 150, trace: { code: "await page.getByRole('tab', { name: '报价单' }).click();" } },
       { at: 66, kind: "tool", title: "读最近的报价", toolId: "browser.extract", input: { list: "getByRole('row')", limit: 5 }, output: "| 商品 | 报价 | 起订量 |\n|---|---|---|\n| 硅胶折叠收纳篮 | ¥11.80 | 1000 |", ms: 600, tokensIn: 14_000, tokensOut: 300 },
@@ -492,12 +496,12 @@ console.log(JSON.stringify(out))
       step++
       const enterStep = step
       const enterCall = `${callId}-s${enterStep}`
-      list.push({ at, kind: "tool", title: "开始跑流程「查 1688 工厂的报价和起订量」第 2 版", toolId: routineToolId("supplier_quote"), input: { 工厂链接: url, 商品: "桌面收纳盒" }, output: "进入流程「查 1688 工厂的报价和起订量」第 2 版", ms: 4, trace: { scriptStep: enterStep, scriptCallId: callId } })
+      list.push({ at, kind: "tool", title: "开始跑流程「查 1688 工厂的报价和起订量」第 2 版", toolId: routineToolId("supplier_quote"), input: { 工厂链接: url, 商品: "桌面收纳盒" }, output: "进入流程「查 1688 工厂的报价和起订量」第 2 版", ms: 4, trace: { scriptStep: enterStep, scriptCallId: callId, ...callOf(A, 2, enterCall) } })
       const inner = quoteSteps(enterCall, at + 1, factory, (k) => ({ scriptStep: enterStep + k, scriptCallId: callId }))
       list.push(...inner)
       step = enterStep + 6
       at += 9
-      list.push({ at, kind: "plan", title: `流程「查 1688 工厂的报价和起订量」跑完：6 步 · 交回 报价=${quoteRow(factory).报价}、起订量=${quoteRow(factory).起订量}、交期=${quoteRow(factory).交期}`, trace: { scriptStep: step, scriptCallId: callId } })
+      list.push({ at, kind: "plan", title: `流程「查 1688 工厂的报价和起订量」跑完：6 步 · 交回 报价=${quoteRow(factory).报价}、起订量=${quoteRow(factory).起订量}、交期=${quoteRow(factory).交期}`, trace: { scriptStep: step, scriptCallId: callId, ...callOf(A, 2, enterCall) } })
       at += 1
     })
     list.push(

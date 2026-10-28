@@ -384,6 +384,7 @@ describe("读、改、停用、撤下", () => {
       slug: "stats_one",
       toolId: "routine.stats_one",
       title: "查一条记录",
+      summary: "要查一条记录的状态时",
       status: "listed",
       publishedVersion: 1,
       taskCount: 2,

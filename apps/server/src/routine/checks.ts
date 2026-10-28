@@ -5,7 +5,7 @@
 // ha.browser.fetch（直接调网站的接口，19.6）还要源快照打开了「允许直接调网站接口」。
 // ha.routine("短名", 输入)（流程库，docs/dev/routine-library.md 5.6）：短名要直接写字符串，routine.<短名> 要在任务的工具里；
 // 库流程不能用 ha.tool("routine.…") 调。脚本的 AST 分析（analyzeScript）也给流程库发布时算「要的工具」用（library/analyze.ts）。
-import { BROWSER_FETCH_TOOL, isRoutineToolId, ROUTINE_TOOL_PREFIX, routineSlugOfToolId, routineToolId } from "@heyagent/shared"
+import { BROWSER_FETCH_TOOL, isRoutineToolId, ROUTINE_TOOL_PREFIX, routineSlugOfToolId, routineToolId, withPropertyOrder } from "@heyagent/shared"
 import { parse, type Node } from "acorn"
 import { z } from "zod"
 
@@ -149,7 +149,7 @@ function propKey(property: AnyNode): string | undefined {
 
 const lineOf = (code: string, offset: number) => code.slice(0, offset).split("\n").length
 
-/** 解析固化员给的 JSON Schema：要是对象类型（脚本的输入、交回的结果都是一个对象），properties、required 的形状要对 */
+/** 解析固化员给的 JSON Schema：要是对象类型（脚本的输入、交回的结果都是一个对象），properties、required 的形状要对；属性顺序记进 x-order */
 export function parseJsonSchema(value: string | Record<string, unknown>, what: string): { schema?: Record<string, unknown>; problems: string[] } {
   let schema: unknown = value
   if (typeof value === "string") {
@@ -182,7 +182,8 @@ export function parseJsonSchema(value: string | Record<string, unknown>, what: s
       problems.push(`${what}不是合法的 JSON Schema：${(error as Error).message}`)
     }
   }
-  return problems.length ? { problems } : { schema: object, problems }
+  // 属性顺序记进 x-order：存进 jsonb 后属性按键长短重排，工具参数 p1、p2 和界面的输入表要照作者写的顺序（shared 的 SCHEMA_ORDER_KEY）
+  return problems.length ? { problems } : { schema: withPropertyOrder(object), problems }
 }
 
 /** 按 JSON Schema 校验一个值，不合格返回原因（几条） */

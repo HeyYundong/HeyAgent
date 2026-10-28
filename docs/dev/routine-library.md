@@ -1,6 +1,7 @@
 # 流程库：固化流程给多个任务共用、当工具调（设计，2026-10-28）
 
-> **状态：约定已写好（2026-10-28，分支 `worktree-agent-aed6bf0847665eb2a`，基于集成分支 1af8ae5）。** 监工 2026-10-28 审过，第 15 节四条都按推荐做（用户 2026-10-28：设计过的都做完，交给监工定）。约定写了什么、和原稿不一样的地方见第 16 节；A / B / C 三包按第 13 节并行做。
+> **状态：已实现，等合并（2026-10-28，集成分支 `worktree-agent-a63a9b71c05b52516`，基于 `worktree-solidify-design` 9ed41ae）。** 约定（第 16 节）和 A / B / C 三包都已合在一起；三包和设计不一样的地方、集成时改的见第 17 节「实现记录」。真模型验收（12.3）还没做。
+> 监工 2026-10-28 审过，第 15 节四条都按推荐做（用户 2026-10-28：设计过的都做完，交给监工定）。
 > 来由：`solidify.md` 6.1 写过「给 agent 当工具」，第 13 节挪到第三期：「多个任务共用的流程库：像技能一样在配置页管理、建任务时选」。
 > 文中写「现在」的，都读分支 `worktree-solidify-design`（0d7652d）的代码确认过；写约定时按 1af8ae5（直接调网站接口、派活第三期、记忆自动挑选已合入）又对了一遍，对不上的已改（第 16.2 节）。
 
@@ -438,11 +439,11 @@ library?: {
 | `engine.ts` | `snapshot.libraryRoutines`；`SnapshotTool.routineId` |
 | `schemas.ts`、`labels.ts` | `toolSourceSchema` 加 `routine`（中文「流程」）；`toolSchema.routineId` |
 
-### 10.3 接口（tRPC `routineLibrary.*`，`trpc/routine-library-router.ts`，现在一律回 NOT_IMPLEMENTED「流程库还没做好」）
+### 10.3 接口（tRPC `routineLibrary.*`，`trpc/routine-library-router.ts`，已实现，接口文档 `api.md` 第 22 节）
 
 | 接口 | 谁能用 | 输入 → 输出 |
 |---|---|---|
-| `list` | 登录即可 | → `RoutineLibraryItem[]`：id、短名、工具 id、名字、状态、发布的版本、在用几个任务、有没有可发布的新版本（`newerVersion`）、`failStreak` |
+| `list` | 登录即可 | → `RoutineLibraryItem[]`：id、短名、工具 id、名字、「什么时候用」（`summary`，集成时加的）、状态、发布的版本、在用几个任务、有没有可发布的新版本（`newerVersion`）、`failStreak` |
 | `get` | 登录即可 | `{ routineId }` → `RoutineLibraryDetail`：登记的全部、来源任务、发布的那一版（不带脚本）、`newerVersions`、发布记录 `publishes`、谁在用（任务带最近一次调用；调它的库流程）、最近 50 次成绩（含按任务、最近 5 次停下的） |
 | `candidates` | 主管 | → `RoutineLibraryCandidate[]`：有转过正式版本的固化流程，已经在库里的带登记 |
 | `preview` | 主管 | `{ routineId, version, slug? }` → `RoutineLibraryPreview`：要的工具、风险、会改东西的步骤、生成的给模型的说明、程序检查的问题、和现在发布的版本比的不兼容改动、受影响的任务（缺什么）和流程 |
@@ -456,11 +457,11 @@ library?: {
 
 审计：`routine.library.publish`、`.update`、`.pause`、`.resume`、`.withdraw`、`.auto_pause`。
 
-### 10.4 代码（空壳已建好，只有签名和注释）
+### 10.4 代码（约定时建的空壳，三包已实现）
 
 | 在哪 | 做什么 | 谁 |
 |---|---|---|
-| `routine/library/service.ts` | 读、发布、改、停用、撤下、调用记录；写 `tools` 那一行和发布记录；`libraryOfRoutine`（`routine.get` 用）；`libraryNotYet()` | B |
+| `routine/library/service.ts` | 读、发布、改、停用、撤下、调用记录；写 `tools` 那一行和发布记录；`libraryOfRoutine`（`routine.get` 用）；约定时的 `libraryNotYet()` 集成时删了 | B |
 | `routine/library/analyze.ts` | `analyzeLibraryCode`、`libraryRisk`、`findLibraryCycle`、`libraryDepthOf`、`analyzeForPublish`、`compatWithPublished`、`routineToolDescription`（4.2 的说明） | B |
 | `routine/library/tool.ts` | 网关里库流程工具的执行 `executeLibraryTool`：起沙箱、`mode = tool` 的工具桥、交回值、交接的话 | A |
 | `routine/library/stats.ts` | `recordRoutineCall`：写 `routine_calls`、`fail_streak`、自动停用、通知 | A |
@@ -621,3 +622,48 @@ library?: {
 13. **迁移编号**：原稿暂记 0034，现在是 0036（和子 agent 的约定撞号，后合并的改 0037）。
 14. **工具页过滤的位置**：工具页的读是 `data/loaders.ts` 的 `listTools`，不是 `data/config/tools.ts`；助手改工具（`assistant/tools.ts`）也要拦。
 15. **子 agent**（`sub-agents.md`，同时在写约定）：子运行从父运行快照抄，`libraryRoutines` 一起抄；两边都改 `routine.ts`、`bridge.ts` 的 `NOT_FOR_AGENT_SCRIPTS`，合并时两边都留。
+
+## 17. 实现记录（2026-10-28）
+
+约定 `worktree-agent-aed6bf0847665eb2a`（c48299d）、B `worktree-agent-ad560512c296d2699`（e03c3bf）、A `worktree-agent-a2d84780a8bb23143`（ac9618e）、C `worktree-agent-a975edbfb21de655c`（3a8d1a3）按这个顺序合进集成分支 `worktree-agent-a63a9b71c05b52516`（基于 `worktree-solidify-design` 9ed41ae）。四个分支都基于 9ed41ae，三包改的文件互不相交，合并没有冲突；迁移 0036 直接接在 0035 后面（子 agent 那边还没合，撞号时后合并的改 0037）。
+
+### 17.1 A 包（运行时）和设计不一样的地方
+
+1. **`EventTrace.libraryCall`**（shared `routine.ts` 新加的可选字段，只做加法）：设计 5.7 只有 `library`（里面的步骤），界面靠「B 进入那一步的调用 id」对上。实现里调库流程**本身**的那几条都写 `libraryCall { callId, routineId, version }`：agent 调的工具 `routine.<短名>` 那一行（网关写，`callId` = 模型的工具调用 id）、脚本里 `ha.routine` 进入那一步、出来时记的「流程『…』跑完 / 自己停下了 / 没跑完」那一条。两层嵌套时 B 的进入、B 跑完那一条同时带 A 的 `library` 和 B 的 `libraryCall`。
+2. **进入请求**：`{ op: "tool", tool: "routine.<短名>", input, routine: true }`，多一个 `routine: true` 标记（工具桥据此走进入的分支）。
+3. **`launch.js`**：agent 调库流程时 stdin 多 `{ "library": { "slug": 短名 } }`，顶层也按嵌套的规矩跑，结局放在 `done.routine`。
+4. **工具结果的最后一行**是交回值（`routineReturnSchema`）或停下的 `data`（`routineToolStopDataSchema`）的 JSON，网页按它显示结局（设计只说 `data` 里给）。
+5. **复核证据**（5.7）：没压成一行，库流程每次调用只留最近 3 步（`log-text.ts`），工具行标「调库流程」。
+6. **库流程里 `ha.tool` 调 `run.finish` / `work.report` / `checkpoint.mark` 一律拒**（设计只写了 `ha.finish` 等 SDK 方法收进交回值，没写绕开 SDK 直接调工具的情况）。
+7. **调用记录**：同一个调用 id 再记是覆盖（挂起后接着跑、重放时不重复记）；`trace.library.step` 每一层自己数。
+8. **`handoff.ts`**：抽出 `stepLinesOf`，`libraryStepLines` 按 `trace.library.callId` 取（同 16.2 第 4 条）。审批卡写「（流程『…』第 j 步）」在 `loop.ts`。
+
+### 17.2 B 包（库服务、固化员）和设计不一样的地方
+
+1. **要的工具**（4.4）算传递（它调的库流程要的也算上），`alwaysOn` 的内置工具不放。
+2. **发布**：有不兼容改动而没带 `acceptBreaking` 回 `CONFLICT`（写清是哪些），`preview` 的问题不空回 `BAD_REQUEST`；撤下的重新发布回到「在库里」。
+3. **撤下**：有任务选用、或别的库流程调它（`requires.routines`）都 `CONFLICT`。
+4. **通知**：转正式「第 n 版可以发布」、来源流程自动停用，发给发布过这个流程的主管（`notifyLibraryPublishable` 等，在 `service.ts`，由 `routine/runtime/stats.ts` 调）。
+5. **程序检查**（`checks.ts` 抽出 `analyzeScript`）：`ha.routine` 的短名要写成字面量；任务要选了 `routine.<短名>`；`ha.tool("routine.…")` 报「用 ha.routine」；也认 `ha.RoutineFailed`。
+6. **助手**：`list_tools` 另列库流程（工具页不列，任务里能选）；改、删工具遇到 `source = routine` 拦下。
+7. **固化员**：材料里库流程那一次是一行（不展开里面的步骤，写脚本里怎么调、参数名 `p<n>` 对应的原名），里面发的接口请求归到这一行；另加「任务选的库流程」一节；有库流程时提示词多一条规矩（同设计）。
+
+### 17.3 C 包（网页）和设计不一样的地方
+
+1. **流程页**：「⋯ → 版本记录」里的「回到这一版」先 `preview` 列不兼容改动和受影响的，`AlertDialog` 确认后 `publish`；「全部调用记录」单独一个弹窗，按任务筛。
+2. **工具名**：`useToolName` 对 `routine.*` 用 `routineLibrary.list` 里的名字（工具页不列库流程，`tools.list` 里没有）。
+3. **规则弹窗**「提到的工具」列流程（标「流程」），规则详情里链到流程页。
+4. **演示数据** `apps/server/src/seed/routine-library-fixture.ts`（`pnpm --filter @heyagent/server dev:routine-library-fixture`）：直接写表，4 个库流程（在库里有新版本可发布、被调的、自动停用的、撤下的）+ 1 个转过正式还没发布的；调用方的运行有 agent 调两次（一次停下）、`code.run` 脚本循环调、两层嵌套。
+
+### 17.4 集成时改的
+
+1. **列表带「什么时候用」**：`RoutineLibraryItem` 加 `summary`，`listLibrary` 带上。任务弹窗的「流程」（`routine-pick.tsx`）原来对每个流程调一次 `routineLibrary.get` 取说明，改成用列表里的；`get` 只对选了的取（要的工具 `requires` 只在详情里）。
+2. **参数顺序**：`routine_versions.input_schema` 是 jsonb，存进去属性按键长短重排，`toolSchemaOf` 给的 p1、p2 就不是作者写的顺序。改成存库前把属性顺序记进 schema 的 `"x-order": [属性名…]`（shared 的 `SCHEMA_ORDER_KEY`、`withPropertyOrder`）：固化员的 `inputSchema` / `outputSchema` 是 JSON 文字，`checks.ts` 的 `parseJsonSchema` 解析时记下（`compile.ts` 存的就是它）。读的地方按 `schemaPropertyNames` 排：`routineObjectSchema` 多返回 `names`，`toolSchemaOf`（因此 `inputOfToolArgs`）、`compareRoutineSchemas`、发布时生成的说明（`analyze.ts`）、固化员材料里「任务选的库流程」一节、网页的输入 / 交回表（`schemaFields`）都按它。没有 `x-order` 的老数据照存的顺序（和以前一样）。zod 的 `fromJSONSchema` 不认识的键直接忽略，校验不受影响。演示数据也写 `x-order`。测试：shared 加三条，`routine-compile.test.ts` 的两处期望带上 `x-order`、加一条中文键顺序的。
+3. **过程按调用 id 归组**：`run-script.ts` 的 `nestLibrary` 原来按位置认主人（脚本调的找第一步前面最近的 `routine.*` 工具行，agent 调的找最后一步后面第一行）。改成先按 `trace.libraryCall.callId` = 组的 `library.callId` 找这一层里的 `routine.*` 工具调用；「跑完」那一条也带 `libraryCall` 但不是工具调用，照普通一项放在后面。没有 `libraryCall` 的老数据照原来按位置认，带 `libraryCall` 的行不会被别的组按位置抢走。演示数据的调用行都补上了 `libraryCall`。
+4. **清理**：删了 `service.ts` 里没人用的 `libraryNotYet`（和随之没用的 `TRPCError` 引用）；C 包没留下临时代码（它的分支只改了网页、演示数据和 `package.json` 的脚本）。
+
+### 17.5 没做的、留给以后的
+
+- 真模型验收（12.3）：这次的环境没有模型的 key。
+- 子 agent 从父快照抄 `libraryRoutines`：子 agent 那边的事（`sub-agents.md`），合并时注意。
+- 使用手册：新加 5.15「流程库」，5.2 内置工具表后、5.14 末尾各加一句，第 8 节改掉「还不能当工具给别的任务用」；接口文档 `api.md` 第 22 节。

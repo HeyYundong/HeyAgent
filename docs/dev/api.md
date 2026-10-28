@@ -26,6 +26,8 @@
 18. 运行结果（2026-10-20）
 19. 桌面（2026-10-22）
 20. 固化（2026-10-27）
+21. 记忆按内容自动挑选（2026-10-28）
+22. 流程库（2026-10-28）
 
 ---
 
@@ -1768,3 +1770,77 @@ curl -X POST http://<host>:8080/api/work-items/W-57/cancel -H "Authorization: Be
 - 记忆的向量存 `memory_embeddings`（`memory_id, model_id` 主键，`content_hash = md5(applies_to || E'\n' || content)`），API 进程的后台循环算（一批 32 条，没活干时每分钟看一次）；失败写 `memories.embed_error` / `embed_tried_at`（推 `memories`）。记忆新建、修改、审核通过、换 embedding 模型后会叫醒它。
 - 系统提示：手选的照旧在「## 记忆（人审核过的，必须遵守）」；自动挑的另起「## 可能相关的记忆（……和这次的事有关就照做，无关的忽略）」，不写相似度。
 - 助手：`create_task` / `update_task` 能设 `autoMemory`、`autoMemoryLimit`（`update_task` 不给就保持原值）；新建任务的卡片上这两项是默认值时不列。
+
+## 22. 流程库（2026-10-28）
+
+设计和实现记录见 `docs/dev/routine-library.md`（第 17 节「实现记录」），契约 `packages/shared/src/routine-library.ts`，迁移 0036。来源任务上转过正式的固化流程，主管发布进库，变成工具 `routine.<短名>`：别的任务选上它，agent 当工具调，脚本里 `ha.routine` 调。
+
+### 22.1 数据（迁移 0036）
+
+- 新表 `routine_library`（库里的登记，主键 `routine_id`）：`slug`（唯一）、`title`、`summary`（「什么时候用」）、`status`（`listed` 在库里 / `paused` 停用 / `withdrawn` 撤下）、`published_version`、`requires`（`RoutineRequires`：`toolIds`、`browser.fetch / vision`、`routines`，传递算的，`alwaysOn` 的不放）、`risk`、`fail_streak`、`paused_reason`、`published_by_id`、`published_at`。
+- 新表 `routine_library_versions`：发布记录，每发布一次一行（自增 id；回到以前的版本会再发布同一版）：`version`、`published_by_id`、`published_at`、`requires`、`risk`、`compat`（`RoutineCompatIssue[]`）、`task_count`（当时在用几个任务）。
+- 新表 `routine_calls`：每次调用一行（agent 调、脚本调；两层嵌套每层各一行）：`routine_id`、`version`、`session_id`、`task_id`、`call_id`、`via`（`tool` / `script`）、`depth`、`result`（`achieved` / `not_achieved` / `bad_input` / `stopped`）、`stop_kind`、`stop_step`、`stop_reason`、`steps`、`ms`、`at`。同一个 `call_id` 再记是覆盖。
+- `routine_versions.proven_at`：在来源任务上转正式的时间（只有它不空的版本能发布）。
+- `routine_versions.input_schema` / `output_schema` 多一个 `"x-order": [属性名…]`：固化员写的属性顺序（jsonb 会按键长短重排）。`toolSchemaOf` 的 p1、p2，界面的输入、交回表都按它排（shared 的 `schemaPropertyNames`）；没有的老数据照存的顺序。
+- `tools` 多 `routine_id`（唯一；`source = routine` 时必填），`tool_source` 多 `routine`（中文「流程」）。库流程在 `tools` 里一行，id 是 `routine.<短名>`：发布时写、改名字和说明时重写、撤下时删。
+- 实时推送：`routine_library` → `routineLibrary.list / get / candidates`、`routine.get`、`tasks.list`；`routine_library_versions` → `routineLibrary.get`；`routine_calls` → `routineLibrary.get / calls`；`task_tools` 也失效 `routineLibrary.list / get`。
+
+### 22.2 接口（`appRouter.routineLibrary`）
+
+| 接口 | 类型 | 谁能用 | 输入 → 输出 |
+|---|---|---|---|
+| `list` | query | 登录即可 | → `RoutineLibraryItem[]`：`routineId`、`slug`、`toolId`、`title`、`summary`、`status`、`publishedVersion`、`taskCount`（撤下的是 0）、`newerVersion`（来源任务上有转过正式、比发布的新的版本：最新的版本号，没有 `null`）、`failStreak`。在库里的、停用的、撤下的都列 |
+| `get` | query | 登录即可 | `{ routineId }` → `RoutineLibraryDetail`：登记的全部、`requires`、`risk`、`pausedReason`、来源任务 `source { taskId, title, ownerId }`、发布的那一版 `version`（不带脚本，看脚本用 `routine.version`）、`newerVersions`、发布记录 `publishes`、谁在用 `usedBy { tasks[]{ …, lastCall }, routines[] }`、最近 50 次成绩 `stats`（含按任务、最近 5 次停下的） |
+| `candidates` | query | 主管 | → `RoutineLibraryCandidate[]`：有转过正式版本的固化流程，已经在库里的带登记 |
+| `preview` | query | 主管 | `{ routineId, version, slug? }` → `RoutineLibraryPreview`：要的工具、风险、会改东西的步骤、生成的给模型的说明、程序检查的问题（不空就不能发布：没转正式、工具没了、调的流程不在库里、有环、超过两层）、和现在发布的版本比的不兼容改动、受影响的任务（缺什么）和调它的流程 |
+| `publish` | mutation | 主管 | `{ routineId, version, slug?, title, summary, acceptBreaking? }` → `{ routineId, version }`。第一次发布要 `slug`（之后不能改）；`preview` 的问题不空是 `BAD_REQUEST`；有不兼容改动不带 `acceptBreaking` 是 `CONFLICT`（写清是哪些）；回到以前的版本、重新发布撤下的（回到「在库里」）也用它。写登记、发布记录、`tools` 那一行 |
+| `update` | mutation | 主管 | `{ routineId, title, summary }` → `{ routineId }`：重写 `tools` 那一行，下一次运行生效 |
+| `setPaused` | mutation | 主管 | `{ routineId, paused }` → `{ routineId, status }`；重新启用清零 `failStreak` |
+| `withdraw` | mutation | 主管 | `{ routineId }` → `{ routineId, status: "withdrawn" }`。有任务选用、别的库流程调它时 `CONFLICT`，写清是哪些。删 `tools` 那一行，登记留着 |
+| `calls` | query | 登录即可 | `{ routineId, cursor?, taskId? }` → `{ items: RoutineCall[], nextCursor }`，新的在前，一页 50 条 |
+
+别的接口的变化：
+
+- `routine.get` 多 `library: { slug, toolId, title, publishedVersion, status, taskCount } | null` 和 `publishable: number[]`（转过正式、比发布的新、能发布的版本）；`versions[]`、`routine.version` 多 `provenAt`。
+- `tools.list` 不列 `source = routine` 的行；`tools.updateHttp` / `tools.deleteHttp` 和助手改、删工具遇到它报「这是流程库里的流程，在流程页里改」。助手的 `list_tools` 另列库流程。
+- 任务的 `toolIds` 里写 `routine.<短名>` 就是选用（存进 `task_tools`）；保存时不拦，开始运行时判断用不用得了。
+- 审计：`routine.library.publish`、`.update`、`.pause`、`.resume`、`.withdraw`、`.auto_pause`。
+- 通知：来源流程转正式、有能发布的新版本时通知发布过的主管；来源流程自动停用时通知发布过的主管；库流程连续 3 次跑不通自动停用时通知来源任务负责人和最近一次发布的主管。
+
+### 22.3 快照和工具 `routine.<短名>`
+
+- 开始运行（含固化试跑）时冻 `snapshot.libraryRoutines`（`LibraryRoutineSnapshot[]`）：任务选了的库流程取发布的那一版，连同它调的（传递）一起冻：短名、工具 id、名字、`summary`、版本、脚本、步骤说明、两个 schema、`commits`、`requires`、风险、`selected`（任务选了 = true；只因为被调冻进来的 = false）、`unavailable`（这次用不了的原因：停用、撤下、缺工具、缺开关、它调的用不了）。`SnapshotTool` 多 `routineId`。
+- 网关给 `selected`、没有 `unavailable` 的每个库流程一个工具：模型看到的名字 `safeName("routine.<短名>")`（`routine_supplier_quote`），说明是发布时生成的 `tools.description`，参数 `toolSchemaOf(inputSchema).jsonSchema`：
+  - 名字是英文、数字、下划线的原样；别的按 `x-order` 的顺序换成 `p<n>`，说明前面写「参数名：…」；撞名往后加 `_2`；
+  - `$attachments` → `attachments`（调用方能读的文件 id 的数组，执行前展开成 `{ id, name, mime }`，不是调用方能读的报错）；`$note` → `note`；
+  - 必填照 `inputSchema`，`additionalProperties: false`。没声明输入的是空对象。
+- 执行（`routine/library/tool.ts`）：参数转回脚本的输入、按 `inputSchema` 再校验 → 起沙箱跑整段（工具桥 `mode = tool`）→ 工具结果：
+  - 报了结果：文字「流程『…』第 n 版跑完：办成 · …」，`data` 是交回值 `RoutineReturn { routine, name, version, outcome, summary, evidence?, reason?, data }`；`not_achieved` 不算出错；
+  - `ha.fail("input")`：出错「输入有问题：…」；
+  - 别的停下：出错，文字是交接的话（做过哪几步、停在哪一页、提交过没有），`data` 是 `RoutineToolStopData { routine, name, version, steps, stoppedAt, commits }`；
+  - 要挂起：同 `code.run`（tools），结果带 `suspend`、`signals`、`facts`；里面一步要审批：停在它前面，不发起审批；
+  - 文字的最后一行是交回值或停下的 `data` 的 JSON（网页按它显示结局）。
+- 系统提示多一节「固化好的流程」：选了的、用得了的一行一个；用不了的写一行原因。
+- 上限：同固化脚本的 `routineLimits`，时间压在这次运行剩下的时间里。规则按调用方任务的：整次调用算一次工具调用（「调用之前要审批」管这里），里面每一步也各过一次。
+
+### 22.4 SDK：`ha.routine`
+
+```ts
+const r = await ha.routine("supplier_quote", { 工厂链接: url })   // → RoutineResult
+```
+
+- `RoutineResult` 同交回值；`outcome = not_achieved` 不抛错。它调了 `ha.fail` → `RoutineFailed`（`kind`、`routine`，可以接住）；输入不合格式、里面一步出错没接住、没报结果就结束 → `StepError`；被规则拦下 → `Denied`；要审批、要挂起、超过上限 → `RoutineStop`。
+- 任务要选了 `routine.<短名>`，短名要写成字面量（程序检查）。`ha.tool("routine.…")` 不行（检查报「用 ha.routine」，工具桥也拒）。
+- 库流程里：`ha.input` 是传进来的；`ha.finish`、`ha.work.report` 只收进交回值；`ha.checkpoint.mark` 不做（记一句）；`ha.tool` 调 `run.finish` / `work.report` / `checkpoint.mark` 被拒；`ha.commit` 算进调用方的提交，标签前加「流程『…』：」；会改东西的 `browser.fetch` 前要有自己的 `ha.commit`。最多两层，不许绕圈。
+- 工具桥协议（`sandbox-sdk/heyagent/index.js` ↔ `routine/runtime/bridge.ts`）：
+  - 进入：`{ op: "tool", tool: "routine.<短名>", input, routine: true, via? }` → 回复的 `data` 是 `LibraryEnterReply { slug, name, version, module, depth, input }`，SDK 载入代码目录里的 `module`（`routines/<短名>.mjs`），在 `AsyncLocalStorage` 的嵌套上下文里调它的 `run(input)`；进入那一步过规则、记重放日志；
+  - 库流程里发的每个请求带 `via`（从外到里的短名）；
+  - 出来：`{ op: "routine_end", slug, depth, end: "finished" | "failed" | "error", steps, result?, kind?, error?, name?, via? }`（`routineEndRequestSchema`），工具桥记一条「流程『…』跑完 / 自己停下了 / 没跑完」、写调用记录，是重放日志里的标记。
+  - agent 调库流程时 `launch.js` 的 stdin 多 `{ "library": { "slug": 短名 } }`：顶层也按嵌套的规矩跑，结局放在 `done.routine`。
+
+### 22.5 过程记录：`EventTrace.library` / `libraryCall`
+
+- `library?: { routineId, version, step, callId, depth }`：这一条是库流程**里面**的一步。`step` 是这个库流程里第几步（每一层自己数），`callId` 是这次调用的 id，`depth` 1 = 直接调的、2 = 库流程里再调的。脚本里调的，同一条同时有 `routineStep` / `scriptStep`；agent 调的，里面步骤的调用 id 是 `<这次的调用 id>-l<步>`。
+- `libraryCall?: { callId, routineId, version }`：这一条**本身**是一次库流程调用：agent 调的工具 `routine.<短名>` 那一行、脚本里进入（`ha.routine`）那一步、出来时记的「流程『…』跑完」那一条。里面步骤的 `library.callId` 等于它的 `callId`；两层嵌套时，B 的进入、B 跑完那一条同时带 A 的 `library` 和 B 的 `libraryCall`。
+- 网页（`run-script.ts` 的 `nestLibrary`）按 `libraryCall.callId` = `library.callId` 把里面的步骤收在调用那一行下面；没有 `libraryCall` 的老数据按位置认。交接的话（`handoff.ts`）按 `library.callId` 取步骤；复核证据（`log-text.ts`）每次调用只留最近 3 步；固化员的材料里库流程那一次是一行，不展开，里面发的接口请求归到这一行。
+- 审批卡写「（流程『…』第 j 步）」。

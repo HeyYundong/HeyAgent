@@ -125,7 +125,7 @@ export const ROUTINE_NOTE_PARAM = "note"
 
 /**
  * 给模型的参数名能直接用的写法（同 HTTP 工具的 httpParamKeys）：几家模型的工具参数名只认英文、数字、下划线。
- * 别的（中文、带 $ 的）换成 p1、p2……（按 inputSchema 里的顺序），说明里写原来的名字
+ * 别的（中文、带 $ 的）换成 p1、p2……（按 inputSchema 里的顺序，即 x-order），说明里写原来的名字
  */
 const MODEL_PARAM_NAME = /^[A-Za-z0-9_]{1,64}$/
 
@@ -136,22 +136,54 @@ export interface RoutineToolParam {
   required: boolean
 }
 
+/**
+ * 属性的顺序记在 schema 的这个键里（字段名的数组）。routine_versions.input_schema / output_schema 是 jsonb，
+ * 存进去属性就按键的长短重排了；固化员写的 JSON 文字是作者的顺序，存库前用 withPropertyOrder 记下来。
+ * 读的时候（工具参数 p1、p2，界面的输入表）按它排；没有的（老数据）照对象里的顺序
+ */
+export const SCHEMA_ORDER_KEY = "x-order"
+
+/** schema 的属性名，按 x-order 排（x-order 里没有的、写错的照对象里的顺序接在后面） */
+export function schemaPropertyNames(schema: unknown): string[] {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return []
+  const record = schema as Record<string, unknown>
+  const properties = record.properties && typeof record.properties === "object" && !Array.isArray(record.properties) ? Object.keys(record.properties) : []
+  const order = record[SCHEMA_ORDER_KEY]
+  const listed = Array.isArray(order) ? order.filter((name): name is string => typeof name === "string" && properties.includes(name)) : []
+  return [...new Set([...listed, ...properties])]
+}
+
+/** 把现在的属性顺序记进 x-order（已有的照它排、补上漏的）；没有属性的不加 */
+export function withPropertyOrder(schema: Record<string, unknown>): Record<string, unknown> {
+  const names = schemaPropertyNames(schema)
+  if (!names.length) {
+    const { [SCHEMA_ORDER_KEY]: _drop, ...rest } = schema
+    return rest
+  }
+  return { ...schema, [SCHEMA_ORDER_KEY]: names }
+}
+
 /** 整理过的对象 schema：空串、{}、有 properties 没写 type 都当成对象（同固化的程序检查） */
 export interface RoutineObjectSchema {
+  /** 属性名，按 x-order 排（作者写的顺序）；properties 的键顺序不可靠（数字样子的键总在前面），按顺序用这个 */
+  names: string[]
   properties: Record<string, Record<string, unknown>>
   required: string[]
 }
 
 /** inputSchema / outputSchema 整理成对象的样子（属性不是对象的当成没写类型） */
 export function routineObjectSchema(schema: unknown): RoutineObjectSchema {
-  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return { properties: {}, required: [] }
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return { names: [], properties: {}, required: [] }
   const record = schema as Record<string, unknown>
   const raw = record.properties && typeof record.properties === "object" && !Array.isArray(record.properties) ? (record.properties as Record<string, unknown>) : {}
+  const names = schemaPropertyNames(record)
   const properties: Record<string, Record<string, unknown>> = {}
-  for (const [name, value] of Object.entries(raw))
+  for (const name of names) {
+    const value = raw[name]
     properties[name] = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
+  }
   const required = Array.isArray(record.required) ? record.required.filter((name): name is string => typeof name === "string" && name in properties) : []
-  return { properties, required: [...new Set(required)] }
+  return { names, properties, required: [...new Set(required)] }
 }
 
 const ATTACHMENTS_DESCRIPTION = "要交给流程的文件：这次运行能读的文件 id（附件、产物）的数组"
@@ -166,8 +198,7 @@ const NOTE_DESCRIPTION = "给流程的一句附加说明"
  * params 记着给模型的名字和 inputSchema 里的名字怎么对应，inputOfToolArgs 按它转回去
  */
 export function toolSchemaOf(inputSchema: unknown): { jsonSchema: Record<string, unknown>; params: RoutineToolParam[] } {
-  const { properties, required } = routineObjectSchema(inputSchema)
-  const names = Object.keys(properties)
+  const { names, properties, required } = routineObjectSchema(inputSchema)
   // 先占住能原样用的名字，换名的再挑没被占的
   const taken = new Set(names.filter((name) => MODEL_PARAM_NAME.test(name)))
   const pick = (base: string) => {
@@ -312,7 +343,8 @@ export function compareRoutineSchemas(
   const issues: RoutineCompatIssue[] = []
   const oldIn = routineObjectSchema(before.inputSchema)
   const newIn = routineObjectSchema(after.inputSchema)
-  for (const [name, property] of Object.entries(newIn.properties)) {
+  for (const name of newIn.names) {
+    const property = newIn.properties[name]
     const old = oldIn.properties[name]
     const required = newIn.required.includes(name)
     if (!old) {
@@ -323,11 +355,12 @@ export function compareRoutineSchemas(
     const [from, to] = [typesOf(old), typesOf(property)]
     if (!accepts(to, from)) issues.push({ kind: "input_type_changed", field: name, text: `参数「${name}」的类型从 ${typeText(from)} 改成了 ${typeText(to)}` })
   }
-  for (const name of Object.keys(oldIn.properties))
+  for (const name of oldIn.names)
     if (!(name in newIn.properties)) issues.push({ kind: "input_removed", field: name, text: `去掉了参数「${name}」` })
   const oldOut = routineObjectSchema(before.outputSchema)
   const newOut = routineObjectSchema(after.outputSchema)
-  for (const [name, old] of Object.entries(oldOut.properties)) {
+  for (const name of oldOut.names) {
+    const old = oldOut.properties[name]
     const property = newOut.properties[name]
     if (!property) {
       issues.push({ kind: "output_removed", field: name, text: `不再交回「${name}」` })
@@ -523,6 +556,8 @@ export const routineLibraryItemSchema = z.object({
   slug: z.string(),
   toolId: z.string(),
   title: z.string(),
+  /** 「什么时候用」（任务弹窗选流程时显示，不用再一个个取详情） */
+  summary: z.string(),
   status: routineLibraryStatusSchema,
   publishedVersion: z.number().int(),
   /** 选用它的任务有几个 */

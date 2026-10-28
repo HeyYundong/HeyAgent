@@ -75,9 +75,11 @@ const isRoutineCall = (event: RunEvent | undefined) => event?.kind === "tool" &&
 /**
  * 按 trace.library 把库流程里的步骤收到调它的那一行下面（这一层是第 depth 层）：
  * - 这一层的步骤按 callId 分组；更深一层的（库流程里再调的）跟着它所在的那组走，下一层再分；
- * - 脚本调的（步骤同时带 routineStep / scriptStep，或者第 2 层）：组的主人是第一步前面最近的一行 routine.* 工具调用（ha.routine 进入那一步）；
- * - agent 调的：主人是最后一步后面第一行 routine.* 工具调用（工具调用跑完才记）。
- * slugOf：知道库流程编号对应的短名时，只认工具 id 对得上的那一行。认不到的组单独成一项（没等到结果、中途断了）
+ * - 组的主人：这一层里 trace.libraryCall.callId 等于组的 callId 的那一行 routine.* 工具调用（agent 调的工具那一行、
+ *   脚本里 ha.routine 进入那一步；「流程『…』跑完」那一条也带 libraryCall，但不是工具调用，照普通一项放在后面）；
+ * - 没有 libraryCall 的老数据按位置认：脚本调的（步骤同时带 routineStep / scriptStep，或者第 2 层）是第一步前面最近的一行
+ *   routine.* 工具调用，agent 调的是最后一步后面第一行（工具调用跑完才记）。slugOf：知道库流程编号对应的短名时，只认工具 id 对得上的那一行。
+ * 认不到的组单独成一项（没等到结果、中途断了）
  */
 export function nestLibrary<T>(items: T[], eventOf: (item: T) => RunEvent | undefined, depth = 1, slugOf?: (routineId: string) => string | undefined): LibraryNode<T>[] {
   const groups = new Map<string, { group: Omit<LibraryGroup, "steps">; events: RunEvent[]; first: number; last: number }>()
@@ -103,16 +105,31 @@ export function nestLibrary<T>(items: T[], eventOf: (item: T) => RunEvent | unde
     }
     member.set(index, key)
   })
-  // 认主人
+  // 认主人：先按 libraryCall.callId 对上
   const owner = new Map<number, string>()
   const claimed = new Set<number>()
+  const byCall = new Map<string, number>()
+  items.forEach((item, index) => {
+    const event = eventOf(item)
+    const callId = event?.trace?.libraryCall?.callId
+    if (callId && isRoutineCall(event) && !member.has(index) && !byCall.has(callId)) byCall.set(callId, index)
+  })
+  for (const key of groups.keys()) {
+    const found = byCall.get(key)
+    if (found === undefined) continue
+    owner.set(found, key)
+    claimed.add(found)
+  }
+  // 老数据（没有 libraryCall）按位置认；带 libraryCall 的那一行是别的调用的，不抢
   const fits = (index: number, routineId: string) => {
     const event = eventOf(items[index]!)
-    if (!isRoutineCall(event) || member.has(index) || claimed.has(index)) return false
+    if (!isRoutineCall(event) || event!.trace?.libraryCall || member.has(index) || claimed.has(index)) return false
     const slug = slugOf?.(routineId)
     return !slug || event!.toolId === routineToolId(slug)
   }
+  const ownedKeys = new Set(owner.values())
   for (const [key, entry] of groups) {
+    if (ownedKeys.has(key)) continue
     let found: number | undefined
     if (entry.group.via === "script") {
       for (let at = entry.first - 1; at >= 0 && found === undefined; at--) if (fits(at, entry.group.routineId)) found = at

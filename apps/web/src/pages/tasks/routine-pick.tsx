@@ -1,6 +1,6 @@
 // 任务弹窗「用哪些」里的「流程」（docs/dev/routine-library.md 6.1、9.2）：选项是流程库里在用的流程（routineLibrary.list 的 listed，
-// 编辑时原来选着的停用、撤下的也列出来），提示写「什么时候用」。选的存进同一个 toolIds（routine.<短名>），界面上和工具分开显示。
-// 选了一个流程，自动勾上它要的工具（requires.toolIds，在 routineLibrary.get 里），下面一行写「流程『…』要：浏览器（已帮你选上）」；
+// 编辑时原来选着的停用、撤下的也列出来），提示写「什么时候用」（列表里的 summary）。选的存进同一个 toolIds（routine.<短名>），界面上和工具分开显示。
+// 选了一个流程，自动勾上它要的工具（requires.toolIds，只对选了的取 routineLibrary.get），下面一行写「流程『…』要：浏览器（已帮你选上）」；
 // 要打开的开关（允许直接调网站接口、允许看画面）也写在这一行，不自动打开，由人决定。后端保存时不拦（6.1），统一在开始运行时判断。
 import * as React from "react"
 import { useWatch, type UseFormReturn } from "react-hook-form"
@@ -17,7 +17,8 @@ export function RoutinePick({ form, initialToolIds }: { form: UseFormReturn<Task
   const [toolIds, allowBrowserFetch, allowBrowserVision] = useWatch({ control: form.control, name: ["toolIds", "allowBrowserFetch", "allowBrowserVision"] })
   const chosen = React.useMemo(() => (toolIds ?? []).filter(isRoutineToolId), [toolIds])
   const entries = (library.data ?? []).filter((entry) => entry.status === "listed" || chosen.includes(entry.toolId))
-  const details = useLibraryDetails(entries.map((entry) => entry.routineId))
+  // 要的工具只在详情里：只取选了的
+  const details = useLibraryDetails(entries.filter((entry) => chosen.includes(entry.toolId)).map((entry) => entry.routineId))
   // 打开弹窗时已经选着的不再自动补工具（人可能故意没选）；这次新选的，取到要的工具后补上一次
   const applied = React.useRef(new Set(initialToolIds.filter(isRoutineToolId)))
 
@@ -37,7 +38,7 @@ export function RoutinePick({ form, initialToolIds }: { form: UseFormReturn<Task
   const options = entries.map((entry) => ({
     value: entry.toolId,
     label: entry.status === "listed" ? entry.title : `${entry.title}（${routineLibraryStatusLabel[entry.status]}）`,
-    hint: details.get(entry.routineId)?.summary ?? `${entry.toolId} · 第 ${entry.publishedVersion} 版`,
+    hint: entry.summary || `${entry.toolId} · 第 ${entry.publishedVersion} 版`,
   }))
   const notes = chosen.flatMap((toolId) => {
     const entry = entries.find((each) => each.toolId === toolId)

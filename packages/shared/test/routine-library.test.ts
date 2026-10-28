@@ -14,7 +14,9 @@ import {
   routineSlugOfToolId,
   routineSlugSchema,
   routineToolId,
+  schemaPropertyNames,
   toolSchemaOf,
+  withPropertyOrder,
 } from "../src/index.js"
 
 describe("toolSchemaOf：inputSchema → 给模型的工具参数", () => {
@@ -87,6 +89,40 @@ describe("toolSchemaOf：inputSchema → 给模型的工具参数", () => {
     expect(routineObjectSchema({ properties: { a: { type: "string" } }, required: ["a", "b", "a"] }).required).toEqual(["a"])
     const { jsonSchema } = toolSchemaOf({ properties: { a: { $schema: "x", type: "string" } } })
     expect((jsonSchema.properties as Record<string, unknown>).a).toEqual({ type: "string" })
+  })
+})
+
+describe("属性顺序（x-order）", () => {
+  // jsonb 存进去以后的样子：键按长短重排了，作者写的是「工厂链接、商品名称、数量」
+  const stored = {
+    type: "object",
+    properties: { 数量: { type: "integer" }, 工厂链接: { type: "string" }, 商品名称: { type: "string" } },
+    required: ["工厂链接"],
+    "x-order": ["工厂链接", "商品名称", "数量"],
+  }
+
+  it("withPropertyOrder 记下现在的顺序；已有的照它、补上漏的、去掉不存在的；没有属性的不加", () => {
+    const schema = withPropertyOrder({ type: "object", properties: { 工厂链接: {}, 商品名称: {}, 数量: {} } })
+    expect(schema["x-order"]).toEqual(["工厂链接", "商品名称", "数量"])
+    expect(withPropertyOrder({ properties: { a: {}, b: {}, c: {} }, "x-order": ["c", "x", "a"] })["x-order"]).toEqual(["c", "a", "b"])
+    expect(withPropertyOrder({ type: "object", "x-order": ["a"] })).toEqual({ type: "object" })
+  })
+
+  it("p1、p2 和 routineObjectSchema 的 names 按 x-order 排；没有 x-order 的老数据照对象里的顺序", () => {
+    expect(toolSchemaOf(stored).params.map((param) => [param.key, param.name])).toEqual([
+      ["p1", "工厂链接"],
+      ["p2", "商品名称"],
+      ["p3", "数量"],
+    ])
+    expect(routineObjectSchema(stored).names).toEqual(["工厂链接", "商品名称", "数量"])
+    const { "x-order": _order, ...old } = stored
+    expect(schemaPropertyNames(old)).toEqual(["数量", "工厂链接", "商品名称"])
+    expect(toolSchemaOf(old).params[0]).toEqual({ key: "p1", name: "数量", required: false })
+  })
+
+  it("inputOfToolArgs 按排好的参数名转回去", () => {
+    const { params } = toolSchemaOf(stored)
+    expect(inputOfToolArgs({ p1: "https://a", p2: "篮子", p3: 3 }, params, [])).toEqual({ ok: true, input: { 工厂链接: "https://a", 商品名称: "篮子", 数量: 3 } })
   })
 })
 

@@ -858,11 +858,11 @@ export function librarySection(routines: readonly LibraryRoutineSnapshot[]): str
   const lines = selected.map((routine) => {
     const input = routineObjectSchema(routine.inputSchema)
     const output = routineObjectSchema(routine.outputSchema)
-    const inputs = Object.keys(input.properties).map((name) => `${name}${input.required.includes(name) ? "（必填）" : ""}`)
+    const inputs = input.names.map((name) => `${name}${input.required.includes(name) ? "（必填）" : ""}`)
     return [
       `- ${routine.toolId}「${routine.name}」第 ${routine.version} 版${routine.unavailable ? `（这次用不了：${routine.unavailable}）` : ""}：${clip(routine.summary, 200)}`,
-      `  脚本里：const r = await ha.routine(${JSON.stringify(routine.slug)}, { ${Object.keys(input.properties).map((name) => `${objectKey(name)}: …`).join(", ")} })`,
-      `  输入：${inputs.join("、") || "不用输入"}；交回 r.data：${Object.keys(output.properties).join("、") || "没有固定字段"}（r.outcome 是 achieved / not_achieved，r.summary、r.reason 是说明）`,
+      `  脚本里：const r = await ha.routine(${JSON.stringify(routine.slug)}, { ${input.names.map((name) => `${objectKey(name)}: …`).join(", ")} })`,
+      `  输入：${inputs.join("、") || "不用输入"}；交回 r.data：${output.names.join("、") || "没有固定字段"}（r.outcome 是 achieved / not_achieved，r.summary、r.reason 是说明）`,
       `  ${routine.commits.length ? `会改东西：${routine.commits.join("；")}` : "只读，不改东西"}`,
     ].join("\n")
   })

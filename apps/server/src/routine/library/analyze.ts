@@ -277,7 +277,10 @@ export function routineToolDescription(input: {
     return `- ${name}${text ? `：${text}` : ""}${param.required ? "（必填）" : ""}`
   })
   const output = routineObjectSchema(input.outputSchema)
-  const outputs = Object.entries(output.properties).map(([name, property]) => `- ${name}${describe(property) ? `：${describe(property)}` : ""}`)
+  const outputs = output.names.map((name) => {
+    const property = output.properties[name] ?? {}
+    return `- ${name}${describe(property) ? `：${describe(property)}` : ""}`
+  })
 
   return [
     "固化好的流程（几秒做完，不用你一步步操作）。",
