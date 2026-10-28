@@ -163,7 +163,7 @@ up() {
   ensure_volumes
   if pod_exists; then
     echo "== pod $POD 已经在了，先停掉重建（数据卷保留）"
-    "${PLAY[@]}" --down "$YAML" >/dev/null
+    stop_pod
   fi
   local network=()
   if desktop_enabled; then
@@ -185,11 +185,12 @@ up() {
   echo "整套已启动：http://localhost:$PORT${ip:+ ，内网 http://$ip:$PORT}"
 }
 
-# worker 等 api 健康后才起；看它的日志确认已经开始干活
+# worker 等 api 健康后才起；看它的日志确认已经开始干活。
+# 不用 grep -q：它匹配到就关管道，日志长时 podman logs 收到 SIGPIPE（141），在 pipefail 下整条管道算失败，永远判不成功
 wait_worker() {
   echo -n "等 worker 启动 "
   for _ in $(seq 1 60); do
-    if podman logs "$POD-worker" 2>&1 | grep -q "HeyAgent worker 已启动"; then
+    if podman logs "$POD-worker" 2>&1 | grep "HeyAgent worker 已启动" >/dev/null; then
       echo " 就绪"
       return 0
     fi
@@ -201,9 +202,17 @@ wait_worker() {
   exit 1
 }
 
+# 停 pod 并删掉（数据卷保留）。先 podman pod stop 给 60 秒：postgres 收到 SIGINT 后要写完关机检查点，
+# 开发机的盘慢时要十几秒，默认 10 秒一到就被强杀，下次启动要做崩溃恢复（2026-10-28 重建时遇到）。
+# Podman 3.4 的 play kube 不认 terminationGracePeriodSeconds，所以在脚本里先停；停好后 --down 只负责删除
+stop_pod() {
+  podman pod stop -t 60 "$POD" >/dev/null
+  "${PLAY[@]}" --down "$YAML" >/dev/null
+}
+
 down() {
   if pod_exists; then
-    "${PLAY[@]}" --down "$YAML" >/dev/null
+    stop_pod
     echo "已停止并删除 pod $POD（数据卷 ${VOLUMES[*]} 保留）"
   else
     echo "pod $POD 不存在"
