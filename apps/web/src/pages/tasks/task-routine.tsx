@@ -3,6 +3,7 @@
 // 「⋯」里：看脚本（启用的那一版）、版本记录（approved 过的能回到那一版，routine.restore）、停用（AlertDialog 确认）/ 重新启用（routine.setPaused）。
 // 开关、停用、回旧版只有负责人和主管能点（后端也拦）。
 // 第二期（第 17.1 节）：一行写任务的「办成后自动固化」「固化时不试跑」现在是什么（在编辑任务里改）；自动固化的版本加「自动固化」徽章。
+// 第三期（19.8）：启用的那一版有 HTTP 工具建议时加一行，建议的内容在「看脚本」里（RoutineVersionView 的 HttpSuggestions）。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
 import { EllipsisIcon, FileCodeIcon, HistoryIcon, PauseIcon, PlayIcon, RotateCcwIcon, RotateCwIcon, TriangleAlertIcon, Undo2Icon } from "lucide-react"
@@ -125,6 +126,9 @@ function RoutineSection({ task, routine, canEdit }: { task: TaskDef; routine: Ro
         </div>
         <RecentLine recent={routine.recent} />
         <SettingsLine task={task} />
+        {active && active.httpToolSuggestions > 0 && (
+          <p className="text-muted-foreground">第 {active.version} 版建议建 {active.httpToolSuggestions} 个 HTTP 工具（在「看脚本」里）</p>
+        )}
         {paused && (
           <Alert>
             <PauseIcon />

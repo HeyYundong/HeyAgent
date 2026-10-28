@@ -4,17 +4,19 @@
 // 下载走 GET /api/files/:id（要求登录，cookie 自动带上）。
 // 代码文件（.py .js .ts .sh .sql .toml .ini 等，docs/dev/session-space.md 3.1）按语言高亮显示（CodeView，复用 use-highlighted-code）。
 // 有 path（空间里的路径，例如 state/progress.json）的文件显示路径，覆盖过的（updatedAt ≠ createdAt）会标出来。
+// 网页请求记录 network/requests.jsonl（kind = network，或者 .jsonl 第一行能按记录的格式解析，docs/dev/solidify.md 19.8）分「表格」「原文」两个标签：表格一行一个请求，点一行看这一行的 JSON。
 // 另外导出 FileViewer（看图 / 看内容的弹窗）、CodeView（带高亮的代码块）、fileSourceLabel（来源文字）、fileTypeIcon（按类型选图标）、isImageFile、canPreviewFile、filePathOf、isOverwritten，给运行详情的「空间文件」列表等别的页面用。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
 import { ChevronLeftIcon, ChevronRightIcon, DownloadIcon, FileCodeIcon, FileIcon, FileSpreadsheetIcon, FileTextIcon, ImageIcon, PaperclipIcon, XIcon, type LucideIcon } from "lucide-react"
-import { fmtDateTime, type SessionFile, type SheetPreview, type UploadedFile } from "@heyagent/shared"
+import { fmtDateTime, networkLogLineSchema, type NetworkLogEndLine, type NetworkLogLine, type NetworkRequestLine, type SessionFile, type SheetPreview, type UploadedFile } from "@heyagent/shared"
 
 import { MarkdownView } from "@/components/markdown"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import {
   Attachment, AttachmentAction, AttachmentActions, AttachmentContent, AttachmentDescription, AttachmentMedia, AttachmentTitle, AttachmentTrigger,
 } from "@/components/ui/attachment"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { CodeBlock, CodeBlockActions, CodeBlockContent, CodeBlockCopyButton, CodeBlockHeader, CodeBlockLine, CodeBlockTitle } from "@/components/ui/code-block"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -244,11 +246,12 @@ function TextPreview({ file }: { file: ShownFile }) {
     },
     staleTime: Infinity,
   })
+  const network = React.useMemo(() => (query.data !== undefined ? networkLogOf(file, query.data) : undefined), [file, query.data])
   if (query.isPending) return <Spinner />
   if (query.isError) return <p className="text-destructive">{query.error.message}</p>
   const cut = query.data.length > MAX_PREVIEW_CHARS
   const text = cut ? query.data.slice(0, MAX_PREVIEW_CHARS) : query.data
-  return (
+  const raw = (
     <div className="flex min-w-0 flex-col gap-2">
       {isMarkdown(file) ? (
         <MarkdownView>{text}</MarkdownView>
@@ -256,6 +259,134 @@ function TextPreview({ file }: { file: ShownFile }) {
         <CodeView code={text} language={codeLanguage(file)} />
       )}
       {cut && <p className="text-xs text-muted-foreground">只显示了前 {MAX_PREVIEW_CHARS.toLocaleString()} 个字，完整内容请下载。</p>}
+    </div>
+  )
+  if (!network) return raw
+  return (
+    <Tabs defaultValue="table" className="min-w-0">
+      <TabsList variant="line">
+        <TabsTrigger value="table">表格</TabsTrigger>
+        <TabsTrigger value="raw">原文</TabsTrigger>
+      </TabsList>
+      <TabsContent value="table"><NetworkLogTable log={network} /></TabsContent>
+      <TabsContent value="raw">{raw}</TabsContent>
+    </Tabs>
+  )
+}
+
+// ---------- 网页请求记录 network/requests.jsonl（docs/dev/solidify.md 19.3、19.8） ----------
+
+interface NetworkLog {
+  rows: NetworkRequestLine[]
+  end?: NetworkLogEndLine
+  /** 解析不了的行数（只在原文里看得到） */
+  bad: number
+}
+
+/** 一行一个 JSON；解析不了的行是 undefined */
+function parseNetworkLines(text: string): (NetworkLogLine | undefined)[] {
+  return text.split("\n").filter((line) => line.trim()).map((line) => {
+    try {
+      const parsed = networkLogLineSchema.safeParse(JSON.parse(line))
+      return parsed.success ? parsed.data : undefined
+    } catch {
+      return undefined
+    }
+  })
+}
+
+/** 是网页请求记录（kind = network，或者 .jsonl 第一行能按记录的格式解析）才按表格显示；不是返回 undefined */
+function networkLogOf(file: ShownFile, text: string): NetworkLog | undefined {
+  if (file.kind !== "network" && !/\.jsonl$/i.test(file.name)) return undefined
+  const lines = parseNetworkLines(text)
+  if (file.kind !== "network" && !lines[0]) return undefined
+  const log: NetworkLog = { rows: [], bad: 0 }
+  for (const line of lines) {
+    if (!line) log.bad++
+    else if ("end" in line) log.end = line
+    else log.rows.push(line)
+  }
+  return log
+}
+
+/** 「09:12:03」：本地时间的时:分:秒 */
+const clockText = (at: string) => {
+  const date = new Date(at)
+  return Number.isNaN(date.getTime()) ? at : date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false })
+}
+
+/** 网址只显示路径和参数；解析不了原样 */
+const requestPath = (url: string) => {
+  try {
+    const parsed = new URL(url)
+    return `${parsed.pathname}${parsed.search}`
+  } catch {
+    return url
+  }
+}
+
+/** 一行一个请求；点一行，下面显示这一行的 JSON（排好版）；最后一行是 end 时写后面还有几个没记 */
+function NetworkLogTable({ log }: { log: NetworkLog }) {
+  const [selected, setSelected] = React.useState<number | null>(null)
+  const row = log.rows.find((each) => each.seq === selected)
+  const toggle = (seq: number) => setSelected((current) => (current === seq ? null : seq))
+  if (log.rows.length === 0 && !log.end)
+    return (
+      <Empty className="border">
+        <EmptyHeader>
+          <EmptyMedia variant="icon"><FileIcon /></EmptyMedia>
+          <EmptyDescription>没有记下请求{log.bad ? `（${log.bad} 行解析不了，看「原文」）` : ""}。</EmptyDescription>
+        </EmptyHeader>
+      </Empty>
+    )
+  return (
+    <div className="flex min-w-0 flex-col gap-2">
+      <div className="border">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="w-10">序号</TableHead>
+              <TableHead>时间</TableHead>
+              <TableHead>方法</TableHead>
+              <TableHead>网址</TableHead>
+              <TableHead>状态</TableHead>
+              <TableHead>返回类型</TableHead>
+              <TableHead className="text-right">大小</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {log.rows.map((each) => (
+              <TableRow
+                key={each.seq}
+                tabIndex={0}
+                aria-selected={each.seq === selected}
+                data-state={each.seq === selected ? "selected" : undefined}
+                onClick={() => toggle(each.seq)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" && event.key !== " ") return
+                  event.preventDefault()
+                  toggle(each.seq)
+                }}
+              >
+                <TableCell className="text-muted-foreground tabular-nums">{each.seq}</TableCell>
+                <TableCell className="tabular-nums">{clockText(each.at)}</TableCell>
+                <TableCell><Badge variant="outline">{each.method}</Badge></TableCell>
+                <TableCell className="max-w-xs truncate font-mono" title={each.url}>{requestPath(each.url)}</TableCell>
+                <TableCell>
+                  {each.status === 0
+                    ? <Badge variant="destructive" title={each.error}>没返回</Badge>
+                    : <Badge variant={each.status >= 400 ? "destructive" : "outline"}>{each.status}</Badge>}
+                </TableCell>
+                <TableCell className="max-w-40 truncate text-muted-foreground" title={each.responseType}>{each.responseType ?? ""}</TableCell>
+                <TableCell className="text-right text-muted-foreground tabular-nums">{each.bytes !== undefined ? fmtSize(each.bytes) : ""}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+      {log.end && <p className="text-xs text-muted-foreground">后面还有 {log.end.skipped} 个请求没记：{log.end.reason}</p>}
+      {log.bad > 0 && <p className="text-xs text-muted-foreground">另有 {log.bad} 行解析不了，看「原文」。</p>}
+      {row ? <CodeView code={JSON.stringify(row, null, 2)} language="json" title={`第 ${row.seq} 个请求`} /> : <p className="text-xs text-muted-foreground">点一行看这个请求的全部记录。</p>}
     </div>
   )
 }
