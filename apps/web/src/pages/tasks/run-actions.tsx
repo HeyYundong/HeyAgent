@@ -3,7 +3,7 @@
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
 import { CircleStopIcon, PlayIcon, ZapIcon } from "lucide-react"
-import { isRunEnded, type SessionSummary, type TaskDef, type Trigger, type UploadedFile } from "@heyagent/shared"
+import { isRunEnded, type FireEventResult, type SessionSummary, type TaskDef, type Trigger, type UploadedFile } from "@heyagent/shared"
 
 import { FileList, UploadButton } from "@/components/files"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
@@ -12,6 +12,7 @@ import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, Di
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field"
 import { Spinner } from "@/components/ui/spinner"
 import { Textarea } from "@/components/ui/textarea"
+import { toast } from "@/components/ui/toast"
 import { useAction } from "@/lib/mutations"
 import { navigate } from "@/lib/router"
 import { trpc } from "@/lib/trpc"
@@ -40,10 +41,29 @@ export function ResumeButton({ run, size = "default" }: { run: SessionSummary; s
 /** 在等的事件：只等事件、或时间和事件先到先继续 */
 export const eventOf = (trigger?: Trigger) => (trigger && "event" in trigger ? trigger.event : undefined)
 
-/** 主管手动触发一个事件（engine.fireEvent，和外部系统 POST /api/events 一样）：在等它的 session 继续、等它的待办触发 */
+/** 触发事件后的提示：继续了几个、触发了几条；派活第三期加「派了 N 张单」「M 个任务没派成」（有才写），没派成的原因放在下面一行 */
+export function fireEventToast(event: string, result: FireEventResult) {
+  const created = result.dispatched.filter((each) => !each.existing).length
+  const existing = result.dispatched.length - created
+  const rejected = result.dispatchRejected
+  const title = [
+    `已触发「${event}」：继续了 ${result.resumedSessionIds.length} 个 session，触发了 ${result.firedTodoIds.length} 条待办`,
+    created ? `派了 ${created} 张单` : "",
+    existing ? `${existing} 张同一件事已经有单` : "",
+    rejected.length ? `${rejected.length} 个任务没派成` : "",
+  ]
+    .filter(Boolean)
+    .join("，")
+  toast.add({
+    title,
+    description: rejected.length ? rejected.map((each) => `${each.taskId}：${each.reason}`).join("；") : undefined,
+    type: rejected.length ? "warning" : "success",
+  })
+}
+
+/** 主管手动触发一个事件（engine.fireEvent，和外部系统 POST /api/events 一样）：在等它的 session 继续、等它的待办触发、配了「收到事件就派一张」的任务派单 */
 export function useFireEvent(event: string) {
-  return useAction(trpc.engine.fireEvent.mutationOptions(), {
-    success: (result) => `已触发「${event}」：继续了 ${result.resumedSessionIds.length} 个 session，触发了 ${result.firedTodoIds.length} 条待办`,
+  return useAction(trpc.engine.fireEvent.mutationOptions({ onSuccess: (result) => fireEventToast(event, result) }), {
     errorTitle: "没能触发事件",
   })
 }

@@ -1,11 +1,12 @@
 // 派活单的弹窗：派一张（按被派任务声明的参数生成表单）、改参数（只有排队的单）、不办了 / 重办的确认。
 // 「派一张」在任务抽屉里用（能被派活的任务，「立即运行」换成「派一张」；「派来的活」右上角也有）。2026-10-21 从 pages/work/dialogs.tsx 搬来。
 // 表单用 React Hook Form + Field（docs/ui-rules.md 第 8 节登记过的写法）；参数按声明顺序放在一个数组里，免得参数名里的「.」被当成路径。
+// 派活第三期（docs/dev/dispatch-p3.md 6.2、6.3 节）：派一张、改参数都加「优先级」「什么时候办」；等自动重试的单不能改时间。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
 import { useForm, useWatch } from "react-hook-form"
 import { ArrowRightIcon, InfoIcon } from "lucide-react"
-import { workDedupeKey, workDefaultTitle, type TaskDef, type TaskDispatchParam, type WorkItem, type WorkItemDetail } from "@heyagent/shared"
+import { workDedupeKey, workDefaultTitle, workWaitKind, type TaskDef, type TaskDispatchParam, type WorkItem, type WorkItemDetail, type WorkPriority } from "@heyagent/shared"
 
 import { HelpTip } from "@/components/shell/simple-page"
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -22,7 +23,7 @@ import { toast } from "@/components/ui/toast"
 import { useAction } from "@/lib/mutations"
 import { trpc } from "@/lib/trpc"
 
-import { WorkItemBadge, timeText, useWorkTaskStats, workLink } from "./work-parts"
+import { WORK_DELAY_ITEMS, WORK_PRIORITY_ITEMS, WorkItemBadge, scheduledAt, timeText, useWorkTaskStats, workLink } from "./work-parts"
 
 /** 按声明把表单里的数组换成参数对象：去掉首尾空白，空的不带 */
 function toParams(declared: TaskDispatchParam[], values: string[] = []) {
@@ -39,11 +40,71 @@ function useDebounced<T>(value: T, ms = 400) {
   return debounced
 }
 
+/** 一个 Select 选一项（优先级、什么时候办） */
+function PlainSelect({ id, items, value, onChange }: { id: string; items: { value: string; label: string }[]; value: string; onChange: (value: string) => void }) {
+  return (
+    <Select items={items} value={value} onValueChange={(next) => next && onChange(String(next))}>
+      <SelectTrigger id={id} className="w-full">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {items.map((item) => (
+          <SelectItem key={item.value} value={item.value}>
+            {item.label}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  )
+}
+
+/** 「优先级」「什么时候办」一行两个（派一张、改参数） */
+function PriorityDelayFields({
+  idPrefix,
+  priority,
+  onPriority,
+  delay,
+  onDelay,
+  delayItems,
+}: {
+  idPrefix: string
+  priority: WorkPriority
+  onPriority: (value: WorkPriority) => void
+  /** 不传 = 不显示「什么时候办」（等自动重试的单不能改时间） */
+  delay?: string
+  onDelay?: (value: string) => void
+  delayItems?: { value: string; label: string }[]
+}) {
+  return (
+    <div className="grid gap-4 sm:grid-cols-2">
+      <Field>
+        <FieldLabel htmlFor={`${idPrefix}-priority`} className="flex items-center gap-1">
+          优先级
+          <HelpTip>只影响这个任务自己的排队：先领高的，同一级按派进来的先后。</HelpTip>
+        </FieldLabel>
+        <PlainSelect id={`${idPrefix}-priority`} items={WORK_PRIORITY_ITEMS} value={priority} onChange={(value) => onPriority(value as WorkPriority)} />
+      </Field>
+      {delay !== undefined && onDelay && (
+        <Field>
+          <FieldLabel htmlFor={`${idPrefix}-delay`} className="flex items-center gap-1">
+            什么时候办
+            <HelpTip>到点以前不开始、不占排队的位子，到点后才排进队里。最长 30 天。</HelpTip>
+          </FieldLabel>
+          <PlainSelect id={`${idPrefix}-delay`} items={delayItems ?? WORK_DELAY_ITEMS} value={delay} onChange={onDelay} />
+        </Field>
+      )}
+    </div>
+  )
+}
+
 interface DispatchForm {
   taskId: string
   values: string[]
   title: string
   note: string
+  priority: WorkPriority
+  /** 过多久再办（分钟），文字形式给 Select 用；"0" = 马上 */
+  delay: string
 }
 
 export function DispatchDialog({
@@ -61,8 +122,8 @@ export function DispatchDialog({
   /** 派出去了（或者同一件事已经有单）：页面决定去哪 */
   onDone: (item: WorkItem, existing: boolean) => void
 }) {
-  const form = useForm<DispatchForm>({ defaultValues: { taskId: initialTaskId ?? taskOptions[0]?.id ?? "", values: [], title: "", note: "" } })
-  const [taskId, values] = useWatch({ control: form.control, name: ["taskId", "values"] })
+  const form = useForm<DispatchForm>({ defaultValues: { taskId: initialTaskId ?? taskOptions[0]?.id ?? "", values: [], title: "", note: "", priority: "normal", delay: "0" } })
+  const [taskId, values, priority, delay] = useWatch({ control: form.control, name: ["taskId", "values", "priority", "delay"] })
   const task = taskOptions.find((each) => each.id === taskId)
   const declared = task?.dispatch?.params ?? []
   const params = toParams(declared, values)
@@ -80,7 +141,15 @@ export function DispatchDialog({
   const submit = form.handleSubmit(async (form) => {
     if (!task?.dispatch || duplicate) return
     const filled = toParams(declared, form.values)
-    const result = await send.submit({ taskId: task.id, params: filled, title: form.title.trim() || undefined, note: form.note.trim() || undefined })
+    const result = await send.submit({
+      taskId: task.id,
+      params: filled,
+      title: form.title.trim() || undefined,
+      note: form.note.trim() || undefined,
+      // 普通、马上都是默认，不写
+      priority: form.priority === "normal" ? undefined : form.priority,
+      delayMinutes: Number(form.delay) || undefined,
+    })
     if (result) onDone(result.item, result.existing)
   })
 
@@ -100,7 +169,7 @@ export function DispatchDialog({
                 value={taskId}
                 onValueChange={(next) => {
                   if (!next) return
-                  form.reset({ taskId: String(next), values: [], title: form.getValues("title"), note: form.getValues("note") })
+                  form.reset({ ...form.getValues(), taskId: String(next), values: [] })
                 }}
               >
                 <SelectTrigger id="dispatch-task" className="w-full">
@@ -152,6 +221,13 @@ export function DispatchDialog({
               </FieldLabel>
               <Input id="dispatch-title" placeholder={task?.dispatch && Object.keys(params).length ? workDefaultTitle(task.dispatch, params) : "一句话：这件事是什么"} {...form.register("title")} />
             </Field>
+            <PriorityDelayFields
+              idPrefix="dispatch"
+              priority={priority}
+              onPriority={(value) => form.setValue("priority", value)}
+              delay={delay}
+              onDelay={(value) => form.setValue("delay", value)}
+            />
             <Field>
               <FieldLabel htmlFor="dispatch-note">
                 补充说明<span className="font-normal text-muted-foreground">（可以不写）</span>
@@ -194,7 +270,7 @@ function DuplicateAlert({ item }: { item: WorkItem }) {
   )
 }
 
-/** 派出去以后的提示：排第几位；任务停用了写「先排着」；已经有了写现状 */
+/** 派出去以后的提示：排第几位；定了时间的写「定在 18:00 以后办」（第三期）；任务停用了写「先排着」；已经有了写现状 */
 export function dispatchedToast(item: WorkItem, existing: boolean, taskEnabled: boolean, action?: { label: string; onClick: () => void }) {
   const actionProps = action && { children: action.label, onClick: action.onClick }
   if (existing) {
@@ -203,7 +279,12 @@ export function dispatchedToast(item: WorkItem, existing: boolean, taskEnabled: 
   }
   toast.add({
     title: `已派出 ${item.id}`,
-    description: taskEnabled ? `排队第 ${item.queuePosition ?? 1} 位，轮到了开一次运行。` : "任务停用了，单先排着，重新启用后开始办。",
+    description:
+      workWaitKind(item) === "scheduled"
+        ? `定在 ${timeText(item.notBefore)} 以后办，到点后排进队里。${taskEnabled ? "" : "任务停用了，重新启用后才开始办。"}`
+        : taskEnabled
+          ? `排队第 ${item.queuePosition ?? 1} 位，轮到了开一次运行。`
+          : "任务停用了，单先排着，重新启用后开始办。",
     type: "success",
     actionProps,
   })
@@ -213,9 +294,12 @@ interface EditForm {
   values: string[]
   title: string
   note: string
+  priority: WorkPriority
+  /** "keep" = 不改；其余是从现在起过多久（分钟），"0" = 马上 */
+  delay: string
 }
 
-/** 改参数：只有排队的单能改。去重的参数不能改（改了就是另一件事） */
+/** 改参数：只有排队的单能改。去重的参数不能改（改了就是另一件事）。第三期：也能改优先级、什么时候办（等自动重试的单不能改时间） */
 export function EditParamsDialog({ item, onClose }: { item: WorkItemDetail | null; onClose: () => void }) {
   return (
     <Dialog open={item !== null} onOpenChange={(open) => !open && onClose()}>
@@ -226,18 +310,37 @@ export function EditParamsDialog({ item, onClose }: { item: WorkItemDetail | nul
 
 function EditParamsForm({ item, onDone }: { item: WorkItemDetail; onDone: () => void }) {
   const declared = item.taskDispatch?.params ?? []
-  const form = useForm<EditForm>({ defaultValues: { values: declared.map((param) => item.params[param.name] ?? ""), title: item.title, note: item.note } })
-  const save = useAction(trpc.work.updateParams.mutationOptions(), { success: `已改 ${item.id} 的参数，轮到它时按新的参数办`, errorTitle: "没改成" })
+  const form = useForm<EditForm>({
+    defaultValues: { values: declared.map((param) => item.params[param.name] ?? ""), title: item.title, note: item.note, priority: item.priority, delay: "keep" },
+  })
+  const [priority, delay] = useWatch({ control: form.control, name: ["priority", "delay"] })
+  const waitKind = workWaitKind(item)
+  const scheduled = scheduledAt(item)
+  // 「什么时候办」第一项是不改（写现在是什么）；现在已经是马上的，不再单列「马上」
+  const delayItems = [
+    { value: "keep", label: `不改（现在：${scheduled ? `${timeText(scheduled)} 以后` : "马上"}）` },
+    ...WORK_DELAY_ITEMS.filter((each) => scheduled || each.value !== "0"),
+  ]
+  const save = useAction(trpc.work.updateParams.mutationOptions(), { success: `已改 ${item.id}，轮到它时按新的办`, errorTitle: "没改成" })
   const submit = form.handleSubmit(async (values) => {
     // 去重的参数原样带上（输入框是灰的，后端也会拦）
     const params = toParams(declared, values.values.map((value, index) => (declared[index]?.dedupe ? (item.params[declared[index].name] ?? "") : value)))
-    if (await save.submit({ id: item.id, params, title: values.title.trim() || item.title, note: values.note.trim() })) onDone()
+    const done = await save.submit({
+      id: item.id,
+      params,
+      title: values.title.trim() || item.title,
+      note: values.note.trim(),
+      // 没改的不写
+      priority: values.priority === item.priority ? undefined : values.priority,
+      delayMinutes: values.delay === "keep" ? undefined : Number(values.delay),
+    })
+    if (done) onDone()
   })
   return (
     <form onSubmit={submit} className="flex flex-col gap-4">
       <DialogHeader>
         <DialogTitle>改参数 · {item.id}</DialogTitle>
-        <DialogDescription>还在排队，改了以后轮到它时按新的参数办。</DialogDescription>
+        <DialogDescription>还在排队，改了以后轮到它时按新的参数办。{waitKind === "retry" && "这张单在等自动重试，不能改时间。"}</DialogDescription>
       </DialogHeader>
       <FieldGroup>
         {declared.map((param, index) => {
@@ -258,6 +361,15 @@ function EditParamsForm({ item, onDone }: { item: WorkItemDetail; onDone: () => 
           <FieldLabel htmlFor="edit-title">标题</FieldLabel>
           <Input id="edit-title" {...form.register("title")} />
         </Field>
+        <PriorityDelayFields
+          idPrefix="edit"
+          priority={priority}
+          onPriority={(value) => form.setValue("priority", value)}
+          // 等自动重试的单不能改时间：要马上办就「不办了」再「重办」
+          delay={waitKind === "retry" ? undefined : delay}
+          onDelay={(value) => form.setValue("delay", value)}
+          delayItems={delayItems}
+        />
         <Field>
           <FieldLabel htmlFor="edit-note">补充说明</FieldLabel>
           <Textarea id="edit-note" {...form.register("note")} />

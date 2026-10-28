@@ -1,6 +1,7 @@
 // 任务详情里的「派来的活」（能被派活的任务，2026-10-21 派活页并进来，docs/dev/work-into-tasks.md）：
 // 名额一行 + 参数、谁能派一行；三个标签 没结束 / 办成 / 没办成（带张数）+ 搜单号、参数；派给这个任务的单，一张一行，点了在抽屉里看单详情（?work=W-…）；
 // 「再看更多」往下翻。右上角「派一张」（负责人和主管）。
+// 第三期（docs/dev/dispatch-p3.md 6.4 节）：名额那行加每天花费；设置那行加「外部系统能派活」「收到事件 … 派一张」；谁派的用 workFromText；优先级徽章。
 // 还有抽屉里的「派一张」弹窗（任务已经选好），派出去以后提示，带「去看 W-…」。
 import * as React from "react"
 import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query"
@@ -21,7 +22,7 @@ import { trpc } from "@/lib/trpc"
 import { retryText } from "./dispatch-fields"
 import { quotaText } from "./work-detail"
 import { DispatchDialog, dispatchedToast } from "./work-dialogs"
-import { WorkItemBadge, shortName, timeText, useWorkTaskStats, workLink } from "./work-parts"
+import { WorkItemBadge, WorkPriorityBadge, timeText, useWorkTaskStats, workFromText, workLink } from "./work-parts"
 
 // 没有「全部」：默认看没结束的；出错、「不办了」的单算在「没办成」里（按单的结果分，见 workItemOutcome）
 const VIEWS: { id: WorkListView; name: string; count: "open" | "achieved" | "notAchieved" }[] = [
@@ -88,6 +89,8 @@ export function DispatchInSection({ task }: { task: TaskDef }) {
             参数：{dispatch.params.map((p) => `${p.name}（${[p.required ? "必填" : "可选", p.dedupe && "去重"].filter(Boolean).join("，")}）`).join("、") || "没有"}
             {dispatch.results?.length ? ` · 要交回：${dispatch.results.map((r) => `${r.name}${r.required ? "（必填）" : ""}`).join("、")}` : ""}
             {" · "}谁能派活给它：{task.dispatchFrom.length ? task.dispatchFrom.map((id) => `「${title(id)}」`).join("、") : "只能人派"}
+            {dispatch.allowApi && " · 外部系统能派活"}
+            {dispatch.events?.length ? ` · 收到事件 ${dispatch.events.map((each) => each.event).join("、")} 派一张` : ""}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -124,12 +127,17 @@ export function DispatchInSection({ task }: { task: TaskDef }) {
                 description={[
                   item.id,
                   timeText(item.createdAt),
-                  item.via === "agent" ? `${shortName(item.fromTaskTitle)}派的` : `${staffName(item.fromUserId ?? undefined)}派的`,
+                  workFromText(item, staffName),
                   item.sessionId,
                 ]
                   .filter(Boolean)
                   .join(" · ")}
-                badge={<WorkItemBadge item={item} long />}
+                badge={
+                  <>
+                    <WorkPriorityBadge priority={item.priority} />
+                    <WorkItemBadge item={item} long />
+                  </>
+                }
               />
             ))}
           </ItemGroup>

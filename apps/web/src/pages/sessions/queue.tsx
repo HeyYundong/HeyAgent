@@ -1,12 +1,13 @@
 // 会话页「排队中」（2026-10-21 派活页并进来，docs/dev/work-into-tasks.md）：全部任务里排队的派活单，还没开运行，所以没有 session。
 // 宽屏是表格（状态 / 派活单 / 要办的事 / 被派的任务 / 谁派的 / 派的时间 / 在等什么），窄屏一条一个 Item；点一行从右侧打开单详情（?status=queue&id=W-…）。
-// 「在等什么」和单详情最上面的提示同一套判断（queueWaitText）：等自动重试、任务停用了、名额满了（谁占着）。
+// 「在等什么」和单详情最上面的提示同一套判断（queueWaitText）：等自动重试、定了时间、任务停用了、花费到了上限、名额满了（谁占着）。
+// 谁派的用 workFromText（第三期加外部系统、外部事件）；优先级不是普通的，状态旁多一个徽章。
 import { startText, type WorkItem, type WorkQueueStats } from "@heyagent/shared"
 
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "@/components/ui/item"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useStaffName } from "@/lib/data"
-import { WorkStatusBadge, queueWaitText, shortName } from "@/pages/tasks/work-parts"
+import { WorkPriorityBadge, WorkStatusBadge, queueWaitText, shortName, workFromText } from "@/pages/tasks/work-parts"
 
 interface QueueProps {
   items: WorkItem[]
@@ -16,10 +17,10 @@ interface QueueProps {
   linkTo: (id: string) => string
 }
 
-/** 谁派的：「巡检…派的」（agent）/「王悦派的」（人） */
+/** 谁派的：「「巡检」派的」「王悦派的」「外部系统（密钥「…」）派的」「外部事件「…」派的」 */
 function useFromText() {
   const staffName = useStaffName()
-  return (item: WorkItem) => (item.via === "agent" ? `${shortName(item.fromTaskTitle)}派的` : `${staffName(item.fromUserId ?? undefined)}派的`)
+  return (item: WorkItem) => workFromText(item, staffName)
 }
 
 export function QueueTable({ items, stats, selectedId, linkTo }: QueueProps) {
@@ -43,7 +44,12 @@ export function QueueTable({ items, stats, selectedId, linkTo }: QueueProps) {
             const wait = queueWaitText(item, stats.find((each) => each.taskId === item.taskId))
             return (
               <TableRow key={item.id} className="relative" data-state={item.id === selectedId ? "selected" : undefined}>
-                <TableCell><WorkStatusBadge item={item} long /></TableCell>
+                <TableCell>
+                  <span className="flex items-center gap-1">
+                    <WorkStatusBadge item={item} long />
+                    <WorkPriorityBadge priority={item.priority} />
+                  </span>
+                </TableCell>
                 <TableCell className="font-mono">
                   {/* 整行可点：链接铺满这一行 */}
                   <a href={linkTo(item.id)} className="after:absolute after:inset-0 hover:underline">{item.id}</a>
@@ -81,6 +87,7 @@ export function QueueItems({ items, stats, selectedId, linkTo }: QueueProps) {
           </ItemContent>
           <ItemActions className="flex-col items-end self-start">
             <WorkStatusBadge item={item} long />
+            <WorkPriorityBadge priority={item.priority} />
           </ItemActions>
         </Item>
       ))}

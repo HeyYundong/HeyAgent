@@ -32,7 +32,7 @@ import { useAction } from "@/lib/mutations"
 import { href } from "@/lib/router"
 import { useMe } from "@/lib/session"
 import { trpc } from "@/lib/trpc"
-import { ParamsTable, WorkItemBadge, shortName, timeText, workLink } from "./work-parts"
+import { ParamsTable, WorkItemBadge, WorkPriorityBadge, shortName, timeText, workFromText, workLink } from "./work-parts"
 
 import { VerificationReport } from "./verification"
 import { CheckpointList, Elapsed, RunStatusBadge, StepList, WaitingAlert, checkpointSummary, focusedCheckpoint, money } from "./parts"
@@ -535,7 +535,7 @@ function RunMeta({ run, rest }: { run: SessionSummary; rest: string }) {
           {item.fromSessionId && <a className="font-mono underline underline-offset-4" href={href("sessions", { id: item.fromSessionId })}>{item.fromSessionId}</a>}
         </>
       ) : (
-        <>· {staffName(item.fromUserId ?? undefined)}手动派的</>
+        <>· {workFromText(item, staffName)}</>
       ))}
       <span>· {rest}</span>
     </span>
@@ -563,6 +563,7 @@ function DispatchedIn({ run, itemId }: { run: SessionSummary; itemId: string }) 
             <span className="font-mono">{item.id}</span>
             {item.title}
             <WorkItemBadge item={item} reason />
+            <WorkPriorityBadge priority={item.priority} />
             {item.runs.length >= 2 && nth > 0 && <Badge variant="outline">这是第 {nth} 次</Badge>}
           </p>
           <ParamsTable declared={item.taskDispatch?.params ?? []} values={item.params} />
