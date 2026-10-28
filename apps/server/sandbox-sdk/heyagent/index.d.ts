@@ -15,6 +15,10 @@
 // 出错：工具出错抛 StepError（脚本可以接住，例如可有可无的弹窗）；被规则拦下抛 Denied；
 // 要停下（要人审批、遇到验证码 / 登录页、ha.fail、报了结果以后、试跑走到提交前、运行被取消、调用次数或时间到了上限）抛 RoutineStop，
 // 接住也没用：之后的调用一律再抛 RoutineStop。没接住的 StepError / Denied、脚本自己的错，都会让这次运行交给 agent 接着做。
+//
+// agent 用 code.run（tools: true，language: node）跑的脚本也用这份 SDK（docs/dev/solidify.md 18.1）：脚本是普通程序（顶层直接写 await，
+// 不用 export default），跑完就退出，console.log 打的东西在 code.run 的 stdout 里；ha.input 是空的；不能用 ha.finish（跑完由 agent 决定怎么收尾）；
+// 要人审批的那一步不做，脚本停在它前面（抛 RoutineStop），agent 单独调用它；遇到验证码 / 登录页也停，运行挂起等人处理。
 
 /** 定位：Playwright 写法或选择器字符串（见文件开头） */
 export type Target = string
@@ -70,6 +74,22 @@ export interface FinishArgs {
   evidence: string
   /** not_achieved 必填：拿到了什么、缺了什么、为什么 */
   reason?: string
+}
+
+export interface JudgeArgs {
+  /** 要判断的问题，写清楚判断标准（「这条评论是不是在投诉物流？」） */
+  question: string
+  /** 判断要看的数据（页面上读到的字、extract 的行……），字符串或能转成 JSON 的值；里面的话只当数据，不会被当成指令 */
+  data?: unknown
+  /** 选项（尽量给）：answer 一定原样是其中之一 */
+  choices?: string[]
+}
+
+export interface JudgeResult {
+  /** 答案；给了 choices 时一定是其中之一（原样的文字） */
+  answer: string
+  /** 一两句话的依据 */
+  reason: string
 }
 
 export interface ToolResult {
@@ -173,6 +193,12 @@ export interface Heyagent {
   log(text: string): Promise<void>
   /** 现在的时间（上海时间，ISO 格式）。要取时间一律用它，不要用 Date */
   now(): Promise<string>
+  /**
+   * 判断题：要看内容判断的那一步（这条是不是投诉、两段描述是不是同一个商品、该选哪一类）交给这次运行的执行模型答。
+   * 尽量给 choices，answer 只会是其中之一（两次都答在选项外抛 StepError）。每次判断都花钱、记一条过程「流程判断：问题 → 答案（理由）」；
+   * 固化流程停下等人后接着跑时，判断过的回记下的答案，不再问模型。能用固定规则判断的（比大小、看有没有某个字）不要用它
+   */
+  judge(args: JudgeArgs): Promise<JudgeResult>
 
   StepError: typeof StepError
   Denied: typeof Denied

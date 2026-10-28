@@ -16,6 +16,27 @@ import {
 export const isCheckpointToolHidden = (snapshot: Pick<SessionSnapshot, "checkpoints">, toolId: string) =>
   toolId === "checkpoint.mark" && snapshot.checkpoints.length === 0
 
+/**
+ * 任务同时有「运行代码」和「浏览器」时，「运行代码」那一节加的几句（docs/dev/solidify.md 18.1）：重复的活写 node 脚本，
+ * 用 code.run（tools: true）一次做完；附上 SDK（apps/server/sandbox-sdk/heyagent）函数的简要说明
+ */
+export function scriptToolsLines(run: string): string[] {
+  return [
+    `- 要重复做很多次同样的操作（录几十行、读几十页、每一行做同样的几步）时，写一段 node 脚本，用 ${run}（language: "node"，tools: true）一次做完，不要一步一步调工具：`,
+    "  - 先手动做一遍（一两行），弄清每一步的定位和页面的反应，再写循环；",
+    "  - 脚本里 import ha from \"heyagent\"，顶层直接写 await；每次调用照样过规则、白名单、审批、记录，一次最多 500 次工具调用；这时脚本不能上网，timeout 按要做的量设（最多 600 秒）；",
+    "  - 定位写 Playwright 写法（getByRole('textbox', { name: '名称' })、getByText('保存')）或选择器字符串，不能写快照里的 ref；",
+    "  - 工具出错抛 StepError（可以 try/catch 接住，跳过这一行接着做）；要人审批的那一步不做，脚本停在它前面（之后单独调用它）；遇到验证码、登录页脚本停下、运行挂起等人；",
+    "  - 用 console.log 打出每一行的结果，看 stdout 核对；跑完由你看输出、核对页面，再决定怎么收尾（脚本里不能用 ha.finish）。",
+    "  SDK（都是 async，参数和同名的浏览器工具一样）：",
+    "  - ha.browser.navigate({ url }) / click({ element, target }) / type({ element, target, text, submit? }) / fillForm({ fields: [{ name, type, target, value }] }) / select({ element, target, values }) / press({ key }) / check / uncheck / hover({ element, target }) / waitFor({ text?, textGone?, time? })",
+    "  - ha.browser.waitAny({ 名字: 定位, … }, { timeout? }) → 先出现的那个的名字；ha.browser.extract({ list?, fields, limit? }) → { rows, total }",
+    "  - ha.file.read({ path | fileId, … }) → 表格是 { header, rows, total }，文本是文字；ha.file.save({ path, content | sheets })；ha.tool(工具 id, 参数) → { text, data }",
+    "  - ha.judge({ question, data?, choices? }) → { answer, reason }：要看内容判断的那一步交给执行模型答（尽量给 choices，answer 只会是其中之一；每次都花钱）",
+    "  - ha.commit(说明) 在会改东西的动作前、ha.verified(说明) 核对后、ha.log(文字) 记一条过程、ha.now() 现在的时间",
+  ]
+}
+
 export function buildSystemPrompt(
   snapshot: SessionSnapshot,
   toolNames: Map<string, string>
@@ -249,6 +270,7 @@ export function buildSystemPrompt(
         "- 常用包已装好：Python 有 pandas、numpy、openpyxl、xlrd、python-dateutil、requests、beautifulsoup4、lxml，另有 jq、curl。别的用 pip install 或 npm install -g 装，装好的包这次运行里一直有效。",
         "- 沙箱里没有密钥、没有环境变量，也碰不到平台的数据和接口；要访问需要登录的系统，用别的工具。",
         "- 默认 60 秒超时（timeout 最多 600 秒），内存有上限；超时整组进程被杀掉。退出码不为 0 不算工具出错，自己看 stdout / stderr 判断。",
+        ...(snapshot.browser ? scriptToolsLines(run) : []),
       ].join("\n")
     )
   }

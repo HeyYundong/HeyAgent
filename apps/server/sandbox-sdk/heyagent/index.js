@@ -3,6 +3,8 @@
 // 工具桥交给 HeyAgent 的工具网关，规则、白名单、审批、验证码 / 登录页检测、过程记录和 agent 自己调用时一样。
 // 协议：一行一个 JSON。请求 { id, op, … }；回复 { id, ok, text?, data?, error?, code? }（code：step_error / denied / stop）。
 // 没有依赖，普通 ESM；跑脚本时拷进沙箱代码目录的 node_modules/heyagent/。
+// agent 用 code.run（tools: true）写的脚本也用它（docs/dev/solidify.md 18.1，由 agent-launch.js 启动）：脚本是普通程序，跑完就退出，
+// 所以连接只在有请求等回复时才拦着进程退出（ref / unref）。
 import { createConnection } from "node:net"
 
 /** 工具出错（定位找不到、超时……）：脚本可以自己接住，比如可有可无的弹窗；没接住就交给 agent */
@@ -59,13 +61,23 @@ function connect() {
   })
   socket.on("error", () => lost("工具桥断开了"))
   socket.on("close", () => lost("工具桥断开了"))
+  // 没有等回复的请求时不拦着进程退出（agent 的脚本跑完最后一行就该退出；固化脚本由 launch.js 报完 done 后退出）
+  socket.unref()
   return socket
+}
+
+/** 有请求等回复时拦着进程退出，没有了就放开 */
+function holdOpen() {
+  if (!socket) return
+  if (pending.size) socket.ref()
+  else socket.unref()
 }
 
 function onReply(reply) {
   const waiter = pending.get(reply.id)
   if (!waiter) return
   pending.delete(reply.id)
+  holdOpen()
   if (reply.ok) return waiter.resolve({ text: reply.text ?? "", data: reply.data })
   const message = reply.error || "出错了"
   if (reply.code === "denied") return waiter.reject(new Denied(message))
@@ -83,6 +95,7 @@ function request(op, payload = {}, force = false) {
     pending.set(id, { resolve, reject })
     try {
       connect().write(`${JSON.stringify({ id, op, ...payload })}\n`)
+      holdOpen()
     } catch (error) {
       pending.delete(id)
       reject(error instanceof RoutineStop ? error : new RoutineStop(String(error?.message ?? error)))
@@ -162,6 +175,16 @@ const ha = {
   /** 现在的时间（上海时间，ISO 格式，例如 2026-10-27T09:30:00.000+08:00） */
   async now() {
     return (await request("now")).data
+  },
+  /** 判断题：交给这次运行的执行模型判断，返回 { answer, reason }；给了 choices，answer 一定是其中之一 */
+  async judge(args) {
+    const { question, data, choices } = args ?? {}
+    const result = await request("judge", {
+      question: String(question ?? ""),
+      ...(data !== undefined ? { data } : {}),
+      ...(choices !== undefined ? { choices } : {}),
+    })
+    return result.data
   },
   StepError,
   Denied,

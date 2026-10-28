@@ -64,6 +64,7 @@ import { appendEvent } from "../records.js"
 import { loadEngineSettings } from "../settings.js"
 import type { AgentClaim } from "../outcome.js"
 import type { SuspendInput } from "../waits.js"
+import type { BridgeGateway } from "../../routine/runtime/bridge.js"
 
 export type SessionRow = typeof t.sessions.$inferSelect
 
@@ -71,6 +72,11 @@ export interface ToolContext {
   db: Db
   session: SessionRow
   snapshot: SessionSnapshot
+  /**
+   * code.run 带 tools（docs/dev/solidify.md 18.1）：脚本经工具桥回到这次运行的网关；callId 是这次 code.run 的模型工具调用 id
+   * （过程记录的 trace.scriptCallId）。只有网关执行 code.run 时给
+   */
+  scriptTools?: { gateway: BridgeGateway; callId: string }
 }
 
 export type SuspendPlan =
@@ -105,6 +111,11 @@ export interface ToolOutcome {
   code?: string
   /** 浏览器动作前后的网址、跳转后的标题（docs/dev/solidify.md 3.2）：网关存进过程记录的 trace */
   trace?: { urlBefore?: string; urlAfter?: string; title?: string }
+  /**
+   * 这次调用里又经网关调了别的工具（code.run 带 tools，18.1）：signals、facts 是脚本停下的那一步的（带给引擎挂起用），
+   * 那一步已经过了调工具后的钩子。网关跑这次调用的钩子时去掉 signals、facts 换成这里的（code.run 自己写回的文件）
+   */
+  nested?: { facts?: ToolOutcome["facts"] }
 }
 
 const fail = (output: string): ToolOutcome => ({ output, isError: true })
