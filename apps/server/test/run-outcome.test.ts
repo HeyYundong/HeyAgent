@@ -333,6 +333,9 @@ describe("复核", () => {
     expect(reviewer.promptText(0)).toContain("存一张三行的表")
     expect(reviewer.promptText(0)).toContain("result.csv 里 3 行")
     expect(JSON.stringify(reviewer.prompts[0]?.prompt)).toContain("证据不够下结论、拿不准时也判 not_achieved")
+    // 批：每步做没做看 ✓ / ✗，填的值不同就是不同的事；过程记录覆盖整次运行
+    expect(JSON.stringify(reviewer.prompts[0]?.prompt)).toContain("每步做没做看结果里的 ✓ / ✗；几步填的值不同就是做了几件不同的事，不是重复")
+    expect(reviewer.promptText(0)).toContain("整次运行共")
     const events = await eventsOf(ctx.db, sessionId)
     expect(events.map((event) => [event.kind, event.title]).slice(-2)).toEqual([
       ["done", "agent 报办成，等 AI 复核"],

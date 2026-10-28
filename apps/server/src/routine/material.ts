@@ -17,6 +17,7 @@ import {
 
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
+import { clip, clipBlocks as clipBlocksWithin, isToolError, oneLine } from "../engine/log-text.js"
 import { readFileData } from "../files/service.js"
 import { GROUP_TOOLS, SDK_BROWSER_TOOLS } from "./checks.js"
 
@@ -27,8 +28,6 @@ export const OUTPUT_HEAD = 300
 const INPUT_MAX = 800
 const CODE_MAX = 600
 
-const clip = (value: string | null | undefined, max: number) => (!value ? "" : value.length > max ? `${value.slice(0, max)}…` : value)
-const oneLine = (value: string) => value.replace(/\s*\n\s*/g, " ⏎ ")
 
 /** 脚本里怎么取这个输入：input.单号；名字不是合法的标识符就写 input["名字"] */
 export function inputAccessor(key: string) {
@@ -93,27 +92,8 @@ export function inputMarks(inputJson: string | null | undefined, values: { label
   return marks
 }
 
-/** 一串段落，超出预算时留开头 2/5、结尾 3/5，中间写省略了几条 */
-export function clipBlocks(blocks: string[], budget = MATERIAL_LOG_BUDGET): string[] {
-  const total = blocks.reduce((sum, block) => sum + block.length + 1, 0)
-  if (total <= budget) return blocks
-  const head: string[] = []
-  const tail: string[] = []
-  let used = 0
-  for (const block of blocks) {
-    if (used + block.length > (budget * 2) / 5) break
-    head.push(block)
-    used += block.length + 1
-  }
-  used = 0
-  for (const block of blocks.slice(head.length).reverse()) {
-    if (used + block.length > (budget * 3) / 5) break
-    tail.unshift(block)
-    used += block.length + 1
-  }
-  const skipped = blocks.length - head.length - tail.length
-  return [...head, `……中间 ${skipped} 条省略……`, ...tail]
-}
+/** 一串段落，超出预算时留开头 2/5、结尾 3/5，中间写省略了几条（共用的写法在 engine/log-text.ts） */
+export const clipBlocks = (blocks: string[], budget = MATERIAL_LOG_BUDGET): string[] => clipBlocksWithin(blocks, budget)
 
 type EventRow = typeof t.sessionEvents.$inferSelect
 
@@ -122,7 +102,7 @@ const CONTEXT_KINDS = new Set(["rule", "wait", "resume", "human", "error"])
 const contextLabel: Record<string, string> = { rule: "规则", wait: "挂起", resume: "继续", human: "人", error: "出错", plan: "过程" }
 
 /** 工具调用的结果是出错（网关落过程记录时标题加「（出错）」） */
-export const isToolError = (event: Pick<EventRow, "title">) => event.title.endsWith("（出错）")
+export { isToolError }
 
 // ---------- agent 运行中写的脚本（code.run 带 tools，18.1） ----------
 
