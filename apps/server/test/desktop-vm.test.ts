@@ -6,12 +6,12 @@ import { createHash } from "node:crypto"
 import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs"
 import { chmod, readFile, readdir, stat, writeFile } from "node:fs/promises"
 import { createServer, type Server, type Server as HttpServer } from "node:http"
-import type { AddressInfo } from "node:net"
+import { createServer as createTcpServer, type AddressInfo } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { serve } from "@hono/node-server"
-import { and, eq } from "drizzle-orm"
+import { and, eq, sql } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import WebSocket from "ws"
 
@@ -29,6 +29,32 @@ import { login, mutate, query } from "./helpers.js"
 import { startFakePodman, type FakeContainer, type FakePodman } from "./podman-fake.js"
 
 const PYTHON_BYTES = Buffer.from("fake python installer\n")
+
+/**
+ * 假桌面服务绑的端口段（HEYAGENT_DESKTOP_PORT_RANGE）。不能在系统的临时端口段（ip_local_port_range，默认 32768–60999）里：
+ * 原来写死的 47310–47399 在临时端口段里，本机任何一条往外的连接（数据库连接池、HTTP keep-alive、别的测试）都可能正好占着
+ * 47314 这类端口，「开机」时假服务 listen 报 EADDRINUSE → 假 Podman 回 500 → 桌面记出错，偶发「等不到 running」，
+ * 后面的删模板跟着 409（全量跑时连接多才碰上，单独跑能过）。现在在 20000–30999 里随机挑一段（别的工作区同时跑这个测试也不撞），
+ * 先试着 listen 一下，占着的换一段
+ */
+async function pickPortBase(): Promise<number> {
+  const free = (port: number) =>
+    new Promise<boolean>((resolve) => {
+      const probe = createTcpServer()
+      probe.once("error", () => resolve(false))
+      probe.listen(port, "127.0.0.1", () => probe.close(() => resolve(true)))
+    })
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const base = 20_000 + 100 * Math.floor(Math.random() * 110)
+    let ok = true
+    for (let port = base + 10; port < base + 30 && ok; port++) ok = await free(port)
+    if (ok) return base
+  }
+  throw new Error("20000–30999 里找不到空着的端口段")
+}
+let PORT_BASE = 0
+/** 端口段里的第 n 个（模板 0、1，第一台桌面 2、3……） */
+const portAt = (n: number) => PORT_BASE + 10 + n
 
 let ctx: EngineTestContext
 let lin: string
@@ -54,14 +80,25 @@ const setEnv = (values: Record<string, string>) => {
 const vmRow = async (id: string) => (await ctx.db.select().from(t.desktopVms).where(eq(t.desktopVms.desktopId, id)))[0]
 const desktopRow = async (id: string) => (await ctx.db.select().from(t.desktops).where(eq(t.desktops.id, id)))[0]
 const listed = async (id: string, cookie = lin) => (await query(ctx.app, "desktops.list", cookie)).data.find((each: { id: string }) => each.id === id)
-/** 等 worker 把这台做到某个状态（开机中 / 装 Windows 中的顺便查一次 /health） */
+/** 这台在 desktop.vm 队列里还有没做完的任务（排着的、在做的、等重试的） */
+async function vmJobsPending(id: string) {
+  const rows = await ctx.db.execute<{ n: number }>(
+    sql`select count(*)::int as n from pgboss.job where name = 'desktop.vm' and singleton_key = ${id} and state in ('created', 'retry', 'active')`
+  )
+  return (rows.rows[0]?.n ?? 0) > 0
+}
+/**
+ * 等 worker 把这台做到某个状态（开机中 / 装 Windows 中的顺便查一次 /health）。还要等这台的 desktop.vm 任务都做完：
+ * 容器退出、被删以后库里的状态还是 running，任务开机后才改成 starting；只看状态会在任务做完之前就「等到了」旧的 running，
+ * 接下来的一步（关掉假服务再对账）和还在开机的任务撞上（对账测试偶发「等 记下连不上 超时」）
+ */
 async function waitState(id: string, state: string, timeout = 20_000) {
   const deadline = Date.now() + timeout
   let row: Awaited<ReturnType<typeof vmRow>>
   for (;;) {
     await vmHealthTick(ctx.db)
     row = await vmRow(id)
-    if (row?.state === state && !row.op) return row
+    if (row?.state === state && !row.op && !(await vmJobsPending(id))) return row
     if (Date.now() > deadline) throw new Error(`等 ${id} 变成 ${state} 超时，现在：${JSON.stringify(row)}`)
     await new Promise((resolve) => setTimeout(resolve, 200))
   }
@@ -106,6 +143,7 @@ beforeAll(async () => {
   podman = await startFakePodman()
   podman.onStart = boot
   podman.onStop = shutdown
+  PORT_BASE = await pickPortBase()
   python = createServer((_req, res) => res.writeHead(200, { "content-type": "application/octet-stream" }).end(PYTHON_BYTES))
   await new Promise<void>((resolve) => python.listen(0, "127.0.0.1", resolve))
   const base = mkdtempSync(join(tmpdir(), "heyagent-dvm-"))
@@ -131,7 +169,7 @@ beforeAll(async () => {
     HEYAGENT_DESKTOP_KVM_DEVICE: kvm,
     HEYAGENT_DESKTOP_RESERVED_GB: "24",
     HEYAGENT_DESKTOP_MIN_FREE_GB: "1",
-    HEYAGENT_DESKTOP_PORT_RANGE: "47310-47399",
+    HEYAGENT_DESKTOP_PORT_RANGE: `${portAt(0)}-${portAt(89)}`,
     HEYAGENT_DESKTOP_VM_HOST: "127.0.0.1",
     HEYAGENT_DESKTOP_BIND: "127.0.0.1",
     HEYAGENT_DESKTOP_VM_STOP_SECONDS: "5",
@@ -252,7 +290,7 @@ describe("模板", () => {
     // 地址由系统按端口填，密钥是系统生成的（只存密文）
     const desktop = await desktopRow(templateId)
     expect(desktop).toMatchObject({ kind: "template", createdById: "u-lin", mcpUrl: `http://127.0.0.1:${row.mcpPort}/mcp`, agentUrl: `http://127.0.0.1:${row.agentPort}` })
-    expect([row.mcpPort, row.agentPort]).toEqual([47310, 47311])
+    expect([row.mcpPort, row.agentPort]).toEqual([portAt(0), portAt(1)])
     const target = await loadDesktopTarget(ctx.db, ctx.keyring, templateId)
     expect(target!.key).toMatch(/^[0-9a-f]{48}$/)
 
@@ -340,7 +378,7 @@ describe("从模板建的桌面", () => {
     const row = await waitState(vmId, "running")
     // 没填存放位置 = 默认位置（设置里选了 rootB）；内存、CPU 和模板一样
     const dir = join(rootB, "heyagent-desktops", vmId)
-    expect(row).toMatchObject({ templateId, storagePath: rootB, dir, memoryGb: 6, cpus: 4, diskGb: 64, desired: "running", mcpPort: 47312, agentPort: 47313 })
+    expect(row).toMatchObject({ templateId, storagePath: rootB, dir, memoryGb: 6, cpus: 4, diskGb: 64, desired: "running", mcpPort: portAt(2), agentPort: portAt(3) })
     const templateDir = join(rootA, "heyagent-desktops", templateId)
 
     // qemu-img：一次性容器，两个目录同路径挂进去
@@ -366,7 +404,7 @@ describe("从模板建的桌面", () => {
     // 自动登记：地址按端口、密钥用模板的；建的人能测试连接，两个服务都通
     const desktop = await desktopRow(vmId)
     const template = await desktopRow(templateId)
-    expect(desktop).toMatchObject({ kind: "vm", createdById: "u-wang", mcpUrl: "http://127.0.0.1:47312/mcp", agentUrl: "http://127.0.0.1:47313", keySecretId: template!.keySecretId })
+    expect(desktop).toMatchObject({ kind: "vm", createdById: "u-wang", mcpUrl: `http://127.0.0.1:${portAt(2)}/mcp`, agentUrl: `http://127.0.0.1:${portAt(3)}`, keySecretId: template!.keySecretId })
     const health = await mutate(ctx.app, "desktops.test", wang, { id: vmId })
     expect(health.error).toBeUndefined()
     expect(health.data.mcp.ok).toBe(true)
@@ -511,6 +549,33 @@ describe("从模板建的桌面", () => {
     await waitFor(async () => !(await desktopRow(id)), { what: "删掉" })
     expect(podman.containers.has(`heyagent-${id}`)).toBe(false)
     expect(await stat(join(rootB, "heyagent-desktops", id)).catch(() => undefined)).toBeUndefined()
+  })
+
+  it("连着点：关机还没做完又点开机、重启，后点的不丢（排在后面做），不靠对账", async () => {
+    // desktop.vm 是 stately 队列（一台一个 singletonKey）：在做的那个算 active，后点的排一个 created（再点的并进它），
+    // 排着的那个开始时才读库里的 desired / op，所以连着点几下，最后一下的意思都会做到
+    const name = `heyagent-${vmId}`
+    await waitState(vmId, "running")
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    podman.onStop = async (container) => {
+      await gate
+      await shutdown(container)
+    }
+    try {
+      const starts = requestsTo(name, "start").length
+      expect((await mutate(ctx.app, "desktops.vmAction", wang, { id: vmId, action: "stop" })).error).toBeUndefined()
+      await waitFor(async () => (await vmRow(vmId))!.state === "stopping", { what: "开始关机" })
+      expect((await mutate(ctx.app, "desktops.vmAction", wang, { id: vmId, action: "start" })).error).toBeUndefined()
+      expect((await mutate(ctx.app, "desktops.vmAction", lin, { id: vmId, action: "restart" })).error).toBeUndefined()
+      release()
+      await waitFor(async () => requestsTo(name, "start").length > starts, { what: "关完又开机" })
+      await waitState(vmId, "running")
+      expect(await vmRow(vmId)).toMatchObject({ desired: "running", op: null, message: null })
+    } finally {
+      release()
+      podman.onStop = shutdown
+    }
   })
 
   it("对账：容器没了 → 该开的重建并开机；该关的记成关着；退出了的自动开", async () => {

@@ -94,10 +94,14 @@ export const noReviewModel = (): Judged => ({ outcome: "not_achieved", by: "rule
 
 /**
  * 复核以后的最终结果：硬规则说办成、复核也判办成才算办成。复核判没办成（旧报告的部分办成、说不准也一样）记没办成；
- * 复核出错（verdict 为空，重试过一次）记没办成。复核只在硬规则说办成时跑，所以结果都是复核定的
+ * 复核出错（verdict 为空，重试过一次；格式不对的请模型改过一次）记没办成，原因写明是复核没做成、结果没有核实，免得看起来像 agent 没做好。
+ * 复核只在硬规则说办成时跑，所以结果都是复核定的
  */
-export function combineReview(review: { verdict?: ReviewVerdict; reason: string; error?: string }): Judged {
-  if (!review.verdict) return { outcome: "not_achieved", by: "review", reason: `复核出错，没能确认办成：${clip(review.error ?? "没有结果", 300)}`, failKind: "not_done" }
+export function combineReview(review: { verdict?: ReviewVerdict; reason: string; error?: string; rawOutput?: string }): Judged {
+  if (!review.verdict) {
+    const why = review.rawOutput ? "复核模型返回的格式不对" : clip(review.error ?? "没有结果", 300)
+    return { outcome: "not_achieved", by: "review", reason: `复核没做成（${why}），结果没有核实，可以人工改结果。`, failKind: "not_done" }
+  }
   if (review.verdict === "achieved") return { outcome: "achieved", by: "review", reason: review.reason.trim() || "复核判办成" }
   return { outcome: "not_achieved", by: "review", reason: review.reason.trim() || `复核判${reviewVerdictLabel[review.verdict]}`, failKind: "not_done" }
 }

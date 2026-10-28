@@ -78,14 +78,19 @@ export function RunOutcomeSection({ run, canEdit }: { run: SessionSummary; canEd
   )
 }
 
-/** 复核报告：默认收起，一行写结论；展开看理由、模型、带没带截图、花费，复核出错、超时时写原因。旧报告的「部分办成」「说不准」照原样显示 */
+/**
+ * 复核报告：默认收起，一行写结论；展开看理由、模型、带没带截图、花费，复核出错、超时时写原因。旧报告的「部分办成」「说不准」照原样显示。
+ * 复核模型返回的格式不对（请它改过一次还不对）时，多一行「模型原话」：它原样返回的文字（截前 2000 字），好查原因
+ */
 /** sameReason：结果的原因就是复核的理由（结果是复核定的）时，报告里不再重复一遍；没有理由（复核出错）也不写这一行 */
 function ReviewReport({ review, sameReason }: { review: RunReview; sameReason: boolean }) {
   const { modelName } = useModels()
   const [open, setOpen] = React.useState(false)
-  const headline = review.verdict ? `复核结论：${reviewVerdictLabel[review.verdict]}` : "复核没跑成"
+  const headline = review.verdict
+    ? `复核结论：${reviewVerdictLabel[review.verdict]}`
+    : `复核没做成${review.rawOutput ? "（模型返回的格式不对）" : ""}，结果没有核实`
   const rows: [string, React.ReactNode][] = [
-    ["结论", review.verdict ? reviewVerdictLabel[review.verdict] : "没有（复核出错）"],
+    ["结论", review.verdict ? reviewVerdictLabel[review.verdict] : "没有（复核没做成，可以人工改结果）"],
     // 复核定的结果，理由已经写在上面；复核出错时没有理由
     ...(sameReason || !review.reason ? [] : [["理由", review.reason] as [string, React.ReactNode]]),
     ["模型", modelName(review.modelId)],
@@ -94,6 +99,7 @@ function ReviewReport({ review, sameReason }: { review: RunReview; sameReason: b
     ["时间", fmtDateTime(review.at)],
   ]
   if (review.error) rows.push(["出错", review.error])
+  if (review.rawOutput) rows.push(["模型原话", <span className="font-mono">{review.rawOutput}</span>])
   return (
     <Collapsible open={open} onOpenChange={setOpen} className="flex flex-col gap-2 border-t pt-3">
       <CollapsibleTrigger render={<Button variant="ghost" size="sm" className="self-start" />}>

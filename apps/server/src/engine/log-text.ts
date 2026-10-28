@@ -329,13 +329,45 @@ export const REVIEW_LOG: ReviewLogOptions = { recent: 30, budget: 12_000 }
 /**
  * 复核、三方验收的输入（一整段文字）最多多少字，超了从中间截掉（开头是目标、检查点和报告，末尾是最近的过程记录）。
  * 2026-10-29 从 6 万（只有复核有上限）放宽到 8 万，三方验收也用：读数据的工具多了，份额从 8000 放到 12000。
- * 8 万字大约 5～8 万 token：复核用的便宜模型（deepseek-v4.1-flash 等）和验收模型上下文都在 12.8 万以上；一般的运行远少于这些
+ * 8 万字大约 5～8 万 token：复核用的便宜模型（deepseek-v4.1-flash 等）和验收模型上下文都在 12.8 万以上；一般的运行远少于这些。
+ * 这是上限：实际按所用模型的上下文算（evidencePromptMax），上下文小的模型更少
  */
 export const EVIDENCE_PROMPT_MAX = 80_000
 
-/** 输入太长时从中间截掉：留开头 6 成、结尾 4 成 */
-export const clipPrompt = (prompt: string, max = EVIDENCE_PROMPT_MAX) =>
-  prompt.length > max ? `${prompt.slice(0, max * 0.6)}\n…（中间太长，省略）…\n${prompt.slice(-max * 0.4)}` : prompt
+/** 不知道模型上下文多长（context_k = 0）时按多少千 token 算（同 compact.ts） */
+export const EVIDENCE_DEFAULT_CONTEXT_K = 128
+/** 给模型输出留的 token：结论本身只有几百 token，推理模型还要想，一起留 8000 */
+export const EVIDENCE_OUTPUT_RESERVE = 8000
+/** 每张截图大约占多少 token（一张 1280×800 左右的截图在各家大约 800～1600） */
+export const EVIDENCE_IMAGE_TOKENS = 2000
+/**
+ * 一个字按多少 token 算（偏保守）：中文一个字在各家分词器里大约 0.6～1.1 token，英文、JSON、网址、id 一个字符 0.25～0.4 token；
+ * 复核材料是中文说明 + JSON 参数 + 网页文字混排，平均多在 0.6～0.9。按 1.2 算，碰上全是中文、分词又粗的模型也放得下
+ */
+export const EVIDENCE_TOKENS_PER_CHAR = 1.2
+/** 再小的模型也至少给这么多字（上下文比这还小的模型本来就做不了复核，让它报错比只给半截目标好查） */
+export const EVIDENCE_PROMPT_MIN = 4000
+
+/**
+ * 复核、三方验收的输入最多多少字，按所用模型的上下文算：
+ * (上下文 − 输出留量 − 系统提示 − 截图) ÷ 每字 token，不超过 EVIDENCE_PROMPT_MAX（8 万字），不少于 EVIDENCE_PROMPT_MIN。
+ * 12.8 万以上的模型还是 8 万字；6.4 万的约 4.3 万字；3.2 万的约 1.7 万字
+ */
+export function evidencePromptMax(input: { contextK: number; systemChars: number; images?: number }): number {
+  const context = (input.contextK > 0 ? input.contextK : EVIDENCE_DEFAULT_CONTEXT_K) * 1000
+  const reserved = EVIDENCE_OUTPUT_RESERVE + input.systemChars * EVIDENCE_TOKENS_PER_CHAR + (input.images ?? 0) * EVIDENCE_IMAGE_TOKENS
+  const chars = Math.floor((context - reserved) / EVIDENCE_TOKENS_PER_CHAR)
+  return Math.max(EVIDENCE_PROMPT_MIN, Math.min(EVIDENCE_PROMPT_MAX, chars))
+}
+
+const CLIP_MARK = "\n…（中间太长，省略）…\n"
+/** 输入太长时从中间截掉：留开头 6 成、结尾 4 成，连省略的标记在内不超过 max */
+export function clipPrompt(prompt: string, max = EVIDENCE_PROMPT_MAX) {
+  if (prompt.length <= max) return prompt
+  const room = Math.max(0, max - CLIP_MARK.length)
+  const head = Math.floor(room * 0.6)
+  return `${prompt.slice(0, head)}${CLIP_MARK}${prompt.slice(prompt.length - (room - head))}`
+}
 
 export interface ReviewLogOptions {
   /** 最近几条照详细的写（参数、结果各 300 字；读数据的工具结果多给，见 DATA_OUTPUT_BUDGET） */

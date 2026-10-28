@@ -406,11 +406,95 @@ describe("复核", () => {
     const sessionId = await runNow(taskId)
     const row = await waitOutcome(sessionId)
     expect(row).toMatchObject({ status: "done", outcome: "not_achieved", outcomeBy: "review" })
-    expect(row.outcomeReason).toMatch(/^复核出错，没能确认办成：复核模型挂了/)
+    expect(row.outcomeReason).toMatch(/^复核没做成（复核模型挂了（重试了一次.*），结果没有核实，可以人工改结果。$/)
     expect(row.review?.error).toContain("重试了一次")
     expect(row.review?.verdict).toBeUndefined()
     expect(reviewer.prompts.length).toBe(2)
-    expect((await eventsOf(ctx.db, sessionId)).at(-1)).toMatchObject({ kind: "verify", title: "AI 复核出错，结果记没办成" })
+    expect((await eventsOf(ctx.db, sessionId)).at(-1)).toMatchObject({ kind: "verify", title: "AI 复核没做成，结果记没办成（没有核实）" })
+  })
+
+  it("复核的 verdict 写法宽松：大小写、空白、中文「办成 / 没办成」、success / failed 等能明确对上的都认，问一次就定", async () => {
+    const cases: [string, "achieved" | "not_achieved"][] = [
+      [" Achieved ", "achieved"],
+      ["办成", "achieved"],
+      ["SUCCESS", "achieved"],
+      ["not achieved", "not_achieved"],
+      ["Not-Achieved", "not_achieved"],
+      ["没办成", "not_achieved"],
+      ["failed", "not_achieved"],
+      ["「未办成」", "not_achieved"],
+    ]
+    for (const [index, [said, expected]] of cases.entries()) {
+      const reviewer = useScript(TEST_REVIEWER, new Script([reviewVerdict(said, `复核理由 ${index}`)]))
+      const model = `test/out-rv-loose-${index}`
+      useScript(model, new Script([step([finish("achieved")])]))
+      const row = await waitOutcome(await runNow(await createTask(ctx.db, { modelId: model })))
+      expect(row, said).toMatchObject({ outcome: expected, outcomeBy: "review", outcomeReason: `复核理由 ${index}`, review: { verdict: expected } })
+      expect(reviewer.prompts.length).toBe(1)
+    }
+  })
+
+  it("复核格式不对：把错值和允许的取值告诉模型、请它改一次，改对了照常定结果，用量两次都算", async () => {
+    const reviewer = useScript(
+      TEST_REVIEWER,
+      new Script([step([text(JSON.stringify({ verdict: "大概办成了吧", reason: "表在" }))], 0.0004), reviewVerdict("achieved", "表在，改了格式")])
+    )
+    useScript("test/out-rv-fix", new Script([step([finish("achieved")])]))
+    const row = await waitOutcome(await runNow(await createTask(ctx.db, { modelId: "test/out-rv-fix" })))
+    expect(row).toMatchObject({ outcome: "achieved", outcomeBy: "review", outcomeReason: "表在，改了格式", review: { verdict: "achieved" } })
+    expect(row.review?.error).toBeUndefined()
+    expect(row.review?.rawOutput).toBeUndefined()
+    // 两次的用量都算（格式不对的那次没有服务返回的花费，按单价估）
+    expect(row.review).toMatchObject({ tokensIn: 200, tokensOut: 40 })
+    expect(row.review?.costUsd).toBeGreaterThan(0.0004)
+    expect(reviewer.prompts.length).toBe(2)
+    // 第二次的提示里有它的原话、错在哪、允许的取值
+    const fix = reviewer.promptText(1)
+    expect(fix).toContain("大概办成了吧")
+    expect(fix).toContain("你上一次的回答格式不对")
+    expect(fix).toContain('只能是 \\"achieved\\"、\\"not_achieved\\" 之一')
+  })
+
+  it("复核改了一次格式还不对：记没办成，原因写「复核没做成、没有核实、可以人工改」，报告里存模型原话；不再整个重试", async () => {
+    const reviewer = useScript(
+      TEST_REVIEWER,
+      new Script([
+        step([text(JSON.stringify({ verdict: "maybe", reason: "说不好" }))], 0.0004),
+        step([text("我觉得这次应该算是办成了，表都在。")], 0.0004),
+      ])
+    )
+    useScript("test/out-rv-bad", new Script([step([finish("achieved")])]))
+    const sessionId = await runNow(await createTask(ctx.db, { modelId: "test/out-rv-bad" }))
+    const row = await waitOutcome(sessionId)
+    expect(row).toMatchObject({
+      status: "done",
+      outcome: "not_achieved",
+      outcomeBy: "review",
+      outcomeReason: "复核没做成（复核模型返回的格式不对），结果没有核实，可以人工改结果。",
+    })
+    expect(row.review?.verdict).toBeUndefined()
+    expect(row.review?.error).toContain("格式不对")
+    expect(row.review?.error).toContain("请模型改了一次格式还是不对")
+    // 存的是最后一次的原话
+    expect(row.review?.rawOutput).toBe("我觉得这次应该算是办成了，表都在。")
+    expect(row.review).toMatchObject({ tokensIn: 200, tokensOut: 40 })
+    expect(reviewer.prompts.length).toBe(2)
+    expect(reviewer.promptText(1)).toContain('你给的是 \\"maybe\\"')
+    const last = (await eventsOf(ctx.db, sessionId)).at(-1)!
+    expect(last).toMatchObject({ kind: "verify", title: "AI 复核没做成（模型返回的格式不对），结果记没办成（没有核实）" })
+    expect(last.detail).toContain("我觉得这次应该算是办成了")
+    expect(last.detail).toContain("可以人工改结果")
+  })
+
+  it("复核模型的原话太长：报告里只存前 2000 字", async () => {
+    const long = `不是 JSON ${"很长的话".repeat(1000)}`
+    useScript(TEST_REVIEWER, new Script([step([text(long)]), step([text(long)])]))
+    useScript("test/out-rv-long", new Script([step([finish("achieved")])]))
+    const row = await waitOutcome(await runNow(await createTask(ctx.db, { modelId: "test/out-rv-long" })))
+    expect(row.outcome).toBe("not_achieved")
+    expect(row.review?.rawOutput?.startsWith(long.slice(0, 2000))).toBe(true)
+    expect(row.review?.rawOutput).toContain(`（共 ${long.length} 字，后面省略）`)
+    expect(row.review?.rawOutput!.length).toBeLessThan(2100)
   })
 
   it("agent 报没办成不复核；任务自己选的复核模型优先于默认的", async () => {

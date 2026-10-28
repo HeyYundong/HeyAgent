@@ -503,6 +503,45 @@ describe("三方验收", () => {
     expect(done.costUsd).toBeCloseTo(0.003 + 0.002, 6)
   })
 
+  it("验收结论的写法宽松：「通过」「 PASS 」等能明确对上的都认，问一次就定", async () => {
+    useScript("test/claude-v-loose", new Script([step([call("file.save", { path: "sum.csv", content: "x,y\n1,2" })]), step([call("checkpoint.mark", { checkpoint: 1, status: "done", record: "存了 sum.csv" })]), step(finishWith("做完了"))]))
+    const verifier = useScript("test/gemini-v-loose", new Script([verifyJson({ items: [{ index: 1, verdict: "通过", reason: "有 sum.csv" }], verdict: " PASS ", headline: "都通过", question: "" })]))
+    const sessionId = await runNow(await verifyTask("test/claude-v-loose", "test/gemini-v-loose"))
+    const done = await waitStatus(ctx.db, sessionId, "done")
+    expect(done.verification).toMatchObject({ status: "passed", verdict: "pass", items: [{ index: 1, verdict: "pass" }] })
+    expect(verifier.prompts.length).toBe(1)
+  })
+
+  it("验收模型格式不对：请它改一次（告诉它错值和允许的取值）；还不对交给负责人，原话记进过程，用量算进运行", async () => {
+    useScript("test/claude-v-badfmt", new Script([step(finishWith("做完了"))]))
+    const verifier = useScript(
+      "test/gemini-v-badfmt",
+      new Script([
+        verifyJson({ items: [{ index: 1, verdict: "OK吧", reason: "大概有" }], verdict: "OK吧", headline: "差不多", question: "" }),
+        step([text("我检查过了，基本没问题。")], 0.002),
+      ])
+    )
+    const sessionId = await runNow(await verifyTask("test/claude-v-badfmt", "test/gemini-v-badfmt"))
+    await waitStatus(ctx.db, sessionId, "needs_human")
+    expect(verifier.prompts.length).toBe(2)
+    const fix = verifier.promptText(1)
+    expect(fix).toContain("你上一次的回答格式不对")
+    expect(fix).toContain('你给的是 \\"OK吧\\"')
+    expect(fix).toContain('只能是 \\"pass\\"、\\"fail\\"、\\"unsure\\" 之一')
+    const events = await eventsOf(ctx.db, sessionId)
+    const bad = events.find((event) => event.title === "三方验收模型返回的格式不对，没能核对")!
+    expect(bad.kind).toBe("error")
+    expect(bad.detail).toContain("我检查过了，基本没问题。")
+    const [item] = await itemsOf(sessionId)
+    expect(item).toMatchObject({ kind: "verify", status: "open" })
+    expect(item!.summary).toContain("验收模型返回的格式不对")
+    const row = (await sessionRow(ctx.db, sessionId))!
+    expect(row.verification).toMatchObject({ status: "disputed", verdict: "unsure" })
+    // 两次验收的用量算进运行（格式不对的没有服务返回的花费，按单价估）
+    expect(bad).toMatchObject({ tokensIn: 200, tokensOut: 40 })
+    expect(row.tokensIn).toBeGreaterThanOrEqual(100 + 200)
+  })
+
   it("反问后补做通过：问题清单交给执行 agent，补做后再验收通过", async () => {
     const executor = useScript(
       "test/claude-v-ask",

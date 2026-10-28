@@ -3,13 +3,15 @@
 import type { Page } from "playwright-core"
 import { describe, expect, it } from "vitest"
 
-import { extractRows } from "../src/browser/extract.js"
+import { extractRows, formatExtract } from "../src/browser/extract.js"
 
 interface FakeElement {
   attrs: Record<string, string>
   innerText: string
   textContent: string
   value?: string
+  /** 定位匹配到几处（默认 1） */
+  count?: number
 }
 
 /** 只认 css=… 这种写法（parseLocatorChain 认不出，走 root.locator） */
@@ -17,7 +19,7 @@ function fakePage(elements: Record<string, FakeElement>): Page {
   const locator = (selector: string) => {
     const element = elements[selector]
     return {
-      count: async () => (element ? 1 : 0),
+      count: async () => (element ? (element.count ?? 1) : 0),
       first: () => ({
         getAttribute: async (name: string) => element?.attrs[name] ?? null,
         inputValue: async () => element?.value ?? "",
@@ -53,5 +55,41 @@ describe("browser.extract 的 attr", () => {
       fields: { title: { target: "css=.done", attr: "title" }, link: { target: "css=a", attr: "href" }, none: { target: "css=.done", attr: "data-x" } },
     })
     expect(rows[0]).toEqual({ title: "提示", link: "https://shop.test/detail/1", none: null })
+  })
+})
+
+describe("browser.extract 不给 list（docs/dev/sub-agents.md 21.7.4 第 2 条）", () => {
+  const page = fakePage({
+    "css=th": { attrs: {}, innerText: "联系人", textContent: "联系人", count: 4 },
+    "css=td": { attrs: {}, innerText: "李强", textContent: "李强", count: 4 },
+    "css=h1": { attrs: {}, innerText: "供应商详情", textContent: "供应商详情" },
+  })
+
+  it("字段的定位匹配到好几处：只读第一处，输出里说找到几处、要读全部用 list；数据（脚本拿到的）不变", async () => {
+    const input = { fields: { field: "css=th", value: "css=td", title: "css=h1" } }
+    const result = await extractRows(page, input)
+    expect(result.rows).toEqual([{ field: "联系人", value: "李强", title: "供应商详情" }])
+    expect(result.multiple).toEqual([
+      { field: "field", target: "css=th", count: 4 },
+      { field: "value", target: "css=td", count: 4 },
+    ])
+    const text = formatExtract(input, result)
+    expect(text).toContain("注意：「field」的定位 css=th 在页面上找到 4 处，只读了第一处。要读全部，给 list（每一行的定位，例如 getByRole('row')）")
+    expect(text).toContain("注意：「value」的定位 css=td 在页面上找到 4 处")
+    expect(text).not.toContain("「title」的定位")
+    expect(text).not.toContain("limit")
+  })
+
+  it("给了 limit 没给 list：提示 limit 不起作用；只匹配到一处、没给 limit 的不提示", async () => {
+    const one = { fields: { title: "css=h1" } }
+    expect(formatExtract(one, await extractRows(page, one))).not.toContain("注意")
+    const limited = { fields: { title: "css=h1" }, limit: 20 }
+    const result = await extractRows(page, limited)
+    expect(result.multiple).toBeUndefined()
+    expect(formatExtract(limited, result)).toContain("注意：没给 list 时 limit 不起作用，整页只读一行（每个字段读第一处）。要读多行，给 list（每一行的定位）。")
+    const both = { fields: { value: "css=td" }, limit: 20 }
+    const text = formatExtract(both, await extractRows(page, both))
+    expect(text).toContain("找到 4 处，只读了第一处")
+    expect(text).toContain("（没给 list 时 limit 不起作用。）")
   })
 })

@@ -49,6 +49,8 @@ export interface ResolvedModel {
   priceIn: number
   priceOut: number
   vision: boolean
+  /** 上下文多长（千 token，models.context_k）；0 或没有 = 不知道（Ollama、公开目录里查不到的模型） */
+  contextK?: number
   /**
    * 结构化输出时请求里带不上 JSON Schema（自定义服务没开「支持 json_schema」：只发 json_object，schema 被丢掉），
    * callStructured 要把格式写进提示词，不然模型不知道字段名、枚举值，只能猜
@@ -73,6 +75,7 @@ export async function resolveModel(
       priceIn: info?.priceIn ?? 0,
       priceOut: info?.priceOut ?? 0,
       vision: info?.vision ?? true,
+      contextK: info?.contextK ?? 0,
     }
   }
   const providerId = info?.providerId ?? modelId.split("/")[0] ?? ""
@@ -111,6 +114,7 @@ export async function resolveModel(
     priceIn: info?.priceIn ?? 0,
     priceOut: info?.priceOut ?? 0,
     vision: info?.vision ?? false,
+    contextK: info?.contextK ?? 0,
     schemaInPrompt: schemaInPrompt(provider.kind, provider.supportsJsonSchema),
   }
 }
@@ -338,6 +342,47 @@ export interface StructuredResult<T> {
   ms: number
 }
 
+/** 结构化输出没通过校验的一处：哪个字段、为什么；枚举值不对时带上允许的取值和模型给的值 */
+export interface StructuredIssue {
+  path: string
+  message: string
+  allowed?: string[]
+  received?: unknown
+}
+
+/**
+ * 模型返回了文字、但不是要的格式（抠不出 JSON，或者不合 schema）。带上模型原样返回的文字、哪几处不对和这次的用量（钱已经花了），
+ * 调用方可以把原文存下来查原因、再请模型改一次（callStructuredWithFix）
+ */
+export class StructuredOutputError extends Error {
+  readonly text: string
+  readonly issues: StructuredIssue[]
+  readonly usage: { tokensIn: number; tokensOut: number; costUsd: number }
+  constructor(
+    message: string,
+    text: string,
+    issues: StructuredIssue[],
+    usage: { tokensIn: number; tokensOut: number; costUsd: number },
+    options?: ErrorOptions
+  ) {
+    super(message, options)
+    this.name = "StructuredOutputError"
+    this.text = text
+    this.issues = issues
+    this.usage = usage
+  }
+}
+
+/** 按 zod 的 path 取 JSON 里的值（看模型给了什么） */
+function valueAt(json: unknown, path: readonly PropertyKey[]): unknown {
+  let value = json
+  for (const key of path) {
+    if (value === null || typeof value !== "object") return undefined
+    value = (value as Record<PropertyKey, unknown>)[key]
+  }
+  return value
+}
+
 /**
  * 请求里带不上 schema 时接在系统提示后面的格式要求。$schema 那一行对模型没用，去掉省 token
  */
@@ -393,15 +438,31 @@ export async function callStructured<T>(
   } catch (error) {
     if (!NoObjectGeneratedError.isInstance(error) || !error.text) throw error
     const cost = costOf(resolved, error.usage, undefined)
-    const parsed = input.schema.safeParse(extractJson(error.text))
-    if (!parsed.success)
-      throw new Error(
-        `模型返回的结果格式不对：${parsed.error.issues
+    const usage = { tokensIn: cost.tokensIn, tokensOut: cost.tokensOut, costUsd: cost.costUsd }
+    let json: unknown
+    try {
+      json = extractJson(error.text)
+    } catch (parseError) {
+      throw new StructuredOutputError(`模型返回的结果格式不对：${(parseError as Error).message}`, error.text, [{ path: "", message: "没有返回能解析的 JSON" }], usage, { cause: error })
+    }
+    const parsed = input.schema.safeParse(json)
+    if (!parsed.success) {
+      const issues = parsed.error.issues.slice(0, 5).map((issue): StructuredIssue => {
+        const path = issue.path.map(String).join(".")
+        const allowed = issue.code === "invalid_value" ? issue.values.map(String) : undefined
+        return { path, message: issue.message, ...(allowed ? { allowed, received: valueAt(json, issue.path) } : {}) }
+      })
+      throw new StructuredOutputError(
+        `模型返回的结果格式不对：${issues
           .slice(0, 3)
-          .map((issue) => `${issue.path.join(".")} ${issue.message}`)
+          .map((issue) => `${issue.path} ${issue.message}`)
           .join("；")}`,
+        error.text,
+        issues,
+        usage,
         { cause: error }
       )
+    }
     return {
       object: parsed.data,
       text: error.text,

@@ -8,6 +8,7 @@ import { join } from "node:path"
 
 import type { SessionRoutineState, SessionSnapshot } from "@heyagent/shared"
 import { eq } from "drizzle-orm"
+import { MockLanguageModelV4 } from "ai/test"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
 import * as t from "../src/db/schema.js"
@@ -21,15 +22,17 @@ import {
   describeToolInput,
   describeToolOutput,
   EVIDENCE_PROMPT_MAX,
+  EVIDENCE_PROMPT_MIN,
+  evidencePromptMax,
   REVIEW_LOG,
   reviewLog,
   shareBudget,
 } from "../src/engine/log-text.js"
-import { buildReviewPrompt } from "../src/engine/review.js"
+import { buildReviewPrompt, performReview } from "../src/engine/review.js"
 import { configureEngine } from "../src/engine/runtime.js"
 import { buildSnapshot } from "../src/engine/sessions.js"
 import { buildVerifyPrompt, loadCheckpoints, loadEvidence } from "../src/engine/verify.js"
-import { createTask } from "./engine-helpers.js"
+import { createTask, step, text } from "./engine-helpers.js"
 import { setupApp, type TestApp } from "./helpers.js"
 
 let ctx: TestApp
@@ -554,5 +557,54 @@ describe("三方验收和复核看同样的过程记录：读数据的工具（H
     // 以前的三方验收只有最近 60 条；现在整次运行都覆盖到（第 1 条压成一行也在）
     expect(verify).toContain("- #1 erp.orders ✓")
     expect(verify).toContain("- #240 调用 调网站接口（browser.fetch）")
+
+    // 上下文小的模型：按它的上下文截，开头的目标和末尾最近的过程记录都还在
+    const small = evidencePromptMax({ contextK: 32, systemChars: 1500, images: 1 })
+    expect(small).toBeLessThan(20_000)
+    const smallReview = (await buildReviewPrompt(ctx.db, session, snapshot, "都做完了", false, small)).prompt
+    expect(smallReview.length).toBeLessThanOrEqual(small + 20)
+    expect(smallReview).toContain("把表里的 8 个商品都录进后台")
+    expect(smallReview).toContain("…（中间太长，省略）…")
+    const smallVerify = buildVerifyPrompt({ ctx: { snapshot }, checkpoints: [], finalText: "都做完了", notes: [], artifacts: evidence.artifacts, log: evidence.log, logInfo: evidence.logInfo, imageNames: [], max: small })
+    expect(smallVerify.length).toBeLessThanOrEqual(small + 20)
+    expect(smallVerify).toContain("- #240 调用 调网站接口（browser.fetch）")
+
+    // 真的复核一次（假模型，上下文 16K）：发出去的输入（系统提示 + 材料）按每字 1.2 token 算，加上输出留量也在 16K 以内
+    await ctx.db.insert(t.models).values({ id: "test/small-reviewer", providerId: "openrouter", name: "上下文小的复核模型", contextK: 16, vision: false }).onConflictDoNothing()
+    const prompts: string[] = []
+    const reviewer = new MockLanguageModelV4({
+      provider: "test",
+      modelId: "small-reviewer",
+      doGenerate: async (options) => {
+        prompts.push(JSON.stringify(options.prompt))
+        return step([text(JSON.stringify({ verdict: "achieved", reason: "都在" }))])
+      },
+    })
+    configureEngine({ modelFactory: () => reviewer })
+    try {
+      const review = await performReview(ctx.db, { session, snapshot, modelId: "test/small-reviewer", report: "都做完了" })
+      expect(review.verdict).toBe("achieved")
+    } finally {
+      configureEngine({ modelFactory: undefined })
+    }
+    const sent = JSON.parse(prompts[0]!) as { role: string; content: string | { type: string; text?: string }[] }[]
+    const system = sent.filter((message) => message.role === "system").map((message) => String(message.content)).join("")
+    const user = sent
+      .filter((message) => message.role === "user")
+      .flatMap((message) => (typeof message.content === "string" ? [message.content] : message.content.map((part) => part.text ?? "")))
+      .join("")
+    expect(user.length).toBeLessThanOrEqual(evidencePromptMax({ contextK: 16, systemChars: system.length }) + 20)
+    expect((system.length + user.length) * 1.2 + 8000).toBeLessThanOrEqual(16_000)
+    expect(user).toContain("把表里的 8 个商品都录进后台")
+  })
+
+  it("材料的上限按模型的上下文算：大模型还是 8 万字，小的按比例少，不知道的按 128K，最少 4000 字", () => {
+    expect(evidencePromptMax({ contextK: 1000, systemChars: 2000, images: 1 })).toBe(EVIDENCE_PROMPT_MAX)
+    expect(evidencePromptMax({ contextK: 128, systemChars: 2000, images: 1 })).toBe(EVIDENCE_PROMPT_MAX)
+    expect(evidencePromptMax({ contextK: 0, systemChars: 2000 })).toBe(EVIDENCE_PROMPT_MAX)
+    const k64 = evidencePromptMax({ contextK: 64, systemChars: 2000, images: 1 })
+    expect(k64).toBe(Math.floor((64_000 - 8000 - 2000 * 1.2 - 2000) / 1.2))
+    expect(evidencePromptMax({ contextK: 32, systemChars: 2000, images: 0 })).toBeLessThan(k64)
+    expect(evidencePromptMax({ contextK: 8, systemChars: 2000, images: 1 })).toBe(EVIDENCE_PROMPT_MIN)
   })
 })

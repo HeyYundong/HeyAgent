@@ -97,17 +97,24 @@ export function subagentSection(snapshot: SessionSnapshot, toolNames: Map<string
     .join("\n")
 }
 
-/** 子运行「你是子 agent」一节（docs/dev/sub-agents.md 5.2）：所有子 agent 都一样（兄弟之间能命中前缀缓存） */
+/**
+ * 子运行「你是子 agent」一节（docs/dev/sub-agents.md 5.2）：所有子 agent 都一样（兄弟之间能命中前缀缓存）。
+ * 有 browser.batch 时多一句：子 agent 活少，不提醒的话多半一步一调（21.7.4 第 3 条；「浏览器」一节已经有 batch 的用法）
+ */
 export function subAgentRoleSection(toolNames: Map<string, string>): string {
   const report = toolNames.get("work.report") ?? "work_report"
   const finish = toolNames.get(RUN_FINISH_TOOL_ID) ?? "run_finish"
+  const batch = toolNames.get("browser.batch")
   return [
     "## 你是子 agent",
     "这次运行是父运行拆出来的，只做第一条消息里的子目标，做完就结束，不要去做父任务的别的部分。",
     `- 要交回的字段用 ${report} 交；要交回的文件存进你的空间，在 ${finish} 的 summary 里写明路径，父 agent 能读到。`,
     `- 要等几小时、几天的事（等回复、等审核）不要等：调用 ${finish} 报没办成，写清在等什么，父 agent 会决定。`,
     "- 遇到验证码、登录页照常交给人处理；规则要求的审批照常等人。",
-  ].join("\n")
+    batch ? `- 子目标里有几项要做同样的几步时，认清页面以后每项用一次 ${batch} 做完，不要一步一调。` : "",
+  ]
+    .filter(Boolean)
+    .join("\n")
 }
 
 export function buildSystemPrompt(

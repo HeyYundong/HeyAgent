@@ -485,6 +485,8 @@ export const runReviewSchema = z.object({
   tokensOut: z.number().int(),
   costUsd: z.number(),
   error: z.string().optional(),
+  /** 复核模型返回的格式不对（请它改过一次还不对）时，它原样返回的文字（截前 2000 字），好查原因；有它就是「格式不对」 */
+  rawOutput: z.string().optional(),
   /** 复核还在跑（运行已经结束、结果先空着，页面上显示「复核中」）：被派的单等它跑完再结算；worker 中途没了，清扫过了时限记没办成 */
   pending: z.boolean().optional(),
 })

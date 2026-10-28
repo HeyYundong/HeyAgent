@@ -256,6 +256,10 @@ describe("拆", () => {
     expect(system).toContain("父任务的目标（背景")
     expect(system).toContain("## 你是子 agent")
     expect(system).not.toContain("## 步骤")
+    // 没有 browser.batch 不提；有的话「你是子 agent」一节加一句用批（21.7.4 第 3 条）
+    expect(system).not.toContain("每项用一次")
+    const withBatch = buildSystemPrompt(snap, new Map([["browser.batch", "browser_batch"]]))
+    expect(withBatch).toContain("- 子目标里有几项要做同样的几步时，认清页面以后每项用一次 browser_batch 做完，不要一步一调。")
     // 放行：默认同时 3 个，3 个都放出来、卡在模型里
     await waitFor(async () => (await childrenOf(parent.row.id)).every((row) => row.status === "running"), { what: "3 个子运行都放行" })
   })

@@ -270,9 +270,16 @@ describe("场景 9：worker 中途被杀掉", () => {
     )
     expect(done.id).toBe(sessionId)
     expect(done.stepCount).toBe(2)
-    expect(done.costUsd).toBeCloseTo(0.0005, 6) // 只算真正有结果的两次（按 usage.cost）
     // 等复核完（复核的请求不带工具，不算在运行的请求里），免得复核的请求落到下一个测试
-    await waitFor(async () => (await db.select({ outcome: t.sessions.outcome }).from(t.sessions).where(eq(t.sessions.id, sessionId)))[0]?.outcome, { timeout: 60_000, what: "复核完" })
+    const reviewed = await waitFor(
+      async () => {
+        const [row] = await db.select({ outcome: t.sessions.outcome, costUsd: t.sessions.costUsd, review: t.sessions.review }).from(t.sessions).where(eq(t.sessions.id, sessionId))
+        return row?.outcome ? row : undefined
+      },
+      { timeout: 60_000, what: "复核完" }
+    )
+    // 运行本身只算真正有结果的两次（按 usage.cost）；复核格式不对的那两次（假服务回的不是 JSON）按单价估，另算在复核里
+    expect(reviewed.costUsd - (reviewed.review?.costUsd ?? 0)).toBeCloseTo(0.0005, 6)
 
     // 第三次请求（worker B 发的）带着完整的历史：第一步的工具调用和结果都在
     expect(requests.filter((request) => request.tools)).toHaveLength(3)

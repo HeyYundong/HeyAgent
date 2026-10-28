@@ -58,11 +58,18 @@ describe("硬规则 + 复核（全部组合）", () => {
       const final = combineReview(review === "error" ? { reason: "", error: "超时" } : { verdict: review, reason: "复核理由" })
       expect(final.outcome).toBe(review === "achieved" ? "achieved" : "not_achieved")
       expect(final.by).toBe("review")
-      if (review === "error") expect(final.reason).toBe("复核出错，没能确认办成：超时")
+      if (review === "error") expect(final.reason).toBe("复核没做成（超时），结果没有核实，可以人工改结果。")
       else expect(final.reason).toBe("复核理由")
       if (final.outcome === "not_achieved") expect(final.failKind).toBe("not_done")
     }
     expect(combineReview({ verdict: "unsure", reason: "" }).reason).toBe("复核判说不准")
+    // 模型返回的格式不对（有原话）：原因写清是复核没做成、没有核实，不像是 agent 没做好
+    expect(combineReview({ reason: "", error: "模型返回的结果格式不对：verdict Invalid option", rawOutput: '{"verdict":"maybe"}' })).toEqual({
+      outcome: "not_achieved",
+      by: "review",
+      reason: "复核没做成（复核模型返回的格式不对），结果没有核实，可以人工改结果。",
+      failKind: "not_done",
+    })
   })
 
   it("没有复核模型：没办成，写清原因", () => {

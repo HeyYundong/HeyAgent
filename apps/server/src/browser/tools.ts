@@ -690,7 +690,8 @@ export class BrowserTools {
     try {
       const result = await extractRows(page, input)
       await this.record("browser_extract", false, page.url())
-      return { output: formatExtract(input, result), data: result, trace: { urlAfter: page.url() } }
+      // data 照旧只有 rows、total（脚本 ha.browser.extract 拿到的形状不变）；匹配到好几处的提示只写在输出里
+      return { output: formatExtract(input, result), data: { rows: result.rows, total: result.total }, trace: { urlAfter: page.url() } }
     } catch (error) {
       await this.record("browser_extract", true, page.url())
       return { ...fail(`读不了：${stripAnsi((error as Error).message).split("\n")[0]}`), trace: { urlAfter: page.url() } }

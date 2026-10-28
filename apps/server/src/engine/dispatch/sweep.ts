@@ -24,7 +24,7 @@ const reviewWaiting = (review: RunReview | null | undefined, now = Date.now()) =
   Boolean(review?.pending) && now - Date.parse(review!.at) < REVIEW_PENDING_TIMEOUT_MS
 
 /** 复核超时的结果原因 */
-export const REVIEW_EXPIRED_REASON = "复核没有结果（worker 可能中途重启了），没能确认办成"
+export const REVIEW_EXPIRED_REASON = "复核没做成（10 分钟没有结果，worker 可能中途重启了），结果没有核实，可以人工改结果。"
 
 /**
  * 复核过了时限还没回来：标记清掉，报告写上原因，结果记没办成（复核期间人已经改过结果的不动）。

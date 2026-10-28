@@ -302,6 +302,12 @@ export interface ExtractInput {
   limit?: number
 }
 export type ExtractRow = Record<string, string | null>
+/** 没给 list 时，某个字段的定位在整页匹配到好几处（只读了第一处）：给模型提示用 list（docs/dev/sub-agents.md 21.7.4 第 2 条） */
+export interface ExtractMultiple {
+  field: string
+  target: string
+  count: number
+}
 
 const tidy = (value: string) =>
   value
@@ -318,10 +324,15 @@ const URL_ATTRS = new Set(["href", "src", "action", "poster"])
  */
 const TEXT_ATTRS = new Set(["textcontent", "innertext", "text"])
 
-async function readField(row: Root, field: ExtractField, pageUrl: string): Promise<string | null> {
+const targetOf = (field: ExtractField) => (typeof field === "string" ? field : field.target)
+
+/** 读一个字段：定位匹配到几处都只读第一处；onCount 拿到匹配了几处（没给 list 时用来提示） */
+async function readField(row: Root, field: ExtractField, pageUrl: string, onCount?: (count: number) => void): Promise<string | null> {
   const { target, attr } = typeof field === "string" ? { target: field, attr: undefined } : field
   const locator = buildLocator(row, target)
-  if ((await locator.count()) === 0) return null
+  const count = await locator.count()
+  onCount?.(count)
+  if (count === 0) return null
   const element = locator.first()
   // textContent 连藏起来的字也读（和 DOM 的 textContent 一样）；innerText、text 照不写 attr 读
   if (attr?.toLowerCase() === "textcontent") return tidy((await element.textContent({ timeout: READ_TIMEOUT_MS })) ?? "")
@@ -342,16 +353,26 @@ async function readField(row: Root, field: ExtractField, pageUrl: string): Promi
   return tidy((await element.textContent({ timeout: READ_TIMEOUT_MS })) ?? "")
 }
 
-/** 按定位读页面：list 是每一行，fields 是行里的字段（相对这一行定位）；没有 list = 整页一行。一行也没有不算出错 */
-export async function extractRows(page: Page, input: ExtractInput): Promise<{ rows: ExtractRow[]; total: number }> {
+/**
+ * 按定位读页面：list 是每一行，fields 是行里的字段（相对这一行定位）；没有 list = 整页一行。一行也没有不算出错。
+ * 没有 list 时记下哪些字段的定位匹配到好几处（multiple，只读了第一处），formatExtract 提示改用 list
+ */
+export async function extractRows(page: Page, input: ExtractInput): Promise<{ rows: ExtractRow[]; total: number; multiple?: ExtractMultiple[] }> {
   const limit = Math.min(EXTRACT_MAX_ROWS, Math.max(1, input.limit ?? EXTRACT_DEFAULT_ROWS))
   const names = Object.keys(input.fields)
-  const readRow = async (row: Root) => {
+  const multiple: ExtractMultiple[] = []
+  const readRow = async (row: Root, track = false) => {
     const out: ExtractRow = {}
-    for (const name of names) out[name] = await readField(row, input.fields[name]!, page.url())
+    for (const name of names) {
+      const field = input.fields[name]!
+      out[name] = await readField(row, field, page.url(), track ? (count) => count > 1 && multiple.push({ field: name, target: targetOf(field), count }) : undefined)
+    }
     return out
   }
-  if (!input.list) return { rows: [await readRow(page)], total: 1 }
+  if (!input.list) {
+    const rows = [await readRow(page, true)]
+    return multiple.length ? { rows, total: 1, multiple } : { rows, total: 1 }
+  }
   const list = buildLocator(page, input.list)
   const total = await list.count()
   const rows: ExtractRow[] = []
@@ -365,8 +386,8 @@ const cell = (value: string | null) => {
   return flat.length > CELL_CHARS ? `${flat.slice(0, CELL_CHARS - 1)}…` : flat || "（空）"
 }
 
-/** 给模型看的小表：最多 50 行，每格最多 100 字 */
-export function formatExtract(input: ExtractInput, result: { rows: ExtractRow[]; total: number }): string {
+/** 给模型看的小表：最多 50 行，每格最多 100 字。没给 list 时：字段匹配到好几处、给了 limit，都提示一句要读全部用 list */
+export function formatExtract(input: ExtractInput, result: { rows: ExtractRow[]; total: number; multiple?: ExtractMultiple[] }): string {
   const names = Object.keys(input.fields)
   const { rows, total } = result
   if (input.list && total === 0) return `列表 ${input.list} 一行也没找到（0 行）。`
@@ -378,6 +399,12 @@ export function formatExtract(input: ExtractInput, result: { rows: ExtractRow[];
   for (const [index, row] of shown.entries()) lines.push(`| ${index + 1} | ${names.map((name) => cell(row[name] ?? null)).join(" | ")} |`)
   if (rows.length > shown.length) lines.push(`…（后面还有 ${rows.length - shown.length} 行没列出来）`)
   if (rows.some((row) => names.some((name) => row[name] === null))) lines.push("（没有 = 这一行里没找到这个字段的元素）")
+  if (!input.list) {
+    for (const each of result.multiple ?? [])
+      lines.push(`注意：「${each.field}」的定位 ${each.target} 在页面上找到 ${each.count} 处，只读了第一处。要读全部，给 list（每一行的定位，例如 getByRole('row')），fields 写成相对这一行的定位，一处一行。`)
+    if (input.limit !== undefined && !result.multiple?.length) lines.push("注意：没给 list 时 limit 不起作用，整页只读一行（每个字段读第一处）。要读多行，给 list（每一行的定位）。")
+    else if (input.limit !== undefined) lines.push("（没给 list 时 limit 不起作用。）")
+  }
   return lines.join("\n")
 }
 

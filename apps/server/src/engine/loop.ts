@@ -342,7 +342,8 @@ async function finishRoutineTest(db: Db, session: SessionRow, snapshot: RoutineS
 }
 
 /**
- * 收尾以后的复核：复核判办成才算办成（outcome.ts 的 combineReview）；出错重试一次，还出错记没办成。
+ * 收尾以后的复核：复核判办成才算办成（outcome.ts 的 combineReview）；出错重试一次，还出错记没办成（写明没有核实）。
+ * 模型返回的格式不对的，performReview 里已经请它改过一次（问了两次），不再整个重试。
  * 写结果、复核报告、过程记录，复核的用量（两次都算）记进这次运行；被派的单这时才结算（叫醒派活方在结算的事务里发）
  */
 async function reviewAfterFinish(
@@ -353,7 +354,7 @@ async function reviewAfterFinish(
 ): Promise<Judged> {
   const first: RunReview = await performReview(db, { session, snapshot, modelId: input.modelId, report: input.report })
   let review = first
-  if (first.error) {
+  if (first.error && !first.rawOutput) {
     const retry = await performReview(db, { session, snapshot, modelId: input.modelId, report: input.report })
     review = {
       ...retry,
@@ -386,7 +387,9 @@ async function reviewAfterFinish(
     await appendEvent(tx, session.id, {
       kind: "verify",
       title: reviewEventTitle(review, final.outcome),
-      detail: review.error ? `复核模型 ${review.modelId} 出错：${review.error}` : `${review.reason}${review.screenshot ? "\n（带了最后一张截图）" : ""}`,
+      detail: review.error
+        ? `复核模型 ${review.modelId} 出错：${review.error}${review.rawOutput ? `\n模型原样返回的（截一段）：\n${review.rawOutput}` : ""}\n结果没有核实，可以人工改结果。`
+        : `${review.reason}${review.screenshot ? "\n（带了最后一张截图）" : ""}`,
       ...(review.error ? {} : { tokensIn: review.tokensIn, tokensOut: review.tokensOut, output: `复核模型 ${review.modelId}，花费 ${review.costUsd.toFixed(6)} 美元` }),
     })
     await afterRunEndedInTx(db, tx, session.id, { status: "done", outcome: final.outcome, outcomeReason: final.reason, summary: input.summary, ...(final.failKind ? { failKind: final.failKind } : {}) })

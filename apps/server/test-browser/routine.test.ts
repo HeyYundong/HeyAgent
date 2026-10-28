@@ -185,6 +185,9 @@ describe("录、browser.wait_any、browser.extract", () => {
             fields: { 单号: "getByRole('cell').first()", 状态: "getByRole('cell').nth(1)", 链接: { target: "getByRole('link')", attr: "href" }, 备注: "css=.none" },
           }),
         ]),
+        // 不给 list：定位匹配到 2 处只读第一处、给了 limit 也没用，输出里提示（docs/dev/sub-agents.md 21.7.4 第 2 条）
+        step([call("browser.extract", { fields: { 订单: "getByRole('row').filter({ hasText: 'A-1' })" }, limit: 20 })]),
+        step([call("browser.extract", { fields: { 单号: "getByRole('cell', { name: 'A-1-2', exact: true })" }, limit: 5 })]),
         step([call("browser.wait_any", { outcomes: { never: "text=不会出现", gone: "url=/never" }, timeout: 1 })]),
         step(finishWith("读到了")),
       ])
@@ -197,7 +200,17 @@ describe("录、browser.wait_any、browser.extract", () => {
     expect(table).toContain("一共 2 行，读了 2 行")
     expect(table).toContain(`| 1 | A-1 | 已发货 | ${base}/detail/A-1 | （没有） |`)
     expect(table).toContain(`| 2 | A-1-2 | 待发货 | ${base}/detail/A-1-2 | （没有） |`)
-    const timedOut = outputs(script, 6)
+    expect(table).not.toContain("只读了第一处")
+    const many = outputs(script, 6)
+    expect(many).toMatch(/\| 1 \| A-1 .*已发货/)
+    expect(many).not.toContain("A-1-2")
+    expect(many).toContain("注意：「订单」的定位 getByRole('row').filter({ hasText: 'A-1' }) 在页面上找到 2 处，只读了第一处。要读全部，给 list")
+    expect(many).toContain("（没给 list 时 limit 不起作用。）")
+    const one = outputs(script, 7)
+    expect(one).toContain("| 1 | A-1-2 |")
+    expect(one).not.toContain("只读了第一处")
+    expect(one).toContain("注意：没给 list 时 limit 不起作用，整页只读一行（每个字段读第一处）。要读多行，给 list（每一行的定位）。")
+    const timedOut = outputs(script, 8)
     expect(timedOut).toContain("等了 1 秒，页面上没出现「never」、「gone」里的任何一个")
     expect(timedOut).toContain("现在的页面：「订单列表」")
 
