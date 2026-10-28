@@ -30,6 +30,7 @@ export async function getTaskRoutine(db: Db, taskId: string): Promise<RoutineSum
       sourceSessionId: t.routineVersions.sourceSessionId,
       auto: t.routineVersions.auto,
       httpSuggestions: t.routineVersions.httpSuggestions,
+      provenAt: t.routineVersions.provenAt,
       createdAt: t.routineVersions.createdAt,
     })
     .from(t.routineVersions)
@@ -50,8 +51,12 @@ export async function getTaskRoutine(db: Db, taskId: string): Promise<RoutineSum
     versions: versions.map(({ httpSuggestions, ...version }) => ({
       ...version,
       httpToolSuggestions: httpSuggestions.length,
+      provenAt: iso(version.provenAt),
       createdAt: version.createdAt.toISOString(),
     })),
+    // 流程库（docs/dev/routine-library.md 9.2）：B 包用 routine/library/service.ts 的 libraryOfRoutine 填
+    library: null,
+    publishable: [],
   }
 }
 
@@ -134,6 +139,7 @@ export async function getRoutineVersion(db: Db, versionId: string): Promise<Rout
     createdBy: person(version.createdById),
     approvedBy: person(version.approvedById),
     approvedAt: iso(version.approvedAt),
+    provenAt: iso(version.provenAt),
     createdAt: version.createdAt.toISOString(),
     humanItemId: item?.id ?? null,
   }

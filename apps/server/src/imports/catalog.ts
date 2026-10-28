@@ -1,6 +1,6 @@
 // 读包时要对照的现有配置：给读包 AI 的摘要（避免重复导入、负责人和模型怎么对上），整理方案时代码再按它核对一遍。
 import { and, asc, desc, eq, isNull } from "drizzle-orm"
-import { compiledRuleSchema, ruleCompileStatusLabel, type Risk, type SkillStatus } from "@heyagent/shared"
+import { compiledRuleSchema, ruleCompileStatusLabel, type Risk, type SkillStatus, type ToolSource } from "@heyagent/shared"
 
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
@@ -21,7 +21,8 @@ export interface ImportCatalog {
   memories: { id: string; content: string; appliesTo: string }[]
   /** 全部规则；effective = 人确认过、运行时会执行 */
   rules: { id: string; name: string; trigger: string; action: string; understood?: string; effective: boolean }[]
-  tools: { id: string; name: string; summary: string; source: "builtin" | "http" | "mcp"; serverId: string | null; risk: Risk }[]
+  /** source = routine 是流程库的流程（docs/dev/routine-library.md），导入的任务也能选它 */
+  tools: { id: string; name: string; summary: string; source: ToolSource; serverId: string | null; risk: Risk }[]
   servers: { id: string; name: string; status: string; toolIds: string[] }[]
   tasks: { id: string; title: string }[]
   /** 已有的全局密钥名（scope = http_tool） */

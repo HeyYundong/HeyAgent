@@ -37,6 +37,9 @@ import {
   modelRoleSchema,
   providerStatusSchema,
   riskSchema,
+  routineCallResultSchema,
+  routineCallViaSchema,
+  routineLibraryStatusSchema,
   routineModeSchema,
   routineStatusSchema,
   routineVersionStatusSchema,
@@ -59,6 +62,9 @@ import {
   type ImportPlan,
   type ImportReadStep,
   type ImportResult,
+  type RoutineCompatIssue,
+  type RoutineRequires,
+  type RoutineStopKind,
   type RoutineTestReport,
   type RuleCompileResult,
   type SessionDigest,
@@ -181,6 +187,10 @@ export const routineStatusEnum = pgEnum("routine_status", values(routineStatusSc
 export const routineVersionStatusEnum = pgEnum("routine_version_status", values(routineVersionStatusSchema.options))
 export const routineModeEnum = pgEnum("routine_mode", values(routineModeSchema.options))
 export const sessionKindEnum = pgEnum("session_kind", values(sessionKindSchema.options))
+// 流程库（docs/dev/routine-library.md）
+export const routineLibraryStatusEnum = pgEnum("routine_library_status", values(routineLibraryStatusSchema.options))
+export const routineCallViaEnum = pgEnum("routine_call_via", values(routineCallViaSchema.options))
+export const routineCallResultEnum = pgEnum("routine_call_result", values(routineCallResultSchema.options))
 
 // ---------- 新 id 用的序列（规则见 shared/ids.ts） ----------
 
@@ -467,12 +477,17 @@ export const tools = pgTable(
     http: jsonb("http").$type<HttpSpec>(),
     risk: riskEnum("risk").notNull(),
     alwaysOn: boolean("always_on").notNull().default(false),
+    /** source = routine（流程库，docs/dev/routine-library.md 4.1）：哪个库流程。这一行只由流程库写，一个库流程一行 */
+    routineId: text("routine_id").references((): AnyPgColumn => routines.id, { onDelete: "cascade" }),
     position: position(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (t) => [
     check("tools_source_check", sql`(${t.source} <> 'mcp' or ${t.serverId} is not null) and (${t.source} <> 'http' or ${t.http} is not null)`),
+    // 和枚举的新值 routine 在同一个迁移里：转成 text 再比，不用到新值（同一个事务里还不能用）
+    check("tools_routine_check", sql`${t.source}::text <> 'routine' or ${t.routineId} is not null`),
+    uniqueIndex("tools_routine_id_idx").on(t.routineId),
   ]
 )
 
@@ -1679,6 +1694,11 @@ export const routineVersions = pgTable(
     createdById: text("created_by_id").references(() => users.id, { onDelete: "set null" }),
     approvedById: text("approved_by_id").references(() => users.id, { onDelete: "set null" }),
     approvedAt: ts("approved_at"),
+    /**
+     * 转正式的时间（试用期连着 3 次脚本直接办成，runtime/stats.ts 写）。只有转过正式的版本能发布进流程库（docs/dev/routine-library.md 2.2）。
+     * 迁移里补了以前的：审计里 routine.promote 记过的那一版，和现在正式的流程启用的那一版
+     */
+    provenAt: ts("proven_at"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -1712,4 +1732,97 @@ export const routineJournal = pgTable(
     at: ts("at").notNull().defaultNow(),
   },
   (t) => [primaryKey({ columns: [t.sessionId, t.seq] })]
+)
+
+// ---------- 流程库（docs/dev/routine-library.md） ----------
+
+/**
+ * 库里的登记：一个固化流程（来源任务上的）发布进库后一行。工具那一行（tools，source = routine，id = routine.<短名>）
+ * 由流程库跟着写：发布、改名字时重写，撤下时删掉（登记留着，能重新发布）
+ */
+export const routineLibrary = pgTable("routine_library", {
+  routineId: text("routine_id")
+    .primaryKey()
+    .references(() => routines.id, { onDelete: "cascade" }),
+  /** 短名（工具 id 是 routine.<短名>）：第一次发布时填，之后不能改 */
+  slug: text("slug").notNull().unique(),
+  /** 库里的名字（tools.name） */
+  title: text("title").notNull(),
+  /** 「什么时候用」：给模型看的一句话（tools.summary），发布的主管写 */
+  summary: text("summary").notNull(),
+  status: routineLibraryStatusEnum("status").notNull().default("listed"),
+  /** 发布的是来源流程的第几版（只收转过正式的） */
+  publishedVersion: integer("published_version").notNull(),
+  /** 发布的那一版要的工具、开关、直接调的库流程（工具已经算上传递的） */
+  requires: jsonb("requires").$type<RoutineRequires>().notNull(),
+  /** 发布时算的风险（tools.risk） */
+  risk: riskEnum("risk").notNull(),
+  /** 连着几次跑不通（停在 step_error、page、script_error、timeout、limit）；报了结果清零，满 3 次自动停用 */
+  failStreak: integer("fail_streak").notNull().default(0),
+  /** 停用的原因（主管停的写谁停的；自动停的写最近三次停在哪） */
+  pausedReason: text("paused_reason"),
+  /** 最近一次发布的人、时间 */
+  publishedById: text("published_by_id").references(() => users.id, { onDelete: "set null" }),
+  publishedAt: ts("published_at").notNull().defaultNow(),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+})
+
+/** 发布记录：每发布一次（第一次、新版本、回到以前的版本）一行。版本记录弹窗用 */
+export const routineLibraryVersions = pgTable(
+  "routine_library_versions",
+  {
+    id: identity(),
+    routineId: text("routine_id")
+      .notNull()
+      .references(() => routineLibrary.routineId, { onDelete: "cascade" }),
+    version: integer("version").notNull(),
+    publishedById: text("published_by_id").references(() => users.id, { onDelete: "set null" }),
+    publishedAt: ts("published_at").notNull().defaultNow(),
+    requires: jsonb("requires").$type<RoutineRequires>().notNull(),
+    risk: riskEnum("risk").notNull(),
+    /** 当时和前一个发布的版本比的不兼容改动（发布时勾了「我知道这些任务会受影响」） */
+    compat: jsonb("compat").$type<RoutineCompatIssue[]>().notNull().default([]),
+    /** 当时在用几个任务 */
+    taskCount: integer("task_count").notNull().default(0),
+  },
+  (t) => [index("routine_library_versions_routine_idx").on(t.routineId, t.publishedAt)]
+)
+
+/** 调用记录：库流程每被调一次（agent 调、脚本调都算，每一层各一行）一行。成绩、自动停用、详情页的「最近停下的」都看它 */
+export const routineCalls = pgTable(
+  "routine_calls",
+  {
+    id: identity(),
+    routineId: text("routine_id")
+      .notNull()
+      .references(() => routines.id, { onDelete: "cascade" }),
+    version: integer("version").notNull(),
+    /** 调用方的运行、任务 */
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    /** agent 调 = 模型的工具调用 id；脚本调 = 进入那一步的调用 id（同 trace.library.callId） */
+    callId: text("call_id").notNull(),
+    via: routineCallViaEnum("via").notNull(),
+    /** 1 = 直接调的；2 = 库流程里再调的 */
+    depth: integer("depth").notNull().default(1),
+    result: routineCallResultEnum("result").notNull(),
+    /** 停下 / 输入不对时：原因、停在库流程的第几步、说明 */
+    stopKind: text("stop_kind").$type<RoutineStopKind>(),
+    stopStep: integer("stop_step"),
+    stopReason: text("stop_reason"),
+    /** 库流程里做了几步、用了多久 */
+    steps: integer("steps").notNull().default(0),
+    ms: integer("ms").notNull().default(0),
+    at: ts("at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("routine_calls_routine_at_idx").on(t.routineId, t.at),
+    index("routine_calls_session_idx").on(t.sessionId),
+    index("routine_calls_task_idx").on(t.taskId, t.at),
+  ]
 )
