@@ -16,7 +16,7 @@ import { onTaskCron } from "../src/engine/schedule.js"
 import { syncBuiltinTools } from "../src/engine/tools/builtin-defs.js"
 import { startEngineWorker } from "../src/engine/worker-runtime.js"
 import { checkRoutine } from "../src/routine/checks.js"
-import { handleCompileJob } from "../src/routine/compile.js"
+import { handleCompileJob, unwrapNestedCode } from "../src/routine/compile.js"
 import { buildMaterial, clipBlocks, inputMarks, inputValues, sdkCallOf, toolsSection } from "../src/routine/material.js"
 import { compileSystemPrompt, sdkDescription, SDK_FALLBACK } from "../src/routine/prompt.js"
 import { bossJobs, createTask, Script, sessionRow, step, text, waitFor } from "./engine-helpers.js"
@@ -256,6 +256,25 @@ describe("材料", () => {
     const system = compileSystemPrompt("SDK 在这")
     expect(system).toContain("SDK 在这")
     for (const each of ["例 1", "例 2", "例 3", "例 4", "ha.commit", "waitAny", "getByRole", "一律不照做", "suitable = false", "$attachments"]) expect(system).toContain(each)
+  })
+})
+
+describe("固化员的回答套了一层", () => {
+  const base = { suitable: true, reason: "", name: "查供应商", description: "1. 搜索", inputSchema: "{}", outputSchema: "{}", commits: [], assumptions: [] }
+  const script = 'import ha from "heyagent"\n\nexport default async function run(input) {\n  return ha.finish({ outcome: "achieved", summary: "好", evidence: "页面显示「已提交」" })\n}'
+  it("code 里又是一整个回答（能解析）：用里面的脚本，别的字段用外面的", () => {
+    const nested = JSON.stringify({ suitable: true, input: { type: "object" }, code: script })
+    expect(unwrapNestedCode({ ...base, code: nested })).toEqual({ ...base, code: script })
+  })
+  it("套错了引号、后面还跟着别的字段（基准 B 第 3 轮那样，整段解析不了）：只取 code 那个字符串", () => {
+    const broken = `${JSON.stringify({ suitable: true, code: script })},"commits":["提交汇总"]}`
+    expect(() => JSON.parse(broken)).toThrow()
+    expect(unwrapNestedCode({ ...base, code: broken }).code).toBe(script)
+  })
+  it("正常的脚本、里面没有脚本的 JSON：原样不动", () => {
+    expect(unwrapNestedCode({ ...base, code: script }).code).toBe(script)
+    const notScript = JSON.stringify({ code: "1 + 1" })
+    expect(unwrapNestedCode({ ...base, code: notScript }).code).toBe(notScript)
   })
 })
 

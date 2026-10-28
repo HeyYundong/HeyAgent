@@ -223,6 +223,41 @@ async function previousProblem(db: Db, version: VersionRow): Promise<string | un
   return [await testFeedback(db, last), previousCode(version.code)].join("\n\n")
 }
 
+/**
+ * 固化员偶尔把整个回答又塞进 code（code 里是 {"suitable":…,"code":"import ha …"}，基准 B 第 3 轮）：
+ * 认出来就用里面那一层的脚本，别的字段用外面这一层的（外面的已经按格式校验过）
+ */
+export function unwrapNestedCode(output: CompileOutput): CompileOutput {
+  const text = output.code.trim()
+  if (!text.startsWith("{")) return output
+  const inner = innerCodeOf(text)
+  return inner !== undefined && /export\s+default/.test(inner) ? { ...output, code: inner } : output
+}
+
+/** 里面那一层的 "code" 字段：整段能解析就直接取；解析不了（模型套错了引号，后面还跟着别的字段）就把 "code": 后面那个字符串单独拿出来 */
+function innerCodeOf(text: string): string | undefined {
+  try {
+    const inner = JSON.parse(text) as { code?: unknown }
+    if (typeof inner.code === "string") return inner.code
+  } catch {
+    // 往下：只取 code 那个字符串
+  }
+  const key = /"code"\s*:\s*"/.exec(text)
+  if (!key) return undefined
+  const start = key.index + key[0].length - 1
+  let end = start + 1
+  for (; end < text.length; end++) {
+    if (text[end] === "\\") end++
+    else if (text[end] === '"') break
+  }
+  try {
+    const value = JSON.parse(text.slice(start, end + 1)) as unknown
+    return typeof value === "string" ? value : undefined
+  } catch {
+    return undefined
+  }
+}
+
 const previousCode = (code: string) => (code ? `你上一轮写的脚本：\n\`\`\`js\n${code}\n\`\`\`` : "")
 
 /** 写脚本：最多写到第 ROUTINE_MAX_ROUNDS 轮，写出一版过了程序检查的就去试跑（或者直接交给人审核） */
@@ -261,7 +296,7 @@ async function draft(db: Db, loaded: Loaded) {
         name: "routine_compile",
       })
       await addCost(db, version.id, { round, modelId, tokensIn: result.tokensIn, tokensOut: result.tokensOut, costUsd: result.costUsd })
-      output = result.object
+      output = unwrapNestedCode(result.object)
     } catch (error) {
       // 模型出错、格式不对：这一轮算用掉了（不然坏掉的模型会一直重试）
       await addCost(db, version.id, { round, modelId, tokensIn: 0, tokensOut: 0, costUsd: 0 })
