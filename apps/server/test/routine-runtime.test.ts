@@ -13,7 +13,7 @@ import { takeCode } from "../src/browser/tools.js"
 import type { GatewayResult, ModelToolCall } from "../src/engine/gateway.js"
 import type { EventInput } from "../src/engine/records.js"
 import type { ToolOutcome } from "../src/engine/tools/builtin.js"
-import { shanghaiNow, ToolBridge, type BridgeGateway, type BridgeJournal, type JournalRow } from "../src/routine/runtime/bridge.js"
+import { shanghaiNow, stepLabel, ToolBridge, type BridgeGateway, type BridgeJournal, type JournalRow } from "../src/routine/runtime/bridge.js"
 import { commitLines, handoffText } from "../src/routine/runtime/handoff.js"
 import { LAUNCH_SCRIPT, SDK_DIR } from "../src/routine/runtime/run.js"
 import { TOOLS_SOCKET_NAME } from "../src/sandbox/runner.js"
@@ -53,6 +53,10 @@ class FakeGateway implements BridgeGateway {
         return input.target === "missing"
           ? done({ output: "工具出错：选择器没找到元素", isError: true })
           : done({ output: "点了" })
+      case "browser.copy_image":
+        return done({ output: "已复制图片（64×48，来源：原图），剪贴板里现在是这张图；文件 id：f-img-1。", data: { fileId: "f-img-1", width: 64, height: 48 } })
+      case "browser.clipboard_read":
+        return done({ output: "剪贴板里是表格：2 行 × 2 列", data: { table: [["a", "b"], ["c", "d"]] } })
       case "danger.tool":
         return done({ output: "被拦下：规则不让", isError: true }, { denied: true })
       case "approve.tool":
@@ -169,6 +173,49 @@ describe("工具桥 + SDK（本机 node，假网关）", () => {
     expect(JSON.parse(state.logs![0]!)).toEqual({ seen: "found", rows: [{ 状态: "已发货" }], total: 1, input: { 单号: "A-1" }, nowOk: true })
     expect(bridge.finish).toMatchObject({ outcome: "achieved", summary: "A-1：已发货" })
     expect(bridge.stopped).toBeUndefined()
+  })
+
+  it("剪贴板：copyImage 拿到 { fileId, width, height }、clipboardRead 拿到 data、clipboardPaste 照传；没包装的浏览器工具用 ha.tool；步骤标题看得懂", async () => {
+    const { bridge, gateway, state, result } = await runScript(`
+  const copied = await ha.browser.copyImage({ target: "getByRole('img', { name: '大写字母 X' })" })
+  const byPoint = await ha.browser.copyImage({ element: "大写字母 E", x: 10, y: 20 })
+  await ha.browser.click({ element: "第 1 行图片格", target: "getByRole('cell').nth(1)" })
+  await ha.commit("贴第 1 张图")
+  const pasted = await ha.browser.clipboardPaste({ fileId: copied.fileId })
+  const read = await ha.browser.clipboardRead({ copy: true })
+  const again = await ha.browser.clipboardRead()
+  const back = await ha.tool("browser.navigate_back", {})
+  await ha.log(JSON.stringify({ copied, byPoint, pasted, read, again, back }))`)
+    expect(result.exitCode, result.stderr.text).toBe(0)
+    expect(bridge.done).toEqual({ ok: true })
+    expect(gateway.calls.map((each) => [each.call.toolName, each.call.input])).toEqual([
+      // 没写 element 就用定位当名字（工具要求有 element）
+      ["browser.copy_image", { element: "getByRole('img', { name: '大写字母 X' })", target: "getByRole('img', { name: '大写字母 X' })" }],
+      ["browser.copy_image", { element: "大写字母 E", x: 10, y: 20 }],
+      ["browser.click", { element: "第 1 行图片格", target: "getByRole('cell').nth(1)" }],
+      ["browser.clipboard_paste", { fileId: "f-img-1" }],
+      ["browser.clipboard_read", { copy: true }],
+      ["browser.clipboard_read", {}],
+      ["browser.navigate_back", {}],
+    ])
+    expect(JSON.parse(state.logs![0]!)).toEqual({
+      copied: { fileId: "f-img-1", width: 64, height: 48 },
+      byPoint: { fileId: "f-img-1", width: 64, height: 48 },
+      // 没有结构化结果的给文字
+      pasted: "browser.clipboard_paste 做完了",
+      read: { table: [["a", "b"], ["c", "d"]] },
+      again: { table: [["a", "b"], ["c", "d"]] },
+      back: { text: "browser.navigate_back 做完了" },
+    })
+    expect(state.commits).toEqual([{ step: 3, label: "贴第 1 张图" }])
+    expect(stepLabel("browser.copy_image", { element: "大写字母 X", target: "e12" })).toBe("复制图片「大写字母 X」")
+    expect(stepLabel("browser.copy_image", { x: 10, y: 20 })).toBe("复制图片「坐标 (10, 20)」")
+    expect(stepLabel("browser.clipboard_read", { copy: true })).toBe("复制并读剪贴板")
+    expect(stepLabel("browser.clipboard_read", {})).toBe("读剪贴板")
+    expect(stepLabel("browser.clipboard_paste", { fileId: "f-1" })).toBe("粘贴图片")
+    expect(stepLabel("browser.clipboard_paste", { table: [["a"], ["b"]] })).toBe("粘贴表格（2 行）")
+    expect(stepLabel("browser.clipboard_paste", { text: "你好" })).toBe("粘贴文字（2 字）")
+    expect(stepLabel("browser.click", { element: "查询", target: "x" })).toBe("click「查询」")
   })
 
   it("StepError 可以接住接着做；没接住的 Denied 让脚本带着 Denied 结束，记下停在哪一步", async () => {

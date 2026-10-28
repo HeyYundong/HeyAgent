@@ -139,6 +139,21 @@ const ha = {
       const result = await callTool("browser.extract", args)
       return result.data ?? { rows: [], total: 0 }
     },
+    /** 复制图片（右键 → 复制图片）：{ fileId, width, height }，图片同时在剪贴板里、存成了这次运行的文件 */
+    async copyImage(args = {}) {
+      const { element, ...rest } = args
+      // 工具要一个给人看的名字：没写就用定位代替
+      const name = typeof element === "string" && element.trim() ? element : typeof rest.target === "string" && rest.target ? rest.target : "图片"
+      const result = await callTool("browser.copy_image", { element: name, ...rest })
+      return result.data
+    },
+    /** 读剪贴板（copy: true 先按一次 Ctrl+C）：{ text?, table?, fileId? } */
+    async clipboardRead(args = {}) {
+      const result = await callTool("browser.clipboard_read", args)
+      return result.data ?? {}
+    },
+    /** 把文字 / 表格 / 这次运行里的图片写进剪贴板，在当前焦点处按 Ctrl+V */
+    clipboardPaste: act("browser.clipboard_paste"),
   },
   file: {
     read: act("file.read"),
@@ -146,7 +161,7 @@ const ha = {
   },
   checkpoint: { mark: act("checkpoint.mark") },
   work: { report: act("work.report") },
-  /** 任务里的任何别的工具（HTTP、MCP……）：{ text, data } */
+  /** 任务里的任何别的工具（HTTP、MCP、比物、图库、SDK 没有包装的浏览器工具 browser.xxx……）：{ text, data } */
   async tool(id, args) {
     const result = await callTool(id, args)
     return { text: result.text, data: result.data }

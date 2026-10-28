@@ -3,7 +3,8 @@
 // - browser.wait_any / browser.extract：等几种结果里的一个、按定位读列表（JS 写法和选择器字符串）；
 // - 先跑脚本：沙箱（worker 镜像里有 bwrap 就用真沙箱）里的脚本经工具桥在真 Chrome 上跑通，执行模型一次都没调；
 // - 按钮改了名字：脚本停下，agent 用同一个 Chrome 接着办成；
-// - 中途遇到登录页：交给人，处理好以后脚本按重放日志跳过前面几步、在同一个 Chrome 里接着跑完（docs/dev/solidify.md 17.2）。
+// - 中途遇到登录页：交给人，处理好以后脚本按重放日志跳过前面几步、在同一个 Chrome 里接着跑完（docs/dev/solidify.md 17.2）；
+// - 剪贴板：脚本复制图片、点到文档的格子、粘贴，页面收到这张图（照基准站点的 /c/doc）。
 import { mkdtempSync } from "node:fs"
 import { rm } from "node:fs/promises"
 import { createServer, type Server } from "node:http"
@@ -12,6 +13,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { and, eq } from "drizzle-orm"
+import sharp from "sharp"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
 import * as t from "../src/db/schema.js"
@@ -30,6 +32,10 @@ let server: Server
 let base = ""
 let runnerName = ""
 const sandboxDir = mkdtempSync(join(tmpdir(), "heyagent-routine-browser-"))
+
+/** 图片页上「大写字母 X」那张图（40×30 的 PNG）；文档页的格子贴进来的图：行 → 宽高 */
+let letterPng: Buffer
+const pasted = new Map<string, { width: number; height: number }>()
 
 const html = (title: string, body: string) => `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>${title}</title></head><body>${body}</body></html>`
 
@@ -68,8 +74,43 @@ beforeAll(async () => {
   runnerName = unavailable ? `直接跑 node（${unavailable}）` : "bwrap 沙箱"
   if (unavailable) setRoutineSandboxDeps({ runner: directNodeRunner, unavailable: async () => undefined })
   console.log(`[routine] 跑脚本用：${runnerName}`)
+  letterPng = await sharp({ create: { width: 40, height: 30, channels: 3, background: { r: 200, g: 30, b: 30 } } }).png().toBuffer()
   server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://x")
+    // 剪贴板（照基准站点 /c/search、/c/doc）：图片页、能贴图的文档格子，贴进来的图报回服务器
+    if (url.pathname === "/img/x.png") return res.writeHead(200, { "content-type": "image/png", "cache-control": "no-store" }).end(letterPng)
+    if (url.pathname === "/pasted" && req.method === "POST") {
+      let body = ""
+      req.on("data", (chunk) => (body += chunk))
+      req.on("end", () => {
+        const data = JSON.parse(body) as { row: string; width: number; height: number }
+        pasted.set(data.row, { width: data.width, height: data.height })
+        res.writeHead(200).end("ok")
+      })
+      return
+    }
+    if (url.pathname === "/pics")
+      return res
+        .writeHead(200, { "content-type": "text/html; charset=utf-8" })
+        .end(html("图片搜索", `<h1>图片</h1><img src="/img/x.png" alt="大写字母 X" width="80"><img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="大写字母 E" width="80">`))
+    if (url.pathname === "/doc")
+      return res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(
+        html(
+          "字母图片表",
+          `<table><tr><th>字母</th><th>图片</th></tr>${["E", "X"].map((letter) => `<tr><td>${letter}</td><td><div class="cell" contenteditable="true" data-row="${letter}" aria-label="字母 ${letter} 的图片格"></div></td></tr>`).join("")}</table>
+<script>
+document.querySelectorAll('.cell').forEach((cell) => cell.addEventListener('paste', async (event) => {
+  event.preventDefault()
+  const file = [...event.clipboardData.files].find((each) => each.type.startsWith('image/'))
+  if (!file) return
+  const bitmap = await createImageBitmap(file)
+  const img = document.createElement('img'); img.src = URL.createObjectURL(file); img.alt = '已贴的图 ' + bitmap.width + '×' + bitmap.height; img.width = 80
+  cell.replaceChildren(img)
+  await fetch('/pasted', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ row: cell.dataset.row, width: bitmap.width, height: bitmap.height }) })
+}))
+</script>`
+        )
+      )
     // 会员页要登录：没登录跳到登录页（有密码框、网址带 login，引擎认成登录页、交给人）；登录页提交后写 cookie、跳回会员页
     const loggedIn = /(?:^|;\s*)member=ok/.test(req.headers.cookie ?? "")
     if (url.pathname === "/members" && !loggedIn) return res.writeHead(302, { location: "/login?next=/members" }).end()
@@ -293,5 +334,58 @@ describe("先跑脚本（真 Chrome）", () => {
     expect(events.some((event) => event.title === "脚本接着跑：前 2 步按记录跳过，从第 3 步接着做")).toBe(true)
     const finish = events.find((event) => event.toolId === "run.finish")
     expect(finish?.input).toContain("会员：张三")
+  })
+})
+
+describe("剪贴板（真 Chrome）", () => {
+  it("脚本复制一张图（按 alt 定位）、点到文档的格子、ha.commit 后粘贴：页面收到这张图；clipboardRead 读回图片的 fileId；执行模型一次都没调", async () => {
+    const script = useScript("test/routine-clipboard", new Script([]))
+    const taskId = await browserTask("test/routine-clipboard")
+    await createRoutine(ctx.db, taskId, {
+      name: "贴字母图",
+      code: routineCode(`
+  await ha.browser.navigate({ url: ${JSON.stringify(`${base}/pics`)} })
+  const copied = await ha.browser.copyImage({ element: "大写字母 X", target: "getByRole('img', { name: '大写字母 X' })" })
+  await ha.browser.navigate({ url: ${JSON.stringify(`${base}/doc`)} })
+  await ha.browser.click({ element: "字母 X 的图片格", target: "locator('.cell[data-row=\\"X\\"]')" })
+  await ha.commit("贴 X 的图")
+  await ha.browser.clipboardPaste({ fileId: copied.fileId })
+  const seen = await ha.browser.waitAny({ pasted: "locator('.cell[data-row=\\"X\\"] img')", none: "url=/never" })
+  const { rows } = await ha.browser.extract({ list: "locator('.cell[data-row=\\"X\\"]')", fields: { alt: { target: "locator('img')", attr: "alt" } } })
+  await ha.verified("格子里有图：" + (rows[0] && rows[0].alt))
+  const read = await ha.browser.clipboardRead()
+  await ha.log(JSON.stringify({ copied, seen, read }))
+  return ha.finish({ outcome: "achieved", summary: "贴好了 X 的图", evidence: "字母 X 的格子里：" + (rows[0] && rows[0].alt) })`),
+    })
+    pasted.clear()
+    const sessionId = await runNow(taskId)
+    const row = await waitOutcome(sessionId)
+    const events = await eventsOf(ctx.db, sessionId)
+    const tools = events.filter((event) => event.kind === "tool")
+    const why = JSON.stringify({ routine: row.routine, tools: tools.map((event) => [event.toolId, event.title, event.output?.slice(0, 300)]) })
+    expect(script.prompts, why).toHaveLength(0)
+    expect(row.outcome, why).toBe("achieved")
+    expect(row.stepCount).toBe(0)
+    // 页面收到了这张图（原图 40×30）
+    expect(pasted.get("X")).toEqual({ width: 40, height: 30 })
+    expect(pasted.has("E")).toBe(false)
+    const logged = JSON.parse(row.routine!.logs![0]!) as { copied: { fileId: string; width: number; height: number }; seen: string; read: { fileId?: string } }
+    expect(logged.copied).toMatchObject({ width: 40, height: 30 })
+    expect(logged.copied.fileId).toMatch(/\S/)
+    expect(logged.seen).toBe("pasted")
+    // 粘贴以后剪贴板里还是这张图：读回来存成了另一个文件
+    expect(logged.read.fileId).toMatch(/\S/)
+    expect(row.routine).toMatchObject({ state: "finished", commits: [{ label: "贴 X 的图", verified: "格子里有图：已贴的图 40×30" }] })
+    expect(tools.map((event) => event.toolId)).toEqual([
+      "browser.navigate",
+      "browser.copy_image",
+      "browser.navigate",
+      "browser.click",
+      "browser.clipboard_paste",
+      "browser.wait_any",
+      "browser.extract",
+      "browser.clipboard_read",
+      "run.finish",
+    ])
   })
 })
