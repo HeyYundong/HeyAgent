@@ -19,6 +19,7 @@ import * as t from "../db/schema.js"
 import { reportedIn } from "./dispatch/settle.js"
 import { callStructured, resolveModel } from "./model.js"
 import type { DbLike } from "./records.js"
+import { clipPrompt, EVIDENCE_PROMPT_MAX, LOG_FORMAT_NOTES, REVIEW_LOG } from "./log-text.js"
 import { loadCheckpoints, loadEvidence, statusText } from "./verify.js"
 import type { SessionRow } from "./tools/builtin.js"
 
@@ -39,8 +40,7 @@ const REVIEW_SYSTEM = [
   "你是 HeyAgent 平台上的复核员。一次运行刚结束，你要判断这次运行到底有没有办成任务目标。",
   "- 结果只有两种。结果导向：只看任务目标要的东西拿没拿到，不看 agent 有多努力。都拿到了是办成（achieved）；没拿到、只拿到一部分、确认「没有」、找不到，都是没办成（not_achieved）。",
   "- 依据要来自证据：过程记录（系统自动记的工具调用和结果）、产出的文件、截图、交回的结果、标「自动」的检查点记录。agent 自己的总结和依据只是它的说法，要和这些证据对得上。",
-  "- 过程记录覆盖整次运行：较早的每条压成一行，最近的详细；工具调用的 #k 是整次运行里的序号。标「流程第 n 步」的是固化流程（脚本）做的，和 agent 做的一样算数。",
-  "- 一次 browser_batch（过程记录里的 browser.batch）连着做好几步，每步做没做看结果里的 ✓ / ✗；几步填的值不同就是做了几件不同的事，不是重复。批里每一步在它前面也单独记了一条（标「第 b 批第 n 步」），批那条是汇总，不是又做了一遍。批的结果后面「最后的页面快照」是批做完时页面上的文字（压过：一行用 ⏎ 隔开，表格的一行各格用 | 连），和 browser.snapshot 的结果一样是页面上真有的内容，agent 多半是从这里读到数据的。",
+  ...LOG_FORMAT_NOTES,
   "- 跳过的检查点：逐条看跳过理由站不站得住（例如这次用不上、已经由别的方式做到了），再看跳过的是不是目标要的东西。理由站得住、目标要的东西都拿到了，可以判 achieved，并在 reason 里写明；跳过的正是目标要的、或者理由说不通，判 not_achieved。",
   "- 有「子 agent」一节的：子 agent 的结果是它们自报的、没有复核；父 agent 说办成的，要看它汇总的数据能不能在子 agent 的结果或文件里找到，找不到、对不上的判 not_achieved。",
   "- agent 说办成了、但证据里看不到目标要的东西，判 not_achieved。证据不够下结论、拿不准时也判 not_achieved，不要猜；reason 里写清缺什么（拿到了什么、缺了什么、缺哪样证据）。",
@@ -59,10 +59,10 @@ export async function reviewModelFor(db: DbLike, snapshot: Pick<SessionSnapshot,
   return snapshot.reviewModelId || (await defaultReviewModel(db))
 }
 
-/** 复核看的过程记录：最近 30 条详细，更早的每条压成一行、合计最多 1.2 万字 */
-export const REVIEW_LOG = { recent: 30, budget: 12_000 }
-/** 复核的输入最多多少字（超了从中间截掉） */
-const REVIEW_PROMPT_MAX = 60_000
+/** 复核看的过程记录（同三方验收）：最近 30 条详细，更早的每条压成一行、合计最多 1.2 万字（定义在 log-text.ts） */
+export { REVIEW_LOG }
+/** 复核的输入最多多少字（超了从中间截掉，同三方验收，见 log-text.ts 的 EVIDENCE_PROMPT_MAX） */
+export const REVIEW_PROMPT_MAX = EVIDENCE_PROMPT_MAX
 
 const routineStateText: Record<SessionRoutineState["state"], string> = {
   running: "脚本还在跑",
@@ -101,7 +101,7 @@ export async function routineSection(db: DbLike, sessionId: string, snapshot: Pi
 /** 复核的输入（一段文字）：目标、检查点、派活参数和交回的结果、agent 的报告、固化流程的记录、产物、整次运行的过程记录 */
 export async function buildReviewPrompt(db: Db, session: SessionRow, snapshot: SessionSnapshot, report: string, vision: boolean) {
   const checkpoints = await loadCheckpoints({ db, session })
-  const evidence = await loadEvidence({ db, session }, vision, { artifacts: 4, images: 1, fullLog: REVIEW_LOG })
+  const evidence = await loadEvidence({ db, session }, vision, { artifacts: 4, images: 1, log: REVIEW_LOG })
   const parts: string[] = [`## 任务\n${snapshot.task.title}\n\n## 目标（做到什么算办成）\n${snapshot.task.goal}`]
   if (checkpoints.length)
     parts.push(
@@ -142,10 +142,7 @@ export async function buildReviewPrompt(db: Db, session: SessionRow, snapshot: S
   )
   if (evidence.images.length) parts.push(`## 证据：最后一张截图\n附在后面（${evidence.images[0]!.name}）。`)
   // 总长有上限：太长的从中间截掉（开头是目标和报告，末尾是最近的过程记录）
-  let prompt = parts.join("\n\n")
-  if (prompt.length > REVIEW_PROMPT_MAX)
-    prompt = `${prompt.slice(0, REVIEW_PROMPT_MAX * 0.6)}\n…（中间太长，省略）…\n${prompt.slice(-REVIEW_PROMPT_MAX * 0.4)}`
-  return { prompt, images: evidence.images }
+  return { prompt: clipPrompt(parts.join("\n\n"), REVIEW_PROMPT_MAX), images: evidence.images }
 }
 
 /** 复核一次：返回复核报告（出错时没有 verdict、写 error）。不写库，调用方决定怎么用结论（出错时调用方重试一次） */

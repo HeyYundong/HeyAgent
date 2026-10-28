@@ -258,8 +258,12 @@ describe("规则执行：调工具前拦下、审批（批准后执行、拒绝�
     const before = await ctx.db.select().from(t.notifications)
     const sessionId = await runNow(taskId)
     await waitStatus(ctx.db, sessionId, "done")
-    // 等复核完：结果和「办成」通知在复核以后才写
-    await waitFor(async () => (await sessionRow(ctx.db, sessionId))?.outcome)
+    // 等复核完：结果在复核以后才写，「办成」通知在写完结果的事务之后才发（读到结果就马上查通知，偶尔还没到）。等通知到，有期限
+    await waitFor(async () => (await sessionRow(ctx.db, sessionId))?.outcome, { what: "复核写结果" })
+    await waitFor(
+      async () => (await ctx.db.select().from(t.notifications).where(eq(t.notifications.sessionId, sessionId))).some((row) => row.title.includes("办成")),
+      { what: "「办成」通知" }
+    )
     expect(script.promptText(1)).toContain("这个任务不许发通知")
     expect(script.promptText(1)).toContain("这个任务不收记忆")
     const events = await eventsOf(ctx.db, sessionId)
