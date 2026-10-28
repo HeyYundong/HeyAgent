@@ -1,6 +1,7 @@
 // 「被派活」一组：任务弹窗（新建 / 编辑任务）和导入向导的「修改要导入的任务」共用（派活第二期，docs/dev/dispatch-p2.md 1.7、4.1 节）。
 // 开关「可以被派活」→ 每件事带的参数、要交回的结果（run-outcome 6.1）、同时最多几个在跑、谁能派活给它、没办成自动重试和间隔。
 // 两边都是 React Hook Form + TaskInput；「谁能派活给它」的选项由外面传：任务弹窗里是系统里的其他任务，导入向导里是方案里的其他任务（值是方案里的 key）。
+// 第三期（docs/dev/dispatch-p3.md 6.1 节）：自动重试下面加「每天花费上限」「外部系统能派活」「收到事件就派一张」（dispatch-events.tsx）；导入那边不显示这三项。
 import * as React from "react"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { Controller, useFieldArray, useWatch, type Control, type FieldErrors, type UseFormRegister } from "react-hook-form"
@@ -12,9 +13,11 @@ import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Field, FieldError, FieldLabel, FieldLegend, FieldSet } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from "@/components/ui/input-group"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 
+import { DispatchEvents } from "./dispatch-events"
 import { MultiPick, type Option } from "./multi-pick"
 
 /** 10 →「10 分钟」，120 →「2 小时」 */
@@ -200,7 +203,70 @@ function DispatchResults({ id, control, register, errors }: {
   )
 }
 
-export function DispatchFields({ id, control, register, errors, fromOptions, fromNote, hideResults = false }: {
+/** 每天花费上限：输入框里的文字自己记着（不然打「0.」时会被数字顶掉），空着 = 不限（null） */
+function BudgetInput({ id, value, onChange, invalid }: { id: string; value: number | null | undefined; onChange: (value: number | null) => void; invalid: boolean }) {
+  const [text, setText] = React.useState(value == null ? "" : String(value))
+  return (
+    <InputGroup>
+      <InputGroupAddon>
+        <InputGroupText>$</InputGroupText>
+      </InputGroupAddon>
+      <InputGroupInput
+        id={id}
+        type="number"
+        inputMode="decimal"
+        min={0.01}
+        step={0.01}
+        placeholder="不限"
+        aria-invalid={invalid}
+        value={text}
+        onChange={(event) => {
+          setText(event.target.value)
+          onChange(event.target.value.trim() === "" ? null : Number(event.target.value))
+        }}
+      />
+    </InputGroup>
+  )
+}
+
+/** 第三期的三项：每天花费上限、外部系统能派活、收到事件就派一张 */
+function DispatchExternal({ id, control, errors }: { id: string; control: Control<TaskInput>; errors: FieldErrors<TaskInput> }) {
+  const budgetError = errors.dispatch?.dailyBudgetUsd?.message
+  return (
+    <>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field data-invalid={!!budgetError}>
+          <FieldLabel htmlFor={`${id}-budget`} className="flex items-center gap-1">
+            每天花费上限
+            <HelpTip>被派来的运行每天（上海时间，按运行开始的那天算）加起来最多花多少美元。到了就不再开新的运行，排队的单明天 0 点以后接着办；已经在跑的不停，所以当天可能超出一点。空着 = 不限。</HelpTip>
+          </FieldLabel>
+          <Controller
+            control={control}
+            name="dispatch.dailyBudgetUsd"
+            render={({ field }) => <BudgetInput id={`${id}-budget`} value={field.value} onChange={field.onChange} invalid={!!budgetError} />}
+          />
+          {budgetError && <FieldError>{budgetError}</FieldError>}
+        </Field>
+      </div>
+      <Controller
+        control={control}
+        name="dispatch.allowApi"
+        render={({ field }) => (
+          <Field orientation="horizontal">
+            <Switch id={`${id}-api`} checked={!!field.value} onCheckedChange={(on) => field.onChange(on)} />
+            <FieldLabel htmlFor={`${id}-api`} className="flex items-center gap-1">
+              外部系统能派活
+              <HelpTip>打开后，外部系统可以用 API 密钥（设置 → API 密钥）调 POST /api/work-items 派活给它，用法在新建密钥的弹窗里。</HelpTip>
+            </FieldLabel>
+          </Field>
+        )}
+      />
+      <DispatchEvents id={id} control={control} errors={errors} />
+    </>
+  )
+}
+
+export function DispatchFields({ id, control, register, errors, fromOptions, fromNote, hideResults = false, hideExternal = false }: {
   id: string
   control: Control<TaskInput>
   register: UseFormRegister<TaskInput>
@@ -209,6 +275,8 @@ export function DispatchFields({ id, control, register, errors, fromOptions, fro
   fromNote?: string
   /** 导入方案里的任务还不能声明要交回的结果，导入时不显示这一项 */
   hideResults?: boolean
+  /** 导入时也不显示第三期的三项（每天花费上限、外部系统能派活、收到事件就派一张），导入后在任务弹窗里配 */
+  hideExternal?: boolean
 }) {
   const dispatch = useWatch({ control, name: "dispatch" })
   // 关掉再打开，刚才写的参数还在
@@ -272,6 +340,7 @@ export function DispatchFields({ id, control, register, errors, fromOptions, fro
               </Field>
             )}
           </div>
+          {!hideExternal && <DispatchExternal id={id} control={control} errors={errors} />}
         </>
       )}
     </FieldSet>

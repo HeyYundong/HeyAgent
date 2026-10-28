@@ -1,4 +1,4 @@
-// 「API 密钥」分区：外部系统调图库的 HTTP 接口和 MCP 时带的密钥（Authorization: Bearer <密钥>），可以有多把，各自删。
+// 「API 密钥」分区：外部系统调图库的 HTTP 接口和 MCP、派活接口（派活第三期，POST /api/work-items）时带的密钥（Authorization: Bearer <密钥>），可以有多把，各自删。
 // 库里只存哈希，页面只看到尾号；原文只在新建那一刻显示一次。用密钥做的事算在建它的人头上。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
@@ -7,7 +7,7 @@ import { KeyRoundIcon, PlusIcon, Trash2Icon } from "lucide-react"
 import { useForm } from "react-hook-form"
 import { apiKeyCreateSchema, fmtDateTime, type ApiKey, type ApiKeyCreateInput } from "@heyagent/shared"
 
-import { DetailSection } from "@/components/shell/simple-page"
+import { DetailSection, HelpTip } from "@/components/shell/simple-page"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -36,7 +36,7 @@ export function ApiKeysSection() {
   return (
     <DetailSection
       title="API 密钥"
-      description="外部系统（别的业务系统、脚本、Claude Desktop 之类的 MCP 客户端）调图库的 HTTP 接口和 MCP 时带的密钥。用密钥做的事都算在建它的人头上。"
+      description="外部系统（别的业务系统、脚本、Claude Desktop 之类的 MCP 客户端）调图库的 HTTP 接口和 MCP、派活接口时带的密钥。用密钥做的事都算在建它的人头上。派活只能派给打开了「外部系统能派活」的任务。"
       action={
         <Button size="sm" variant="outline" onClick={() => setCreating(true)}>
           <PlusIcon data-icon="inline-start" />
@@ -157,6 +157,15 @@ function RevealDialog({ name, apiKey, onClose }: { name: string; apiKey: string;
     `  -H "Authorization: Bearer ${apiKey}" -H "Content-Type: application/json" \\`,
     `  -d '{"tags": ["标签"], "where": [{"path": "价格", "op": "lt", "value": 10}]}'`,
   ].join("\n")
+  // 派活第三期（docs/dev/dispatch-p3.md 2.5 节）：派一张、用自己的编号查单。任务 id、参数名换成自己的
+  const work = [
+    `curl -X POST ${origin}/api/work-items \\`,
+    `  -H "Authorization: Bearer ${apiKey}" -H "Content-Type: application/json" \\`,
+    `  -d '{"task": "T-1042", "params": {"单号": "ORD-1018-0012"}, "priority": "high"}'`,
+    "",
+    `curl "${origin}/api/work-items?task=T-1042&key=ORD-1018-0012" \\`,
+    `  -H "Authorization: Bearer ${apiKey}"`,
+  ].join("\n")
   const mcp = `claude mcp add --transport http heyagent-gallery ${origin}/api/gallery/mcp --header "Authorization: Bearer ${apiKey}"`
 
   return (
@@ -175,6 +184,11 @@ function RevealDialog({ name, apiKey, onClose }: { name: string; apiKey: string;
           <Code text={apiKey} label="复制密钥" />
           <p className="font-medium">HTTP 接口：传图、检索</p>
           <Code text={curl} label="复制示例命令" />
+          <p className="flex items-center gap-1 font-medium">
+            HTTP 接口：派活、查单
+            <HelpTip>只能派给打开了「外部系统能派活」的任务（任务弹窗的「被派活」一组）。同一件事（去重参数一样，或者同一个 key）再派只返回已有的单，不会办两次。结果用 GET /api/work-items/单号 查，status、outcome、result 都在里面。</HelpTip>
+          </p>
+          <Code text={work} label="复制派活示例命令" />
           <p className="font-medium">MCP（Streamable HTTP）：例如加到 Claude Code</p>
           <Code text={mcp} label="复制 MCP 命令" />
         </div>

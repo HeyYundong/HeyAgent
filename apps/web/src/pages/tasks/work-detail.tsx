@@ -5,11 +5,14 @@
 // 排队等自动重试的单徽章写「排队 · 16:38 重试」，顶部提示和处理记录里写第几次重试。
 // 运行结果（docs/dev/run-outcome.md 第 6.2、8 节）：单的结果跟着最后那次运行的结果（办成 / 没办成）；没办成多一种：缺要交回的结果（missing_result）。
 // 2026-10-20 以前的旧单可能是 failKind = partial（部分办成），或者办完 + 结果没办成（原来「没核实」的，迁移 0026 改的），照样显示。
+// 派活第三期（docs/dev/dispatch-p3.md 6.4 节）：谁派的加外部系统、外部事件（workFromText）；优先级徽章；定了时间的排队（「定在 … 以后办」）；
+// 名额那行和排队的提示加每天花费上限。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
 import {
   ArrowRightIcon,
   BotIcon,
+  CalendarClockIcon,
   CircleCheckIcon,
   CircleSlashIcon,
   CircleAlertIcon,
@@ -23,7 +26,6 @@ import {
   ScanSearchIcon,
   SearchXIcon,
   TimerIcon,
-  UserIcon,
 } from "lucide-react"
 import {
   can,
@@ -57,7 +59,22 @@ import { trpc } from "@/lib/trpc"
 import { delayText } from "./dispatch-fields"
 import { WaitingAlert, money } from "./parts"
 import { CancelDialog, EditParamsDialog, RedoDoneDialog, useRedo } from "./work-dialogs"
-import { ParamsTable, ReportTable, WorkItemBadge, failReason, reportText, retryAt, shortName, timeText, useWorkTaskStats } from "./work-parts"
+import {
+  ParamsTable,
+  ReportTable,
+  WORK_VIA_ICON,
+  WorkItemBadge,
+  WorkPriorityBadge,
+  budgetHit,
+  failReason,
+  reportText,
+  retryAt,
+  scheduledAt,
+  shortName,
+  timeText,
+  useWorkTaskStats,
+  workFromText,
+} from "./work-parts"
 
 /** 一张单的详情，带「⋯」里三个操作的弹窗（改参数、不办了、办完的重办先确认） */
 export function WorkItemView({ id }: { id: string }) {
@@ -81,9 +98,21 @@ export function WorkItemView({ id }: { id: string }) {
   )
 }
 
-/** 名额的一行（任务详情「派来的活」）：同时最多几个在跑、现在占几个、排队几张；停用了写「先不开始」 */
-export function quotaText(task: { enabled: boolean }, stats: { maxRunning: number; occupied: number; queued: number }) {
-  return task.enabled ? `同时最多 ${stats.maxRunning} 个在跑 · 现在占 ${stats.occupied} 个 · 排队 ${stats.queued} 张` : `任务停用了，排队的 ${stats.queued} 张先不开始`
+/** 每天花费上限的写法：5 →「$5」，0.5 →「$0.5」 */
+export const budgetText = (usd: number) => `$${Number(usd.toFixed(2))}`
+
+/**
+ * 名额的一行（任务详情「派来的活」）：同时最多几个在跑、现在占几个、排队几张；停用了写「先不开始」。
+ * 第三期：设了每天花费上限的加「今天花了 $1.20 / 上限 $5」；到了上限写「今天的花费到了上限（$5），排队的 N 张明天 0 点以后办」
+ */
+export function quotaText(
+  task: { enabled: boolean },
+  stats: { maxRunning: number; occupied: number; queued: number; spentTodayUsd: number; dailyBudgetUsd: number | null }
+) {
+  if (!task.enabled) return `任务停用了，排队的 ${stats.queued} 张先不开始`
+  if (budgetHit(stats)) return `今天的花费到了上限（${budgetText(stats.dailyBudgetUsd!)}），排队的 ${stats.queued} 张明天 0 点以后办`
+  const quota = `同时最多 ${stats.maxRunning} 个在跑 · 现在占 ${stats.occupied} 个 · 排队 ${stats.queued} 张`
+  return stats.dailyBudgetUsd != null ? `${quota} · 今天花了 ${money(stats.spentTodayUsd)} / 上限 ${budgetText(stats.dailyBudgetUsd)}` : quota
 }
 
 const RUN_ICON: Record<RunStatus, typeof CircleCheckIcon> = { running: BotIcon, waiting: HourglassIcon, needs_human: HandIcon, verifying: ScanSearchIcon, done: CircleCheckIcon, incomplete: CircleAlertIcon, failed: CircleXIcon }
@@ -108,6 +137,7 @@ function WorkDetail({ id, onEdit, onCancel, onRedo }: { id: string; onEdit: (ite
   const canManage = can(user, "work.manage", { taskOwnerId: item.taskOwnerId })
   const ended = item.status === "done" || item.status === "failed" || item.status === "cancelled"
   const attempt = item.status === "queued" && item.attempts > 0 ? item.attempts + 1 : item.attempts
+  const FromIcon = WORK_VIA_ICON[item.via]
 
   return (
     <DetailPanel
@@ -115,6 +145,7 @@ function WorkDetail({ id, onEdit, onCancel, onRedo }: { id: string; onEdit: (ite
       badges={
         <>
           <WorkItemBadge item={item} long reason />
+          <WorkPriorityBadge priority={item.priority} />
           {attempt >= 2 && <Badge variant="outline">第 {attempt} 次</Badge>}
         </>
       }
@@ -140,8 +171,8 @@ function WorkDetail({ id, onEdit, onCancel, onRedo }: { id: string; onEdit: (ite
             </>
           ) : (
             <>
-              <UserIcon className="size-3" />
-              {staffName(item.fromUserId ?? undefined)}手动派的
+              <FromIcon className="size-3" />
+              {workFromText(item, staffName)}
             </>
           )}
           <span>· 派于 {timeText(item.createdAt)}</span>
@@ -217,6 +248,7 @@ function StatusAlert({ item, run, canManage }: { item: WorkItemDetail; run?: Ses
   const humanItems = useHumanItems()
   const runNow = useRunNow()
   if (retryAt(item)) return <RetryAlert item={item} canManage={canManage} />
+  if (scheduledAt(item)) return <ScheduledAlert item={item} canManage={canManage} />
   if (item.status === "queued") return <QueuedAlert item={item} canManage={canManage} />
   if (item.status === "running" && run?.status === "needs_human") {
     const human = humanItems.find((each) => each.runId === run.id)
@@ -274,7 +306,21 @@ function RetryAlert({ item, canManage }: { item: WorkItemDetail; canManage: bool
   )
 }
 
-/** 排队的单：排第几位、谁在占名额；任务停用了（或关了被派活）写「单先排着」 */
+/** 派的时候说了过多久再办、还没到点（第三期）：到点前不领、不算排队名次 */
+function ScheduledAlert({ item, canManage }: { item: WorkItemDetail; canManage: boolean }) {
+  return (
+    <Alert>
+      <CalendarClockIcon />
+      <AlertTitle>定在 {timeText(scheduledAt(item))} 以后办</AlertTitle>
+      <AlertDescription>
+        派的时候说了过一阵再办：到点以前不开始、不占排队的位子，到点后排进「{item.taskTitle}」的队里。
+        {canManage && "要提前办或者换个时间，点右上角「⋯ → 改参数」改「什么时候办」。"}
+      </AlertDescription>
+    </Alert>
+  )
+}
+
+/** 排队的单：排第几位、谁在占名额；任务停用了（或关了被派活）写「单先排着」；今天的花费到了上限写「明天接着办」（第三期） */
 function QueuedAlert({ item, canManage }: { item: WorkItemDetail; canManage: boolean }) {
   const stats = useWorkTaskStats(item.taskId).data
   // 在办的单里执行中、验收中的就是占名额的（等浏览器的也占，但列表上看不出来，数字以 stats 为准）
@@ -284,6 +330,8 @@ function QueuedAlert({ item, canManage }: { item: WorkItemDetail; canManage: boo
   let text: string
   if (!item.taskDispatch) text = `「${item.taskTitle}」关了被派活，单先排着；重新打开后接着办。`
   else if (!item.taskEnabled) text = `「${item.taskTitle}」停用了，单先排着；${canManage ? "重新启用任务后" : "负责人重新启用后"}自动开始办。`
+  else if (stats && budgetHit(stats))
+    text = `「${item.taskTitle}」今天被派来的运行花了 ${money(stats.spentTodayUsd)}，到了每天的上限 ${budgetText(stats.dailyBudgetUsd!)}，今天不再开新的运行；明天 0 点以后接着办。${canManage ? "要今天接着办，就去任务里调大上限。" : ""}`
   else text = `「${item.taskTitle}」同时最多 ${item.taskDispatch.maxRunning} 个在跑，现在${holders}。前面的办完或者挂起等待，就轮到它。`
   return (
     <Alert>
@@ -416,6 +464,7 @@ function ResultBody({ item, run, canManage }: { item: WorkItemDetail; run?: Sess
       </div>
     )
   if (retryAt(item)) return <p className="text-muted-foreground">上一次运行出错，还没有结果；{timeText(retryAt(item))} 自动重试，办完了结果写在这里。</p>
+  if (scheduledAt(item) && item.attempts === 0) return <p className="text-muted-foreground">定在 {timeText(scheduledAt(item))} 以后办，还没开始；办完了结果写在这里。</p>
   if (item.status === "queued") {
     return (
       <div className="flex flex-col gap-3">
@@ -478,7 +527,9 @@ function History({ item }: { item: WorkItemDetail }) {
             <TraceTitle>
               {retryAt(item)
                 ? `等自动重试：${timeText(retryAt(item))} 到点后排队，轮到了开第 ${runs.length + 1} 次运行`
-                : `排队中 · 第 ${item.queuePosition ?? "—"} 位，轮到了开第 ${runs.length + 1} 次运行`}
+                : scheduledAt(item)
+                  ? `定在 ${timeText(scheduledAt(item))} 以后办：到点后排队，轮到了开第 ${runs.length + 1} 次运行`
+                  : `排队中 · 第 ${item.queuePosition ?? "—"} 位，轮到了开第 ${runs.length + 1} 次运行`}
             </TraceTitle>
           </TraceLine>
         </div>
@@ -547,14 +598,18 @@ function EventLine({ item, entry }: { item: WorkItemDetail; entry: WorkLogEntry 
   const staffName = useStaffName()
   const who = staffName(entry.byId)
   const line = (() => {
-    if (entry.kind === "created")
+    if (entry.kind === "created") {
+      const Icon = WORK_VIA_ICON[item.via]
       return {
-        icon: item.via === "agent" ? <BotIcon /> : <UserIcon />,
+        icon: <Icon />,
         title:
           item.via === "agent"
             ? `派进来：「${shortName(item.fromTaskTitle)}」的运行 ${item.fromSessionId ?? ""} 用「派活」派的`
-            : `派进来：${staffName(entry.byId ?? item.fromUserId ?? undefined)}手动派的`,
+            : item.via === "human"
+              ? `派进来：${staffName(entry.byId ?? item.fromUserId ?? undefined)}手动派的`
+              : `派进来：${workFromText(item, staffName)}`,
       }
+    }
     if (entry.kind === "redo") return { icon: <RotateCwIcon />, title: `${who} 点了「重办」` }
     if (entry.kind === "params_changed") return { icon: <PencilIcon />, title: entry.byId ? `${who} 改了参数` : "参数改了（派活方用新参数覆盖）" }
     if (entry.kind !== "cancelled") return null

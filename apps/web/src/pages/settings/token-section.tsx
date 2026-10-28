@@ -41,7 +41,7 @@ export function TokenSection({ token }: { token: SettingsView["eventToken"] }) {
   return (
     <DetailSection
       title="外部事件令牌"
-      description="别的系统发生了某件事（例如审批通过、文件处理完），可以发一个事件过来，叫醒正在等这个事件的待办。发事件时要带这个令牌。"
+      description="别的系统发生了某件事（例如审批通过、文件处理完），可以发一个事件过来，叫醒正在等这个事件的待办。任务上配了「收到事件就派一张」的，事件来了会派单。发事件时要带这个令牌。"
       action={token && <Badge variant="outline">已生成</Badge>}
     >
       <div className="flex flex-col gap-3">
