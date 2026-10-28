@@ -12,7 +12,8 @@ REPEAT=${3:-1}
 "$ROOT/scripts/or-usage.sh" check 18
 mkdir -p "$ROOT/.dev/speed"
 OPENROUTER_API_KEY=$(grep -E '^OPENROUTER_API_KEY=' "$ROOT/.env" | head -1 | cut -d= -f2-)
-TEST_DATABASE_URL=$(grep -E '^TEST_DATABASE_URL=' "$ROOT/.env" | head -1 | cut -d= -f2-)
+# 测试库：环境变量里给了就用它（几个基准同时跑时各用各的 *_test 库），不然用 .env 的
+TEST_DATABASE_URL=${TEST_DATABASE_URL:-$(grep -E '^TEST_DATABASE_URL=' "$ROOT/.env" | head -1 | cut -d= -f2-)}
 export OPENROUTER_API_KEY TEST_DATABASE_URL
 IMAGE=${HEYAGENT_BROWSER_TEST_IMAGE:-localhost/heyagent-worker:m1}
 exec podman run --rm --init --shm-size=2g \
