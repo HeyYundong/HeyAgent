@@ -1,6 +1,6 @@
 // 工具的写操作：HTTP 接口（可从 cURL 导入）、全局密钥、MCP 服务器。
 // 安全：模板（URL、请求头、请求体）、MCP 的命令和地址里出现明文密钥就拒绝保存，要求改成 {{名字}}；
-// 密钥值只加密存进 secrets，任何接口都不返回原文。内置工具由引擎在启动时同步，这里不能改、不能删。
+// 密钥值只加密存进 secrets，任何接口都不返回原文。内置工具由引擎在启动时同步，这里不能改、不能删；流程库的工具（source = routine）也是。
 import { and, eq, inArray, sql } from "drizzle-orm"
 import { hasPlainSecret, moveSecrets, scanTemplate, secretNameSchema, notifyChannelSchema, SETTING_KEYS, syncHttpParams, templatePlaceholders, type HttpParam, type HttpSpec, type Risk, type Tool } from "@heyagent/shared"
 import { z } from "zod"
@@ -9,6 +9,9 @@ import * as t from "../../db/schema.js"
 import { checkJsonBodyTemplate } from "../../engine/tools/http.js"
 import { assertCan, audit, badRequest, conflict, deleteSecret, findSecret, freeId, notFound, putSecret, slugOf, type DbOrTx, type Tx, type WriteCtx } from "./common.js"
 import { usedByText } from "./tasks.js"
+
+/** 流程库的工具（source = routine，docs/dev/routine-library.md 4.1）只由流程库写 */
+export const ROUTINE_TOOL_MESSAGE = "这是流程库里的流程，在流程页里改"
 
 // ---------- 被谁用着 ----------
 
@@ -158,6 +161,7 @@ export async function updateHttpTool(ctx: WriteCtx, input: HttpToolFields & { id
   return ctx.db.transaction(async (tx) => {
     const [before] = await tx.select().from(t.tools).where(eq(t.tools.id, input.id))
     if (!before) throw notFound("工具", input.id)
+    if (before.source === "routine") throw badRequest(ROUTINE_TOOL_MESSAGE)
     if (before.source !== "http") throw badRequest(before.source === "builtin" ? "内置工具由系统提供，不能改" : "MCP 工具要编辑它所在的服务器")
     // 没传参数清单：原来存的清单当底子（同名参数的类型、必填、说明沿用），新参数按模板推
     if (!input.http.params && before.http?.params) input = { ...input, http: { ...input.http, params: syncHttpParams(specOf(input.http), before.http.params).params } }
@@ -182,6 +186,7 @@ export async function deleteHttpTool(ctx: WriteCtx, input: { id: string }): Prom
   return ctx.db.transaction(async (tx) => {
     const [before] = await tx.select().from(t.tools).where(eq(t.tools.id, input.id))
     if (!before) throw notFound("工具", input.id)
+    if (before.source === "routine") throw badRequest(ROUTINE_TOOL_MESSAGE)
     if (before.source !== "http") throw badRequest(before.source === "builtin" ? "内置工具由系统提供，不能删" : "MCP 工具要删除它所在的服务器，或者在服务器里取消勾选")
     const usage = await toolUsage(tx, [input.id])
     if (inUse(usage)) throw conflict(`工具「${before.name}」正在被使用：${usageText(usage)}。先去掉这些引用，再删除。`)
