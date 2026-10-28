@@ -260,7 +260,7 @@ describe("材料", () => {
 })
 
 describe("固化员的回答套了一层", () => {
-  const base = { suitable: true, reason: "", name: "查供应商", description: "1. 搜索", inputSchema: "{}", outputSchema: "{}", commits: [], assumptions: [] }
+  const base = { suitable: true, reason: "", name: "查供应商", description: "1. 搜索", inputSchema: "{}", outputSchema: "{}", commits: [], assumptions: [], httpToolSuggestions: [] }
   const script = 'import ha from "heyagent"\n\nexport default async function run(input) {\n  return ha.finish({ outcome: "achieved", summary: "好", evidence: "页面显示「已提交」" })\n}'
   it("code 里又是一整个回答（能解析）：用里面的脚本，别的字段用外面的", () => {
     const nested = JSON.stringify({ suitable: true, input: { type: "object" }, code: script })
