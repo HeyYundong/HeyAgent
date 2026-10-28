@@ -1072,11 +1072,14 @@ Chrome 时间线（秒，从父运行开始算；开始起 = Chrome 进程出现
 3. **花费会多 1.7–2.5 倍**：每个子 agent 要自己认一遍页面、定步骤、交回，一步一调多（不拆的 agent 活多了反而会用批）。省时间的代价是钱，赶时间的才拆。
 4. 拆的总用时更稳：同样 18 家，拆的 3 遍 128–134 秒，不拆的 183–295 秒（不拆的 agent 一次走偏，就全程都慢）。
 
-#### 21.7.4 还有的问题（产品代码，只记下，没改）
+#### 21.7.4 还有的问题（产品代码；2026-10-30 三条都修了，见每条末尾）
 
 1. **复核的模型两次返回格式不对，对的运行被记成「没办成」**（S5L 拆第 2 遍：18/18 全对、只提交 1 次，结果「复核出错，没能确认办成：模型返回的结果格式不对：verdict Invalid option: expected one of "achieved"|"not_achieved"（重试了一次……）」）。`engine/review.ts` 的 `performReview` 用 `callStructured` 要 `{ verdict, reason }`，DeepSeek 两次给的 `verdict` 都不是这两个值之一（原样没存，看不到给了什么）；复核出错按规矩记没办成。这次 12 遍里 1 遍，21.6 没遇到。和子 agent 无关（材料长：3 个子 agent 的结果 + 父的过程），但拆过的运行复核材料更长，可能更容易碰上。建议：① 格式不对时把模型原样的输出存进复核报告（截一段），好查是给了中文「办成」、大写还是别的；② `verdict` 的取值在提示词里再写一遍，或者格式不对的那次先试着从文字里认出 achieved / not_achieved；③ 复核出错要不要记「没办成」还是记「没核实」让人看，由监工定。
+   **已修（3b3a656）**：`verdict` 解析时宽松认（大小写、空白、中文「办成 / 没办成」、success / failed 等能明确对上的，`engine/structured.ts` 的 `lenientEnum`），系统提示末尾再写一遍只能是哪两个值；还对不上就请模型改一次（回话里列出允许的取值和它给的错值）；改了还不对仍记没办成（不加新结果），原因写「复核没做成（复核模型返回的格式不对），结果没有核实，可以人工改结果。」，模型原话截前 2000 字存进 `review.rawOutput`，复核报告里能看到。三方验收同样处理。另外复核、三方验收的材料上限改成按模型的上下文算（`evidencePromptMax`，最多仍是 8 万字）。见 `run-outcome.md` 5.2。
 2. **（不是子 agent 的问题，归浏览器）不带 `list` 的 `browser_extract` 只读第一个匹配，模型以为没读全，同一个调用重复好几次**（S5L 不拆第 2 遍：详情页上 `{"fields":{"field":"getByRole('rowheader')","value":"getByRole('cell')"},"limit":20}` 连调 3–4 次，每次都只回「1 | 联系人 | 李强」，最后才加上 `list: getByRole('row')` 读到 4 行；之后每家都先 extract 一两次再说，整遍 36 次 extract、105 次调用、295 秒，是不拆组最慢的一遍）。工具说明里有「不给 list 就是整页一行」，`limit` 不给 list 时没用，但输出没说。建议：不给 list、某个字段的定位匹配到好几个时，输出加一句「getByRole('rowheader') 匹配到 4 个，只取了第一个；要每个一行请给 list（例如 getByRole('row')）」；给了 `limit` 没给 `list` 也提示一句。
+   **已修（3b3a656）**：不给 `list` 时，字段的定位在页面上匹配到好几处，输出加一句「注意：「字段」的定位 … 在页面上找到 N 处，只读了第一处。要读全部，给 list（每一行的定位，例如 getByRole('row')）……」；给了 `limit` 没给 `list` 提示 limit 不起作用（`browser/extract.ts` 的 `formatExtract`）。脚本 `ha.browser.extract` 拿到的数据不变。
 3. **（小，提示词的取舍）子 agent 少用 `browser_batch`**：查 6 家的 9 个子 agent 只有 3 个用批，其余每家 4 次调用；不拆的 agent 查 18 家时 2/3 遍认完页面就每家一个批。子 agent 的系统提示和父一样，看起来是活少时模型不觉得值得用批。要不要在子 agent 那一节加一句「同样的几步要对好几件做时用 browser_batch」由监工定（不要写死业务）。
+   **已修（3b3a656）**：子运行的系统提示里本来就有「浏览器」一节的 batch 用法（和父一样）；「你是子 agent」一节在有 `browser.batch` 时再加一句「子目标里有几项要做同样的几步时，认清页面以后每项用一次 browser_batch 做完，不要一步一调。」（`engine/prompt.ts` 的 `subAgentRoleSection`）。
 
 #### 21.7.5 花费
 
