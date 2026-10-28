@@ -125,6 +125,13 @@ export interface ToolOutcome {
 const fail = (output: string): ToolOutcome => ({ output, isError: true })
 
 /**
+ * run.finish 报没办成却没传 reason 时回给模型的话（docs/dev/sub-agents.md 21.3 第 6 条：模型三次把原因写进 summary、没传 reason 这个参数）：
+ * 说清缺的是哪个参数、和 summary / evidence 并列、该写什么，其余照原样再调一次
+ */
+export const runFinishReasonMissing = (outcome: string) =>
+  `没有记下：缺参数 reason。outcome = ${outcome} 时，除了 summary、evidence，还要单独传 reason 这个参数（和 summary、evidence 并列的一个字段，只写在 summary 里不算），写拿到了什么、缺了什么、为什么，例如 reason: "只拿到 3 项里的 2 项，缺第 3 项：页面不存在"。outcome、summary、evidence 照原样，加上 reason 再调一次。`
+
+/**
  * file.read 读表格时的结构化结果（固化脚本按附件表格一行行做，docs/dev/solidify.md 4.4）：第一行当表头，
  * 从 startRow（表里的行号，默认表头下一行）起读 rows 行（默认 200、最多 500），一行一个对象；total 是表头以下一共几行
  */
@@ -748,7 +755,7 @@ const handlers: {
     }
     const reason = input.reason?.trim()
     if (input.outcome !== "achieved" && !reason)
-      return fail(`outcome = ${input.outcome} 时要写 reason：拿到了什么、缺了什么、为什么。补上 reason 再调一次`)
+      return fail(runFinishReasonMissing(input.outcome))
     const summary = input.summary.trim()
     const evidence = input.evidence.trim()
     if (!summary || !evidence) return fail("summary 和 evidence 都要写：做了什么、结果在哪；对照目标逐条写依据")

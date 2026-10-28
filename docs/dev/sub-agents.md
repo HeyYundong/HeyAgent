@@ -154,7 +154,9 @@
 - 用浏览器的子 agent 每个要一个 Chrome：本任务允许 2 个 Chrome，所以同时最多 2 个子 agent 能用浏览器，多的会等。你自己开着浏览器时还要再少一个。
 - 写子目标：子 agent 看不到你的对话、你读过的网页和文件，只看到你写的目标、输入和给它的文件；写清做到什么算完、交回什么（字段写在 results 里，文件让它存到空间里）。
 - 这次运行同时最多 3 个子 agent 在跑，一共最多拆 10 个。
-- 拆完先做你自己能做的，再用 subagent_wait 等；收到结果后自己核对、汇总。没办成的看原因：补一个写得更具体的子 agent、自己做，或者如实报没办成。不要把子 agent 没做到的说成做到了。
+- 拆完先做不在子目标里的事（没有就直接用 subagent_wait 等），交出去的不要自己再做一遍。
+- 收到结果后汇总：看各个子 agent 交回的依据、文件有没有互相矛盾、和目标对不对得上，不要逐个重做；有矛盾或缺的只查那一处，或补拆。子 agent 写的文件在你空间的 subs/<n>/ 下（只读）。
+- 子 agent 报没办成、或交回的东西缺了的，看原因：补一个写得更具体的子 agent、自己做那一件，或者如实报没办成。不要把子 agent 没做到的说成做到了。
 - 子 agent 还没结束时不能报结果：先等完，或者用 subagent_cancel 停掉不要的。
 ```
 
@@ -284,6 +286,7 @@
 ### 6.3 Chrome 名额不够时
 
 - 两层限制都不变：每个 Chrome 配置一个运行、每个 worker 最多 `browser.maxPerWorker` 个 Chrome。子 agent 用浏览器时照常分配，没有空的就「等待浏览器」，占着子 agent 名额等（6.2 的表）。
+- 起 Chrome（2026-10-29 加，21.3 第 2、3 条；`chrome.ts`，所有起 Chrome 的地方都一样）：同一个 worker 进程里排队一个一个起（前一个报了 DevTools 地址或失败才起下一个，排队时间不算进 30 秒的启动超时）；启动超时自动再起一次（运行没被停掉的话），两次都超时才报「Chrome 启动超时（试了 2 次，每次 30 秒）」。第一次挑的 Chrome 一次都没起来的不钉住（`browser/tools.ts` 的 `startFailed`：清掉 `sessions.browser_profile_id`），下次照第一次那样挑空闲的；打开过、中途断了的，和 agent 用 `browser.use` 指定的，照旧只用原来那个。
 - 结果：任务只允许 1 个 Chrome 时，用浏览器的子 agent 实际上一个一个跑。系统提示里写明（4.3 节），任务页在选了「拆给子 agent」又只允许 1 个 Chrome 时给一行提示「只有 1 个 Chrome：用浏览器的子 agent 会一个一个做」。
 - worker 的 Chrome 上限：一台 worker 默认 4 个，子 agent 默认同时 3 个，留 1 个。上限调高时，`browser.maxPerWorker` 也要跟着调，设置页「?」里写一句。
 - 父运行在等子 agent 时不占 Chrome、不占 worker（挂起了）。
@@ -344,8 +347,10 @@
   文件：subs/1/out/a.csv
 - R-12-3.4「查 D 站」没办成：要登录，人在 30 分钟内没处理（子 agent 自报）
 ……
-以上是子 agent 自报的结果，没有复核；要交给人的结论，自己核对一下关键的数据和文件。
+以上是子 agent 自报的结果，没有复核。汇总前看各个子 agent 交回的依据、文件有没有互相矛盾、和目标对不对得上；有矛盾或缺的只查那一处，或补拆，不要把交出去的事逐个重做。报没办成的、交回的东西缺了的照常处理。
 ```
+
+（2026-10-29 改，21.3 第 1 条：原来的「拆完先做你自己能做的」「自己核对一下关键的数据和文件」让父 agent 把交出去的活又做了一遍。）
 
 - 每个子 agent：结果、`summary`（前 1500 字）、`evidence`（前 1000 字）、`work.report` 交的字段、它写的文件路径（前 20 个）。出错的写错误原因，被停掉的写谁停的、为什么。
 - 已经交回过的（`any` 模式前几次给过的），再交时只写一行「R-12-3.1 办成（前面给过）」。
@@ -385,6 +390,7 @@
 
 - **不能再拆**：子快照里没有 `subagent.start`，`subagent.start` 的处理里也查 `kind`，只一层。理由：多层的花费、名额、等待都难以估计；真要多层的，父 agent 自己可以补拆。
 - 停掉子运行（`stopChildrenInTx`、`subagent.cancel`）复用取消的那段写法（`cancelSessionInTx`：改状态、作废等待、取消要人办的事、写过程），但不用人的身份，审计记系统。正在跑的子运行在下一个工具调用之前发现状态变了就停（`loop.ts` 现在就这样），Chrome 跟着关。
+- **中止信号**（2026-10-29 加，21.3 第 4 条；所有运行通用，不只子运行）：`engine/stop-watch.ts` 每个进程一个轮询，`runSession` 期间登记，每秒（`runtime.stopPollMs`，环境变量 `HEYAGENT_STOP_POLL_MS`）查一次在跑的运行，变成已结束（人取消、父结束连带停、清扫、`subagent.cancel`）就 abort 它的信号：正在调的模型（`abortSignal`）、等重试的间隔、排队等 worker 空位的、正在起的 Chrome（`chrome.ts` 的 `startChrome` 杀掉整组进程）马上停。停掉以后到的工具结果（网关的 `stopped()`：信号到了或库里已经结束）、模型回复不再记进过程、不再算钱和步数，「已停掉」后面没有别的过程记录；中止之前花掉的照实记。固化脚本照旧用自己的取消（每次工具调用前看状态）。
 
 ## 9. 结果和复核
 
@@ -479,7 +485,7 @@ ALTER TABLE "tasks" ADD COLUMN "subagent_model_id" text;
 
 - `ItemGroup`，每个子 agent 一个 `Item`（`outline` / `sm`），整行是链接，点了打开那个子运行的详情（`#/sessions?id=R-12-3.2`）：
   - `ItemTitle`：编号（`font-mono`）+ 标题；
-  - `ItemDescription`：目标的第一行（`line-clamp-1`）· 花费 · 用时；
+  - `ItemDescription`：目标的第一行（`line-clamp-1`）· 花费 · 用时（2026-10-29 改，21.3 第 5 条：从开始执行算、不算排队，`SubagentRow.ranAt` 到 `endedAt`，按秒写「15 秒」「1 分 20 秒」，同导入页的 `took`；一次没轮到就结束的写「没开始」；还在跑的写「今天 09:12 开始」）；
   - `ItemActions`：状态徽章，按 `SubagentRow.state`（文字用 shared 的 `subagentStateLabel`）：`queued` `outline`「排队」；`running` `secondary` + `Spinner`「在跑」；`waiting` `secondary` + `Spinner`，文字用 `waitingWhat`（「等待浏览器」这类）；`needs_human` `default`「等人处理」；`ended` 用现成的 `OutcomeBadge`（`outcome` + `outcomeReason`，悬停看原因）+ `ChevronRightIcon`。
   - 数据：`sessions.subagents({ parentId })`；区块标题的「3 / 4 结束」、花费合计用父运行摘要上的 `subagents`（`ended` / `total`、`costUsd`）。
 - 有在跑的子 agent 时，区块标题旁一个 `Progress`（结束的个数 / 总数）。

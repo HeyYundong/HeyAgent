@@ -3,12 +3,12 @@ import type { Server } from "node:http"
 
 import { serve } from "@hono/node-server"
 import { and, eq, inArray, isNull } from "drizzle-orm"
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 import WebSocket from "ws"
 import { ANY_PROFILE_EVENT, leaseEventName, profileEventName, SETTING_KEYS } from "@heyagent/shared"
 
 import { adaptSchema, browserToolId } from "../src/browser/tools.js"
-import { chromeArgs } from "../src/browser/chrome.js"
+import { BrowserUnavailableError, chromeArgs } from "../src/browser/chrome.js"
 import { judgePage, parseVisionAnswer, probeLooksLoggedIn, type PageFacts } from "../src/browser/detect.js"
 import { gostConfig } from "../src/browser/gost.js"
 import type { GostPool } from "../src/browser/gost.js"
@@ -16,6 +16,7 @@ import { BrowserInstance, ProfileFullError } from "../src/browser/instance.js"
 import { accountForHost, acquireLease, profileSessionCount, releaseLeases, sweepLeases, wakeLeaseWaiters, wakeProfileWaiters } from "../src/browser/leases.js"
 import { fillCredentials, loadAccountPassword, passwordHosts } from "../src/browser/auto-login.js"
 import { captchaPrompt, parseCaptchaPlan } from "../src/browser/captcha.js"
+import { getBrowserManager } from "../src/browser/manager.js"
 import { listBrowserMcpTools } from "../src/browser/mcp.js"
 import { attachBrowserViewRelay } from "../src/browser/view-relay.js"
 import { casWrite, loadVault, mergeStates, writeBackMerged, type StorageState, type StoredCookie } from "../src/browser/vault.js"
@@ -363,8 +364,9 @@ describe("每个 Chrome 同一时间只给一个运行用", () => {
     await ctx.db.delete(t.browserProfiles).where(eq(t.browserProfiles.id, "br-slot"))
   })
 
-  it("运行自动挑空闲的 Chrome，分到后绝不换；全被占着挂起等任一个，空出来叫醒；browser.use 指定被占的就等那一个，分到后不能再换", async () => {
-    // 这台机器没有 Chrome：挑中、登记成功后起 Chrome 会失败（「浏览器起不来」），够看出挑的是哪个
+  it("运行自动挑空闲的 Chrome，打开过就绝不换；全被占着挂起等任一个，空出来叫醒；browser.use 指定被占的就等那一个，分到后不能再换", async () => {
+    // 这台机器没有 Chrome：挑中、登记成功后起 Chrome 会失败（「浏览器起不来」），够看出挑的是哪个。
+    // 「打开过」的要 Chrome 起来过：1) 里把 BrowserInstance.start 换成什么都不做（之后连 MCP 时报「Chrome 还没起来」，Chrome 登记还开着）
     const workerId = "w-auto-test"
     await ctx.db.insert(t.browserWorkers).values({ id: workerId, controlUrl: "http://127.0.0.1:9", maxBrowsers: 4 })
     await ctx.db.insert(t.browserProfiles).values([
@@ -387,14 +389,17 @@ describe("每个 Chrome 同一时间只给一个运行用", () => {
     const waitOf = async (sessionId: string) =>
       (await ctx.db.select().from(t.sessionWaits).where(and(eq(t.sessionWaits.sessionId, sessionId), eq(t.sessionWaits.status, "waiting"))))[0]
 
-    // 1) 自动一被占着：运行 B 自动挑到自动二，不挂起
+    // 1) 自动一被占着：运行 B 自动挑到自动二，不挂起；Chrome 起来了（MCP 没连上）
+    const start = vi.spyOn(BrowserInstance.prototype, "start").mockResolvedValue(undefined)
+    let b = ""
     await occupy("bw-auto-a", "br-auto-1", "R-H-1")
     const scriptB = useScript(
       "test/auto-b",
       new Script([
         step([call("browser.navigate", { url: "https://example.com/" })]),
-        // B 已经分到自动二。这时自动一空出来、自动二被别的运行占了：B 不换，挂起等自动二
+        // B 已经打开过自动二。这时 Chrome 断了、自动一空出来、自动二被别的运行占了：B 不换，挂起等自动二
         async () => {
+          await getBrowserManager()!.forSession(b)?.close({ writeBack: false, reason: "测试：Chrome 断了" })
           await release("bw-auto-a")
           await occupy("bw-auto-x", "br-auto-2", "R-H-4")
           return step([call("browser.navigate", { url: "https://example.com/" })])
@@ -402,9 +407,10 @@ describe("每个 Chrome 同一时间只给一个运行用", () => {
         step([text("结束")]),
       ])
     )
-    const b = await run(await newTask("test/auto-b"))
+    b = await run(await newTask("test/auto-b"))
     await waitStatus(ctx.db, b, "waiting", 60_000)
-    expect(scriptB.promptText(1)).toMatch(/浏览器起不来/)
+    start.mockRestore()
+    expect(scriptB.promptText(1)).toMatch(/浏览器起不来：Chrome 还没起来/)
     expect((await sessionRow(ctx.db, b))!.browserProfileId).toBe("br-auto-2")
     expect((await eventsOf(ctx.db, b)).filter((event) => event.title.includes("等待浏览器"))).toHaveLength(1)
     expect(await waitOf(b)).toMatchObject({ event: profileEventName("br-auto-2"), what: "等待浏览器：Chrome「自动二」正在被别的运行用" })
@@ -441,7 +447,8 @@ describe("每个 Chrome 同一时间只给一个运行用", () => {
     expect(scriptC.promptText(1)).toContain("都在被别的运行用")
     expect(scriptC.promptText(1)).toContain("Chrome「自动一」空出来了")
     expect(scriptC.promptText(2)).toMatch(/浏览器起不来/)
-    expect((await sessionRow(ctx.db, c))!.browserProfileId).toBe("br-auto-1")
+    // 自动一一次都没起来：不钉住（21.3 第 2 条），下次照第一次那样挑
+    expect((await sessionRow(ctx.db, c))!.browserProfileId).toBeNull()
 
     // 3) agent 指定被占着的自动一：挂起只等它，自动二空着也不换；分到以后再指定别的被拒绝
     await release("bw-auto-b")
@@ -473,6 +480,53 @@ describe("每个 Chrome 同一时间只给一个运行用", () => {
 
     await ctx.db.update(t.sessions).set({ status: "failed" }).where(eq(t.sessions.taskId, holderTask))
     await ctx.db.delete(t.browserWorkers).where(eq(t.browserWorkers.id, workerId))
+  })
+
+  it("Chrome 一次都没起来的不钉住：第一个起失败、被别的运行拿走，下次用另一个空闲的（不排队等它）", async () => {
+    // 21.3 第 2 条：以前起失败也算分到了，第一个被别的运行拿走后这次运行一直等它，另一个空着也不用
+    const workerId = "w-pick-test"
+    await ctx.db.insert(t.browserWorkers).values({ id: workerId, controlUrl: "http://127.0.0.1:9", maxBrowsers: 4 })
+    await ctx.db.insert(t.browserProfiles).values([
+      { id: "br-pick-1", name: "挑一", position: 1 },
+      { id: "br-pick-2", name: "挑二", position: 2 },
+    ])
+    const holderTask = await createTask(ctx.db, { modelId: "test/pick-holder" })
+    await ctx.db.insert(t.sessions).values({ id: "R-P-1", taskId: holderTask, status: "running", modelId: "test/pick-holder", startedAt: new Date() })
+    // 第一次起 Chrome 超时；之后的「起来了」（不起真 Chrome，连 MCP 时报「Chrome 还没起来」，算打开过）
+    const tried: string[] = []
+    const start = vi.spyOn(BrowserInstance.prototype, "start").mockImplementation(async function (this: BrowserInstance) {
+      tried.push(this.profileId)
+      if (tried.length === 1) throw new BrowserUnavailableError("Chrome 启动超时（30 秒，试了 2 次）：测试")
+    })
+    try {
+      const script = useScript(
+        "test/pick-e",
+        new Script([
+          step([call("browser.navigate", { url: "https://example.com/" })]),
+          // 挑一起失败以后被别的运行拿走
+          async () => {
+            await ctx.db.insert(t.browserInstances).values({ id: "bw-pick-a", workerId, kind: "session", profileId: "br-pick-1", sessionId: "R-P-1", state: "running" })
+            return step([call("browser.navigate", { url: "https://example.com/" })])
+          },
+          step([text("结束")]),
+        ])
+      )
+      const taskId = await createTask(ctx.db, { modelId: "test/pick-e", toolIds: ["browser"] })
+      await ctx.db.update(t.tasks).set({ browserProfileIds: ["br-pick-1", "br-pick-2"], allowedDomains: [] }).where(eq(t.tasks.id, taskId))
+      const id = (await mutate(ctx.app, "engine.runNow", wang, { taskId })).data.sessionId as string
+      await waitStatus(ctx.db, id, "done", 60_000)
+      expect(script.promptText(1)).toContain("浏览器起不来：Chrome 启动超时")
+      // 第二次没去等挑一，直接用空着的挑二
+      expect(tried).toEqual(["br-pick-1", "br-pick-2"])
+      expect(script.promptText(2)).not.toContain("正在被别的运行用")
+      expect((await eventsOf(ctx.db, id)).some((event) => event.title.includes("等待浏览器"))).toBe(false)
+      expect((await sessionRow(ctx.db, id))!.browserProfileId).toBe("br-pick-2")
+    } finally {
+      start.mockRestore()
+      await ctx.db.update(t.sessions).set({ status: "failed" }).where(eq(t.sessions.taskId, holderTask))
+      await ctx.db.delete(t.browserInstances).where(eq(t.browserInstances.id, "bw-pick-a"))
+      await ctx.db.delete(t.browserWorkers).where(eq(t.browserWorkers.id, workerId))
+    }
   })
 })
 
@@ -554,8 +608,9 @@ describe("工具网关：浏览器工具组", () => {
     expect(script.promptText(2)).toContain("blocked.test 不在本任务的网址白名单里")
     // 这台机器没有 Chrome：报原因，不崩
     expect(script.promptText(3)).toMatch(/浏览器起不来：.*(Chrome|Xvfb)/)
+    // Chrome 一次都没起来：不算分到（21.3 第 2 条）
     const [session] = await ctx.db.select().from(t.sessions).where(eq(t.sessions.id, sessionId))
-    expect(session!.browserProfileId).toBe("br-us")
+    expect(session!.browserProfileId).toBeNull()
     const events = await eventsOf(ctx.db, sessionId)
     expect(events.some((event) => event.toolId === "browser.navigate")).toBe(true)
 

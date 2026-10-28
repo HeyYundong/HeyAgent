@@ -134,8 +134,12 @@ export async function loadSubRunFacts(db: DbLike, parentId: string): Promise<Sub
  */
 export async function listSubagents(db: Db, parentId: string): Promise<SubagentRow[]> {
   const children = await childrenOf(db, parentId)
+  const turns = await queueTurns(db, children.map(({ row }) => row.id))
   return children.map(({ row, n, wait }) => {
     const state = subagentStateOf(row.status, wait?.event)
+    const turn = turns.get(row.id)
+    // 开始执行：排过队的是轮到的时候，一次没轮到（排队时被停掉、还在排）的没有；没排过队的就是拆出来的时候
+    const ranAt = turn ? turn.firedAt : row.startedAt
     return {
       id: row.id,
       n,
@@ -147,11 +151,31 @@ export async function listSubagents(db: Db, parentId: string): Promise<SubagentR
       ...(state === "ended" && row.outcomeBy ? { outcomeBy: row.outcomeBy } : {}),
       costUsd: Number(row.costUsd),
       startedAt: row.startedAt.toISOString(),
+      ...(ranAt ? { ranAt: ranAt.toISOString() } : {}),
       ...(row.endedAt ? { endedAt: row.endedAt.toISOString() } : {}),
       ...(wait?.what && state !== "ended" ? { waitingWhat: wait.what } : {}),
       delivered: Boolean(row.subResult?.deliveredAt),
     }
   })
+}
+
+/**
+ * 子运行排名额的那条等待（subagent.queue:）：轮到的时间（fired 的 fired_at，最早一次）。没有这条的（没排过队）不在 Map 里；
+ * 排过队、一次没轮到的 firedAt 是 null
+ */
+async function queueTurns(db: DbLike, ids: string[]): Promise<Map<string, { firedAt: Date | null }>> {
+  const result = new Map<string, { firedAt: Date | null }>()
+  if (!ids.length) return result
+  const rows = await db
+    .select({ sessionId: t.sessionWaits.sessionId, status: t.sessionWaits.status, firedAt: t.sessionWaits.firedAt })
+    .from(t.sessionWaits)
+    .where(and(inArray(t.sessionWaits.sessionId, ids), sql`${t.sessionWaits.event} like ${`${SUBAGENT_QUEUE_EVENT_PREFIX}%`}`))
+  for (const row of rows) {
+    const fired = row.status === "fired" && row.firedAt ? row.firedAt : null
+    const seen = result.get(row.sessionId)
+    if (!seen || (fired && (!seen.firedAt || fired < seen.firedAt))) result.set(row.sessionId, { firedAt: fired ?? seen?.firedAt ?? null })
+  }
+  return result
 }
 
 /** 一批父运行各自的子 agent 统计（没拆过的不在 Map 里）：一次分组查询 */

@@ -18,7 +18,7 @@ import { buildSnapshot, startSessionImpl } from "../src/engine/sessions.js"
 import { cancelFromAgent, startFromAgent, waitFromAgent } from "../src/engine/subagents/agent-tools.js"
 import { recheckSubagentWaitAfterSuspend } from "../src/engine/subagents/notify.js"
 import { pumpSubagents } from "../src/engine/subagents/pump.js"
-import { subagentResultsText, type SubRunFacts } from "../src/engine/subagents/results.js"
+import { SUBAGENT_RESULTS_TAIL, subagentResultsText, type SubRunFacts } from "../src/engine/subagents/results.js"
 import { familyCost } from "../src/engine/subagents/settle.js"
 import { sweepSubagents } from "../src/engine/subagents/sweep.js"
 import { listSubagents } from "../src/engine/subagents/view.js"
@@ -96,6 +96,7 @@ function gate(title: string) {
 async function childReply(options: CallOptions) {
   const title = titleOf(options)
   const turn = toolResults(options)
+  if (title.startsWith("停")) return stopReply(title, options)
   if (title.startsWith("等")) await gate(title).promise
   if (title.startsWith("出错")) throw new Error("模型那边坏了")
   if (title.startsWith("只回文字")) return step([text(`说一句话：${title}`)])
@@ -103,6 +104,35 @@ async function childReply(options: CallOptions) {
   if (title.includes("写文件") && turn === 0) return step([call("file.save", { path: "out/result.txt", content: `内容 ${title}` })])
   if (title.startsWith("报字段") && turn === 0) return step([call("work.report", { data: { 价格: 12.5, 链接: "https://example.com/x" } })])
   return step(finishWith(`完成：${title}`))
+}
+
+/** 停的测试：模型开始调的时间、被中止的时间、不理中止回来的时间（按标题） */
+const modelEntered = new Map<string, number>()
+const modelAborted = new Map<string, number>()
+const modelReturned = new Map<string, number>()
+
+/**
+ * 停…的子 agent：停等…：一直等，直到这次调用被中止（AbortSignal）；停慢…：不理中止，1.5 秒后回一个工具调用（模拟停掉时模型已经在回了）
+ */
+async function stopReply(title: string, options: CallOptions) {
+  modelEntered.set(title, Date.now())
+  if (title.startsWith("停等"))
+    await new Promise<void>((resolve, reject) => {
+      const signal = options.abortSignal
+      const timer = setTimeout(resolve, 20_000)
+      signal?.addEventListener(
+        "abort",
+        () => {
+          clearTimeout(timer)
+          modelAborted.set(title, Date.now())
+          reject(signal.reason instanceof Error ? signal.reason : new Error("aborted"))
+        },
+        { once: true }
+      )
+    })
+  else await new Promise((resolve) => setTimeout(resolve, 1500))
+  modelReturned.set(title, Date.now())
+  return step([call("plan.set", { steps: ["接着做"] })])
 }
 
 let modelNo = 0
@@ -502,6 +532,35 @@ describe("失败和取消", () => {
     expect(second.error).toContain(`父运行 ${parent.row.id} 已经结束`)
   })
 
+  it("停掉父运行：子 agent 正在调的模型马上中止；停掉以后才回来的模型回复不记、不算钱；「已停掉」后面没有别的过程记录", async () => {
+    const { taskId } = await makeParentTask()
+    const parent = await fakeParent(taskId)
+    const tc = toolCtx(parent.row, parent.snapshot)
+    await startFromAgent(tc, { items: items("停等甲", "停慢乙") })
+    const [first, second] = [`${parent.row.id}.1`, `${parent.row.id}.2`]
+    await waitFor(async () => modelEntered.has("停等甲") && modelEntered.has("停慢乙"), { what: "两个子 agent 都在调模型" })
+    const cancelledAt = Date.now()
+    await cancelSessionImpl(ctx.db, { sessionId: parent.row.id, actorId: "u-lin", actorName: "林舟" })
+    // 甲的模型调用很快被中止（轮询 1 秒一次），不等它调完（20 秒）
+    const abortedAt = await waitFor(async () => modelAborted.get("停等甲"), { what: "甲的模型调用被中止", timeout: 5000 })
+    expect(abortedAt - cancelledAt).toBeLessThan(3000)
+    // 乙的模型不理中止，停掉以后才回来
+    await waitFor(async () => modelReturned.get("停慢乙"), { what: "乙的模型回来", timeout: 5000 })
+    await new Promise((resolve) => setTimeout(resolve, 800))
+    for (const id of [first, second]) {
+      const row = (await sessionRow(ctx.db, id))!
+      expect(row.status).toBe("failed")
+      // 这一次模型调用没记花费、没算步数
+      expect(Number(row.costUsd)).toBe(0)
+      expect(row.stepCount).toBe(0)
+      const events = await eventsOf(ctx.db, id)
+      const stop = events.findIndex((event) => event.title === "已停掉")
+      expect(stop).toBeGreaterThan(-1)
+      expect(events.slice(stop + 1).map((event) => event.title)).toEqual([])
+      expect(events.some((event) => event.kind === "think")).toBe(false)
+    }
+  })
+
   it("父还有子 agent 没结束：run.finish 被拒；只回文字先提醒一次，再只回文字就停掉子 agent 收尾", async () => {
     const parentModel = "test/sub-parent-text"
     const script = useScript(
@@ -583,6 +642,14 @@ describe("别处", () => {
     expect(system).toContain("## 拆给子 agent")
     expect(system).toContain("同时最多 3 个子 agent 在跑，一共最多拆 10 个")
     expect(system).toContain("mode: none")
+    // 21.3 第 1 条：交出去的不要自己再做、只查矛盾和缺的那一处；没办成、缺的照常处理
+    expect(system).toContain("拆完先做不在子目标里的事")
+    expect(system).toContain("交出去的不要自己再做一遍")
+    expect(system).toContain("看各个子 agent 交回的依据、文件有没有互相矛盾、和目标对不对得上")
+    expect(system).toContain("有矛盾或缺的只查那一处，或补拆")
+    expect(system).toContain("子 agent 报没办成、或交回的东西缺了的，看原因")
+    expect(system).not.toContain("先做你自己能做的")
+    expect(system).not.toContain("自己核对")
     expect(buildSystemPrompt(parent.snapshot, new Map())).not.toContain("## 拆给子 agent")
   })
 
@@ -599,13 +666,19 @@ describe("别处", () => {
     expect(text).toContain("R-1-1.2「乙」没办成（出错或被停掉）：父 agent 停掉的：不要了")
     expect(text).toContain("R-1-1.3「丙」办成（前面给过）")
     expect(text).toContain("没有复核")
+    // 21.3 第 1 条：叫醒消息的最后一句只让看矛盾、查缺的那一处，不要逐个重做
+    expect(text.split("\n").at(-1)).toBe(SUBAGENT_RESULTS_TAIL)
+    expect(SUBAGENT_RESULTS_TAIL).toContain("看各个子 agent 交回的依据、文件有没有互相矛盾、和目标对不对得上")
+    expect(SUBAGENT_RESULTS_TAIL).toContain("有矛盾或缺的只查那一处，或补拆")
+    expect(SUBAGENT_RESULTS_TAIL).toContain("报没办成的、交回的东西缺了的照常处理")
+    expect(text).not.toContain("自己核对")
   })
 })
 
 // ---------- 演示数据 ----------
 
 describe("演示数据", () => {
-  it("一个父运行拆了 4 个：2 个办成、1 个没办成、1 个排队；页面要的数据都齐", async () => {
+  it("一个父运行拆了 5 个：2 个办成、1 个没办成、1 个排队、1 个排队时被停掉；页面要的数据都齐", async () => {
     const { parentId, childIds } = await insertSubagentFixtures(ctx.db)
     const rows = await listSubagents(ctx.db, parentId)
     expect(rows.map((row) => [row.id, row.state, row.outcome ?? null])).toEqual([
@@ -613,9 +686,15 @@ describe("演示数据", () => {
       [childIds[1], "ended", "achieved"],
       [childIds[2], "ended", "not_achieved"],
       [childIds[3], "queued", null],
+      [childIds[4], "ended", "not_achieved"],
     ])
+    // 用时从轮到（ranAt）算，不算排队：15 秒、80 秒、42 秒；一直没轮到的没有 ranAt（页面写「没开始」）
+    const ran = rows.map((row) => (row.ranAt && row.endedAt ? (Date.parse(row.endedAt) - Date.parse(row.ranAt)) / 1000 : null))
+    expect(ran).toEqual([15, 80, 42, null, null])
+    expect(rows[3]!.ranAt).toBeUndefined()
+    expect(rows[4]!.ranAt).toBeUndefined()
     const [summary] = await listSessions(ctx.db, { ids: [parentId] })
-    expect(summary!.subagents).toMatchObject({ total: 4, ended: 3, achieved: 2, queued: 1 })
+    expect(summary!.subagents).toMatchObject({ total: 5, ended: 4, achieved: 2, queued: 1 })
     expect(summary!.waiting?.what).toBe("子 agent（还有 1 个没结束）")
     const child = await loadSession(ctx.db, childIds[0]!)
     expect(child!.subGoal).toMatchObject({ n: 1, results: [{ name: "标题", value: "Example A" }, { name: "状态码", value: 200 }], files: [{ name: "in/pages.csv" }] })

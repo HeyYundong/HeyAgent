@@ -31,6 +31,8 @@ export interface EngineRuntime {
   modelRetryBaseMs: number
   /** 单个 pg-boss 任务最多跑多久，超过就排一个新的 session.run 自己退出 */
   maxRunMs: number
+  /** 在跑的运行多久查一次有没有被停掉（stop-watch.ts）：停掉了就中止正在调的模型、正在起的 Chrome */
+  stopPollMs: number
   /** HTTP 工具的超时和返回大小上限 */
   httpTimeoutMs: number
   httpMaxBytes: number
@@ -92,6 +94,7 @@ export const runtime: EngineRuntime = {
   modelRetries: 3,
   modelRetryBaseMs: num("HEYAGENT_MODEL_RETRY_BASE_MS", 2000),
   maxRunMs: num("HEYAGENT_MAX_RUN_MINUTES", 30) * 60_000,
+  stopPollMs: num("HEYAGENT_STOP_POLL_MS", 1000),
   httpTimeoutMs: 30_000,
   httpMaxBytes: 2 * 1024 * 1024,
   toolOutputMaxChars: 8000,

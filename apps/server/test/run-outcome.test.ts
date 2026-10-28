@@ -133,7 +133,9 @@ describe("run.finish", () => {
     const sessionId = await runNow(taskId)
     const row = await waitOutcome(sessionId)
     expect(row).toMatchObject({ status: "done", outcome: "not_achieved", outcomeBy: "agent", outcomeReason: "只拿到 2 家报价，缺第 3 家" })
-    expect(script.promptText(1)).toContain("outcome = not_achieved 时要写 reason")
+    // 说清缺的是哪个参数、和 summary / evidence 并列、该写什么（docs/dev/sub-agents.md 21.3 第 6 条）
+    expect(script.promptText(1)).toContain("没有记下：缺参数 reason。outcome = not_achieved 时，除了 summary、evidence，还要单独传 reason 这个参数")
+    expect(script.promptText(1)).toContain("加上 reason 再调一次")
   })
 
   it("旧说明里的 partial（部分办成）照收：当没办成，不复核", async () => {

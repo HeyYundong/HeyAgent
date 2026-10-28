@@ -85,7 +85,9 @@ export function subagentSection(snapshot: SessionSnapshot, toolNames: Map<string
     browserLine,
     "- 写子目标：子 agent 看不到你的对话、你读过的网页和文件，只看到你写的目标、输入和给它的文件；写清做到什么算完、交回什么（字段写在 results 里，文件让它存到空间里）。",
     `- 这次运行同时最多 ${limits.maxParallel} 个子 agent 在跑，一共最多拆 ${limits.maxPerRun} 个。`,
-    `- 拆完先做你自己能做的，再用 ${wait} 等；收到结果后自己核对、汇总。子 agent 写的文件在你空间的 subs/<n>/ 下（只读）。没办成的看原因：补一个写得更具体的子 agent、自己做，或者如实报没办成。不要把子 agent 没做到的说成做到了。`,
+    `- 拆完先做不在子目标里的事（没有就直接用 ${wait} 等），交出去的不要自己再做一遍。`,
+    `- 收到结果后汇总：看各个子 agent 交回的依据、文件有没有互相矛盾、和目标对不对得上，不要逐个重做；有矛盾或缺的只查那一处，或补拆。子 agent 写的文件在你空间的 subs/<n>/ 下（只读）。`,
+    "- 子 agent 报没办成、或交回的东西缺了的，看原因：补一个写得更具体的子 agent、自己做那一件，或者如实报没办成。不要把子 agent 没做到的说成做到了。",
     `- 子 agent 还没结束时不能报结果：先等完，或者用 ${cancel} 停掉不要的。有人让你提前继续时，子 agent 可能还没结束：先用 ${wait}（mode: none）看现状再决定。`,
   ]
     .filter(Boolean)
