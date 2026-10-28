@@ -4,10 +4,12 @@
 // 开关、停用、回旧版只有负责人和主管能点（后端也拦）。
 // 第二期（第 17.1 节）：一行写任务的「办成后自动固化」「固化时不试跑」现在是什么（在编辑任务里改）；自动固化的版本加「自动固化」徽章。
 // 第三期（19.8）：启用的那一版有 HTTP 工具建议时加一行，建议的内容在「看脚本」里（RoutineVersionView 的 HttpSuggestions）。
+// 流程库（docs/dev/routine-library.md 9.2）：发布进库的加一行「在流程库里：routine.<短名> 第 3 版 · 6 个任务在用」（点了去流程页）；
+// 有转过正式、还没发布的版本：主管「⋯ → 发布到流程库」（打开流程页的发布弹窗，来源任务、版本已选好），负责人看到一行「可以请主管发布」。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
-import { EllipsisIcon, FileCodeIcon, HistoryIcon, PauseIcon, PlayIcon, RotateCcwIcon, RotateCwIcon, TriangleAlertIcon, Undo2Icon } from "lucide-react"
-import { autoSolidifyDefault, fmtDateTime, ROUTINE_PAUSE_AFTER_FALLBACKS, ROUTINE_TRIAL_RUNS, type RoutineSummary, type TaskDef } from "@heyagent/shared"
+import { EllipsisIcon, FileCodeIcon, HistoryIcon, PauseIcon, PlayIcon, RotateCcwIcon, RotateCwIcon, TriangleAlertIcon, Undo2Icon, UploadIcon } from "lucide-react"
+import { autoSolidifyDefault, can, fmtDateTime, routineLibraryStatusLabel, ROUTINE_PAUSE_AFTER_FALLBACKS, ROUTINE_TRIAL_RUNS, type RoutineSummary, type TaskDef } from "@heyagent/shared"
 
 import { DetailSection, HelpTip } from "@/components/shell/simple-page"
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -22,7 +24,9 @@ import { Switch } from "@/components/ui/switch"
 import { useHumanItems, useModels } from "@/lib/data"
 import { useAction } from "@/lib/mutations"
 import { href } from "@/lib/router"
+import { useMe } from "@/lib/session"
 import { trpc } from "@/lib/trpc"
+import { PublishDialog } from "@/pages/routines/publish-dialog"
 import { TextLink } from "@/pages/sessions/parts"
 
 import { money } from "./parts"
@@ -61,6 +65,10 @@ function RoutineSection({ task, routine, canEdit }: { task: TaskDef; routine: Ro
   const [viewing, setViewing] = React.useState<string | null>(null)
   const [history, setHistory] = React.useState(false)
   const [pausing, setPausing] = React.useState(false)
+  const [publishing, setPublishing] = React.useState(false)
+  // 发布到流程库只有主管（docs/dev/routine-library.md 6.3）
+  const isAdmin = can(useMe().user, "config.manage", {})
+  const publishable = routine.publishable[0]
   const active = routine.versions.find((each) => each.version === routine.activeVersion)
   const activeAuto = active?.auto ?? false
   const paused = routine.status === "paused"
@@ -88,6 +96,7 @@ function RoutineSection({ task, routine, canEdit }: { task: TaskDef; routine: Ro
           <DropdownMenuContent align="end" className="w-40">
             <DropdownMenuItem disabled={!active} onClick={() => active && setViewing(active.id)}><FileCodeIcon />看脚本</DropdownMenuItem>
             <DropdownMenuItem onClick={() => setHistory(true)}><HistoryIcon />版本记录</DropdownMenuItem>
+            {isAdmin && publishable !== undefined && <DropdownMenuItem onClick={() => setPublishing(true)}><UploadIcon />发布到流程库</DropdownMenuItem>}
             {canEdit && routine.activeVersion !== null && (
               <>
                 <DropdownMenuSeparator />
@@ -125,6 +134,10 @@ function RoutineSection({ task, routine, canEdit }: { task: TaskDef; routine: Ro
           {paused && routine.mode === "first" && <span className="text-muted-foreground">（停用中，不会跑）</span>}
         </div>
         <RecentLine recent={routine.recent} />
+        <LibraryLine routine={routine} />
+        {publishable !== undefined && !isAdmin && canEdit && (
+          <p className="text-muted-foreground">第 {publishable} 版转过正式，可以请主管发布到流程库，给别的任务当工具用。</p>
+        )}
         <SettingsLine task={task} />
         {active && active.httpToolSuggestions > 0 && (
           <p className="text-muted-foreground">第 {active.version} 版建议建 {active.httpToolSuggestions} 个 HTTP 工具（在「看脚本」里）</p>
@@ -148,6 +161,7 @@ function RoutineSection({ task, routine, canEdit }: { task: TaskDef; routine: Ro
         )}
       </div>
       {viewing && <VersionDialog versionId={viewing} activeVersion={routine.activeVersion} onClose={() => setViewing(null)} />}
+      {publishing && <PublishDialog open onOpenChange={setPublishing} routineId={routine.id} version={publishable} />}
       {history && (
         <HistoryDialog routine={routine} canEdit={canEdit} onView={(id) => setViewing(id)} onClose={() => setHistory(false)} />
       )}
@@ -168,6 +182,21 @@ function RoutineSection({ task, routine, canEdit }: { task: TaskDef; routine: Ro
         </AlertDialogContent>
       </AlertDialog>
     </DetailSection>
+  )
+}
+
+/** 在流程库里的一行：「在流程库里：routine.order_status 第 3 版 · 6 个任务在用」，点了去流程页；停用、撤下的写上 */
+function LibraryLine({ routine }: { routine: RoutineSummary }) {
+  const library = routine.library
+  if (!library) return null
+  return (
+    <p className="flex flex-wrap items-center gap-x-1">
+      <span className="text-muted-foreground">在流程库里：</span>
+      <TextLink to={href("routines", { id: routine.id })}><span className="font-mono">{library.toolId}</span></TextLink>
+      第 {library.publishedVersion} 版 · {library.taskCount} 个任务在用
+      {library.status !== "listed" && <span className="text-muted-foreground">（{routineLibraryStatusLabel[library.status]}）</span>}
+      <HelpTip>发布进流程库以后，别的任务选上它就能当工具用：agent 一次调用跑完整段脚本，脚本里也能 ha.routine 调。库里的版本和这里的启用版本分开记，转了正式的新版本要主管再发布。</HelpTip>
+    </p>
   )
 }
 

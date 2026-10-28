@@ -6,6 +6,7 @@
 // 新任务和以前没选的旧任务都先填上默认复核模型；选了「交给三方验收」的规则时，验收通过的不再复核。
 // 固化（docs/dev/solidify.md 17.1）：「用哪些」里放「办成后自动固化」（跟默认 / 开 / 关，存 autoSolidify：null / true / false）和「固化时不试跑」（routineSkipTest），说明在 label 的「?」里。
 // 自动挑选记忆（docs/dev/memory-retrieval.md 6.1 节）：「用哪些 → 记忆」下面一个开关 + 开着时「最多几条」；没设 embedding 模型时提醒开着也不会挑。
+// 流程库（docs/dev/routine-library.md 6.1）：「用哪些」里工具后面多一项「流程」（routine-pick.tsx），选的库流程存进同一个 toolIds，「工具」那一项不列它们。
 // 派活（docs/dev/dispatch.md 9.1 节）：「被派活」一组（参数、名额、谁能派活给它，第二期加自动重试，组件在 dispatch-fields.tsx，导入向导也用）；定时那里「上一次还没跑完就跳过」；选了内置工具「派活」时写能派给谁。
 import * as React from "react"
 import { Controller, useFieldArray, useForm, useWatch, type Control, type UseFormRegister } from "react-hook-form"
@@ -20,6 +21,7 @@ import {
   can,
   checkpointKindLabel,
   DESKTOP_TOOL_ID,
+  isRoutineToolId,
   modelFamily,
   recognizeCheckpoints,
   sameFamily,
@@ -57,6 +59,7 @@ import { cronText } from "./cron"
 import { DispatchFields, retriesOf, taskResolver } from "./dispatch-fields"
 import { MultiPick, type Option } from "./multi-pick"
 import { PLACEHOLDER } from "./data"
+import { RoutinePick } from "./routine-pick"
 import { TaskAttachments } from "./run-actions"
 
 type PickKey = "memoryIds" | "skillIds" | "toolIds" | "ruleIds"
@@ -77,7 +80,8 @@ function usePickOptions(picked: Partial<Record<PickKey, string[]>>, originalRule
   return {
     memoryIds: { label: "记忆", options: memories.filter((m) => m.status === "active" || keep("memoryIds", m.id)).map((m) => ({ value: m.id, label: clip(m.content), hint: m.appliesTo })) },
     skillIds: { label: "技能", options: skills.filter((s) => s.status === "published" || keep("skillIds", s.id)).map((s) => ({ value: s.id, label: s.name, hint: s.dept })) },
-    toolIds: { label: "工具", options: tools.filter((t) => !t.alwaysOn).map((t) => ({ value: t.id, label: t.name, hint: t.summary })) },
+    // 库流程（source = routine）在「流程」那一项里选
+    toolIds: { label: "工具", options: tools.filter((t) => !t.alwaysOn && t.source !== "routine" && !isRoutineToolId(t.id)).map((t) => ({ value: t.id, label: t.name, hint: t.summary })) },
     ruleIds: {
       label: "规则",
       options: rules.map((r) => ({
@@ -561,8 +565,8 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
                             id={`task-${key}`}
                             label={options[key].label}
                             options={options[key].options}
-                            value={field.value ?? []}
-                            onChange={field.onChange}
+                            value={key === "toolIds" ? (field.value ?? []).filter((id) => !isRoutineToolId(id)) : (field.value ?? [])}
+                            onChange={key === "toolIds" ? (next) => field.onChange([...next, ...(field.value ?? []).filter(isRoutineToolId)]) : field.onChange}
                             description={key === "toolIds" ? `${alwaysOn.length ? `每个任务都自带：${alwaysOn.map(toolName).join("、")}。` : ""}${IMPLIED_TOOLS_NOTE}`
                               : key === "ruleIds" ? "只能选已经生效的（主管在「规则」页确认过「系统理解为」）；没生效的灰着，写了原因。" : undefined}
                             notes={key === "ruleIds" ? ruleNotes : key === "toolIds" ? toolNotes : undefined}
@@ -571,11 +575,19 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
                       />
                     )
                     // 记忆下面紧跟「自动挑选记忆」，放在同一格里
-                    return key === "memoryIds" ? (
-                      <div key={key} className="flex flex-col gap-3">
+                    if (key === "memoryIds")
+                      return (
+                        <div key={key} className="flex flex-col gap-3">
+                          {pick}
+                          <AutoMemoryFields control={form.control} />
+                        </div>
+                      )
+                    // 工具后面是「流程」
+                    return key === "toolIds" ? (
+                      <React.Fragment key={key}>
                         {pick}
-                        <AutoMemoryFields control={form.control} />
-                      </div>
+                        <RoutinePick form={form} initialToolIds={task?.toolIds ?? []} />
+                      </React.Fragment>
                     ) : pick
                   })}
                   {usesBrowser && (

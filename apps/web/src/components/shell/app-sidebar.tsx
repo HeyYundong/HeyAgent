@@ -17,6 +17,7 @@ import {
   SettingsIcon,
   ShieldCheckIcon,
   UsersIcon,
+  WorkflowIcon,
   WrenchIcon,
   type LucideIcon,
 } from "lucide-react"
@@ -72,6 +73,7 @@ export const NAV_RESOURCES: NavItem[] = [
 export const NAV_CONFIG: NavItem[] = [
   { id: "memory", title: "记忆", icon: BrainIcon },
   { id: "skills", title: "技能", icon: BookOpenIcon },
+  { id: "routines", title: "流程", icon: WorkflowIcon },
   { id: "rules", title: "规则", icon: ShieldCheckIcon },
   { id: "tools", title: "工具", icon: WrenchIcon },
   { id: "models", title: "模型", icon: CpuIcon },
