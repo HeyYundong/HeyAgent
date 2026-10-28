@@ -920,3 +920,66 @@ P1 验收：
   - 固化脚本里不能用带工具的 code.run：脚本本身就能调工具，两层工具桥会让过程记录和接着跑都对不上。
 
 **没验证的**：真模型会不会照系统提示写循环脚本、固化员会不会用好 `ha.judge`。测试的模型都是假的，`.env` 里的 OpenRouter key 过期了。
+
+## 19. 第三期第一批：直接调网站的接口（草稿，2026-10-28）
+
+用户 2026-10-28 换了 OpenRouter key，回「你继续吧」：先用真模型验第一、二期，再照第 10 节和给用户的建议做第三期。第二批（流程库、把流程当工具给别的任务用）等真模型验过固化的效果再做。
+
+### 19.1 开关
+
+- 任务加 `allowBrowserFetch`（界面「允许直接调网站接口」），默认关，和「允许执行脚本」「允许看画面」放在一起。
+- 冻进 `snapshot.browser.allowFetch`。关着时没有 `browser.fetch` 这个工具，也不记接口。
+
+### 19.2 哪些网址能调（`browser.fetch` 和记接口用同一条）
+
+- 先要打开过这个网站的页面：只能在当前标签页的页面里发。
+- 任务没设白名单：只能调和当前页面同源的（协议、主机、端口都一样）。
+- 设了白名单：目标主机和当前页面的主机要落在同一条白名单里。例如白名单 `example.com`，从 `www.example.com` 调 `api.example.com` 可以。不引入公共后缀表。
+- 平台账号的租约照「打开网址」的规矩：调平台域名下的网址也要有这个账号的租约。
+
+### 19.3 记接口（编排器那一侧，`browser/instance.ts`）
+
+- 开关开着时，编排器自己的 CDP 连接对每个页面 `Network.enable`，只看 XHR / Fetch、按 19.2 能调的、返回 JSON 的请求。
+- 每个请求一行，追加进这次运行的文件 `network/requests.jsonl`（只读目录，和 `downloads/` 一样）：
+  - 时间、方法、网址（查询参数原样，按这次运行的密钥打码）；
+  - 请求头只记名字（`content-type` 记值）；
+  - 请求体开头 2 KB（打码）；
+  - 状态码、返回的 content-type、返回 JSON 的字段结构、开头 20 KB（打码）。
+- 上限：一次运行 500 个请求、2 MB，到了就不再记，最后一行写「后面的没记」。
+
+### 19.4 新工具 `browser.fetch`
+
+- 输入：`{ url, method?: GET, headers?, body?: string | object, as?: "json" | "text" }`。
+- 在当前页面的隔离环境（`Page.createIsolatedWorld` + `Runtime.evaluate`）里发 `fetch(..., { credentials: "include" })`：页面脚本改不了 `fetch`，也看不到参数和结果。
+- 超时 30 秒；返回体最多 5 MB。
+- 风险等级 `external`，和别的浏览器动作一样。
+- GET、HEAD 是只读；别的方法算「会改东西」：
+  - 试跑停在它前面（同 `test_commit`）；
+  - 固化脚本里前面要有 `ha.commit`（程序检查）；
+  - agent 用的照常过规则。
+- 给模型的输出：状态码、content-type，JSON 排好版截到 8 KB，文本截到 8 KB，全文存成「工具输出全文」。
+- 给脚本的 `data`：`{ status, contentType, json?, text? }`，按这次运行的密钥打码。
+- 过程记录的 `trace.code` 写成 `await page.evaluate(() => fetch(...))` 的样子，给固化员看。
+
+### 19.5 SDK 和固化员
+
+- SDK 加 `ha.browser.fetch({ url, method?, headers?, body? }) → { status, json?, text? }`，`index.d.ts` 写清楚。
+- 材料：把 `network/requests.jsonl` 按「方法 + 路径」归成接口列表：参数名、哪几个参数每次不一样、返回的字段结构、是在哪一步之后发的（按时间对上过程）。
+- 提示词：
+  - 读列表、翻页、查详情，过程里看得到返回 JSON 的接口时，可以先打开一次页面（登录态、同源），再用 `ha.browser.fetch` 直接读，比一页页点快得多。
+  - 会改东西的请求，只有 agent 那次运行确实是通过这个接口改的（过程里看得到）才能照做，前面 `ha.commit`，做完读回核对。
+  - 记录里没有的接口不要猜。
+- HTTP 工具建议：接口用 token 认证（请求头里有 `Authorization`、`X-API-Key` 这类名字，不靠 cookie）的，输出里给 `httpToolSuggestions`（名称、方法、网址模板、参数、认证头的名字），审核卡上列出来，说明「主管可以在工具页建一个 HTTP 工具，密钥写成 `{{名字}}`」。不自动建。
+
+### 19.6 界面
+
+- 任务弹窗：「允许直接调网站接口」开关，旁边「?」说明。
+- 运行过程：`browser.fetch` 一行写方法、网址、状态码。
+- 审核卡：「HTTP 工具建议」一节。
+- 空间文件：`network/requests.jsonl` 按表格显示（时间、方法、网址、状态）。
+
+### 19.7 分工（真模型验过以后开始）
+
+- **A4（运行时）**：19.1–19.4，`browser/*`、`engine/*`、SDK、工具桥试跑。测试：同源和白名单规则、隔离环境、记接口的上限和打码，以及浏览器测试——本地站点有分页的 JSON 接口，agent（假模型）调 `browser.fetch` 读 30 页。
+- **B4（固化员）**：19.5，`routine/{material,prompt,checks}.ts`，测试。
+- **C4（界面）**：19.6，fixture。
