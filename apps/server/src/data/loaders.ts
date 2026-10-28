@@ -546,6 +546,8 @@ export async function listTools(db: Db): Promise<{ tools: Tool[]; mcpServers: Mc
         source: row.source,
         serverId: opt(row.serverId),
         http: row.http ? compact(row.http) : undefined,
+        // 流程库的工具（source = routine）：工具页不列，B 包在这里过滤掉（docs/dev/routine-library.md 4.1）
+        routineId: opt(row.routineId),
         risk: row.risk,
         alwaysOn: row.alwaysOn || undefined,
       })

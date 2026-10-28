@@ -6,6 +6,7 @@ import { sessionDesktopSnapshotSchema } from "./desktop.js"
 import { workDelayMinutesSchema, workPrioritySchema } from "./dispatch.js"
 import { autoMemorySnapshotSchema, snapshotMemoryAutoSchema } from "./memory-retrieval.js"
 import { routineSnapshotSchema } from "./routine.js"
+import { libraryRoutineSnapshotSchema } from "./routine-library.js"
 import {
   checkpointKindSchema,
   httpSpecSchema,
@@ -32,6 +33,8 @@ export const snapshotToolSchema = z.object({
   alwaysOn: z.boolean().optional(),
   serverId: z.string().optional(),
   http: httpSpecSchema.optional(),
+  /** source = routine（流程库，docs/dev/routine-library.md 6.2）：库流程的编号；脚本、两个 schema 在 snapshot.libraryRoutines 里 */
+  routineId: z.string().optional(),
 })
 export type SnapshotTool = z.infer<typeof snapshotToolSchema>
 
@@ -153,6 +156,11 @@ export const sessionSnapshotSchema = z.object({
   desktop: sessionDesktopSnapshotSchema.optional(),
   /** 固化（docs/dev/solidify.md 6.2）：这次运行先跑的那一版脚本；固化试跑冻的是要试的那一版 */
   routine: routineSnapshotSchema.optional(),
+  /**
+   * 流程库（docs/dev/routine-library.md 6.2）：任务选了的库流程（发布的那一版）连同它们调的库流程（传递）。
+   * 用不了的也在，带 unavailable。没选库流程的运行、加这个字段之前开始的运行没有
+   */
+  libraryRoutines: z.array(libraryRoutineSnapshotSchema).optional(),
 })
 export type SessionSnapshot = z.infer<typeof sessionSnapshotSchema>
 
