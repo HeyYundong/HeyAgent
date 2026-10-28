@@ -138,7 +138,14 @@ export class BrowserManager {
    * session 要用 Chrome：已经有（包括等人处理时保留着的）就接着用；没有就起一个（满了排队）。一个运行只用一个 Chrome，不切换。
    * onQueued：要排队时调一次（给 session 写一条「等待浏览器」的过程事件）。
    */
-  async acquireForSession(input: { sessionId: string; profileId: string; allowedDomains: string[]; onQueued?: (used: number, max: number) => Promise<void> }): Promise<BrowserInstance> {
+  async acquireForSession(input: {
+    sessionId: string
+    profileId: string
+    allowedDomains: string[]
+    /** 任务打开了「允许直接调网站接口」（快照的 browser.allowFetch）：记下网页自己调的接口 */
+    recordNetwork?: boolean
+    onQueued?: (used: number, max: number) => Promise<void>
+  }): Promise<BrowserInstance> {
     const existing = this.forSession(input.sessionId)
     if (existing && existing.profileId === input.profileId) {
       if (existing.state === "held") await this.claim(existing)
@@ -148,7 +155,7 @@ export class BrowserManager {
     if (existing) throw new Error(`一次运行只能用一个 Chrome：这次运行已经在用 ${existing.profileId}，不能换成 ${input.profileId}`)
     const instance = new BrowserInstance(
       { db: this.db, keyring: this.keyring, gost: this.gost, workerId: this.workerId },
-      { kind: "session", profileId: input.profileId, sessionId: input.sessionId, allowedDomains: input.allowedDomains }
+      { kind: "session", profileId: input.profileId, sessionId: input.sessionId, allowedDomains: input.allowedDomains, recordNetwork: input.recordNetwork }
     )
     this.track(instance)
     const max = await this.maxPerWorker()

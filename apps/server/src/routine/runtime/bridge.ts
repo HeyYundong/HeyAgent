@@ -16,12 +16,18 @@
 // 工具调用开始前先写一行（reply 为空）、做完补上，进程被杀时知道哪一步做到一半。停下等人（审批、验证码、登录页）
 // 或者进程被杀以后，从头再跑一遍脚本：和日志对得上的请求直接回记下的结果，不真做、不再记过程；
 // 到停下的那一步按规则决定真做还是停下交给 agent；对不上（脚本走了别的路）就停下交给 agent。
+// 直接调网站的接口（browser.fetch，docs/dev/solidify.md 19.5）：固化脚本（run、test）里会改东西的请求（不是 GET、HEAD）
+// 前面要有自己的 ha.commit（从上一个会改东西的请求以来新走过一个），不然不做、脚本停下（script_error，脚本接不住）；
+// 方法可以是变量，所以在这里判，不靠程序检查。agent 的脚本不要求。结果太大的（超过 256 KB）日志里只记开头，
+// 接着跑到这一步时只读的真做一次，会改东西的不重做、交给 agent。
 import { createHash } from "node:crypto"
 import { rmSync } from "node:fs"
 import net from "node:net"
 
 import {
+  BROWSER_FETCH_TOOL,
   builtinToolInputs,
+  isWriteMethod,
   routineStopKindLabel,
   type EventTrace,
   type Risk,
@@ -35,6 +41,7 @@ import type { GatewayResult, ModelToolCall } from "../../engine/gateway.js"
 import type { AgentClaim } from "../../engine/outcome.js"
 import type { EventInput } from "../../engine/records.js"
 import type { SuspendPlan, ToolOutcome } from "../../engine/tools/builtin.js"
+import { maskUrl } from "../../browser/site-api.js"
 
 /** 工具桥要用的网关的几个方法（测试里换成假的） */
 export interface BridgeGateway {
@@ -170,6 +177,16 @@ const NOT_FOR_AGENT_SCRIPTS: Record<string, string> = {
 }
 /** ha.log 最多记几条 */
 const MAX_LOGS = 50
+/** browser.fetch 的结果序列化后超过这么大，重放日志里只记开头（一页 5 MB 的列表别把日志表撑大） */
+export const JOURNAL_REPLY_MAX = 256 * 1024
+/** 只记开头时留多少字 */
+const JOURNAL_TEXT_HEAD = 2000
+
+/** browser.fetch 的方法（大写，没写是 GET）和打了码的网址 */
+function fetchTarget(input: unknown): { method: string; url: string } {
+  const args = (input && typeof input === "object" ? input : {}) as Record<string, unknown>
+  return { method: typeof args.method === "string" && args.method.trim() ? args.method.trim().toUpperCase() : "GET", url: maskUrl(typeof args.url === "string" ? args.url.trim() : "") }
+}
 
 const str = (value: unknown) => (typeof value === "string" ? value : value === undefined || value === null ? "" : String(value))
 const firstLine = (text: string, max = 300) => {
@@ -203,6 +220,12 @@ export function stepLabel(toolId: string, input: unknown): string {
   const short = toolId.replace(/^browser\./, "")
   const text = (value: unknown) => (typeof value === "string" ? value.trim() : "")
   const clipped = (value: string) => (value.length > 40 ? `${value.slice(0, 39)}…` : value)
+  // 调接口：方法 + 路径和参数（主机名太长，看不出是哪个接口）
+  if (toolId === BROWSER_FETCH_TOOL) {
+    const { method, url } = fetchTarget(args)
+    const path = url.replace(/^https?:\/\/[^/?#]*/i, "") || "/"
+    return `fetch「${clipped(`${method} ${path}`)}」`
+  }
   // 剪贴板的三个工具：短名看不懂，写成人话；粘贴的内容不写进来（同上，不取要填的内容），只写是什么、多少
   if (toolId === "browser.copy_image") {
     const what = text(args.element) || text(args.target) || (typeof args.x === "number" && typeof args.y === "number" ? `坐标 (${args.x}, ${args.y})` : "")
@@ -253,6 +276,8 @@ export class ToolBridge {
   private seq = 0
   /** 接着跑：按日志跳过的部分走完了（「脚本接着跑」那条过程只记一次） */
   private replayEnded = false
+  /** 会改东西的 browser.fetch 已经用掉了几个 ha.commit（每个请求要自己的提交点） */
+  private fetchCommitsUsed = 0
   /** 每个工具调了几次、出错几次（code.run 的输出里汇总；没过网关就被拒的也算出错） */
   readonly toolStats = new Map<string, { calls: number; errors: number }>()
 
@@ -542,10 +567,23 @@ export class ToolBridge {
         return this.stopWith("test_blocked", `下一步 ${label} 会对外发送或改东西，试跑不做`, where)
     }
 
+    // 会改东西的接口请求要有自己的 ha.commit（固化脚本；接着跑时提交标记也按日志重放，算法一样）
+    const fetchWrite = toolId === BROWSER_FETCH_TOOL && isWriteMethod(fetchTarget(input).method)
+    if (fetchWrite && mode !== "agent") {
+      if (this.state.commits.length <= this.fetchCommitsUsed) {
+        this.count(toolId, true)
+        const { method, url } = fetchTarget(input)
+        return this.stopWith("script_error", `第 ${step} 步 ${method} ${url}：会改东西的接口请求前面要有自己的 ha.commit，没做`, where)
+      }
+      this.fetchCommitsUsed = this.state.commits.length
+    }
+
     // 重放日志：对得上的回记下的结果；停下的那一步按规则定；之后的先写一行（reply 为空）再真做
     let approvedRuleIds: string[] = []
     let seq = 0
     let hash = ""
+    /** 日志里只记了开头的只读请求：接着跑时真做一次（不算接着跑的起点，后面的照样按日志跳过） */
+    let redo = false
     if (journal) {
       seq = ++this.seq
       hash = journalHash(input)
@@ -553,17 +591,30 @@ export class ToolBridge {
       if (prior) {
         const mismatched = await this.mismatch(prior, "tool", toolId, hash, where)
         if (mismatched) return mismatched
-        if (prior.reply && !prior.stop) return this.replayTool(prior, where)
-        const decided = await this.atStop(prior, where)
-        if ("reply" in decided) return decided.reply
-        approvedRuleIds = decided.approvedRuleIds
+        if (prior.reply && !prior.stop) {
+          if (!prior.reply.dataOmitted) return this.replayTool(prior, where)
+          if (fetchWrite) {
+            this.state.steps = step
+            return this.stopWith("interrupted", `${label} 的结果太大，没记进重放日志；它是会改东西的请求，接着跑时不重做`, where)
+          }
+          redo = true
+        } else {
+          const decided = await this.atStop(prior, where)
+          if ("reply" in decided) return decided.reply
+          approvedRuleIds = decided.approvedRuleIds
+        }
       }
-      await this.endReplay()
-      await journal.write({ seq, op: "tool", tool: toolId, inputHash: hash, reply: null, stop: approvedRuleIds.length ? "approved" : null, instanceId: null })
+      if (!redo) {
+        await this.endReplay()
+        await journal.write({ seq, op: "tool", tool: toolId, inputHash: hash, reply: null, stop: approvedRuleIds.length ? "approved" : null, instanceId: null })
+      }
     }
     const writeJournal = async (reply: Record<string, unknown> | null, stop: JournalStop | null) => {
       if (!journal) return
       const instanceId = toolId.startsWith("browser.") ? (this.options.browserInstanceId?.() ?? null) : null
+      // 调接口的结果太大：只记开头（重放到这一步时只读的真做一次）
+      if (toolId === BROWSER_FETCH_TOOL && reply && reply.ok && JSON.stringify(reply).length > JOURNAL_REPLY_MAX)
+        reply = { ok: true, text: String(reply.text ?? "").slice(0, JOURNAL_TEXT_HEAD), dataOmitted: true }
       await journal.write({ seq, op: "tool", tool: toolId, inputHash: hash, reply, stop, instanceId })
     }
 

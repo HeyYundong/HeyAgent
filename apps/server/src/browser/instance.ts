@@ -22,6 +22,7 @@ import { startDownloadCapture, type DownloadCapture } from "./downloads.js"
 import type { GostPool } from "./gost.js"
 import { accountForHost, acquireLease, profileAccounts, profileSessionCount, releaseLeases, type PlatformAccount } from "./leases.js"
 import { startBrowserMcp, type BrowserMcp } from "./mcp.js"
+import { NetworkLog } from "./network-log.js"
 import { emptyState, loadVault, writeBackMerged, type StorageState } from "./vault.js"
 import { ViewerHub } from "./viewer.js"
 
@@ -43,6 +44,8 @@ export interface InstanceInit {
   openedById?: string
   /** session：任务的网址白名单（空 = 不限制）；login：不限制 */
   allowedDomains: string[]
+  /** session：任务打开了「允许直接调网站接口」，记下网页自己调的接口（docs/dev/solidify.md 19.3，browser/network-log.ts） */
+  recordNetwork?: boolean
 }
 
 /** 被编排器拦下的导航（每次调完工具取走，告诉 agent） */
@@ -114,6 +117,8 @@ export class BrowserInstance {
   context?: BrowserContext
   /** 运行的 Chrome：下载的文件存成这次运行的文件（browser/downloads.ts） */
   downloads?: DownloadCapture
+  /** 记接口（任务打开「允许直接调网站接口」的运行才有）：每个页面开 Network，记网页自己发的 XHR / fetch */
+  readonly network?: NetworkLog
 
   private readonly deps: InstanceDeps
   private dir?: string
@@ -144,6 +149,8 @@ export class BrowserInstance {
     this.openedById = init.openedById
     this.allowedDomains = init.allowedDomains
     this.viewer = new ViewerHub(this)
+    if (init.recordNetwork && init.kind === "session" && init.sessionId)
+      this.network = new NetworkLog({ db: deps.db, sessionId: init.sessionId, allowedDomains: init.allowedDomains })
   }
 
   get db() {
@@ -217,6 +224,8 @@ export class BrowserInstance {
       }
     }
 
+    // 接着记：先读这次运行已有的 network/requests.jsonl（进程重启、Chrome 换了以后 seq 接着编）
+    await this.network?.load()
     const vault = await loadVault(db, this.deps.keyring(), this.profileId)
     this.base = vault.state
 
@@ -304,7 +313,7 @@ export class BrowserInstance {
     return this.currentPage()
   }
 
-  /** 每个页面：挂弹框监听（不处理，留给 agent 或人）、拦截主文档请求（白名单、账号租约） */
+  /** 每个页面：挂弹框监听（不处理，留给 agent 或人）、拦截主文档请求（白名单、账号租约）；开着记接口时记网页发的 XHR / fetch */
   private async watchPage(page: Page, follow: boolean) {
     this.pageId(page)
     page.on("dialog", (dialog) => {
@@ -336,6 +345,8 @@ export class BrowserInstance {
       })
       await session.send("Page.enable")
       await session.send("Fetch.enable", { patterns: [{ urlPattern: "*", resourceType: "Document", requestStage: "Request" }] })
+      // 记接口：同一条连接再开 Network（只在开关开着时）
+      if (this.network) await this.network.attach(session, page, mainFrameId)
     } catch {
       // 页面刚开就关了
     }
@@ -569,6 +580,8 @@ export class BrowserInstance {
     }
     this.viewer.close(options.reason)
     if (this.urlWrite) clearTimeout(this.urlWrite)
+    // 记下的接口最后写一次（网关关闭时已经写过；Chrome 意外退出时这里兜底）
+    await this.network?.flush()
     await this.downloads?.close()
     await this.mcp?.close()
     this.mcp = undefined

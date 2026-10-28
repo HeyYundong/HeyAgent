@@ -63,6 +63,13 @@ class FakeGateway implements BridgeGateway {
         return done({ output: "", isError: true }, { approval: { ruleId: "r1", ruleName: "付钱要审批", assigneeId: "u-wang", reason: "要花钱。", input } })
       case "wait.tool":
         return done({ output: "检测到登录页：要登录。已交给负责人", suspend: { kind: "wait", input: { what: "等", triggerKind: "time", at: new Date() } as never } })
+      case "browser.fetch": {
+        // 网址里带 big 的返回一大块（超过重放日志的上限）
+        const method = String(input.method ?? "GET")
+        const big = String(input.url).includes("big")
+        const json = big ? { list: Array.from({ length: 4000 }, (_, k) => ({ id: k, name: `名字-${k}-${"x".repeat(60)}` })) } : { method, url: input.url }
+        return done({ output: `${method} ${String(input.url)} → 200 application/json（1 KB，3 毫秒）`, data: { status: 200, ok: true, contentType: "application/json", bytes: 1024, json } })
+      }
       case "run.finish":
         return done({ output: "已记下", finish: { outcome: "achieved", summary: String(input.summary), evidence: String(input.evidence), via: "finish" } })
       default:
@@ -87,7 +94,7 @@ class FakeGateway implements BridgeGateway {
 /** 准备代码目录（routine.mjs + SDK），起工具桥，用本机 node 跑 launch.js */
 async function runScript(
   body: string,
-  options: { mode?: "run" | "test"; trial?: boolean; maxCalls?: number; gateway?: FakeGateway; input?: Record<string, unknown>; journal?: BridgeJournal; approvedRuleIds?: string[] } = {}
+  options: { mode?: "run" | "test" | "agent"; trial?: boolean; maxCalls?: number; gateway?: FakeGateway; input?: Record<string, unknown>; journal?: BridgeJournal; approvedRuleIds?: string[] } = {}
 ) {
   const root = await mkdtemp(join(tmpdir(), "heyagent-routine-"))
   dirs.push(root)
@@ -102,7 +109,7 @@ async function runScript(
     routineId: "RT-1",
     versionId: "RT-1-v1",
     version: 1,
-    mode: options.mode ?? "run",
+    mode: options.mode === "test" ? "test" : "run",
     state: "running",
     startedAt: new Date().toISOString(),
     steps: 0,
@@ -548,5 +555,101 @@ describe("交接的话", () => {
       })
     ).toEqual(["会改东西的「保存第 1 个」做了，核对过：页面提示保存成功。", "第 7 步「保存第 3 个」已经做了，可能已经生效：先看页面核对，不要重复做。"])
     expect(commitLines({ ...base, steps: 6, commits: [{ step: 6, label: "保存第 3 个" }] })).toEqual(["会改东西的「保存第 3 个」还没做。"])
+  })
+})
+
+describe("browser.fetch 的工具桥规矩（假网关，docs/dev/solidify.md 19.5）", () => {
+  it("会改东西的请求前面没有 ha.commit：不做、脚本停下（script_error，接住也没用）；run 和 test 都是", async () => {
+    const BODY = `
+  await ha.browser.navigate({ url: "https://shop.example.com/items" })
+  const list = await ha.browser.fetch({ url: "https://shop.example.com/api/items?page=1" })
+  await ha.log("读到 " + list.status)
+  try {
+    await ha.browser.fetch({ url: "https://shop.example.com/api/items?token=abc", method: "post", body: { name: "新的" } })
+  } catch (error) {
+    await ha.log("接住了：" + error.name)
+  }
+  await ha.finish({ outcome: "achieved", summary: "-", evidence: "-" })`
+    for (const mode of ["run", "test"] as const) {
+      const { bridge, gateway, state, stops } = await runScript(BODY, { mode })
+      expect(gateway.calls.map((each) => [each.call.toolName, (each.call.input as { method?: string }).method ?? "GET"]), mode).toEqual([
+        ["browser.navigate", "GET"],
+        ["browser.fetch", "GET"],
+      ])
+      expect(bridge.stopped, mode).toMatchObject({ step: 3, kind: "script_error", tool: "browser.fetch", label: "fetch「POST /api/items?token=••••」" })
+      expect(bridge.stopped!.reason).toBe("第 3 步 POST https://shop.example.com/api/items?token=••••：会改东西的接口请求前面要有自己的 ha.commit，没做")
+      expect(stops).toEqual(["script_error"])
+      // 接住了也没用：后面的调用一律 stop，没报结果
+      expect(bridge.finish).toBeUndefined()
+      expect(state.recorded?.finish).toBeUndefined()
+      expect(state.steps).toBe(2)
+    }
+  })
+
+  it("有自己的 commit 的照做；两个写请求共用一个 commit → 第二个停；GET、HEAD 不要求；agent 的脚本不要求", async () => {
+    const BODY = `
+  await ha.browser.navigate({ url: "https://shop.example.com/items" })
+  await ha.commit("新建第 1 个")
+  await ha.browser.fetch({ url: "https://shop.example.com/api/items", method: "POST", body: { name: "一" } })
+  await ha.browser.fetch({ url: "https://shop.example.com/api/items/1", method: "HEAD" })
+  await ha.verified("读回来有了")
+  await ha.commit("新建第 2 个")
+  await ha.browser.fetch({ url: "https://shop.example.com/api/items", method: "POST", body: { name: "二" } })
+  await ha.browser.fetch({ url: "https://shop.example.com/api/items/2", method: "DELETE" })
+  await ha.finish({ outcome: "achieved", summary: "-", evidence: "-" })`
+    const run = await runScript(BODY)
+    expect(run.gateway.calls.map((each) => [each.call.toolName, (each.call.input as { method?: string }).method ?? "GET"])).toEqual([
+      ["browser.navigate", "GET"],
+      ["browser.fetch", "POST"],
+      ["browser.fetch", "HEAD"],
+      ["browser.fetch", "POST"],
+    ])
+    expect(run.bridge.stopped).toMatchObject({ step: 5, kind: "script_error", label: "fetch「DELETE /api/items/2」" })
+
+    // 试跑：走到第一个 ha.commit 就停，永远不会真发会改东西的请求
+    const test = await runScript(BODY, { mode: "test" })
+    expect(test.gateway.calls.map((each) => each.call.toolName)).toEqual(["browser.navigate"])
+    expect(test.bridge.stopped).toMatchObject({ kind: "test_commit" })
+
+    // agent 的脚本：不要求（agent 自己在管）
+    const agent = await runScript(BODY.replace(/\n {2}await ha\.(commit|verified)\([^)]*\)/g, "").replace(/\n {2}await ha\.finish[^\n]*/, ""), { mode: "agent" })
+    expect(agent.bridge.stopped).toBeUndefined()
+    expect(agent.gateway.calls.filter((each) => each.call.toolName === "browser.fetch")).toHaveLength(4)
+  })
+
+  it("SDK 的 ha.browser.fetch 返回 data（status、json）", async () => {
+    const { bridge, state } = await runScript(`
+  const got = await ha.browser.fetch({ url: "https://shop.example.com/api/items?page=2" })
+  await ha.log(JSON.stringify(got))`)
+    expect(bridge.done).toEqual({ ok: true })
+    expect(JSON.parse(state.logs![0]!)).toEqual({ status: 200, ok: true, contentType: "application/json", bytes: 1024, json: { method: "GET", url: "https://shop.example.com/api/items?page=2" } })
+  })
+
+  it("结果太大的只记开头；接着跑时 GET 真做一次（后面的照样按日志跳过），会改东西的不重做、交给 agent", async () => {
+    const BODY = `
+  await ha.browser.navigate({ url: "https://shop.example.com/items" })
+  const all = await ha.browser.fetch({ url: "https://shop.example.com/api/big" })
+  await ha.browser.click({ element: "下一页", target: "getByRole('button', { name: '下一页' })" })
+  await ha.commit("提交")
+  const saved = await ha.browser.fetch({ url: "https://shop.example.com/api/big", method: "PUT", body: { n: all.json.list.length } })
+  await ha.tool("wait.tool", { n: saved.json.list.length })
+  await ha.finish({ outcome: "achieved", summary: String(all.json.list.length), evidence: "-" })`
+    const memory = memoryJournal()
+    const first = await runScript(BODY, { journal: memory.journal })
+    expect(first.bridge.stopped).toMatchObject({ kind: "suspend", tool: "wait.tool" })
+    const rows = memory.merged()
+    const fetched = rows.filter((row) => row.tool === "browser.fetch")
+    expect(fetched).toHaveLength(2)
+    for (const row of fetched) {
+      expect(row.reply).toMatchObject({ ok: true, dataOmitted: true })
+      expect(row.reply!.data).toBeUndefined()
+      expect(JSON.stringify(row.reply).length).toBeLessThan(5000)
+    }
+
+    // 接着跑：GET 真做一次，click 按日志跳过；PUT 的结果没记，不重做，停下交给 agent
+    const resumed = await runScript(BODY, { journal: memoryJournal(rows).journal })
+    expect(resumed.gateway.calls.map((each) => [each.call.toolName, (each.call.input as { method?: string }).method ?? "GET"])).toEqual([["browser.fetch", "GET"]])
+    expect(resumed.bridge.stopped).toMatchObject({ step: 4, kind: "interrupted", tool: "browser.fetch" })
+    expect(resumed.bridge.stopped!.reason).toContain("结果太大，没记进重放日志；它是会改东西的请求，接着跑时不重做")
   })
 })
