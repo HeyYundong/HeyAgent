@@ -334,6 +334,16 @@ describe("程序检查", () => {
     expect(problemsOf(GOOD_CODE, { dispatch: DISPATCH, inputSchema: JSON.stringify({ type: "object", properties: { 编号: { type: "string" } } }) }).join()).toContain("声明的参数「单号」")
     expect(problemsOf(GOOD_CODE, { sampleInput: { 单号: 3 } }).join()).toContain("原来那次运行的输入不符合输入格式")
   })
+
+  it("没有输入 / 没有结果时常见的写法（空串、{}、有 properties 没写 type）：当成对象，不算错", () => {
+    const code = wrap('  await ha.browser.navigate({ url: "https://erp.example.com/orders" })\n  return ha.finish({ outcome: "achieved", summary: "打开了", evidence: "订单页" })')
+    for (const schema of ["", "{}", JSON.stringify({ properties: {} })]) {
+      expect(problemsOf(code, { inputSchema: schema, outputSchema: schema, sampleInput: {} })).toEqual([])
+    }
+    const check = checkRoutine({ ...base, code, inputSchema: "{}", outputSchema: "", sampleInput: {} })
+    expect(check.inputSchema).toMatchObject({ type: "object" })
+    expect(check.outputSchema).toMatchObject({ type: "object" })
+  })
 })
 
 describe("固化成流程：开始", () => {

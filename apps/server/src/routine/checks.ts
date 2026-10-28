@@ -138,14 +138,19 @@ const lineOf = (code: string, offset: number) => code.slice(0, offset).split("\n
 export function parseJsonSchema(value: string | Record<string, unknown>, what: string): { schema?: Record<string, unknown>; problems: string[] } {
   let schema: unknown = value
   if (typeof value === "string") {
-    try {
-      schema = JSON.parse(value)
-    } catch (error) {
-      return { problems: [`${what}不是合法的 JSON：${(error as Error).message}`] }
-    }
+    // 没有输入、没有要交回的结果时，固化员常写空串：当成没有字段的对象
+    if (!value.trim()) schema = {}
+    else
+      try {
+        schema = JSON.parse(value)
+      } catch (error) {
+        return { problems: [`${what}不是合法的 JSON：${(error as Error).message}`] }
+      }
   }
   if (!schema || typeof schema !== "object" || Array.isArray(schema)) return { problems: [`${what}要是一个 JSON Schema 对象`] }
-  const object = schema as Record<string, unknown>
+  const object = { ...(schema as Record<string, unknown>) }
+  // 没写 type、又看得出是对象的（空的 {}，或者有 properties）：补上 "type": "object"（基准 B 有一轮就因为写了 {} 三轮都没过）
+  if (object.type === undefined && (Object.keys(object).length === 0 || "properties" in object)) object.type = "object"
   const problems: string[] = []
   if (object.type !== "object") problems.push(`${what}最外层要是 "type": "object"`)
   const properties = object.properties

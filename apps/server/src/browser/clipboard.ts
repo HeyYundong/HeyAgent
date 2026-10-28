@@ -238,6 +238,28 @@ async function press(page: Page, keys: string) {
   await sleep(KEY_SETTLE_MS)
 }
 
+export interface PasteFocus {
+  /** 焦点在哪：<td>、<div 字母 A 的图片格>、页面本身 */
+  element: string
+  /** 输入框、文本框、可编辑区（contenteditable）、iframe（里面看不到，算可以） */
+  editable: boolean
+}
+
+/** 焦点在哪（在隔离环境里读，网页脚本改不了）：输入框、文本框、可编辑区、iframe 算能接粘贴 */
+const READ_FOCUS = `function () {
+  const el = document.activeElement
+  if (!el || el === document.body || el === document.documentElement) return { element: "页面本身（没点到任何输入的地方）", editable: false }
+  const tag = el.tagName.toLowerCase()
+  const label = (el.getAttribute("aria-label") || el.getAttribute("name") || "").slice(0, 40)
+  const editable = el.isContentEditable || tag === "input" || tag === "textarea" || tag === "iframe" || el.getAttribute("role") === "textbox"
+  return { element: "<" + tag + (label ? " " + label : "") + ">", editable }
+}`
+
+/** 按 Ctrl+V 前焦点在哪（docs/dev/solidify.md 第 20 节：脚本点了表格的格子、焦点没进可编辑的那一层，贴不进去）。读不到返回 undefined */
+async function pasteFocus(page: Page): Promise<PasteFocus | undefined> {
+  return callIsolated<PasteFocus>(page, READ_FOCUS).catch(() => undefined)
+}
+
 /** 打了记号的元素：在哪个页面的哪个 frame（ref 指的元素可能在 iframe 里） */
 async function findMarked(pages: Page[], id: string): Promise<{ page: Page; frame: Frame; locator: Locator } | undefined> {
   const selector = `[${PICK_ATTR}="${id}"]`
@@ -653,21 +675,27 @@ export class ClipboardTools {
     const ready = await this.page(name, {})
     if (!("instance" in ready)) return ready
     const { page } = ready
+    let focus: PasteFocus | undefined
     try {
       await writeClipboard(page, data)
+      focus = await pasteFocus(page)
       await press(page, "Control+V")
     } catch (error) {
       await this.deps.record(name, true, page.url())
       return fail(friendlyClipboardError((error as Error).message))
     }
     await this.deps.record(name, false, page.url())
-    await this.event(`粘贴了${what}`)
+    await this.event(`粘贴了${what}`, focus && !focus.editable ? `焦点在 ${focus.element}，不是可编辑的地方` : undefined)
     const check = this.deps.allowVision() ? "，或用 browser_look 看一眼" : ""
+    // 焦点不在输入框、可编辑区：多半没贴进去（有的网页在整页上接粘贴，所以只提醒、不报错）
+    const warn = focus && !focus.editable ? `\n注意：按 Ctrl+V 时焦点在 ${focus.element}，不是可编辑的地方，多半没贴进去：先点到要放的地方（输入框、可编辑的那一层），再粘贴。` : ""
     return {
-      output:
+      output: `${
         "png" in data
           ? `已把${what}写进剪贴板，并在当前焦点处按了 Ctrl+V。拿一次快照${check}确认贴上了；贴不进时用网页的「插入 → 图片 → 本地上传」配合 browser_file_upload。`
-          : `已把${what}写进剪贴板，并在当前焦点处按了 Ctrl+V。要核对就选中刚贴的区域，用 browser_clipboard_read（copy: true）读回来比对${check}。`,
+          : `已把${what}写进剪贴板，并在当前焦点处按了 Ctrl+V。要核对就选中刚贴的区域，用 browser_clipboard_read（copy: true）读回来比对${check}。`
+      }${warn}`,
+      ...(focus ? { data: { focus: focus.element, editable: focus.editable } } : {}),
     }
   }
 }
