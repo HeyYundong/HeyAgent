@@ -12,7 +12,7 @@ import { encrypt, mask } from "../../src/lib/crypto.js"
 import { createTask, eventsOf, sessionRow, setupEngine, waitStatus, type EngineTestContext } from "../../test/engine-helpers.js"
 import { login, mutate } from "../../test/helpers.js"
 import { createProfile } from "../fixtures.js"
-import { LETTERS, PRODUCTS, score, startSpeedSite, SUPPLIERS, TARGET_SUPPLIERS, type SpeedScenario, type SpeedSite } from "./site.js"
+import { E_ITEMS, E_TARGETS, LETTERS, PRODUCTS, score, startSpeedSite, SUPPLIERS, TARGET_SUPPLIERS, type SpeedScenario, type SpeedSite } from "./site.js"
 
 const MODEL = process.env.SPEED_MODEL ?? "openrouter/deepseek/deepseek-v4.1-flash-1017"
 const LABEL = process.env.SPEED_LABEL ?? "run"
@@ -33,6 +33,10 @@ function goalOf(scenario: SpeedScenario) {
     return `把 ${site.url("/a/products")} 上列的 ${PRODUCTS.length} 个商品逐个录入 ERP：在 ${site.url("/a/new")} 填好编号、名称、单价、起订量、类目、含税，每个商品提交一次（不要重复提交）。${PRODUCTS.length} 个都录完后结束。`
   if (scenario === "D")
     return `${site.url("/d/requests")} 上有几条采购需求。每条需求在商品目录 ${site.url("/d/catalog")} 里挑一个最符合的商品，到 ${site.url("/d/order")} 下单：选需求编号和商品，点提交，每条需求只提交一次。所有需求都下单后结束。`
+  if (scenario === "E")
+    return `在采购系统的商品列表 ${site.url("/e/list")} 查下面 ${E_TARGETS.length} 个商品的单价和供应商（每样商品都有标准款和加大款，要看准）：${E_TARGETS.map((code) => E_ITEMS.find((each) => each.code === code)!.name).join("、")}。列表一页只显示 8 个，要翻页。查完后到 ${site.url("/e/report")} 提交汇总，每行一个商品，格式「名称,单价,供应商」，名称照列表写全（带款式）。`
+  if (scenario === "F")
+    return `在采购系统的商品列表 ${site.url("/e/list")} 查下面 ${E_TARGETS.length} 个商品的单价、供应商和库存（每样商品都有标准款和加大款，要看准）：${E_TARGETS.map((code) => E_ITEMS.find((each) => each.code === code)!.name).join("、")}。列表一页只显示 8 个，要翻页。查完后到 ${site.url("/e/report")} 提交汇总，每行一个商品，格式「名称,单价,供应商,库存」，名称照列表写全（带款式）。`
   if (scenario === "B")
     return `在供应商搜索 ${site.url("/b/search")} 查下面 ${TARGET_SUPPLIERS.length} 家供应商的电话和评分（注意有名字相近的别家，要看准全名）：${TARGET_SUPPLIERS.map((id) => SUPPLIERS.find((each) => each.id === id)!.name).join("、")}。查完后到 ${site.url("/b/report")} 提交汇总，每行一家，格式「名称,电话,评分」，名称写全名。`
   return `在线文档 ${site.url("/c/doc")} 是一张字母图片表，按 ${LETTERS.join("、")} 每行放一张图：图片到 ${site.url("/c/search?q=letter+A")} 这样的网址搜（把 A 换成对应字母），选「大写字母 X」那张（X 是这一行的字母），复制图片，贴进文档里这个字母那一行的图片格。${LETTERS.length} 行都贴好、没有贴错的后结束。`
@@ -85,7 +89,7 @@ async function runScenario(scenario: SpeedScenario, round: number) {
   site.reset()
   const taskId = await createTask(ctx.db, { modelId: MODEL, title: `基准 ${scenario}`, goal: goalOf(scenario), toolIds: TOOLS, ownerId: "u-wang", reviewModelId: MODEL })
   // C 和 R-1-2 一样开着「允许看画面」
-  await ctx.db.update(t.tasks).set({ browserProfileIds: [profileId], allowBrowserVision: scenario === "C" }).where(eq(t.tasks.id, taskId))
+  await ctx.db.update(t.tasks).set({ browserProfileIds: [profileId], allowBrowserVision: scenario === "C", allowBrowserFetch: scenario === "E" || scenario === "F" }).where(eq(t.tasks.id, taskId))
   const res = await mutate(ctx.app, "engine.runNow", wang, { taskId })
   if (!res.data) throw new Error(JSON.stringify(res.error))
   const sessionId = res.data.sessionId as string

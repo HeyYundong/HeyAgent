@@ -10,7 +10,7 @@ import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
 import * as t from "../src/db/schema.js"
-import { describeToolInput, reviewLog } from "../src/engine/log-text.js"
+import { DATA_OUTPUT_BUDGET, describeToolInput, describeToolOutput, reviewLog } from "../src/engine/log-text.js"
 import { buildReviewPrompt } from "../src/engine/review.js"
 import { configureEngine } from "../src/engine/runtime.js"
 import { buildSnapshot } from "../src/engine/sessions.js"
@@ -198,6 +198,42 @@ describe("复核看的过程记录", () => {
     expect(prompt).toContain("整次运行共 5 条，其中工具调用 5 次）")
     expect(prompt).not.toContain("较早的记录")
     expect(prompt).toContain("- #3 调用 填表单（browser.fill_form）：参数 编号=P-101、名称=折叠露营椅")
+  })
+})
+
+describe("读数据的工具：结果的 JSON 压成一行、多给字数（基准 E：复核只看到每页第一条）", () => {
+  const items = (page: number) => Array.from({ length: 8 }, (_, i) => ({ code: `E-${page}${i}`, name: `商品${page}-${i}`, spec: i % 2 ? "加大款" : "标准款", price: 10 + i, supplier: `供应商${i}` }))
+  const fetchOutput = (page: number) =>
+    [`GET https://shop.test/e/api/items?page=${page}&size=8 → 200 application/json（1.2 KB，35 毫秒）`, "", JSON.stringify({ page, total: 40, items: items(page) }, null, 2)].join("\n")
+  const rowsOf = (sessionId: string, list: { kind: string; title: string; toolId: string; input: string; output: string }[]) =>
+    list.map((row, index) => ({ id: index + 1, sessionId, seq: index + 1, at: new Date(), detail: null, trace: null, ...row })) as unknown as (typeof t.sessionEvents.$inferSelect)[]
+
+  it("排好版的 JSON 压成一行再截：300 字里能看到好几条，不只第一条", () => {
+    const text = describeToolOutput("browser.fetch", fetchOutput(1), 300)
+    expect(text).toContain("GET https://shop.test/e/api/items?page=1&size=8 → 200")
+    expect(text).toContain('{"page": 1,"total": 40,"items": [{"code": "E-10"')
+    expect(text).toContain('"code": "E-11"')
+    // 不是 JSON 的结果照旧
+    expect(describeToolOutput("browser.snapshot", "第一行\n  第二行", 300)).toBe("第一行 ⏎ 第二行")
+  })
+
+  it("详细的几条里 browser.fetch 的结果多给：5 页每页 8 条都看得到；很多次时每条少给，合计有上限", () => {
+    const rows = rowsOf("R-z", [
+      { kind: "tool", title: "打开网页", toolId: "browser.navigate", input: JSON.stringify({ url: "https://shop.test/e/list" }), output: "好" },
+      ...[1, 2, 3, 4, 5].map((page) => ({ kind: "tool", title: "调网站接口", toolId: "browser.fetch", input: JSON.stringify({ url: `https://shop.test/e/api/items?page=${page}&size=8` }), output: fetchOutput(page) })),
+      { kind: "tool", title: "报结果", toolId: "run.finish", input: JSON.stringify({ outcome: "achieved" }), output: "好" },
+    ])
+    const text = reviewLog(rows, { recent: 30, budget: 12_000 }).lines.join("\n")
+    for (const page of [1, 2, 3, 4, 5]) for (const item of items(page)) expect(text).toContain(`"code": "${item.code}"`)
+
+    const many = rowsOf(
+      "R-w",
+      Array.from({ length: 30 }, (_, index) => ({ kind: "tool", title: "调网站接口", toolId: "browser.fetch", input: "{}", output: fetchOutput(index) }))
+    )
+    const results = reviewLog(many, { recent: 30, budget: 12_000 }).lines.map((line) => line.slice(line.indexOf("→ 结果 ") + 5))
+    // 平分到每条不到 300 字时按原来的 300 字给（不比原来少）
+    expect(DATA_OUTPUT_BUDGET / 30).toBeLessThan(300)
+    expect(Math.max(...results.map((line) => line.length))).toBeLessThanOrEqual(302)
   })
 })
 

@@ -491,3 +491,29 @@ shared（已写好 `packages/shared/test/dispatch.test.ts`，11 个用例）：�
 
 - 网页：运行详情「手动触发事件」按钮（`run-actions.tsx` 的 `FireEventButton`）对在等 `browser.` / `desktop:` / `work.done:` 的运行现在点了会报错（`BAD_REQUEST`，文字说清原因）。网页可以用 `reservedEventPrefix(event)` 判断，这几种不显示按钮。
 - 演示数据的花费上限任务，两次运行在 80、45 分钟前开始：刚过 0 点（上海时间）插的话算在昨天，看不到「到了上限」。
+
+## 13. 验收（冒烟，2026-10-28）
+
+在集成分支 1af8ae5 上做，私有库 `heyagent_x2`（`pnpm db:seed`）+ 开发服务（API 3139、worker）。主管在 tRPC 建了一把 API 密钥「外部系统 X」、生成了事件令牌；建了两个被派任务：T-1046 开「外部系统能派活」，参数「单号」（必填、去重）「备注」，配了「收到事件 `item.created` 就派一张」（单号 ← `itemNo`，备注 ← `note.text`），名额 1；T-1047 能被派活但没开「外部系统能派活」。执行模型 `deepseek-v4.1-flash-1017`，只有自带的工具。全部用 curl 走（脚本在监工的 jobs 目录 `x2/curl-dispatch.sh`）。
+
+| # | 请求 | 结果 |
+|---|---|---|
+| 1 | `POST /api/work-items` T-1046 单号 X-0001、`priority: high` | 201，W-1 `queued`、`via = api`、`apiKeyName`「外部系统 X」、`link` 指到 `#/tasks?id=T-1046&work=W-1`。几秒后被领走开了运行 |
+| 2 | 同一件事再提交（备注不同） | 200，`existing: true`、`updated: false`，还是 W-1，没重开 |
+| 3 | `delayMinutes: 30` / `priority: low` | 201，W-2 带 `notice`「定在 10-28 23:03 以后办」、`notBefore` 对；W-3 排队 |
+| 4 | T-1047（没开开关） | 403「任务 T-1047 没有打开「外部系统能派活」（在任务设置的「被派活」里打开）」 |
+| 5 | 缺必填 / 多出参数 / 没有的任务 / 密钥不对 | 400「缺少必填参数「单号」」/ 400「对方任务没有参数「颜色」，要的是：单号、备注」/ 404 / 401 |
+| 6 | `GET /api/work-items?task=T-1046&key=X-0001`、不带 key | 200，按 key 精确查到 W-1；列表新派的在前 |
+| 7 | `GET /api/work-items/W-1`、`W-99999` | 200 / 404「没有派活单 W-99999」 |
+| 8 | `POST /api/work-items/W-3/cancel`（`{reason}`）、再点一次；W-2 不带内容取消 | 200，`cancelled`、`error`「外部系统（密钥「外部系统 X」）点了不办了：外部系统撤回」；第二次 409「这张单已经结束了」；不带内容的 200 |
+| 9 | `POST /api/events` `item.created` `{itemNo: "E-1001", note: {text}}` | 200，`dispatched: [{T-1046, W-4, existing: false}]`；W-4 `via = event`、`fromEvent = item.created`，参数「单号 E-1001」「备注 事件来的」（嵌套路径取到了） |
+| 10 | 同一个事件再来一次 | 200，`existing: true`，还是 W-4 |
+| 11 | 事件数据缺 `itemNo` | 200，`dispatchRejected`「事件数据里没有「itemNo」（参数「单号」从这里取）」；负责人收到一条通知「处理外部登记的条目：外部事件派单没派成」，正文带事件数据和「今天再有没派成的不再通知」 |
+| 12 | 事件名 `work.done:W-1`、`subagent.done:x` | 400，写清是哪个前缀、平台拿它等什么 |
+
+**运行**：W-1 的运行（R-1046-1）「运行开始」写「派活触发：W-1，外部系统（密钥「外部系统 X」）派的」，agent 读了参数、`work.report` 交回、办成，$0.0014；W-4 的运行写「派活触发：W-4，外部事件「item.created」派的」。名额 1 时 W-4 等 W-1 结束才领。优先级的领单顺序、花费上限没在这次冒烟里看（后端测试覆盖了）。
+
+**看到的小问题**（不阻塞）：
+
+- **已修（edeb8ce）**：`link` 改用控制台地址（`BETTER_AUTH_URL`，部署时就是 `PUBLIC_URL`，`lib/api-auth.ts` 的 `consoleBaseUrl`），不按请求的 Host 拼。原来的记录：`link` 用请求的 Host 拼（`publicBaseUrl`）：开发时 API 和网页分两个端口，curl 打 3139 拿到的是 `http://127.0.0.1:3139/#/…`，点开是 API 端口；整套 pod 同一个入口没这个问题。和图库、比物一样，接口文档提一句「link 按调用时的地址拼」就够了。
+- 被派任务没声明「要交回的结果」时，agent 的 `work.report` 照样交了好几个自己起名的字段（「处理说明」「是否已读取」），外部系统查单会看到。不算错，只是提醒：给外部系统用的任务最好声明结果字段。

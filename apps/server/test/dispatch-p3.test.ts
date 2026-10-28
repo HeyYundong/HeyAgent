@@ -7,6 +7,7 @@ import { and, eq, sql } from "drizzle-orm"
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest"
 
 import * as t from "../src/db/schema.js"
+import { env } from "../src/env.js"
 import { fireEventImpl } from "../src/engine/control.js"
 import { notifyBudgetOnce } from "../src/engine/dispatch/budget.js"
 import { describeItem, dispatchFromAgent } from "../src/engine/dispatch/dispatch.js"
@@ -169,7 +170,9 @@ describe("HTTP 派单", () => {
     const res = await post({ task: worker, params: { 单号: "A-1" } })
     expect(res.status).toBe(201)
     expect(res.body).toMatchObject({ existing: false, updated: false, item: { taskId: worker, key: "A-1", title: "单号 A-1", status: "queued", via: "api", apiKeyId: keyId, apiKeyName: "外部系统 X", fromUserId: "u-lin", priority: "normal" } })
-    expect(res.body.link).toBe(`http://localhost/#/tasks?id=${worker}&work=${res.body.item.id}`)
+    // 控制台的地址（BETTER_AUTH_URL），不按请求的 Host 拼
+    expect(res.body.link).toBe(`${env.authUrl.replace(/\/+$/, "")}/#/tasks?id=${worker}&work=${res.body.item.id}`)
+    expect(res.body.link).not.toContain("http://localhost/#")
     // 停用的任务照样接单，返回里提醒一句
     expect(res.body.notice).toContain("任务停用了")
     const row = await itemRow(res.body.item.id)

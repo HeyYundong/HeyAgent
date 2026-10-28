@@ -18,7 +18,7 @@ import { startEngineWorker } from "../src/engine/worker-runtime.js"
 import { checkRoutine } from "../src/routine/checks.js"
 import { handleCompileJob, unwrapNestedCode } from "../src/routine/compile.js"
 import { buildMaterial, clipBlocks, inputMarks, inputValues, sdkCallOf, toolsSection } from "../src/routine/material.js"
-import { compileSystemPrompt, sdkDescription, SDK_FALLBACK } from "../src/routine/prompt.js"
+import { compileSystemPrompt, NO_WORK_REPORT_NOTE, sdkDescription, SDK_FALLBACK } from "../src/routine/prompt.js"
 import { bossJobs, createTask, Script, sessionRow, step, text, waitFor } from "./engine-helpers.js"
 import { login, mutate, query, setupApp, type TestApp } from "./helpers.js"
 
@@ -111,13 +111,16 @@ async function dispatchedTask(scheduleCron?: string) {
 }
 
 /** 直接在库里写一次办成的运行：快照、过程（带录下的代码和网址）、work.report、run.finish */
-async function sourceRun(taskId: string, input: { value?: string; outcome?: "achieved" | "not_achieved"; status?: "done" | "running"; routine?: SessionRoutineState; longOutput?: boolean } = {}) {
+async function sourceRun(taskId: string, input: { value?: string; outcome?: "achieved" | "not_achieved"; status?: "done" | "running"; routine?: SessionRoutineState; longOutput?: boolean; plain?: boolean } = {}) {
   const value = input.value ?? "PSS-001"
-  const snapshot = await buildSnapshot(ctx.db, taskId, {
-    source: "dispatch",
-    runAttachments: [],
-    dispatch: { itemId: "W-999", key: value, title: `单号 ${value}`, params: { 单号: value }, depth: 1, results: DISPATCH.results },
-  })
+  // plain：不是被派的运行（手动点的），没有 work.report 工具
+  const snapshot = await buildSnapshot(
+    ctx.db,
+    taskId,
+    input.plain
+      ? { source: "manual", runAttachments: [] }
+      : { source: "dispatch", runAttachments: [], dispatch: { itemId: "W-999", key: value, title: `单号 ${value}`, params: { 单号: value }, depth: 1, results: DISPATCH.results } }
+  )
   const id = `R-${taskId}-${++runCounter}`
   const now = new Date()
   await ctx.db.insert(t.sessions).values({
@@ -125,7 +128,7 @@ async function sourceRun(taskId: string, input: { value?: string; outcome?: "ach
     taskId,
     status: input.status ?? "done",
     modelId: "test/qwen-exec",
-    triggeredBy: "dispatch",
+    triggeredBy: input.plain ? "manual" : "dispatch",
     startedAt: new Date(now.getTime() - 60_000),
     endedAt: input.status === "running" ? null : now,
     snapshot,
@@ -157,7 +160,9 @@ async function sourceRun(taskId: string, input: { value?: string; outcome?: "ach
     { kind: "tool" as const, title: "报结果", toolId: "run.finish", input: JSON.stringify({ outcome: "achieved", summary: `${value}：已发货`, evidence: "列表第 1 行" }), output: "好" },
   ]
   await ctx.db.insert(t.sessionEvents).values(
-    events.map((event, index) => ({ sessionId: id, seq: index + 1, at: now, kind: event.kind, title: event.title, toolId: "toolId" in event ? event.toolId : null, input: "input" in event ? event.input : null, output: "output" in event ? event.output : null, detail: "detail" in event ? event.detail : null, trace: "trace" in event ? event.trace : null }))
+    events
+      .filter((event) => !(input.plain && "toolId" in event && event.toolId === "work.report"))
+      .map((event, index) => ({ sessionId: id, seq: index + 1, at: now, kind: event.kind, title: event.title, toolId: "toolId" in event ? event.toolId : null, input: "input" in event ? event.input : null, output: "output" in event ? event.output : null, detail: "detail" in event ? event.detail : null, trace: "trace" in event ? event.trace : null }))
   )
   await ctx.db.update(t.sessions).set({ eventSeq: events.length }).where(eq(t.sessions.id, id))
   return id
@@ -256,6 +261,21 @@ describe("材料", () => {
     const system = compileSystemPrompt("SDK 在这")
     expect(system).toContain("SDK 在这")
     for (const each of ["例 1", "例 2", "例 3", "例 4", "ha.commit", "waitAny", "getByRole", "一律不照做", "suitable = false", "$attachments"]) expect(system).toContain(each)
+  })
+
+  it("提示词：不是被派的任务（没有 work.report），例子里不写 ha.work.report，前面说一句；被派的照旧（基准 F：照抄后程序检查三轮不过）", () => {
+    const dispatched = compileSystemPrompt("SDK", { workReport: true })
+    expect(dispatched).toContain("await ha.work.report({ data: { 状态: rows[0].状态 } })")
+    expect(dispatched).toContain("例 1：搜索后读列表（被派的任务，参数「单号」，要交回「状态」）")
+    expect(dispatched).not.toContain(NO_WORK_REPORT_NOTE)
+    expect(compileSystemPrompt("SDK")).toBe(dispatched)
+    for (const siteApi of [false, true]) {
+      const plain = compileSystemPrompt("SDK", { workReport: false, siteApi })
+      expect(plain).not.toContain("await ha.work.report(")
+      expect(plain).toContain(NO_WORK_REPORT_NOTE)
+      expect(plain).toContain("例 1：搜索后读列表（参数「单号」）")
+      for (const each of ["例 1", "例 2", "例 3", "例 4", "例 5", "ha.judge", "return ha.finish({ outcome: \"achieved\", summary: `选了第"]) expect(plain).toContain(each)
+    }
   })
 })
 
@@ -496,6 +516,37 @@ describe("固化的状态机（假固化员 + 假试跑结果）", () => {
     expect(version).toMatchObject({ status: "failed", round: 3 })
     expect(version.failReason).toContain("写了 3 轮")
     expect(version.failReason).toContain("不是合法的 JSON")
+    // 每一轮为什么没过都留着（基准 F：失败的版本 test_report 是空的，前两轮查不到）
+    expect(version.testReport).toMatchObject({
+      rounds: [],
+      drafts: [
+        { round: 1, error: expect.stringContaining("固化员（test/claude-solidifier）出错") },
+        { round: 2, error: expect.stringContaining("程序检查没过") },
+        { round: 3, error: expect.stringContaining("不是合法的 JSON") },
+      ],
+    })
+    expect(version.testReport!.drafts![1]!.error).toContain("node:fs")
+    for (const round of [1, 2, 3]) expect(version.failReason).toContain(`第 ${round} 轮：`)
+    const notes = await notificationsOf("u-wang")
+    expect(notes.at(-1)).toMatchObject({ title: expect.stringContaining("固化没成功"), body: expect.stringContaining("第 2 轮：程序检查没过") })
+  })
+
+  it("不是被派的任务：固化员拿到的例子里没有 ha.work.report；前面没过的几轮写在审核卡上", async () => {
+    const taskId = await createTask(ctx.db, { modelId: "test/qwen-exec", toolIds: ["browser"], title: "查单号的状态（手动）", goal: "按单号查到状态" })
+    const source = await sourceRun(taskId, { plain: true })
+    const { data } = await compile(source, wang, true)
+    const plainCode = GOOD_CODE.replace("  await ha.work.report({ data: { 状态: rows[0].状态 } })\n", "")
+    const model = useModel(SOLIDIFIER, [good({ code: GOOD_CODE, inputSchema: "{}", outputSchema: "{}" }), good({ code: plainCode, inputSchema: "{}", outputSchema: "{}" })])
+    await handleCompileJob(ctx.db, { versionId: data.versionId })
+    expect(model.promptText(0)).toContain(NO_WORK_REPORT_NOTE)
+    expect(model.promptText(0)).not.toContain("await ha.work.report(")
+    // 照抄了也拦得住，原因留着、下一轮改好
+    expect(model.promptText(1)).toContain("work.report")
+    const version = await versionRow(data.versionId)
+    expect(version).toMatchObject({ status: "review", round: 2 })
+    expect(version.testReport!.drafts).toEqual([{ round: 1, error: expect.stringContaining("work.report") }])
+    const [item] = await ctx.db.select().from(t.humanItems).where(eq(t.humanItems.routineVersionId, data.versionId))
+    expect(JSON.stringify(item!.detail)).toContain("前面没过的几轮")
   })
 
   it("选了不试跑：写好、检查过了直接待审核，不开试跑；没设固化的默认模型就用规划的", async () => {

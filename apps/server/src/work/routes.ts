@@ -18,7 +18,7 @@ import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
 import { cancelWorkItemByApi, dispatchByApi } from "../engine/dispatch/manage.js"
 import { EngineError } from "../engine/sessions.js"
-import { authenticateRequest, publicBaseUrl, zodMessage, type ApiCaller } from "../lib/api-auth.js"
+import { authenticateRequest, consoleBaseUrl, zodMessage, type ApiCaller } from "../lib/api-auth.js"
 import { listWorkItems, toWorkItems, WorkError } from "./service.js"
 
 interface Deps {
@@ -77,7 +77,7 @@ export function registerWorkRoutes(app: Hono, deps: Deps) {
       const input = parse(workApiCreateInputSchema, await readJson(c))
       // 没有去重参数时，去重键也可以放在请求头 Idempotency-Key 里（内容里的 key 优先）
       const idempotencyKey = c.req.header("idempotency-key")?.trim() || undefined
-      const { status, body } = await dispatchByApi(db, caller, input, { idempotencyKey, baseUrl: publicBaseUrl(c.req.raw) })
+      const { status, body } = await dispatchByApi(db, caller, input, { idempotencyKey, baseUrl: consoleBaseUrl() })
       return c.json(body, status)
     })
   )

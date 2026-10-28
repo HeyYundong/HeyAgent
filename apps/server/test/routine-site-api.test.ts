@@ -84,7 +84,7 @@ const LOG: NetworkLogLine[] = [
   req(7, 41, {
     url: "https://api.shop.example.com/v1/orders/9f8e7d6c5b4a39281706f5e4d3c2b1a0",
     headers: ["authorization"],
-    auth: { cookie: false, headers: ["authorization"] },
+    auth: { cookie: false, headers: ["authorization"], schemes: { authorization: "Bearer" } },
     shape: "{ id: string, status: string }",
   }),
   { end: true, skipped: 12, reason: "同一个网址最多记 3 次" },
@@ -242,7 +242,7 @@ describe("材料：网页调过的接口", () => {
     expect(section).toMatch(/接口 4：GET https:\/\/shop\.example\.com\/api\/notice\/poll\n.*\n- 在哪一步：#3 之后、下一次调用之前（\d\d:\d\d:\d\d）/)
     // token 认证的
     expect(section).toContain("### 接口 5：GET https://api.shop.example.com/v1/orders/{id}")
-    expect(section).toContain("- 认证：不带 cookie；认证头 authorization（用 token 认证：browser.fetch 调不了，脚本里照页面点；见规矩第 24 条）")
+    expect(section).toContain("- 认证：不带 cookie；认证头 authorization（值是「Bearer <密钥>」）（用 token 认证：browser.fetch 调不了，脚本里照页面点；见规矩第 24 条）")
     // 过程里的那一步也标了 seq；browser.fetch 在任务里的工具里写了调法
     expect(text).toContain("#1 browser.navigate ✓")
     expect(text).toContain("  这一步里网页发的请求：seq 1–2（见「网页调过的接口」）")

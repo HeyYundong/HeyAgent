@@ -104,6 +104,68 @@ export function maskText(text: string): string {
     .replace(/(^|[?&\s])([A-Za-z0-9_-]{2,40})=([^&\s"'<>]+)/g, (all, lead: string, key: string) => (siteSecretKey(key) ? `${lead}${key}=${SITE_SECRET_MASK}` : all))
 }
 
+// ---------- browser.fetch 拿到 401、403 时的说法 ----------
+
+/**
+ * 401、403 时给 agent 的一句（21.3 第 6 条）：browser.fetch 只带浏览器的 cookie、不能设 Authorization，
+ * 网页调这个接口时用的是认证头不带 cookie（记接口里看得到）、返回头要 Bearer 这类认证时，不是登录过期，是这个接口要别的认证；
+ * 请求没带 cookie（这个网址没有 cookie）时两种都可能（还没登录，或者要 token），都说；带了 cookie 的才说多半登录过期了
+ */
+export function fetchAuthHint(input: { authenticate?: string | undefined; cookies: number; tokenApi: boolean }): string {
+  const other = "这个接口要别的认证（例如 token），browser.fetch 调不了（它只带浏览器的 cookie，不能设 Authorization），照页面点或建 HTTP 工具（密钥存在平台里）"
+  if (input.tokenApi) return `${other}：网页调这个接口时带的是认证头、没带 cookie。`
+  if (input.authenticate) return `${other}：接口的返回头要 ${input.authenticate} 认证。`
+  if (input.cookies === 0) return `这次请求没带 cookie（这个网址没有 cookie）：要么还没登录（先用 browser.navigate 打开网站的页面看看要不要登录），要么${other}。`
+  return "多半登录过期了，先用 browser.navigate 打开网站的页面看看要不要登录。"
+}
+
+// ---------- 请求头打码（Playwright MCP 的 browser_network_requests / browser_network_request 的输出） ----------
+
+/**
+ * 值要打码的请求头、返回头名字。和 SITE_SECRET_KEYS（只认整个字段名）不一样，这里按名字里带不带这些词认、宁多勿少：
+ * - 请求头的名字五花八门（x-auth-token、x-goog-api-key、x-amz-security-token、x-session-id……），只认整个名字会漏；
+ * - 字段名只认整个名字，是因为 nextPageToken 这类翻页要用；请求头的值 agent 用不上（browser.fetch 不许设
+ *   Cookie、Authorization，登录态由浏览器自己带；要 token 的接口建 HTTP 工具，密钥存在平台里），多打了也不碍事；
+ * - 和记接口（network-log.ts 的 authHeader）一样不记值，只是这里连 csrf、cookie、set-cookie 都打（记接口那边干脆不记这几个头）。
+ * HTTP/2 的伪头（:authority 是主机名）不算
+ */
+const SECRET_HEADER_EXACT = new Set(["authorization", "proxy-authorization", "cookie", "cookie2", "set-cookie", "set-cookie2"])
+const SECRET_HEADER_WORD = /token|secret|key|auth|cookie|session|passw|credential|csrf|xsrf|signature/
+export function secretHeaderName(name: string): boolean {
+  const lower = name.trim().toLowerCase()
+  if (!lower || lower.startsWith(":")) return false
+  return SECRET_HEADER_EXACT.has(lower) || SECRET_HEADER_WORD.test(lower)
+}
+
+/** 一行「名字: 值」（前面可以有缩进；HTTP/2 伪头带冒号开头） */
+const HEADER_LINE = /^(\s*)(:?[A-Za-z0-9!#$%&'*+.^_`|~-]+):(\s*)(.*)$/
+/** Playwright 输出里的段落标题、markdown 标题、代码块边界：不是上一个头的续行 */
+const NOT_CONTINUATION = /^\s*$|^\s*(#|```)|^\s*(General|Request headers|Response headers|Request|Response)\s*$/
+
+/**
+ * 看网页请求的工具（MCP 的 browser_network_requests / browser_network_request）给模型的输出打码：
+ * - 「名字: 值」的行，名字是 secretHeaderName 的，值换成 ••••，只留名字；
+ *   多个 Set-Cookie 被 Playwright 用换行连成一个值，后面的续行（不是「名字: 值」、不是空行和段落标题）一并去掉；
+ * - 别的行（网址、请求体、返回体）按 maskText：查询参数、"名字": "值"、名字=值 按 SITE_SECRET_KEYS 打码。
+ * 这样 token、cookie 的原文不进模型上下文、过程记录和固化员的材料（docs/dev/solidify.md 21.3 第 4 条）
+ */
+export function maskNetworkOutput(output: string): string {
+  const out: string[] = []
+  let inSecret = false
+  for (const line of output.split("\n")) {
+    const header = HEADER_LINE.exec(line)
+    if (header && !/^https?$/i.test(header[2]!)) {
+      inSecret = secretHeaderName(header[2]!) && header[4] !== ""
+      out.push(inSecret ? `${header[1]}${header[2]}:${header[3] || " "}${SITE_SECRET_MASK}` : maskText(line))
+      continue
+    }
+    if (inSecret && !NOT_CONTINUATION.test(line)) continue
+    inSecret = false
+    out.push(maskText(line))
+  }
+  return out.join("\n")
+}
+
 /** 请求体、返回体打码：JSON 按键；表单参数按名字；别的按文字 */
 export function maskBody(body: string, contentType = ""): { text: string; json?: unknown } {
   const trimmed = body.trim()
@@ -174,7 +236,8 @@ export interface PageFetchRequest {
 }
 
 export type PageFetchResult =
-  | { ok: true; status: number; contentType: string; bytes: number; text?: string; ms: number }
+  /** authenticate：返回头 WWW-Authenticate 的方案名（Bearer、Basic……），401 时看是不是要 token */
+  | { ok: true; status: number; contentType: string; bytes: number; text?: string; ms: number; authenticate?: string }
   | { ok: false; error: "csrf" | "redirect" | "network" | "timeout" | "too_big"; message: string; ms: number }
 
 /** 隔离环境的名字（和剪贴板的分开） */
@@ -220,6 +283,7 @@ const PAGE_FETCH = `async function (req, timeoutMs, maxBytes) {
     }
     if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) return done({ ok: false, error: "redirect", message: "接口要跳转" })
     const contentType = res.headers.get("content-type") || ""
+    const authenticate = (res.headers.get("www-authenticate") || "").trim().split(/[\\s,]/)[0] || undefined
     const chunks = []
     let bytes = 0
     if (res.body) {
@@ -240,14 +304,14 @@ const PAGE_FETCH = `async function (req, timeoutMs, maxBytes) {
       }
     }
     const textual = !contentType || /json|^text\\/|xml|javascript|x-www-form-urlencoded|ecmascript/i.test(contentType)
-    if (!textual) return done({ ok: true, status: res.status, contentType, bytes })
+    if (!textual) return done({ ok: true, status: res.status, contentType, bytes, authenticate })
     const all = new Uint8Array(bytes)
     let at = 0
     for (const chunk of chunks) { all.set(chunk, at); at += chunk.byteLength }
     const charset = (/charset=([^;\\s]+)/i.exec(contentType) || [])[1]
     let decoder
     try { decoder = new TextDecoder(charset ? charset.replace(/["']/g, "") : "utf-8") } catch (e) { decoder = new TextDecoder("utf-8") }
-    return done({ ok: true, status: res.status, contentType, bytes, text: decoder.decode(all) })
+    return done({ ok: true, status: res.status, contentType, bytes, text: decoder.decode(all), authenticate })
   } finally {
     clearTimeout(timer)
   }

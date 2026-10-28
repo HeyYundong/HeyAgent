@@ -51,6 +51,29 @@ const browserHeader = (name: string) => BROWSER_HEADERS.has(name) || name.starts
 /** 像认证的请求头（csrf、xsrf 的不算） */
 export const authHeader = (name: string) => !/csrf|xsrf/.test(name) && (/^(authorization|x-api-key|api-key|apikey)$/.test(name) || /token|auth/.test(name))
 
+/**
+ * 认证头的值的方案名（给固化员写 HTTP 工具建议时照着加不加 Bearer，21.3 第 5 条）：
+ * 值里有空格、第一个词全是字母（可带 -，2～20 个）的记这个词（Bearer、Basic、Token、Digest）；没有空格（整个就是密钥）记 ""；
+ * 别的（第一个词带数字等，可能是密钥的一部分）不记。只记方案名，密钥本身不记
+ */
+export function authScheme(value: string): string | undefined {
+  const trimmed = value.trim()
+  if (!trimmed) return undefined
+  const space = trimmed.search(/\s/)
+  if (space < 0) return ""
+  const word = trimmed.slice(0, space)
+  return /^[A-Za-z][A-Za-z-]{1,19}$/.test(word) ? word : undefined
+}
+
+function authSchemes(headers: Record<string, string>, names: string[]): Record<string, string> | undefined {
+  const out: Record<string, string> = {}
+  for (const name of names) {
+    const scheme = authScheme(headers[name] ?? "")
+    if (scheme !== undefined) out[name] = scheme
+  }
+  return Object.keys(out).length ? out : undefined
+}
+
 interface Sent {
   requestId: string
   type: "xhr" | "fetch"
@@ -158,6 +181,28 @@ export class NetworkLog {
   serialize(): string {
     const all = this.ended ? [...this.lines, JSON.stringify(this.ended)] : this.lines
     return all.length ? `${all.join("\n")}\n` : ""
+  }
+
+  /**
+   * 记下的请求里，网页调同一个接口（同源、同一个路径）时带了认证头、没带 cookie（用 token 认证）：
+   * browser.fetch 拿到 401、403 时用来说清「要 token，browser.fetch 调不了」，别往「登录过期」上带
+   */
+  usesToken(url: string): boolean {
+    let target: URL
+    try {
+      target = new URL(url)
+    } catch {
+      return false
+    }
+    return this.lines.some((text) => {
+      try {
+        const line = JSON.parse(text) as NetworkRequestLine
+        const each = new URL(line.url)
+        return each.origin === target.origin && each.pathname === target.pathname && line.auth.headers.length > 0 && !line.auth.cookie
+      } catch {
+        return false
+      }
+    })
   }
 
   /** browser.fetch 发请求前登记：工具执行期间方法和网址对得上的那一个不记。返回撤销登记的函数 */
@@ -374,6 +419,8 @@ export class NetworkLog {
       .filter((name) => !browserHeader(name))
       .sort()
     const csrf = await timed(this.findCsrf(session, mainFrameId, item))
+    const authNames = pageHeaders.filter(authHeader)
+    const schemes = authSchemes(item.headers, authNames)
 
     let postData = item.postData
     if (postData === undefined && item.hasPostData)
@@ -391,7 +438,7 @@ export class NetworkLog {
       url: maskUrl(item.url),
       page: maskUrl(item.pageUrl),
       headers: pageHeaders,
-      auth: { cookie: end.cookie, headers: pageHeaders.filter(authHeader) },
+      auth: { cookie: end.cookie, headers: authNames, ...(schemes ? { schemes } : {}) },
       ...(csrf ? { csrf } : {}),
       ...(requestType ? { requestType } : {}),
       ...(request ? { requestBody: request.text, ...(request.omitted ? { requestOmitted: request.omitted } : {}) } : {}),
