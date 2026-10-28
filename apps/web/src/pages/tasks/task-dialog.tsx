@@ -5,6 +5,7 @@
 // 运行结果（docs/dev/run-outcome.md 5.4 节）：「完成」一组放三方验收模型和复核模型。复核一定做（2026-10-20 去掉了开关），复核模型必填，
 // 新任务和以前没选的旧任务都先填上默认复核模型；选了「交给三方验收」的规则时，验收通过的不再复核。
 // 固化（docs/dev/solidify.md 17.1）：「用哪些」里放「办成后自动固化」（跟默认 / 开 / 关，存 autoSolidify：null / true / false）和「固化时不试跑」（routineSkipTest），说明在 label 的「?」里。
+// 自动挑选记忆（docs/dev/memory-retrieval.md 6.1 节）：「用哪些 → 记忆」下面一个开关 + 开着时「最多几条」；没设 embedding 模型时提醒开着也不会挑。
 // 派活（docs/dev/dispatch.md 9.1 节）：「被派活」一组（参数、名额、谁能派活给它，第二期加自动重试，组件在 dispatch-fields.tsx，导入向导也用）；定时那里「上一次还没跑完就跳过」；选了内置工具「派活」时写能派给谁。
 import * as React from "react"
 import { Controller, useFieldArray, useForm, useWatch, type Control, type UseFormRegister } from "react-hook-form"
@@ -13,6 +14,7 @@ import {
   alwaysOnToolIds,
   AUTO_MEMORY_DEFAULT,
   AUTO_MEMORY_LIMIT_DEFAULT,
+  AUTO_MEMORY_LIMIT_OPTIONS,
   autoSolidifyDefault,
   BROWSER_TOOL_ID,
   can,
@@ -42,7 +44,7 @@ import { Spinner } from "@/components/ui/spinner"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 
-import { useBrowsersQuery, useDesktopsQuery, useMemoriesQuery, useModels, useRulesQuery, useSkillsQuery, useStaffQuery, useTasksQuery, useToolName, useToolsQuery } from "@/lib/data"
+import { useBrowsersQuery, useDesktopsQuery, useMemoriesQuery, useModels, useModelsQuery, useRulesQuery, useSkillsQuery, useStaffQuery, useTasksQuery, useToolName, useToolsQuery } from "@/lib/data"
 import { domainsText, invalidDomainsMessage, parseDomains } from "@/lib/domains"
 import { useAction } from "@/lib/mutations"
 import { navigate } from "@/lib/router"
@@ -305,6 +307,52 @@ function SolidifyFields({ control, autoDefault }: { control: Control<TaskInput>;
   )
 }
 
+/** 「最多几条」的选项；任务上存的值不在选项里（助手可以设 1～20 的任意数）时也列出来，免得显示空白 */
+function autoMemoryLimitItems(current: number | undefined) {
+  const values = [...new Set([...AUTO_MEMORY_LIMIT_OPTIONS, ...(current ? [current] : [])])].sort((a, b) => a - b)
+  return values.map((value) => ({ value: String(value), label: `最多 ${value} 条` }))
+}
+
+/** 自动挑选记忆（docs/dev/memory-retrieval.md 6.1 节）：开关 + 开着时右边「最多几条」；没设 embedding 模型时下面一行提醒 */
+function AutoMemoryFields({ control }: { control: Control<TaskInput> }) {
+  const [on, limit] = useWatch({ control, name: ["autoMemory", "autoMemoryLimit"] })
+  const modelsQuery = useModelsQuery()
+  // 模型设置取到了、默认里没有 embed 才提醒（没取到前不闪一下）
+  const noEmbedModel = modelsQuery.isSuccess && !modelsQuery.data.defaults.embed
+  const items = autoMemoryLimitItems(limit)
+  return (
+    <div className="flex flex-col gap-2">
+      <Field orientation="horizontal">
+        <Controller
+          control={control}
+          name="autoMemory"
+          render={({ field }) => <Switch id="task-autoMemory" checked={!!field.value} onCheckedChange={(next) => field.onChange(Boolean(next))} />}
+        />
+        {/* 「?」放在 label 里：点 label 里的按钮不会切换开关 */}
+        <FieldLabel htmlFor="task-autoMemory" className="items-center gap-1">
+          自动挑选记忆
+          <HelpTip>运行开始时按任务标题、目标、步骤和这次的说明，从记忆库里再挑几条相关的给 agent。手选的一定会给。来自网页、没核实的记忆不会被自动挑。</HelpTip>
+        </FieldLabel>
+        {on && (
+          <Controller
+            control={control}
+            name="autoMemoryLimit"
+            render={({ field }) => (
+              <Select items={items} value={String(field.value ?? AUTO_MEMORY_LIMIT_DEFAULT)} onValueChange={(value) => value && field.onChange(Number(value))}>
+                <SelectTrigger id="task-autoMemoryLimit" size="sm" aria-label="自动挑的最多几条"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {items.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            )}
+          />
+        )}
+      </Field>
+      {on && noEmbedModel && <FieldDescription>还没设 embedding 模型，开着也不会挑（模型页 → 默认设置）</FieldDescription>}
+    </div>
+  )
+}
+
 const DEFAULT_CRON = "0 9 * * *"
 
 export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpenChange: (open: boolean) => void; task?: TaskDef }) {
@@ -502,25 +550,34 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
                 <FieldLegend variant="label">用哪些</FieldLegend>
                 <FieldDescription>agent 只能用这里选的。规则没有默认的，要手动选。</FieldDescription>
                 <div className="grid gap-4 sm:grid-cols-2">
-                  {PICK_KEYS.map((key) => (
-                    <Controller
-                      key={key}
-                      control={form.control}
-                      name={key}
-                      render={({ field }) => (
-                        <MultiPick
-                          id={`task-${key}`}
-                          label={options[key].label}
-                          options={options[key].options}
-                          value={field.value ?? []}
-                          onChange={field.onChange}
-                          description={key === "toolIds" ? `${alwaysOn.length ? `每个任务都自带：${alwaysOn.map(toolName).join("、")}。` : ""}${IMPLIED_TOOLS_NOTE}`
-                            : key === "ruleIds" ? "只能选已经生效的（主管在「规则」页确认过「系统理解为」）；没生效的灰着，写了原因。" : undefined}
-                          notes={key === "ruleIds" ? ruleNotes : key === "toolIds" ? toolNotes : undefined}
-                        />
-                      )}
-                    />
-                  ))}
+                  {PICK_KEYS.map((key) => {
+                    const pick = (
+                      <Controller
+                        key={key}
+                        control={form.control}
+                        name={key}
+                        render={({ field }) => (
+                          <MultiPick
+                            id={`task-${key}`}
+                            label={options[key].label}
+                            options={options[key].options}
+                            value={field.value ?? []}
+                            onChange={field.onChange}
+                            description={key === "toolIds" ? `${alwaysOn.length ? `每个任务都自带：${alwaysOn.map(toolName).join("、")}。` : ""}${IMPLIED_TOOLS_NOTE}`
+                              : key === "ruleIds" ? "只能选已经生效的（主管在「规则」页确认过「系统理解为」）；没生效的灰着，写了原因。" : undefined}
+                            notes={key === "ruleIds" ? ruleNotes : key === "toolIds" ? toolNotes : undefined}
+                          />
+                        )}
+                      />
+                    )
+                    // 记忆下面紧跟「自动挑选记忆」，放在同一格里
+                    return key === "memoryIds" ? (
+                      <div key={key} className="flex flex-col gap-3">
+                        {pick}
+                        <AutoMemoryFields control={form.control} />
+                      </div>
+                    ) : pick
+                  })}
                   {usesBrowser && (
                     <BrowserFields control={form.control} domainText={domainText} domainError={errors.allowedDomains?.message} onDomainText={(text) => {
                       setDomainText(text)

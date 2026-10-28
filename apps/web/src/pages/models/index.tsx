@@ -205,11 +205,11 @@ function DefaultsSection({ providers, defaults, readOnly, nameOf, saving, onSave
             onValueChange={(next) => setDraft({ ...draft, review: next || undefined })} />
         </Field>
         <Field>
-          <FieldTitle htmlFor="default-embed" label="图库的 embedding 模型">
-            把图片和描述变成向量，图库的以图搜图、比对、按描述找图都用它。只列能处理图片的 embedding 模型。
-            换了以后后台用新模型把所有图重算一遍，算完之前检索还用旧模型。
+          <FieldTitle htmlFor="default-embed" label="embedding 模型（图库、记忆共用）">
+            把图片和描述变成向量，图库的以图搜图、比对、按描述找图都用它；开着「自动挑选记忆」的任务也用它挑记忆。只列能处理图片的 embedding 模型。
+            换了以后后台用新模型把所有图、记忆重算一遍，算完之前图库检索还用旧模型。
           </FieldTitle>
-          <ModelCombobox id="default-embed" className="w-full sm:w-96" models={embeddingModels} value={draft.embed ?? ""} disabled={readOnly} clearable placeholder="不用（图库不能以图搜图）"
+          <ModelCombobox id="default-embed" className="w-full sm:w-96" models={embeddingModels} value={draft.embed ?? ""} disabled={readOnly} clearable placeholder="不用（图库不能以图搜图，记忆不会被自动挑）"
             onValueChange={(next) => setDraft({ ...draft, embed: next || undefined })} />
           {embeddingModels.length === 0 && <FieldDescription>现在一个都没有：到 OpenRouter 服务里点「刷新模型列表」。</FieldDescription>}
         </Field>
@@ -362,7 +362,7 @@ function ProviderDetail({ provider, tasks, defaults, isAdmin, actions }: {
         )}
       </DetailSection>
       {embeddings.length > 0 && (
-        <DetailSection title="embedding 模型" description="把图片、文字变成向量的模型，图库检索用（在「默认设置」里选）。能处理图片的才能以图搜图，排在前面。价格是每百万 token（美元）。">
+        <DetailSection title="embedding 模型" description="把图片、文字变成向量的模型，图库检索、自动挑选记忆用（在「默认设置」里选）。能处理图片的才能以图搜图，排在前面。价格是每百万 token（美元）。">
           <Table>
             <TableHeader>
               <TableRow><TableHead>模型</TableHead><TableHead>能处理图片</TableHead><TableHead>价格</TableHead></TableRow>
@@ -373,7 +373,7 @@ function ProviderDetail({ provider, tasks, defaults, isAdmin, actions }: {
                   <TableCell>
                     <div className="flex flex-wrap items-center gap-1">
                       {m.name}
-                      {defaults.embed === m.id && <Badge variant="secondary">图库默认</Badge>}
+                      {defaults.embed === m.id && <Badge variant="secondary">图库、记忆默认</Badge>}
                     </div>
                   </TableCell>
                   <TableCell>{m.vision ? "能" : "不能"}</TableCell>
@@ -400,7 +400,7 @@ function ProviderDetail({ provider, tasks, defaults, isAdmin, actions }: {
                 ...defaultRoles.map((role) => `${role.label}用 ${provider.models.find((m) => m.id === defaults[role.id])?.name}`),
                 ...(assistantDefault ? [`助手用 ${assistantDefault.name}`] : []),
                 ...(solidifyDefault ? [`固化用 ${solidifyDefault.name}`] : []),
-                ...(embedDefault ? [`图库用 ${embedDefault.name}`] : []),
+                ...(embedDefault ? [`图库、记忆用 ${embedDefault.name}`] : []),
               ].join("，")}
               。
             </p>

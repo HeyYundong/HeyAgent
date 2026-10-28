@@ -5,6 +5,7 @@ import { ENDED_RUN_STATUSES, isRunEnded, runOutcomeLabel, type FireEventResult, 
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
 import { endRoutineTestInTx } from "../routine/runtime/test-end.js"
+import { dispatchFromEvent } from "./dispatch/events.js"
 import { settleWorkItemInTx } from "./dispatch/settle.js"
 import { failedOutcome } from "./outcome.js"
 import type { Tx } from "./queue.js"
@@ -163,7 +164,7 @@ export async function fireEventImpl(
   }
 ): Promise<FireEventResult> {
   const data = input.data ?? {}
-  const result: FireEventResult = { resumedSessionIds: [], firedTodoIds: [] }
+  const result: FireEventResult = { resumedSessionIds: [], firedTodoIds: [], dispatched: [], dispatchRejected: [] }
   const payload = Object.keys(data).length
     ? `\n事件数据：${JSON.stringify(data).slice(0, 4000)}`
     : ""
@@ -186,6 +187,10 @@ export async function fireEventImpl(
     })
     if (fired) result.firedTodoIds.push(todo.id)
   }
+  // 派活第三期：按任务上的「收到事件就派一张」派单（docs/dev/dispatch-p3.md 第 3 节；现在是空壳，包 A 实现）
+  const dispatched = await dispatchFromEvent(db, { event: input.event, data, actorId: input.actorId ?? null, via: input.via })
+  result.dispatched = dispatched.dispatched
+  result.dispatchRejected = dispatched.rejected
   await writeAudit(db, {
     actorId: input.actorId ?? null,
     action: "event.fire",

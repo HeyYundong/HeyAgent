@@ -1499,9 +1499,16 @@ export const workItems = pgTable(
     sessionId: text("session_id").references((): AnyPgColumn => sessions.id, { onDelete: "set null" }),
     attempts: integer("attempts").notNull().default(0),
     via: workViaEnum("via").notNull(),
+    /** 优先级（第三期）：1 高、0 普通、-1 低（shared 的 WORK_PRIORITY_RANK）；领单先领大的，同一级按 created_at */
+    priority: integer("priority").notNull().default(0),
     fromTaskId: text("from_task_id").references(() => tasks.id, { onDelete: "set null" }),
     fromSessionId: text("from_session_id").references((): AnyPgColumn => sessions.id, { onDelete: "set null" }),
+    /** 人派的：谁；API 密钥派的：密钥的创建人 */
     fromUserId: text("from_user_id").references(() => users.id, { onDelete: "set null" }),
+    /** via = api（第三期）：哪把 API 密钥；密钥删了置空 */
+    apiKeyId: text("api_key_id").references(() => apiKeys.id, { onDelete: "set null" }),
+    /** via = event（第三期）：哪个外部事件派来的 */
+    fromEvent: text("from_event"),
     depth: integer("depth").notNull().default(1),
     result: jsonb("result").$type<WorkResult>(),
     error: text("error"),
@@ -1510,7 +1517,7 @@ export const workItems = pgTable(
     /** 结果（run-outcome 6.2）：跟着最后那次运行的结果；单结束了才有 */
     outcome: runOutcomeEnum("outcome").$type<RunOutcome>(),
     outcomeReason: text("outcome_reason"),
-    /** 排队等自动重试：到这个时间才领（第二期） */
+    /** 排队时到这个时间才领：等自动重试（第二期），或者派的时候说了过多久再办（第三期） */
     notBefore: ts("not_before"),
     /** 这一轮已经自动重试了几次（人点重办清零；第二期） */
     autoRetries: integer("auto_retries").notNull().default(0),
@@ -1525,6 +1532,9 @@ export const workItems = pgTable(
     uniqueIndex("work_items_task_key_idx").on(t.taskId, t.key),
     index("work_items_task_status_idx").on(t.taskId, t.status, t.createdAt),
     index("work_items_task_not_before_idx").on(t.taskId, t.status, t.notBefore),
+    // 第三期：领单、排队名次按优先级从高到低、再按派进来的先后
+    index("work_items_task_queue_idx").on(t.taskId, t.status, t.priority.desc(), t.createdAt, t.id),
+    index("work_items_api_key_idx").on(t.apiKeyId),
     index("work_items_created_idx").on(t.createdAt.desc(), t.id.desc()),
     index("work_items_from_session_idx").on(t.fromSessionId),
     index("work_items_from_task_idx").on(t.fromTaskId),

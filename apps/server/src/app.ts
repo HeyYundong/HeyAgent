@@ -1,4 +1,4 @@
-// HTTP 入口：/api/health、/api/setup（首次设置管理员）、/api/auth/*（better-auth）、/api/trpc/*（tRPC，含 SSE 订阅）、/api/gallery/*（图库的 HTTP 接口和 MCP）、/api/compare/*（比物的 HTTP 接口和 MCP）、/api/imports（上传要导入的 zip）、/api/assistant/*（右下角助手，流式）。
+// HTTP 入口：/api/health、/api/setup（首次设置管理员）、/api/auth/*（better-auth）、/api/trpc/*（tRPC，含 SSE 订阅）、/api/gallery/*（图库的 HTTP 接口和 MCP）、/api/compare/*（比物的 HTTP 接口和 MCP）、/api/imports（上传要导入的 zip）、/api/assistant/*（右下角助手，流式）、/api/work-items（派活的对外接口，第三期）。
 import { fetchRequestHandler } from "@trpc/server/adapters/fetch"
 import { sql } from "drizzle-orm"
 import { Hono } from "hono"
@@ -16,6 +16,7 @@ import { loadKeyring, type Keyring } from "./lib/crypto.js"
 import type { ChangeHub } from "./live/hub.js"
 import type { Context } from "./trpc/init.js"
 import { appRouter } from "./trpc/router.js"
+import { registerWorkRoutes } from "./work/routes.js"
 
 export interface AppDeps {
   db: Db
@@ -67,6 +68,7 @@ export function createApp({ db, auth, hub, keyring: givenKeyring }: AppDeps) {
   registerGalleryRoutes(app, { db, auth })
   registerCompareRoutes(app, { db, auth })
   registerImportRoutes(app, { db, auth })
+  registerWorkRoutes(app, { db, auth })
   registerAssistantRoutes(app, { db, auth, keyring })
 
   app.all("/api/trpc/*", (c) =>
