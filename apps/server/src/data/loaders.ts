@@ -110,6 +110,7 @@ export async function listTasks(db: Db, ids?: string[]): Promise<TaskDef[]> {
       allowedDomains: row.allowedDomains,
       allowBrowserEvaluate: row.allowBrowserEvaluate,
       allowBrowserVision: row.allowBrowserVision,
+      allowBrowserFetch: row.allowBrowserFetch,
       desktopIds: row.desktopIds,
       allowDesktopVision: row.allowDesktopVision,
       verifyModelId: opt(row.verifyModelId),
@@ -119,6 +120,8 @@ export async function listTasks(db: Db, ids?: string[]): Promise<TaskDef[]> {
       cronSkipIfRunning: row.cronSkipIfRunning,
       autoSolidify: row.autoSolidify,
       routineSkipTest: row.routineSkipTest,
+      autoMemory: row.autoMemory,
+      autoMemoryLimit: row.autoMemoryLimit,
     })
   )
 }

@@ -164,6 +164,7 @@ const taskInputOf = (task: TaskDef): TaskInput => ({
   allowedDomains: task.allowedDomains,
   allowBrowserEvaluate: task.allowBrowserEvaluate,
   allowBrowserVision: task.allowBrowserVision,
+  allowBrowserFetch: task.allowBrowserFetch,
   desktopIds: task.desktopIds,
   allowDesktopVision: task.allowDesktopVision,
   verifyModelId: task.verifyModelId,
@@ -174,6 +175,8 @@ const taskInputOf = (task: TaskDef): TaskInput => ({
   cronSkipIfRunning: task.cronSkipIfRunning ?? true,
   autoSolidify: task.autoSolidify ?? null,
   routineSkipTest: task.routineSkipTest ?? false,
+  autoMemory: task.autoMemory,
+  autoMemoryLimit: task.autoMemoryLimit,
 })
 
 async function loadTodoRow(ctx: ToolCtx, id: string) {
@@ -316,11 +319,14 @@ const TASK_LABELS: Partial<Record<keyof TaskInput, string>> = {
   allowedDomains: "网址白名单",
   allowBrowserEvaluate: "允许在网页里执行脚本",
   allowBrowserVision: "允许看画面",
+  allowBrowserFetch: "允许直接调网站接口",
   desktopIds: "桌面",
   allowDesktopVision: "允许看桌面画面",
   cronSkipIfRunning: "上一次没跑完就跳过这次",
   autoSolidify: "办成后自动固化",
   routineSkipTest: "固化时不试跑",
+  autoMemory: "自动挑选记忆",
+  autoMemoryLimit: "自动挑的记忆最多几条",
 }
 
 function taskFormatter(names: Names) {
@@ -355,9 +361,11 @@ function taskFormatter(names: Names) {
       case "enabled":
       case "allowBrowserEvaluate":
       case "allowBrowserVision":
+      case "allowBrowserFetch":
       case "allowDesktopVision":
       case "cronSkipIfRunning":
       case "routineSkipTest":
+      case "autoMemory":
         return yesNo(Boolean(value))
       case "autoSolidify":
         return value === null || value === undefined ? "按默认（被派的、定时的任务开，别的关）" : yesNo(Boolean(value))
@@ -640,6 +648,7 @@ export const TOOLS: Record<string, ToolDef> = {
           if (key === "enabled" && value === true) continue
           if (key === "allowBrowserEvaluate" && value === false) continue
           if (key === "allowBrowserVision" && value === false) continue
+          if (key === "allowBrowserFetch" && value === false) continue
           if (key === "allowDesktopVision" && value === false) continue
           if (key === "cronSkipIfRunning" && value === true) continue
           if (key === "autoSolidify" && value === null) continue

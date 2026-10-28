@@ -29,6 +29,7 @@ export async function getTaskRoutine(db: Db, taskId: string): Promise<RoutineSum
       name: t.routineVersions.name,
       sourceSessionId: t.routineVersions.sourceSessionId,
       auto: t.routineVersions.auto,
+      httpSuggestions: t.routineVersions.httpSuggestions,
       createdAt: t.routineVersions.createdAt,
     })
     .from(t.routineVersions)
@@ -46,7 +47,11 @@ export async function getTaskRoutine(db: Db, taskId: string): Promise<RoutineSum
     fallbackStreak: routine.fallbackStreak,
     pausedReason: routine.pausedReason,
     recent: await recentStats(db, taskId),
-    versions: versions.map((version) => ({ ...version, createdAt: version.createdAt.toISOString() })),
+    versions: versions.map(({ httpSuggestions, ...version }) => ({
+      ...version,
+      httpToolSuggestions: httpSuggestions.length,
+      createdAt: version.createdAt.toISOString(),
+    })),
   }
 }
 
@@ -115,6 +120,7 @@ export async function getRoutineVersion(db: Db, versionId: string): Promise<Rout
     outputSchema: version.outputSchema,
     commits: version.commits,
     assumptions: version.assumptions,
+    httpToolSuggestions: version.httpSuggestions,
     failReason: version.failReason,
     sourceSessionId: version.sourceSessionId,
     baseVersion: version.baseVersion,

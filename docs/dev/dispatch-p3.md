@@ -1,6 +1,6 @@
 # 派活第三期：对外（设计和开发说明，2026-10-28）
 
-> **状态：设计 + 约定代码已写好，等监工审、用户定第 11 节。** 方案 `docs/dev/dispatch.md` 第 13 节「第三期」；第一、二期 `dispatch-p1.md`、`dispatch-p2.md`；后来的改动 `work-into-tasks.md`（没有派活页了，单在任务抽屉里）、`run-outcome.md`（单的结果）。接口 `docs/dev/api.md` 第 7、13、16 节。
+> **状态：设计 + 约定代码已写好。2026-10-28 监工审过，第 11 节要用户定的三条按推荐。** 约定代码已合到集成分支（b22612d，记忆检索 0033、直接调网站接口 0034 之后），迁移是 0035。方案 `docs/dev/dispatch.md` 第 13 节「第三期」；第一、二期 `dispatch-p1.md`、`dispatch-p2.md`；后来的改动 `work-into-tasks.md`（没有派活页了，单在任务抽屉里）、`run-outcome.md`（单的结果）。接口 `docs/dev/api.md` 第 7、13、16 节。
 > 文中写「现在」的，都是读 `worktree-solidify-design`（0d7652d）的代码确认过的，后面写了文件和函数名。
 > 平台通用：代码里不写任何业务。下面的例子用中性的词：「外部系统 X 每来一个订单号就派一张」。
 
@@ -14,7 +14,7 @@
 | 3b | **优先级** | 单上的高 / 普通 / 低，同一个任务排队时先领高的 | 不写 = 普通；只排这个任务自己的队，不跨任务 |
 | 3c | **过多久再办** | 派单时指定 `notBefore`（接口）或「过多久」（人、接口、agent、事件配置），到点前不领 | 不写 = 马上；最长 30 天；用现成的 `work_items.not_before` 和延迟的 `work.pump` |
 
-数据：`work_items` 加 `priority`、`api_key_id`、`from_event` 三列，`work_via` 加 `api`、`event`（迁移 `0033_dispatch_external.sql`）。任务上的新配置都放进现成的 `tasks.dispatch`（jsonb）：`allowApi`、`events`、`dailyBudgetUsd`，不用迁移。
+数据：`work_items` 加 `priority`、`api_key_id`、`from_event` 三列，`work_via` 加 `api`、`event`（迁移 `0035_dispatch_external.sql`）。任务上的新配置都放进现成的 `tasks.dispatch`（jsonb）：`allowApi`、`events`、`dailyBudgetUsd`，不用迁移。
 
 分工：后端、网页各一个开发者（第 9 节），约 2～3 个工作日，加监工联调半天。**要用户定的只有 3 件**（第 11 节）。
 
@@ -329,7 +329,7 @@ curl "http://<host>:8080/api/work-items?task=T-1042&key=ORD-1018-0012" -H "Autho
 | tRPC `tasks.*` | `TaskInput.dispatch` / `TaskDef.dispatch` 加 `allowApi`、`events`、`dailyBudgetUsd` | 校验已写好，存取原样走 jsonb |
 | 内置工具 `work.dispatch` | 每张加 `priority?`、`delayMinutes?` | 输入已加，现在不看 |
 | 快照 `dispatch` | 加 `fromApi?`、`fromEvent?` | 已加，现在没人写 |
-| 数据库 | 迁移 `0033_dispatch_external.sql`（第 10 节） | 已生成 |
+| 数据库 | 迁移 `0035_dispatch_external.sql`（第 10 节） | 已生成 |
 
 不新加 tRPC 过程：事件配置的「试一下」是纯前端（`workItemFromEvent`）；花费数字并进现成的 `taskStats` / `queueStats`。
 
@@ -412,7 +412,7 @@ shared（已写好 `packages/shared/test/dispatch.test.ts`，11 个用例）：�
 - shared `dispatch.ts`：`workPrioritySchema` `workPriorityLabel` `WORK_PRIORITY_RANK` `workPriorityOf`；`WORK_DELAY_MAX_MINUTES` `workDelayMinutesSchema` `workNotBefore` `workWaitKind`；`RESERVED_EVENT_PREFIXES` `taskDispatchEventSchema` `WORK_EVENT_BINDINGS_MAX`；`taskDispatchSchema` 的 `allowApi` `events` `dailyBudgetUsd` 和校验；`workViaSchema` 加 `api` `event`；`workItemSchema` 加 `priority` `apiKeyId` `apiKeyName` `fromEvent`；`workTaskStatsSchema` / `workQueueStatsSchema` 加 `spentTodayUsd` `dailyBudgetUsd`；`workListInputSchema.key`；`workDispatchInputSchema` / `workUpdateParamsInputSchema` 加 `priority` `delayMinutes`；纯函数 `readEventPath` `eventValueText` `workItemFromEvent`、`WORK_PARAM_MAX_CHARS`；HTTP 的 `workApiParamValueSchema` `workApiCreateInputSchema` `workApiCreateResultSchema` `workApiListQuerySchema` `workApiListResultSchema` `workApiCancelInputSchema`。测试 `packages/shared/test/dispatch.test.ts`。
 - shared `engine.ts`：快照 `dispatch.fromApi` `dispatch.fromEvent`；`work.dispatch` 每张的 `priority` `delayMinutes`；`fireEventResultSchema` 的 `dispatched` `dispatchRejected`。
 - shared `schemas.ts`：`TaskDef.dispatch` 加三项。
-- server `db/schema.ts` + 迁移 `drizzle/0033_dispatch_external.sql`：
+- server `db/schema.ts` + 迁移 `drizzle/0035_dispatch_external.sql`：
 
   ```sql
   ALTER TYPE "public"."work_via" ADD VALUE 'api';

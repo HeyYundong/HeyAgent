@@ -11,6 +11,8 @@ import { Controller, useFieldArray, useForm, useWatch, type Control, type UseFor
 import { PlayIcon, PlusIcon, XIcon } from "lucide-react"
 import {
   alwaysOnToolIds,
+  AUTO_MEMORY_DEFAULT,
+  AUTO_MEMORY_LIMIT_DEFAULT,
   autoSolidifyDefault,
   BROWSER_TOOL_ID,
   can,
@@ -317,6 +319,7 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
           allowedDomains: task.allowedDomains,
           allowBrowserEvaluate: task.allowBrowserEvaluate,
           allowBrowserVision: task.allowBrowserVision,
+          allowBrowserFetch: task.allowBrowserFetch,
           desktopIds: task.desktopIds,
           allowDesktopVision: task.allowDesktopVision,
           verifyModelId: task.verifyModelId ?? "",
@@ -328,13 +331,17 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
           // 后端还没带这两项时（undefined）按没单独设、要试跑
           autoSolidify: task.autoSolidify ?? null,
           routineSkipTest: task.routineSkipTest ?? false,
+          // 自动挑选记忆（docs/dev/memory-retrieval.md 第 4 节）：改任务时带上原来的值（不带会变回默认的「开」）
+          autoMemory: task.autoMemory ?? false,
+          autoMemoryLimit: task.autoMemoryLimit ?? AUTO_MEMORY_LIMIT_DEFAULT,
         }
       : {
           title: "", goal: "", steps: [{ text: "", wait: false }], modelId: defaults.run, ownerId: user.id, schedule: null, enabled: true,
-          memoryIds: [], skillIds: [], toolIds: [], ruleIds: [], browserProfileIds: [], allowedDomains: [], allowBrowserEvaluate: false, allowBrowserVision: false, desktopIds: [], allowDesktopVision: false, verifyModelId: "",
+          memoryIds: [], skillIds: [], toolIds: [], ruleIds: [], browserProfileIds: [], allowedDomains: [], allowBrowserEvaluate: false, allowBrowserVision: false, allowBrowserFetch: false, desktopIds: [], allowDesktopVision: false, verifyModelId: "",
           reviewModelId: defaults.review ?? "",
           dispatch: null, dispatchFrom: [], cronSkipIfRunning: true,
           autoSolidify: null, routineSkipTest: false,
+          autoMemory: AUTO_MEMORY_DEFAULT, autoMemoryLimit: AUTO_MEMORY_LIMIT_DEFAULT,
         },
   })
   // 网址白名单在表单里是一段文字（每行一个），提交时拆成数组

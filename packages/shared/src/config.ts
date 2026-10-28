@@ -9,6 +9,7 @@ import { canonicalLocale, canonicalTimeZone } from "./browsers.js"
 import { taskDispatchSchema } from "./dispatch.js"
 import { settingsAssistantInputSchema } from "./assistant.js"
 import { scanTemplate } from "./http-template.js"
+import { AUTO_MEMORY_DEFAULT, AUTO_MEMORY_LIMIT_DEFAULT, AUTO_MEMORY_LIMIT_MAX } from "./memory-retrieval.js"
 import { httpMethodSchema, httpParamSchema, httpSpecSchema, modelProviderKindSchema, riskSchema, skillStatusSchema, taskStepSchema, type ModelProviderKind } from "./schemas.js"
 import { TIME_ZONE } from "./time.js"
 
@@ -141,6 +142,11 @@ export const taskInputSchema = z.object({
   allowBrowserEvaluate: z.boolean().default(false),
   /** 是否允许 agent 看画面：browser.look 截当前画面发给模型、按坐标点击拖动（Playwright MCP 的 --caps vision），默认不允许 */
   allowBrowserVision: z.boolean().default(false),
+  /**
+   * 是否允许直接调网站的接口（docs/dev/solidify.md 第 19 节）：打开后多一个工具 browser.fetch（带着浏览器的登录态调网页自己用的接口），
+   * 运行时记下网页发的 XHR / fetch 请求（network/requests.jsonl，给固化员看）。默认不允许
+   */
+  allowBrowserFetch: z.boolean().default(false),
   /** 选了「桌面」工具时允许用哪些桌面；空 = 全部桌面都能用 */
   desktopIds: ids.default([]),
   /** 是否允许 agent 看桌面画面：desktop.look 截图发给模型、desktop.snapshot 带截图，默认不允许 */
@@ -159,6 +165,15 @@ export const taskInputSchema = z.object({
   autoSolidify: z.boolean().nullable().default(null),
   /** 固化时不试跑（会自动存草稿的网站） */
   routineSkipTest: z.boolean().default(false),
+  /** 自动挑选记忆（docs/dev/memory-retrieval.md 第 4 节）：不传 = 开。改任务时要把原来的值带上，不然会变回默认 */
+  autoMemory: z.boolean().default(AUTO_MEMORY_DEFAULT),
+  /** 自动挑的最多几条 */
+  autoMemoryLimit: z
+    .number()
+    .int()
+    .min(1, "至少 1 条")
+    .max(AUTO_MEMORY_LIMIT_MAX, `最多 ${AUTO_MEMORY_LIMIT_MAX} 条`)
+    .default(AUTO_MEMORY_LIMIT_DEFAULT),
 })
 export type TaskInput = z.input<typeof taskInputSchema>
 export const taskUpdateSchema = taskInputSchema.extend({ id: z.string().min(1) })

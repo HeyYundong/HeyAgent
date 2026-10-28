@@ -7,6 +7,7 @@ import { z } from "zod"
 
 import { eventTraceSchema, sessionKindSchema, sessionRoutineStateSchema } from "./routine.js"
 import { ruleCompileViewSchema } from "./rules.js"
+import { memoryEmbedInfoSchema, runMemoryUseSchema } from "./memory-retrieval.js"
 
 /** ISO 8601 时间（UTC）。接口返回的时间都是这个格式 */
 export const isoTime = z.string()
@@ -300,6 +301,8 @@ export const memorySchema = z.object({
   note: z.object({ evidence: z.string().optional(), lastUsed: z.string().optional() }),
   /** 新增：待审核时，「待办」里那件事的 id（原型直接用记忆 id 当待办 id，以后新提议的不再相同，「去待办处理」请用这个） */
   reviewItemId: z.string().optional(),
+  /** 自动挑选用的向量在当前 embedding 模型下算没算好（docs/dev/memory-retrieval.md 第 2 节）；没设 embedding 模型、或者不是「生效」的没有 */
+  embed: memoryEmbedInfoSchema.optional(),
 })
 export type MemoryRef = z.infer<typeof memorySchema>
 
@@ -382,6 +385,8 @@ export const taskSchema = z.object({
   allowBrowserEvaluate: z.boolean(),
   /** 是否允许 agent 看画面（browser.look 截图发给模型 + 按坐标操作的工具） */
   allowBrowserVision: z.boolean(),
+  /** 是否允许直接调网站的接口（browser.fetch）、记网页发的请求（docs/dev/solidify.md 第 19 节） */
+  allowBrowserFetch: z.boolean(),
   /** 桌面：选了「桌面」工具时允许用哪些桌面；空 = 全部 */
   desktopIds: z.array(z.string()),
   /** 桌面：是否允许 agent 看画面（desktop.look 截图发给模型、desktop.snapshot 带截图） */
@@ -427,6 +432,10 @@ export const taskSchema = z.object({
   autoSolidify: z.boolean().nullable(),
   /** 固化时不试跑（会自动存草稿的网站）：自动固化照它，手动固化的弹窗默认勾上 */
   routineSkipTest: z.boolean(),
+  /** 自动挑选记忆（docs/dev/memory-retrieval.md 第 4 节）：运行开始时按这次要办的事从记忆库里再挑几条，和手选的一起给 agent */
+  autoMemory: z.boolean(),
+  /** 自动挑的最多几条（1～20） */
+  autoMemoryLimit: z.number().int(),
 })
 export type TaskDef = z.infer<typeof taskSchema>
 
@@ -662,6 +671,8 @@ export type SessionSummary = z.infer<typeof sessionSummarySchema>
 export const sessionRunSchema = sessionSummarySchema.extend({
   /** 按 seq 从小到大 */
   events: z.array(runEventSchema),
+  /** 这次用了哪些记忆：手选的、自动挑的（带相似度）、挑选情况（docs/dev/memory-retrieval.md 第 6 节）。没有快照的演示数据没有 */
+  memoryUse: runMemoryUseSchema.optional(),
 })
 export type SessionRun = z.infer<typeof sessionRunSchema>
 
