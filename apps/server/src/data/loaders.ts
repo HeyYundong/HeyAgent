@@ -1,6 +1,6 @@
 // 从库里读数据，拼成 @heyagent/shared 里的领域类型（和原型页面读的形状一致）。
 // 规则：库里为空的字段直接省略；时间都转成 ISO；密钥只给掩码，登录态只给状态和个数，绝不读出原文。
-import { and, asc, desc, eq, inArray, isNull, sql, type AnyColumn } from "drizzle-orm"
+import { and, asc, desc, eq, inArray, isNull, ne, sql, type AnyColumn } from "drizzle-orm"
 import {
   BROWSER_ID_IN_INPUT,
   BROWSER_ID_IN_PLAN,
@@ -527,7 +527,8 @@ export function ruleCompileView(row: typeof t.rules.$inferSelect): RuleCompileVi
 
 export async function listTools(db: Db): Promise<{ tools: Tool[]; mcpServers: McpServer[]; savedSecrets: Record<string, SavedSecret> }> {
   const [toolRows, serverRows, secretRows] = await Promise.all([
-    db.select().from(t.tools).orderBy(asc(t.tools.position), asc(t.tools.createdAt)),
+    // 流程库的工具（source = routine，docs/dev/routine-library.md 4.1）只由流程库写，工具页不列：在流程页里管
+    db.select().from(t.tools).where(ne(t.tools.source, "routine")).orderBy(asc(t.tools.position), asc(t.tools.createdAt)),
     db.select().from(t.mcpServers).orderBy(asc(t.mcpServers.position), asc(t.mcpServers.createdAt)),
     // 只取名字、谁存的、什么时候存的；enc（密文）不读出来
     db
@@ -546,7 +547,6 @@ export async function listTools(db: Db): Promise<{ tools: Tool[]; mcpServers: Mc
         source: row.source,
         serverId: opt(row.serverId),
         http: row.http ? compact(row.http) : undefined,
-        // 流程库的工具（source = routine）：工具页不列，B 包在这里过滤掉（docs/dev/routine-library.md 4.1）
         routineId: opt(row.routineId),
         risk: row.risk,
         alwaysOn: row.alwaysOn || undefined,

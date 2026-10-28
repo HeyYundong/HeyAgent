@@ -232,7 +232,12 @@ async function loadRule(ctx: ToolCtx, id: string) {
 
 async function loadHttpTool(ctx: ToolCtx, id: string) {
   const tool = (await load.listTools(ctx.db)).tools.find((each) => each.id === id)
-  if (!tool) throw new ToolError(`找不到工具 ${id}，先用 list_tools 查编号`)
+  if (!tool) {
+    // 流程库的工具（routine.*）不在工具列表里（docs/dev/routine-library.md 4.1）
+    const [row] = await ctx.db.select({ source: t.tools.source }).from(t.tools).where(eq(t.tools.id, id))
+    if (row?.source === "routine") throw new ToolError(toolsConfig.ROUTINE_TOOL_MESSAGE)
+    throw new ToolError(`找不到工具 ${id}，先用 list_tools 查编号`)
+  }
   if (tool.source !== "http" || !tool.http) throw new ToolError(tool.source === "builtin" ? "内置工具由系统提供，不能改" : "这是 MCP 服务器里的工具，要改它所在的服务器（update_mcp_server）")
   return tool
 }
@@ -515,15 +520,18 @@ export const TOOLS: Record<string, ToolDef> = {
     },
   }),
   list_tools: read({
-    description: "列工具（内置 / HTTP 接口 / MCP）、MCP 服务器、已存的全局密钥名字（没有值）",
+    description: "列工具（内置 / HTTP 接口 / MCP / 流程库的流程 routine.*）、MCP 服务器、已存的全局密钥名字（没有值）。流程库的流程只能在任务里选，不能在这里改",
     input: queryInput,
     label: (input) => (input.query ? `查工具「${input.query}」` : "查工具"),
     run: async (ctx, input) => {
       const { tools, mcpServers, savedSecrets } = await load.listTools(ctx.db)
+      // 流程库的流程（routine.*）工具页不列，这里也列出来：任务里能选它（改它在流程页）
+      const routines = await ctx.db.select({ id: t.tools.id, name: t.tools.name, summary: t.tools.summary, risk: t.tools.risk }).from(t.tools).where(eq(t.tools.source, "routine"))
       return {
-        tools: tools
-          .filter((tool) => contains(input.query, tool.id, tool.name, tool.summary))
-          .map((tool) => ({ id: tool.id, name: tool.name, summary: tool.summary, source: tool.source, risk: tool.risk, serverId: tool.serverId, http: tool.http, alwaysOn: tool.alwaysOn })),
+        tools: [
+          ...tools.map((tool) => ({ id: tool.id, name: tool.name, summary: tool.summary, source: tool.source, risk: tool.risk, serverId: tool.serverId, http: tool.http, alwaysOn: tool.alwaysOn })),
+          ...routines.map((tool) => ({ ...tool, source: "routine" as const })),
+        ].filter((tool) => contains(input.query, tool.id, tool.name, tool.summary)),
         mcpServers: mcpServers.map((server) => ({ id: server.id, name: server.name, transport: server.transport, command: server.command, url: server.url, status: server.status, note: server.note, env: server.env })),
         secretNames: Object.keys(savedSecrets),
       }

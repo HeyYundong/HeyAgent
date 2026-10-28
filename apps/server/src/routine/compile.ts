@@ -371,8 +371,8 @@ async function draft(db: Db, loaded: Loaded) {
   } catch (error) {
     return fail(db, loaded, `固化用的模型 ${modelId} 用不了：${(error as Error).message}`)
   }
-  // 材料里有「网页调过的接口」才加第 19–24 条规矩和例 6（19.6）
-  const system = compileSystemPrompt(undefined, { siteApi: Boolean(material.networkSeqs?.length) })
+  // 材料里有「网页调过的接口」才加第 19–24 条规矩和例 6（19.6）；选了 / 调过库流程才加「用 ha.routine 调」那一条
+  const system = compileSystemPrompt(undefined, { siteApi: Boolean(material.networkSeqs?.length), library: material.library })
   let problem = await previousProblem(db, version)
   let lastError = ""
 

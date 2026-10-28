@@ -6,6 +6,7 @@ import type { RoutineMode, RoutineSummary, RoutineVersion } from "@heyagent/shar
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
 import { assertCan, audit, badRequest, notFound, type DbOrTx, type WriteCtx } from "../data/config/common.js"
+import { libraryOfRoutine } from "./library/service.js"
 
 /** 统计看最近几次运行 */
 const RECENT_RUNS = 20
@@ -54,9 +55,8 @@ export async function getTaskRoutine(db: Db, taskId: string): Promise<RoutineSum
       provenAt: iso(version.provenAt),
       createdAt: version.createdAt.toISOString(),
     })),
-    // 流程库（docs/dev/routine-library.md 9.2）：B 包用 routine/library/service.ts 的 libraryOfRoutine 填
-    library: null,
-    publishable: [],
+    // 流程库（docs/dev/routine-library.md 9.2）：在库里的登记、转过正式还没发布的版本
+    ...(await libraryOfRoutine(db, routine.id)),
   }
 }
 

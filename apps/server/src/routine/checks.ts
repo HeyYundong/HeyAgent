@@ -3,7 +3,9 @@
 // 所以这里宁可严一点：只许 import ha from "heyagent"，不许 eval / Function / require / 动态 import / process / globalThis，
 // 用到的工具都要在这个任务里（ha.judge 不是工具，用这次运行的执行模型，18.2），两个 JSON Schema 要像样，要有 export default 的函数。
 // ha.browser.fetch（直接调网站的接口，19.6）还要源快照打开了「允许直接调网站接口」。
-import { BROWSER_FETCH_TOOL } from "@heyagent/shared"
+// ha.routine("短名", 输入)（流程库，docs/dev/routine-library.md 5.6）：短名要直接写字符串，routine.<短名> 要在任务的工具里；
+// 库流程不能用 ha.tool("routine.…") 调。脚本的 AST 分析（analyzeScript）也给流程库发布时算「要的工具」用（library/analyze.ts）。
+import { BROWSER_FETCH_TOOL, isRoutineToolId, ROUTINE_TOOL_PREFIX, routineSlugOfToolId, routineToolId } from "@heyagent/shared"
 import { parse, type Node } from "acorn"
 import { z } from "zod"
 
@@ -56,7 +58,11 @@ const SDK_TOP: Record<string, string | null> = {
   StepError: null,
   Denied: null,
   RoutineStop: null,
+  // 库流程里 ha.fail 抛给调用方的错（docs/dev/routine-library.md 5.6）
+  RoutineFailed: null,
   finish: "run.finish",
+  // 流程库（docs/dev/routine-library.md 5.6）：ha.routine("短名", 输入)，要的工具是 routine.<短名>，看第一个参数
+  routine: null,
   // 下面这几个要看后面的函数名
   browser: null,
   file: null,
@@ -198,147 +204,231 @@ function toolAvailable(toolId: string, toolIds: Set<string>) {
   return GROUP_TOOLS.includes(group) && toolIds.has(group)
 }
 
+/** 按坐标的工具（「允许看画面」才有）：ha.tool("browser.mouse_click_xy") 这类、browser.look */
+export const isVisionToolId = (toolId: string) => /^browser\.(mouse_|look$)/.test(toolId)
+
+/** 复制图片的工具：参数里写了 x / y（按坐标复制）也要「允许看画面」 */
+const COPY_IMAGE_TOOL = SDK_BROWSER_TOOLS.copyImage!
+
+/**
+ * 脚本里看出来的一样东西（按在脚本里出现的顺序）：
+ * - problem：写法上的问题（和任务无关：解析不了、不许用的名字、ha 的用法不对……）；
+ * - tool：用到的工具（how 是给人看的写法）；fetch = ha.browser.fetch（还要「允许直接调网站接口」）；
+ * - routine：ha.routine 调的库流程（短名）
+ */
+export type ScriptItem = { problem: string } | { tool: string; how: string; fetch?: boolean } | { routine: string; how: string }
+
+export interface ScriptAnalysis {
+  items: ScriptItem[]
+  /** 有没有 ha.commit */
+  usesCommit: boolean
+  /** 有没有按坐标的操作（坐标工具、copyImage 写 x / y）：要「允许看画面」 */
+  vision: boolean
+}
+
+/** 写死的字符串（"x"、`x`）就给出来 */
+function literalString(node: AnyNode | undefined): string | undefined {
+  if (node?.type === "Literal" && typeof node.value === "string") return node.value
+  if (node?.type === "TemplateLiteral" && (node.expressions as AnyNode[]).length === 0) return ((node.quasis as AnyNode[])[0]!.value as { cooked: string }).cooked
+  return undefined
+}
+
+/** 对象字面量里写了 x 或 y（按坐标） */
+const hasPointKeys = (node: AnyNode | undefined) =>
+  node?.type === "ObjectExpression" && (node.properties as AnyNode[]).some((each) => each.type === "Property" && ["x", "y"].includes(propKey(each) ?? ""))
+
+/** ha.browser.copyImage(…) 这个调用：callee 是 ha.browser.copyImage */
+function isCopyImageCall(node: AnyNode): boolean {
+  const callee = node.callee as AnyNode
+  if (callee.type !== "MemberExpression" || propName(callee) !== "copyImage") return false
+  const object = callee.object as AnyNode
+  return object.type === "MemberExpression" && propName(object) === "browser" && (object.object as AnyNode).type === "Identifier" && (object.object as AnyNode).name === "ha"
+}
+
+/**
+ * 把脚本读一遍（不看任务）：写法上的问题、用到的工具、ha.routine 调的库流程、有没有 ha.commit、按坐标的操作。
+ * checkRoutine 拿它对任务的工具；流程库发布时（library/analyze.ts 的 analyzeLibraryCode）拿它算要的工具和风险
+ */
+export function analyzeScript(code: string): ScriptAnalysis {
+  const items: ScriptItem[] = []
+  const problem = (text: string) => items.push({ problem: text })
+  let usesCommit = false
+  let vision = false
+
+  let ast: AnyNode | undefined
+  if (!code.trim()) problem("脚本是空的")
+  else {
+    try {
+      ast = parse(code, { ecmaVersion: "latest", sourceType: "module", allowHashBang: false }) as unknown as AnyNode
+    } catch (error) {
+      problem(`脚本解析不了（要是 ES module）：${(error as Error).message}`)
+    }
+  }
+  if (!ast) return { items, usesCommit, vision }
+
+  let haImports = 0
+  let exportDefault: AnyNode | undefined
+  const tool = (id: string, how: string, extra: { fetch?: boolean } = {}) => {
+    items.push({ tool: id, how, ...extra })
+    if (isVisionToolId(id)) vision = true
+  }
+  const at = (node: AnyNode) => `第 ${lineOf(code, node.start)} 行`
+
+  for (const statement of ast.body as AnyNode[]) {
+    if (statement.type === "ImportDeclaration") {
+      const specifiers = statement.specifiers as AnyNode[]
+      const source = (statement.source as AnyNode).value
+      const ok =
+        source === "heyagent" &&
+        specifiers.length === 1 &&
+        specifiers[0]!.type === "ImportDefaultSpecifier" &&
+        (specifiers[0]!.local as AnyNode).name === "ha"
+      if (ok) haImports++
+      else problem(`${at(statement)}：只许写 import ha from "heyagent"，不能 import 别的（${String(source)}）`)
+    }
+    if ((statement.type === "ExportNamedDeclaration" || statement.type === "ExportAllDeclaration") && statement.source)
+      problem(`${at(statement)}：不能从别的模块导出（export … from）`)
+    if (statement.type === "ExportDefaultDeclaration") exportDefault = statement
+  }
+  if (haImports > 1) problem(`import ha from "heyagent" 只要写一次`)
+  if (!exportDefault) problem("要有 export default async function run(input) { … }")
+  else {
+    const declaration = exportDefault.declaration as AnyNode
+    if (!["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(declaration.type))
+      problem("export default 要是一个函数：export default async function run(input) { … }")
+  }
+
+  walk(ast, (node, parent, key) => {
+    if (node.type === "ImportExpression") problem(`${at(node)}：不能用动态 import()`)
+    if (node.type === "MetaProperty") problem(`${at(node)}：不能用 import.meta / new.target`)
+    if (node.type === "WithStatement") problem(`${at(node)}：不能用 with`)
+    // 按坐标复制图片（copyImage 写 x、y）：要「允许看画面」
+    if (node.type === "CallExpression" && isCopyImageCall(node) && hasPointKeys((node.arguments as AnyNode[])[0])) vision = true
+    if (node.type === "Identifier" && FORBIDDEN_NAMES.has(node.name as string) && isReference(parent, key))
+      problem(`${at(node)}：不能用 ${String(node.name)}（脚本只能通过 ha 做事）`)
+    if (node.type === "MemberExpression") {
+      const name = propName(node)
+      if (name && FORBIDDEN_PROPS.has(name)) problem(`${at(node)}：不能访问 .${name}`)
+      if (node.computed && !name && (node.object as AnyNode).type === "Identifier" && (node.object as AnyNode).name === "ha")
+        problem(`${at(node)}：ha 的属性要写死（ha.browser.click），不能用 ha[变量]`)
+    }
+    // ha 只能写成 ha.xxx：传来传去、解构以后，这里就看不出用了哪些工具
+    if (node.type === "Identifier" && node.name === "ha" && isReference(parent, key)) {
+      const isObject = parent?.type === "MemberExpression" && key === "object"
+      if (!isObject) problem(`${at(node)}：ha 要写成 ha.browser.click(…) 这样直接用，不要赋给别的变量、解构或传来传去`)
+    }
+    // ha.xxx、ha.xxx.yyy：认得的函数、用到的工具
+    if (node.type === "MemberExpression" && (node.object as AnyNode).type === "Identifier" && (node.object as AnyNode).name === "ha") {
+      const top = propName(node)
+      if (!top) return
+      if (!(top in SDK_TOP)) {
+        problem(`${at(node)}：SDK 里没有 ha.${top}`)
+        return
+      }
+      if (top === "commit") usesCommit = true
+      const direct = SDK_TOP[top]
+      if (direct) tool(direct, `ha.${top}`)
+      const outer = parent?.type === "MemberExpression" && key === "object" ? parent : undefined
+      const sub = outer ? propName(outer) : undefined
+      if (top === "browser") {
+        if (!sub) {
+          problem(`${at(node)}：ha.browser 要接具体的函数，例如 ha.browser.click(…)`)
+          return
+        }
+        const toolId = Object.hasOwn(SDK_BROWSER_TOOLS, sub) ? SDK_BROWSER_TOOLS[sub] : undefined
+        if (!toolId) {
+          problem(`${at(node)}：SDK 里没有 ha.browser.${sub}（有的是：${SDK_BROWSER_FUNCTIONS.join("、")}；别的浏览器工具用 ha.tool("browser.xxx", { … })）`)
+          return
+        }
+        // 浏览器工具在快照里只有组的 id：要求任务里有 browser
+        tool("browser", `ha.browser.${sub}（${toolId}）`, toolId === BROWSER_FETCH_TOOL ? { fetch: true } : {})
+      }
+      if (top in SDK_NESTED) {
+        const toolId = sub ? SDK_NESTED[top]![sub] : undefined
+        if (!toolId) {
+          problem(`${at(node)}：SDK 里没有 ha.${top}.${sub ?? "…"}（有的是：${Object.keys(SDK_NESTED[top]!).map((name) => `ha.${top}.${name}`).join("、")}）`)
+          return
+        }
+        tool(toolId, `ha.${top}.${sub}`)
+      }
+      if (top === "tool") {
+        const call = parent?.type === "CallExpression" && key === "callee" ? parent : undefined
+        const args = call?.arguments as AnyNode[] | undefined
+        const id = literalString(args?.[0])
+        if (!call) problem(`${at(node)}：ha.tool 要直接调用：ha.tool("工具 id", { … })`)
+        else if (!id) problem(`${at(node)}：ha.tool 的第一个参数要直接写工具 id 的字符串`)
+        else if (isRoutineToolId(id))
+          problem(`${at(node)}：ha.tool("${id}") 不行：流程库里的流程用 ha.routine("${routineSlugOfToolId(id) ?? id.slice(ROUTINE_TOOL_PREFIX.length)}", 输入) 调`)
+        else {
+          tool(id, `ha.tool("${id}")`)
+          if (id === COPY_IMAGE_TOOL && hasPointKeys(args?.[1])) vision = true
+        }
+      }
+      if (top === "routine") {
+        const call = parent?.type === "CallExpression" && key === "callee" ? parent : undefined
+        const slug = literalString((call?.arguments as AnyNode[] | undefined)?.[0])
+        if (!call) problem(`${at(node)}：ha.routine 要直接调用：ha.routine("短名", { … })`)
+        else if (!slug) problem(`${at(node)}：ha.routine 的第一个参数要直接写流程的短名（字符串，例如 "order_status"）`)
+        else items.push({ routine: slug, how: `ha.routine("${slug}")` })
+      }
+      if (top === "judge") {
+        const call = parent?.type === "CallExpression" && key === "callee" ? parent : undefined
+        const first = (call?.arguments as AnyNode[] | undefined)?.[0]
+        if (!call) problem(`${at(node)}：ha.judge 要直接调用：ha.judge({ question, data, choices })`)
+        else if (!first) problem(`${at(node)}：ha.judge 要给参数 { question, data, choices }`)
+        else if (first.type === "ObjectExpression") {
+          // { ...args }、{ [name]: … } 看不出有没有 question，不报
+          const keys = (first.properties as AnyNode[]).map((each) => (each.type === "Property" ? propKey(each) : undefined))
+          if (!keys.includes("question") && !keys.includes(undefined)) problem(`${at(node)}：ha.judge 要写 question（判断什么、按什么标准）`)
+          const choices = (first.properties as AnyNode[]).find((each) => each.type === "Property" && propKey(each) === "choices")?.value as AnyNode | undefined
+          const list = choices?.type === "ArrayExpression" ? (choices.elements as (AnyNode | null)[]) : undefined
+          if (list && !list.some((each) => each?.type === "SpreadElement") && list.length < 2)
+            problem(`${at(node)}：ha.judge 的 choices 至少要两个选项（不给选项就不写 choices）`)
+        }
+      }
+      if (top === "fail") {
+        const call = parent?.type === "CallExpression" && key === "callee" ? parent : undefined
+        const first = (call?.arguments as AnyNode[] | undefined)?.[0]
+        if (first?.type === "Literal" && first.value !== "input" && first.value !== "page")
+          problem(`${at(node)}：ha.fail 的第一个参数只能是 "input"（输入有问题）或 "page"（页面和预期不一样）`)
+      }
+    }
+  })
+  return { items, usesCommit, vision }
+}
+
 /** 程序检查。problems 为空 = 过了 */
 export function checkRoutine(input: RoutineCheckInput): RoutineCheckResult {
   const problems: string[] = []
   const used = new Set<string>()
   const toolIds = new Set(input.toolIds)
-  const code = input.code
-
-  let ast: AnyNode | undefined
-  if (!code.trim()) problems.push("脚本是空的")
-  else {
-    try {
-      ast = parse(code, { ecmaVersion: "latest", sourceType: "module", allowHashBang: false }) as unknown as AnyNode
-    } catch (error) {
-      problems.push(`脚本解析不了（要是 ES module）：${(error as Error).message}`)
-    }
+  const missing = new Set<string>()
+  // browser.fetch 要任务打开开关：只报一次
+  const fetchUsed = () => {
+    if (!input.allowFetch && !problems.includes(FETCH_NOT_ALLOWED)) problems.push(FETCH_NOT_ALLOWED)
   }
-
-  if (ast) {
-    let haImports = 0
-    let exportDefault: AnyNode | undefined
-    const missing = new Set<string>()
-    // browser.fetch 要任务打开开关：只报一次
-    const fetchUsed = () => {
-      if (!input.allowFetch && !problems.includes(FETCH_NOT_ALLOWED)) problems.push(FETCH_NOT_ALLOWED)
+  for (const item of analyzeScript(input.code).items) {
+    if ("problem" in item) {
+      problems.push(item.problem)
+      continue
     }
-    const need = (toolId: string, how: string) => {
+    if ("routine" in item) {
+      // 调用方脚本里 ha.routine 的流程也要在任务里选上（docs/dev/routine-library.md 6.2），同「用到的工具都在任务里」
+      const toolId = routineToolId(item.routine)
       used.add(toolId)
-      if (toolId === BROWSER_FETCH_TOOL) fetchUsed()
-      if (!toolAvailable(toolId, toolIds) && !missing.has(toolId)) {
+      if (!toolIds.has(toolId) && !missing.has(toolId)) {
         missing.add(toolId)
-        problems.push(`${how} 要用工具 ${toolId}，这个任务里没有这个工具`)
+        problems.push(`${item.how}：任务没选流程「${toolId}」（流程库里的流程要在任务里选上才能调）`)
       }
+      continue
     }
-    const at = (node: AnyNode) => `第 ${lineOf(code, node.start)} 行`
-
-    for (const statement of ast.body as AnyNode[]) {
-      if (statement.type === "ImportDeclaration") {
-        const specifiers = statement.specifiers as AnyNode[]
-        const source = (statement.source as AnyNode).value
-        const ok =
-          source === "heyagent" &&
-          specifiers.length === 1 &&
-          specifiers[0]!.type === "ImportDefaultSpecifier" &&
-          (specifiers[0]!.local as AnyNode).name === "ha"
-        if (ok) haImports++
-        else problems.push(`${at(statement)}：只许写 import ha from "heyagent"，不能 import 别的（${String(source)}）`)
-      }
-      if ((statement.type === "ExportNamedDeclaration" || statement.type === "ExportAllDeclaration") && statement.source)
-        problems.push(`${at(statement)}：不能从别的模块导出（export … from）`)
-      if (statement.type === "ExportDefaultDeclaration") exportDefault = statement
+    used.add(item.tool)
+    if (item.tool === BROWSER_FETCH_TOOL) fetchUsed()
+    if (!toolAvailable(item.tool, toolIds) && !missing.has(item.tool)) {
+      missing.add(item.tool)
+      problems.push(`${item.how} 要用工具 ${item.tool}，这个任务里没有这个工具`)
     }
-    if (haImports > 1) problems.push(`import ha from "heyagent" 只要写一次`)
-    if (!exportDefault) problems.push("要有 export default async function run(input) { … }")
-    else {
-      const declaration = exportDefault.declaration as AnyNode
-      if (!["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(declaration.type))
-        problems.push("export default 要是一个函数：export default async function run(input) { … }")
-    }
-
-    walk(ast, (node, parent, key) => {
-      if (node.type === "ImportExpression") problems.push(`${at(node)}：不能用动态 import()`)
-      if (node.type === "MetaProperty") problems.push(`${at(node)}：不能用 import.meta / new.target`)
-      if (node.type === "WithStatement") problems.push(`${at(node)}：不能用 with`)
-      if (node.type === "Identifier" && FORBIDDEN_NAMES.has(node.name as string) && isReference(parent, key))
-        problems.push(`${at(node)}：不能用 ${String(node.name)}（脚本只能通过 ha 做事）`)
-      if (node.type === "MemberExpression") {
-        const name = propName(node)
-        if (name && FORBIDDEN_PROPS.has(name)) problems.push(`${at(node)}：不能访问 .${name}`)
-        if (node.computed && !name && (node.object as AnyNode).type === "Identifier" && (node.object as AnyNode).name === "ha")
-          problems.push(`${at(node)}：ha 的属性要写死（ha.browser.click），不能用 ha[变量]`)
-      }
-      // ha 只能写成 ha.xxx：传来传去、解构以后，这里就看不出用了哪些工具
-      if (node.type === "Identifier" && node.name === "ha" && isReference(parent, key)) {
-        const isObject = parent?.type === "MemberExpression" && key === "object"
-        if (!isObject) problems.push(`${at(node)}：ha 要写成 ha.browser.click(…) 这样直接用，不要赋给别的变量、解构或传来传去`)
-      }
-      // ha.xxx、ha.xxx.yyy：认得的函数、用到的工具
-      if (node.type === "MemberExpression" && (node.object as AnyNode).type === "Identifier" && (node.object as AnyNode).name === "ha") {
-        const top = propName(node)
-        if (!top) return
-        if (!(top in SDK_TOP)) {
-          problems.push(`${at(node)}：SDK 里没有 ha.${top}`)
-          return
-        }
-        const direct = SDK_TOP[top]
-        if (direct) need(direct, `ha.${top}`)
-        const outer = parent?.type === "MemberExpression" && key === "object" ? parent : undefined
-        const sub = outer ? propName(outer) : undefined
-        if (top === "browser") {
-          if (!sub) {
-            problems.push(`${at(node)}：ha.browser 要接具体的函数，例如 ha.browser.click(…)`)
-            return
-          }
-          const toolId = Object.hasOwn(SDK_BROWSER_TOOLS, sub) ? SDK_BROWSER_TOOLS[sub] : undefined
-          if (!toolId) {
-            problems.push(`${at(node)}：SDK 里没有 ha.browser.${sub}（有的是：${SDK_BROWSER_FUNCTIONS.join("、")}；别的浏览器工具用 ha.tool("browser.xxx", { … })）`)
-            return
-          }
-          // 浏览器工具在快照里只有组的 id：要求任务里有 browser
-          need("browser", `ha.browser.${sub}（${toolId}）`)
-          if (toolId === BROWSER_FETCH_TOOL) fetchUsed()
-        }
-        if (top in SDK_NESTED) {
-          const toolId = sub ? SDK_NESTED[top]![sub] : undefined
-          if (!toolId) {
-            problems.push(`${at(node)}：SDK 里没有 ha.${top}.${sub ?? "…"}（有的是：${Object.keys(SDK_NESTED[top]!).map((name) => `ha.${top}.${name}`).join("、")}）`)
-            return
-          }
-          need(toolId, `ha.${top}.${sub}`)
-        }
-        if (top === "tool") {
-          const call = parent?.type === "CallExpression" && key === "callee" ? parent : undefined
-          const first = (call?.arguments as AnyNode[] | undefined)?.[0]
-          const id = first?.type === "Literal" && typeof first.value === "string" ? first.value : first?.type === "TemplateLiteral" && (first.expressions as AnyNode[]).length === 0 ? ((first.quasis as AnyNode[])[0]!.value as { cooked: string }).cooked : undefined
-          if (!call) problems.push(`${at(node)}：ha.tool 要直接调用：ha.tool("工具 id", { … })`)
-          else if (!id) problems.push(`${at(node)}：ha.tool 的第一个参数要直接写工具 id 的字符串`)
-          else need(id, `ha.tool("${id}")`)
-        }
-        if (top === "judge") {
-          const call = parent?.type === "CallExpression" && key === "callee" ? parent : undefined
-          const first = (call?.arguments as AnyNode[] | undefined)?.[0]
-          if (!call) problems.push(`${at(node)}：ha.judge 要直接调用：ha.judge({ question, data, choices })`)
-          else if (!first) problems.push(`${at(node)}：ha.judge 要给参数 { question, data, choices }`)
-          else if (first.type === "ObjectExpression") {
-            // { ...args }、{ [name]: … } 看不出有没有 question，不报
-            const keys = (first.properties as AnyNode[]).map((each) => (each.type === "Property" ? propKey(each) : undefined))
-            if (!keys.includes("question") && !keys.includes(undefined)) problems.push(`${at(node)}：ha.judge 要写 question（判断什么、按什么标准）`)
-            const choices = (first.properties as AnyNode[]).find((each) => each.type === "Property" && propKey(each) === "choices")?.value as AnyNode | undefined
-            const items = choices?.type === "ArrayExpression" ? (choices.elements as (AnyNode | null)[]) : undefined
-            if (items && !items.some((each) => each?.type === "SpreadElement") && items.length < 2)
-              problems.push(`${at(node)}：ha.judge 的 choices 至少要两个选项（不给选项就不写 choices）`)
-          }
-        }
-        if (top === "fail") {
-          const call = parent?.type === "CallExpression" && key === "callee" ? parent : undefined
-          const first = (call?.arguments as AnyNode[] | undefined)?.[0]
-          if (first?.type === "Literal" && first.value !== "input" && first.value !== "page")
-            problems.push(`${at(node)}：ha.fail 的第一个参数只能是 "input"（输入有问题）或 "page"（页面和预期不一样）`)
-        }
-      }
-    })
+    if (item.fetch) fetchUsed()
   }
 
   const inputParsed = parseJsonSchema(input.inputSchema, "输入格式（inputSchema）")
