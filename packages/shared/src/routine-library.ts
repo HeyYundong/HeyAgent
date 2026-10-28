@@ -65,6 +65,35 @@ export function defaultRoutineSlug(name: string, routineId: string): string {
   return number ? `rt${number}` : "rt"
 }
 
+/**
+ * 发布时「什么时候用」的默认值（4.2）：流程的名字（固化员起的，例如「查一条记录的状态」）；没有就用来源任务的标题。
+ * 不用步骤说明的第一行：那是怎么做（「打开某某页」），不是什么时候用。发布弹窗里能改
+ */
+export function defaultLibrarySummary(input: { name?: string | null; taskTitle?: string | null }): string {
+  return (input.name?.trim() || input.taskTitle?.trim() || "").slice(0, 500)
+}
+
+/**
+ * 被派任务声明的参数、结果的说明补进 JSON Schema 的 properties（routine-library.md 4.2）：固化员写的 schema 常常只有 type，
+ * 由程序按声明补上（不靠模型）。只补 properties 里有这一项、又没写说明的；别的原样。没补任何一项时返回原对象
+ */
+export function withDeclaredDescriptions(schema: Record<string, unknown>, declared: readonly { name: string; description?: string | null }[]): Record<string, unknown> {
+  const raw = schema.properties
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return schema
+  const properties = { ...(raw as Record<string, unknown>) }
+  let changed = false
+  for (const item of declared) {
+    const text = item.description?.trim()
+    const property = properties[item.name]
+    if (!text || !property || typeof property !== "object" || Array.isArray(property)) continue
+    const own = (property as Record<string, unknown>).description
+    if (typeof own === "string" && own.trim()) continue
+    properties[item.name] = { ...(property as Record<string, unknown>), description: text }
+    changed = true
+  }
+  return changed ? { ...schema, properties } : schema
+}
+
 /** 库流程的代码在沙箱代码目录里的位置（相对代码目录；调用方自己的脚本是 routine.mjs） */
 export const libraryModulePath = (slug: string) => `routines/${slug}.mjs`
 

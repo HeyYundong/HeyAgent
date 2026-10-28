@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   compareRoutineSchemas,
+  defaultLibrarySummary,
   defaultRoutineSlug,
   inputOfToolArgs,
   libraryStreakChange,
@@ -16,6 +17,7 @@ import {
   routineToolId,
   schemaPropertyNames,
   toolSchemaOf,
+  withDeclaredDescriptions,
   withPropertyOrder,
 } from "../src/index.js"
 
@@ -278,5 +280,38 @@ describe("短名、工具 id", () => {
   it("短名的格式", () => {
     for (const ok of ["ab", "order_status", "rt12", "a1_b2"]) expect(routineSlugSchema.safeParse(ok).success).toBe(true)
     for (const bad of ["a", "1abc", "Order", "order-status", "订单", "_ab", "a".repeat(41)]) expect(routineSlugSchema.safeParse(bad).success).toBe(false)
+  })
+})
+
+describe("发布时的默认值、说明（4.2）", () => {
+  it("「什么时候用」默认是流程的名字，没有就用来源任务的标题", () => {
+    expect(defaultLibrarySummary({ name: " 查一条记录的状态 ", taskTitle: "查记录" })).toBe("查一条记录的状态")
+    expect(defaultLibrarySummary({ name: "", taskTitle: "查记录" })).toBe("查记录")
+    expect(defaultLibrarySummary({ name: null })).toBe("")
+  })
+
+  it("被派任务声明的参数、结果的说明补进 schema：只补没写说明的，声明里没有、说明是空的不动", () => {
+    const schema = {
+      type: "object",
+      properties: { 编号: { type: "string" }, 备注: { type: "string", description: "自己写的" }, 页数: { type: "integer" } },
+      required: ["编号"],
+    }
+    const filled = withDeclaredDescriptions(schema, [
+      { name: "编号", description: "要查的记录编号" },
+      { name: "备注", description: "声明里的" },
+      { name: "页数", description: "  " },
+      { name: "没有的", description: "不在 schema 里" },
+    ])
+    expect(filled).toEqual({
+      type: "object",
+      properties: { 编号: { type: "string", description: "要查的记录编号" }, 备注: { type: "string", description: "自己写的" }, 页数: { type: "integer" } },
+      required: ["编号"],
+    })
+    // 原对象不改；什么都没补时原样返回
+    expect(schema.properties.编号).toEqual({ type: "string" })
+    expect(withDeclaredDescriptions(schema, [{ name: "页数", description: "" }])).toBe(schema)
+    expect(withDeclaredDescriptions({}, [{ name: "编号", description: "x" }])).toEqual({})
+    // 补过的说明进给模型的参数
+    expect(JSON.stringify(toolSchemaOf(filled).jsonSchema)).toContain("要查的记录编号")
   })
 })

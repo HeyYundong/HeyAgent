@@ -405,7 +405,9 @@ describe("固化的状态机（假固化员 + 假试跑结果）", () => {
 
     let version = await versionRow(data.versionId)
     expect(version).toMatchObject({ status: "testing", round: 1, name: "查单号的状态", code: GOOD_CODE, modelId: SOLIDIFIER, assumptions: ["默认取第一行"] })
-    expect(version.inputSchema).toEqual({ ...JSON.parse(INPUT_SCHEMA), "x-order": ["单号"] })
+    // 固化员写的 schema 只有 type：声明的参数、结果的说明由程序补上（流程库给别的任务看的说明用它）
+    expect(version.inputSchema).toEqual({ type: "object", properties: { 单号: { type: "string", description: "要查的单号" } }, required: ["单号"], "x-order": ["单号"] })
+    expect(version.outputSchema).toEqual({ type: "object", properties: { 状态: { type: "string", description: "单子现在的状态" } }, "x-order": ["状态"] })
     expect(version.costUsd).toBeCloseTo(0.002)
     // 固化员拿到的：规矩、SDK、材料
     expect(model.promptText(0)).toContain("固化员")

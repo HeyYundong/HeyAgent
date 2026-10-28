@@ -19,6 +19,7 @@ import {
   routineRequiresAdded,
   routineRequiresSchema,
   toolSchemaOf,
+  withDeclaredDescriptions,
   type Risk,
   type RoutineCompatIssue,
   type RoutineRequires,
@@ -240,16 +241,63 @@ export async function compatWithPublished(db: DbOrTx, input: { routineId: string
   return [...issues, ...routineRequiresAdded(published.success ? published.data : { toolIds: [], browser: {}, routines: [] }, input.requires)]
 }
 
-/** 「什么时候用」的默认值：步骤说明的第一行（去掉「1.」这样的编号） */
-export function defaultLibrarySummary(description: string): string {
-  const first = description.split("\n").map((line) => line.trim()).find(Boolean) ?? ""
-  return first.replace(/^\d+[.、)）]\s*/, "").slice(0, 500)
+type Declared = readonly { name: string; description?: string | null }[]
+
+/**
+ * 这一版的输入、交回 schema 补上来源任务（被派的）声明的参数、结果的说明（4.2）：固化员写的 schema 常常只有 type，
+ * 给别的任务看的工具说明、工具参数、流程页的输入 / 交回表都用补过的。来源任务不是被派的原样返回
+ */
+export function withSourceDeclared<V extends { inputSchema: Record<string, unknown>; outputSchema: Record<string, unknown> }>(
+  version: V,
+  dispatch: { params: Declared; results?: Declared } | null | undefined
+): V {
+  if (!dispatch) return version
+  const inputSchema = withDeclaredDescriptions(version.inputSchema, dispatch.params)
+  const outputSchema = withDeclaredDescriptions(version.outputSchema, dispatch.results ?? [])
+  return inputSchema === version.inputSchema && outputSchema === version.outputSchema ? version : { ...version, inputSchema, outputSchema }
+}
+
+/** 来源任务的标题和派活配置（按固化流程 id 查） */
+export async function routineSource(db: DbOrTx, routineId: string) {
+  const [row] = await db
+    .select({ title: t.tasks.title, dispatch: t.tasks.dispatch })
+    .from(t.routines)
+    .innerJoin(t.tasks, eq(t.tasks.id, t.routines.taskId))
+    .where(eq(t.routines.id, routineId))
+  return row
+}
+
+/** 报结果的说法：交回、报办成 / 没办成、ha.work.report、ha.finish（只对来源任务有意义，别的任务里只是收进交回值） */
+const REPORTING = /work[_.]?report|\bfinish\b|交回|报(?:告)?(?:办成|没办成|结果)/
+
+/**
+ * 「做什么」的步骤（4.2）：步骤说明一行一步，去掉交回、报结果的那几行（一行里只有一半是的，去掉那一半），
+ * 「派活的『X』」写成「输入的『X』」（选用它的任务没有派活），重新编号
+ */
+export function libraryDescriptionSteps(description: string): string[] {
+  const kept: string[] = []
+  for (const raw of description.split("\n")) {
+    const line = raw.trim()
+    if (!line) continue
+    const numbered = /^(\d+)[.、)）]\s*/.exec(line)
+    const body = numbered ? line.slice(numbered[0].length) : line
+    // 按逗号、分号拆开，开头的「并、再、然后」去掉
+    const parts = body
+      .split(/[，,；;]/)
+      .map((part) => part.trim().replace(/^(?:并且|并|再|然后)\s*/, ""))
+      .filter(Boolean)
+    const rest = parts.filter((part) => !REPORTING.test(part))
+    if (!rest.length) continue
+    const text = (rest.length === parts.length ? body : rest.join("，")).replace(/派活(?:单)?(?:里|中|给)?的「/g, "输入的「")
+    kept.push(numbered ? `${kept.length + 1}. ${text}` : text)
+  }
+  return kept
 }
 
 const describe = (property: Record<string, unknown>) => (typeof property.description === "string" ? property.description.trim() : "")
 
 /**
- * 给模型的说明（4.2 的模板）：固化好的流程（几秒做完）、什么时候用、做什么（步骤说明最多 LIBRARY_DESCRIPTION_STEPS 行）、
+ * 给模型的说明（4.2 的模板）：固化好的流程（几秒做完）、什么时候用、做什么（libraryDescriptionSteps，最多 LIBRARY_DESCRIPTION_STEPS 行）、
  * 要的输入（按 toolSchemaOf 转过的参数名）、交回、会真的提交（commits，没有写「只读，不改东西」）、用的是你这次运行的浏览器、跑不通怎么办
  */
 export function routineToolDescription(input: {
@@ -260,10 +308,7 @@ export function routineToolDescription(input: {
   commits: string[]
   usesBrowser: boolean
 }): string {
-  const steps = input.description
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
+  const steps = libraryDescriptionSteps(input.description)
   const shown = steps.slice(0, LIBRARY_DESCRIPTION_STEPS)
   if (steps.length > shown.length) shown.push(`……还有 ${steps.length - shown.length} 步`)
 

@@ -25,6 +25,15 @@ const parse = (text: string | null) => {
   }
 }
 
+/** wait_any 等到的那一种的定位（outcomes[名字]），太长的截短 */
+function waitTarget(input: unknown, name: string): string {
+  const outcomes = input && typeof input === "object" ? (input as { outcomes?: unknown }).outcomes : undefined
+  const target = outcomes && typeof outcomes === "object" ? (outcomes as Record<string, unknown>)[name] : undefined
+  if (typeof target !== "string") return ""
+  const text = target.trim()
+  return text.length > 100 ? `${text.slice(0, 99)}…` : text
+}
+
 type StepRow = Pick<typeof t.sessionEvents.$inferSelect, "kind" | "title" | "detail" | "toolId" | "input" | "output" | "trace">
 
 const stepColumns = {
@@ -57,8 +66,10 @@ export function stepLinesOf(rows: readonly StepRow[], stepOf: (row: StepRow) => 
           : `${step}. ${label} 没做：要人审批`
       if (row.kind === "plan") return `${step}. ${label}（试跑，只记下来）`
       if (row.title.endsWith("（出错）")) return `${step}. ✗ ${label}：${firstLine(row.output?.replace(/^工具出错：/, "")) || "出错了"}`
+      // 等到了哪一种：写名字和它的定位（例如 heading（getByRole('heading', { name: '…' })）），看得出核对了什么
       const matched = row.toolId === "browser.wait_any" ? /^等到了「([^」]+)」/.exec(row.output ?? "")?.[1] : undefined
-      return `${step}. ${label}${matched ? ` → ${matched}` : ""} ✓`
+      const target = matched ? waitTarget(parse(row.input), matched) : ""
+      return `${step}. ${label}${matched ? ` → ${matched}${target ? `（${target}）` : ""}` : ""} ✓`
     })
   if (lines.length <= HEAD_STEPS + TAIL_STEPS) return lines
   return [...lines.slice(0, HEAD_STEPS), `…（中间 ${lines.length - HEAD_STEPS - TAIL_STEPS} 步省略）`, ...lines.slice(-TAIL_STEPS)]
