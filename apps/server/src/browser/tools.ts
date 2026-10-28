@@ -9,6 +9,8 @@
 // - 剪贴板工具 browser.copy_image / clipboard_read / clipboard_paste（browser/clipboard.ts），在线表格、文档大块读写数据、贴图用；
 // - browser.batch：连着做几步（docs/dev/browser-speed.md A），定义在这里，在工具网关里展开（每一步走一次普通调用）；
 // - browser.extract / browser.wait_any：按定位读页面、等几种结果里的一个（docs/dev/solidify.md 4.5，browser/extract.ts），只读；
+// - browser.fetch：在当前页面里带着登录态直接调网站的接口（docs/dev/solidify.md 19.4，browser/site-api.ts），任务打开「允许直接调网站接口」才有；
+//   开着时还记下网页自己调的接口（browser/network-log.ts），每次浏览器工具调用结束时写进 network/requests.jsonl，网关把这一步记下的 seq 范围写进 trace.network；
 // - 录（docs/dev/solidify.md 3.1）：MCP 输出里的 ### Ran Playwright code 从给模型的输出里拿掉，连同动作前后的网址放进 ToolOutcome，网关存进过程记录。
 // 每次调用：调之前查导航参数（白名单、账号租约）→ 交给 MCP（被弹窗挡住时认得出的无害关闭按钮点掉、再做一次）→ 调完后兜底扫一遍页面、
 // 取走被拦下的导航、跳转后在后台截图存档、检测验证码和登录页 → 末尾附上页面概况（标题网址、弹窗、文件选择框，page-brief.ts）。验证码先自己试着过（设置里的开关，captcha.ts），
@@ -18,6 +20,13 @@ import { extname, join } from "node:path"
 
 import { eq, lt, sql } from "drizzle-orm"
 import {
+  BROWSER_FETCH_TOOL,
+  browserFetchInputSchema,
+  FETCH_MAX_BYTES,
+  FETCH_OUTPUT_MAX_CHARS,
+  FETCH_TIMEOUT_MS,
+  NETWORK_LOG_PATH,
+  type BrowserFetchInput,
   browserActionLabel,
   browserActionTag,
   hostOf,
@@ -62,6 +71,7 @@ import { accountForHost, busyProfileIds } from "./leases.js"
 import { getBrowserManager } from "./manager.js"
 import { BLOCKED_MCP_TOOLS, EVALUATE_TOOL, listBrowserMcpTools, VISION_MCP_TOOLS } from "./mcp.js"
 import { blockedKind, DISMISS_ATTR, explainError, formatBrief, modalGuidance, overlayText, readPageBrief, stripAnsi, stripPageSections } from "./page-brief.js"
+import { fetchTargetAllowed, maskBody, maskJson, maskUrl, NEED_PAGE, sendInPage } from "./site-api.js"
 import { phaseTimer, recordBrowserTiming } from "./timing.js"
 
 /** 一次 MCP 动作录下的：代码、做之前的网址（callMcp 收尾时再读做之后的网址、标题） */
@@ -118,7 +128,7 @@ const READ_ONLY_TOOLS = new Set(["browser_snapshot", "browser_find", "browser_co
 /** 点元素的动作：被弹窗挡住时（Playwright 的 intercepts pointer events，或超时且认出了弹窗）先试着关掉弹窗再做一次 */
 const POINTER_TOOLS = new Set(["browser_click", "browser_hover", "browser_type", "browser_fill_form", "browser_select_option", "browser_check", "browser_uncheck", "browser_drag", "browser_press_sequentially"])
 /** 不能放进 browser.batch 的：batch 自己、指定 Chrome、只读的（看页面的放最后由 snapshot 参数做） */
-const NOT_BATCHABLE = new Set([BATCH_TOOL, "browser.use", LOOK_TOOL, EXTRACT_TOOL, WAIT_ANY_TOOL, "browser.clipboard_read", ...[...READ_ONLY_TOOLS].map((name) => browserToolIdOf(name))])
+const NOT_BATCHABLE = new Set([BATCH_TOOL, "browser.use", LOOK_TOOL, EXTRACT_TOOL, WAIT_ANY_TOOL, BROWSER_FETCH_TOOL, "browser.clipboard_read", ...[...READ_ONLY_TOOLS].map((name) => browserToolIdOf(name))])
 
 function browserToolIdOf(mcpName: string) {
   return `browser.${mcpName.replace(/^browser_/, "")}`
@@ -133,6 +143,16 @@ export function batchToolId(tool: string) {
 export const batchable = (toolId: string) => toolId.startsWith("browser.") && !NOT_BATCHABLE.has(toolId)
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** 浏览器工具调用结束时，最多等这么久让这一步触发的网页请求记完（算进这一步的 trace.network） */
+const NETWORK_DRAIN_MS = 800
+
+/** 字节数写成给人看的（512 B、17.9 KB、1.2 MB） */
+export function sizeText(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
 
 /** MCP 输出里的 ### Ran Playwright code 段（--codegen typescript：```js 代码框） */
 const CODE_SECTION = /(^|\n)### Ran Playwright code\n```[a-z]*\n([\s\S]*?)\n```[ \t]*(?=\n|$)/
@@ -249,6 +269,11 @@ export class BrowserTools {
     })
   }
 
+  /** 任务打开了「允许直接调网站接口」：browser.fetch + 记接口 */
+  private get allowFetch() {
+    return Boolean(this.ctx.snapshot.browser?.allowFetch)
+  }
+
   /** 任务打开了「允许看画面」：browser.look + 坐标工具 */
   private get allowVision() {
     return Boolean(this.ctx.snapshot.browser?.allowVision)
@@ -341,6 +366,7 @@ export class BrowserTools {
         execute: () => this.look(),
       })
     entries.push(...this.readEntries())
+    if (this.allowFetch) entries.push(this.fetchEntry())
     for (const tool of this.mcpTools) {
       if (BLOCKED_MCP_TOOLS.has(tool.name)) continue
       if (tool.name === EVALUATE_TOOL && !browser?.allowEvaluate) continue
@@ -486,6 +512,149 @@ export class BrowserTools {
       },
     ]
   }
+
+  /** browser.fetch（docs/dev/solidify.md 19.4）：在当前页面里带着登录态调网站的接口；不能放进 batch */
+  private fetchEntry(): BrowserToolEntry {
+    const methods = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]
+    return {
+      id: BROWSER_FETCH_TOOL,
+      def: {
+        id: BROWSER_FETCH_TOOL,
+        name: "浏览器：调网站接口",
+        summary: "在当前页面里带着浏览器的登录态直接调网站自己的接口（读列表、翻页、查详情比一页页点快）",
+        description: `在当前标签页里发一个请求，带着浏览器的登录态（cookie 由浏览器自己带），返回状态码和返回体（JSON 排好版）。先用 browser.navigate 打开这个网站的页面再调。url 要写完整的 http(s) 网址；只能调和当前页面同源的，任务设了网址白名单时和页面落在同一条白名单里的也行。不能设 Cookie、Authorization、Host、Origin、Referer、Proxy-*、Sec-* 这类请求头；网站要 CSRF 的，给 csrf（{ header, from: meta | cookie, name }），工具在页面里读出 token 填进去。body 是对象、数组时按 JSON 发；GET、HEAD 不能带 body。4xx、5xx 不算出错，看状态码；接口要跳转（多半登录过期）、连不上、超时（${FETCH_TIMEOUT_MS / 1000} 秒）、返回体超过 ${FETCH_MAX_BYTES / 1024 / 1024} MB 算出错。网页自己调过的接口记在 ${NETWORK_LOG_PATH}，先看一眼照着调，不要猜。返回里像密码、token 的字段值换成了 ••••。`,
+        source: "builtin",
+        risk: "external",
+      },
+      jsonSchema: {
+        type: "object",
+        properties: {
+          url: { type: "string", minLength: 1, description: "完整的 http(s) 网址（https://…），不认相对路径" },
+          method: { type: "string", enum: methods, description: "默认 GET。GET、HEAD 只读；别的会改东西" },
+          headers: { type: "object", additionalProperties: { type: "string" }, description: "请求头（照网页发的写，例如 content-type、x-requested-with）" },
+          body: { description: "请求体：字符串原样发；对象、数组按 JSON 发（没写 content-type 时补 application/json）" },
+          as: { type: "string", enum: ["auto", "json", "text"], description: "怎么读返回：auto（默认，content-type 带 json 的解析成 JSON）、json、text" },
+          csrf: {
+            type: "object",
+            properties: {
+              header: { type: "string", description: "要填的请求头，例如 x-csrf-token" },
+              from: { type: "string", enum: ["meta", "cookie"], description: "从页面的 <meta name> 读，还是从（不是 HttpOnly 的）cookie 读" },
+              name: { type: "string", description: "meta 的 name 或 cookie 的名字" },
+            },
+            required: ["header", "from", "name"],
+            additionalProperties: false,
+            description: `CSRF：工具在页面里读出 token 填进这个请求头（值不经过你）。照 ${NETWORK_LOG_PATH} 里记下的 csrf 填`,
+          },
+        },
+        required: ["url"],
+        additionalProperties: false,
+      },
+      validator: browserFetchInputSchema,
+      execute: (input) => this.fetch(input as BrowserFetchInput),
+    }
+  }
+
+  /** browser.fetch：在当前页面的隔离环境里发请求（页面脚本改不了、看不到） */
+  private async fetch(input: BrowserFetchInput): Promise<ToolOutcome> {
+    const target = input.url.trim()
+    const method = input.method
+    const shown = `${method} ${maskUrl(target)}`
+    if (!/^https?:\/\//i.test(target)) return fail(`要写完整的 http(s) 网址（https://…），不认相对路径：${target.slice(0, 200)}`)
+    // 白名单不用等 Chrome 起来就能查
+    const listed = urlAllowed(target, this.ctx.snapshot.browser?.allowedDomains ?? [])
+    if (!listed.ok) {
+      await this.record("browser_fetch", true, target)
+      return fail(`被拦下：${listed.reason}。只能调白名单里的网址。`)
+    }
+    const ready = await this.ensure()
+    if (!("id" in ready)) return ready
+    const instance = ready
+    instance.touch()
+    // 前台的标签页拿不准时（例如前台是个空白页）退回 agent 最近导航的那个
+    const isWeb = (each: ReturnType<BrowserInstance["currentPage"]>) => Boolean(each && /^https?:/i.test(each.url()))
+    const front = await instance.frontPage()
+    const page = isWeb(front) ? front : isWeb(instance.currentPage()) ? instance.currentPage() : undefined
+    const pageUrl = page?.url()
+    if (!page || !pageUrl) return fail(NEED_PAGE)
+    const trace = { urlBefore: pageUrl }
+    if (instance.dialogs.has(page)) return { ...fail("页面上开着网页弹框，先用 browser_handle_dialog 处理"), trace }
+    const allowed = fetchTargetAllowed(target, pageUrl, instance.allowedDomains)
+    if (!allowed.ok) {
+      await this.record("browser_fetch", true, target)
+      return { ...fail(`不让调：${allowed.reason}`), trace }
+    }
+    // 和打开网址同一个函数：白名单 + 平台域名的账号租约（租约满了照 navigate 的处理：挂起等）
+    const blocked = await instance.checkNavigation(target)
+    if (blocked) {
+      await this.record("browser_fetch", true, target)
+      return { ...(await this.blockedOutcome([blocked], "")), trace }
+    }
+    const headers: Record<string, string> = { ...(input.headers ?? {}) }
+    let body: string | undefined
+    if (input.body !== undefined) {
+      if (typeof input.body === "string") body = input.body
+      else {
+        body = JSON.stringify(input.body)
+        if (!Object.keys(headers).some((name) => name.toLowerCase() === "content-type")) headers["content-type"] = "application/json"
+      }
+    }
+    instance.viewer.announce(browserActionLabel("browser_fetch", {}))
+    // 自己发的不记进 network/requests.jsonl（过程记录里有）
+    const unexpect = instance.network?.expectOwn(method, target)
+    let result: Awaited<ReturnType<typeof sendInPage>>
+    try {
+      result = await sendInPage(page, { url: target, method, headers, ...(body !== undefined ? { body } : {}), ...(input.csrf ? { csrf: input.csrf } : {}) })
+    } catch (error) {
+      result = { ok: false, error: "network", message: stripAnsi((error as Error).message).split("\n")[0] ?? "出错了", ms: 0 }
+    } finally {
+      // 请求事件可能比结果晚一点到：等一会儿再撤销登记（发不出去的请求不会留下登记）
+      setTimeout(() => unexpect?.(), 2000)
+    }
+    await this.record("browser_fetch", !result.ok, target)
+    if (!result.ok) {
+      const why =
+        result.error === "csrf"
+          ? `CSRF 读不到：${result.message}。先打开有这个 token 的页面，或者照 ${NETWORK_LOG_PATH} 里记下的 csrf 填`
+          : result.error === "redirect"
+            ? "接口要跳转（多半登录过期了）：先用 browser.navigate 打开网站的页面看看"
+            : result.error === "timeout"
+              ? `超时：${FETCH_TIMEOUT_MS / 1000} 秒没收完`
+              : result.error === "too_big"
+                ? `返回体超过 ${FETCH_MAX_BYTES / 1024 / 1024} MB，停了。要文件用下载`
+                : `连不上，或者被浏览器的跨域规则拦下了（目标不同源、网站没允许）：${result.message}`
+      return { ...fail(`${shown} → 出错：${why}`), trace }
+    }
+    const contentType = result.contentType
+    let json: unknown
+    let text: string | undefined
+    if (result.text !== undefined) {
+      const wantJson = input.as === "json" || (input.as === "auto" && /json/i.test(contentType))
+      if (wantJson) {
+        try {
+          json = maskJson(JSON.parse(result.text))
+        } catch {
+          if (input.as === "json") return { ...fail(`${shown} → ${result.status}：返回不是 JSON（${contentType || "没有 content-type"}）`), trace }
+          text = maskBody(result.text, contentType).text
+        }
+      } else text = maskBody(result.text, /json/i.test(contentType) ? "text/plain" : contentType).text
+    }
+    const ok = result.status >= 200 && result.status < 300
+    const lines = [`${shown} → ${result.status} ${contentType || "（没有 content-type）"}（${sizeText(result.bytes)}，${result.ms} 毫秒）`]
+    if (result.status === 401 || result.status === 403) lines.push("多半登录过期了，先用 browser.navigate 打开网站的页面看看要不要登录。")
+    let shownBody = json !== undefined ? JSON.stringify(json, null, 2) : text
+    if (shownBody === undefined) lines.push(method === "HEAD" ? "（HEAD 没有返回体）" : `（返回不是文字：只给大小 ${sizeText(result.bytes)}。要文件用下载）`)
+    else if (shownBody === "") lines.push("（返回体是空的）")
+    else {
+      if (shownBody.length > FETCH_OUTPUT_MAX_CHARS) shownBody = `${shownBody.slice(0, FETCH_OUTPUT_MAX_CHARS)}\n…（返回体一共 ${shownBody.length} 字，这里截到前 ${FETCH_OUTPUT_MAX_CHARS} 字）`
+      lines.push("", shownBody)
+    }
+    return {
+      output: lines.join("\n"),
+      data: { status: result.status, ok, contentType, bytes: result.bytes, ...(json !== undefined ? { json } : {}), ...(text !== undefined ? { text } : {}) },
+      trace,
+    }
+  }
+
 
   /** 读页面的工具要的页面：开着 Chrome、打开了网页、没有网页弹框挡着 */
   private async readablePage(): Promise<{ instance: BrowserInstance; page: NonNullable<ReturnType<BrowserInstance["currentPage"]>> } | ToolOutcome> {
@@ -634,6 +803,7 @@ export class BrowserTools {
       sessionId: session.id,
       profileId,
       allowedDomains: snapshot.browser?.allowedDomains ?? [],
+      recordNetwork: this.allowFetch,
       onQueued: async (used, max) => {
         await this.assign(profileId)
         await appendEvent(db, session.id, {
@@ -1278,10 +1448,30 @@ export class BrowserTools {
     return { fileId: row.id }
   }
 
+  /**
+   * 记接口（docs/dev/solidify.md 19.3）：一次浏览器工具调用开始时记下 seq 走到哪了（还没开 Chrome 就是 undefined）。
+   * 网关在调用前后各调一次，把这一步记下的请求的 seq 范围写进过程记录的 trace.network
+   */
+  networkMark(): number | undefined {
+    return this.instance?.network?.seq
+  }
+
+  /** 一次浏览器工具调用结束：等一小会儿让这一步触发的请求记完，有新行就写文件；返回这一步记下的 seq 范围（没有就 undefined） */
+  async networkSettle(mark: number | undefined): Promise<{ first: number; last: number } | undefined> {
+    const log = this.instance?.network
+    if (!log) return undefined
+    await log.drain(NETWORK_DRAIN_MS)
+    await log.flush()
+    // 调用前还没开 Chrome：这次开的，读完已有文件以后的都算这一步
+    const first = (mark ?? log.loadedSeq) + 1
+    return log.seq >= first ? { first, last: log.seq } : undefined
+  }
+
   /** gateway 关闭（session 结束、挂起、交接）：要保留就保留（等人处理验证码），否则写回登录态、关掉 Chrome、释放租约 */
   async close(reason = "运行停下了") {
-    // 后台的存档截图先存完（关 Chrome 之前）
+    // 后台的存档截图先存完（关 Chrome 之前）；记下的接口写一次（两次调用之间页面自己发的）
     await Promise.allSettled([...this.pendingSaves])
+    await this.instance?.network?.flush()
     const manager = getBrowserManager()
     const { db, session } = this.ctx
     if (!manager || !manager.forSession(session.id)) return

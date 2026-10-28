@@ -154,6 +154,14 @@ const ha = {
     },
     /** 把文字 / 表格 / 这次运行里的图片写进剪贴板，在当前焦点处按 Ctrl+V */
     clipboardPaste: act("browser.clipboard_paste"),
+    /**
+     * 直接调网站的接口（任务打开「允许直接调网站接口」才有）：{ status, ok, contentType, bytes, json?, text? }。
+     * 4xx、5xx 不抛错，看 status；会改东西的请求（不是 GET、HEAD）前面要有自己的 ha.commit，不然脚本停下
+     */
+    async fetch(args) {
+      const result = await callTool("browser.fetch", args)
+      return result.data
+    },
   },
   file: {
     read: act("file.read"),

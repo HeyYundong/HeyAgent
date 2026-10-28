@@ -1,8 +1,10 @@
 // 系统提示：只由快照拼出来，整个 session 不变（Anthropic 的 prompt caching 按前缀缓存，系统提示一变缓存就全失效）。
 // 会变的东西（现在几点、等到了什么）放在消息里。平台通用：这里只有通用的说明，业务全部来自任务配置。
 import {
+  BROWSER_FETCH_TOOL,
   checkpointKindLabel,
   compiledRuleSchema,
+  NETWORK_LOG_PATH,
   riskLabel,
   RUN_FINISH_TOOL_ID,
   RUN_NOT_DONE_TOOL_ID,
@@ -195,6 +197,15 @@ export function buildSystemPrompt(
           ? `- 网址白名单：${allowedDomains.join("、")}（含子域名）。不在名单里的网页会被拦下。`
           : "- 没有网址白名单，但只做任务需要的访问。",
         allowEvaluate ? "- 允许用 browser_evaluate 在网页里执行脚本（会记审计），能用快照解决的不要用它。" : "",
+        // 任务打开「允许直接调网站接口」才有 browser.fetch（docs/dev/solidify.md 19.4）
+        toolNames.has(BROWSER_FETCH_TOOL)
+          ? [
+              `- 可以用 ${toolNames.get(BROWSER_FETCH_TOOL)} 带着登录态直接调网站自己的接口，读列表、翻页、查详情比一页页点快：先 browser_navigate 打开这个网站的页面，再调（url 写完整的网址，只能调和页面同源的）。`,
+              `- 网页自己调过的接口记在 ${NETWORK_LOG_PATH}（方法、网址、请求头的名字、返回的字段结构 shape），可以先 ${toolNames.get("file.read") ?? "file_read"} 看一眼，照着调，不要猜没记下来的接口和参数。`,
+              "- 不能设 Cookie、Authorization：登录态由浏览器自己带。要 CSRF 的，照记录里的 csrf 填 csrf 参数。返回 4xx、5xx 不算出错，看状态码；401、403 多半是登录过期了。",
+              "- 会改东西的请求（POST、PUT、PATCH、DELETE）照常过规则；没把握就照页面点。",
+            ].join("\n")
+          : "",
         // 设置里开着「遇到验证码先自己试着过」才有填验证码的工具
         toolNames.has("browser.fill_captcha")
           ? `- 遇到验证码，系统先自己试着过简单的（图片里的字母数字、「我不是机器人」这类点一下的）。表单里的图片验证码：先填好别的项，再调 ${toolNames.get("browser.fill_captcha")} 让系统认出来、填进去，然后提交。不要自己猜验证码。`
@@ -245,7 +256,7 @@ export function buildSystemPrompt(
         "## 空间文件",
         "这次运行有一个自己的文件空间（只属于这次运行，负责人在界面里能看能下载），按路径找文件：",
         "- agent 写的文件在你给的路径，例如 result.csv、state/progress.json、scripts/clean.py。同一路径再存就是覆盖（文件 id 不变，不留旧版本）。",
-        "- 别的来源只读，放在固定目录：attachments/ 附件、downloads/ 浏览器下载、screenshots/ 截图、tool-outputs/ 太长的工具输出全文、clipboard/ 剪贴板工具存的。写文件的路径不能用这几个目录开头。",
+        "- 别的来源只读，放在固定目录：attachments/ 附件、downloads/ 浏览器下载、screenshots/ 截图、tool-outputs/ 太长的工具输出全文、clipboard/ 剪贴板工具存的、network/ 记下的网页请求。写文件的路径不能用这几个目录开头。",
         [
           `- ${name("file.list")} 列出全部（路径、id、来源、大小）`,
           has("file.read") ? `${name("file.read")} 按路径或 id 读` : "",

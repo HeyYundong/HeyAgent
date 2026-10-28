@@ -448,6 +448,46 @@ export async function writeSpaceFile(
   }
 }
 
+/** 这次运行记下的网页请求文件（network/requests.jsonl，docs/dev/solidify.md 19.3）；还没有返回 undefined */
+export async function networkLogRow(db: DbLike, sessionId: string, name: string): Promise<FileRow | undefined> {
+  const [row] = await db
+    .select()
+    .from(t.files)
+    .where(and(eq(t.files.sessionId, sessionId), eq(t.files.kind, "network"), eq(t.files.name, name)))
+    .orderBy(asc(t.files.createdAt))
+    .limit(1)
+  return row
+}
+
+/**
+ * 写记下的网页请求：整份覆盖（新 blob、同一行 files，旧 blob 改完再删，同 writeSpaceFile 的覆盖写法），没有就新建。
+ * 记的过程中会写很多次（每次浏览器工具调用结束、网关关闭时）
+ */
+export async function writeNetworkLog(db: DbLike, sessionId: string, name: string, data: Buffer): Promise<FileRow> {
+  const existing = await networkLogRow(db, sessionId, name)
+  if (!existing) return saveFile(db, { data, name, kind: "network", sessionId })
+  const storagePath = newStoragePath(existing.id, true)
+  await fileStorage().put(storagePath, data)
+  let updated: FileRow | undefined
+  try {
+    ;[updated] = await db
+      .update(t.files)
+      .set({ storagePath, size: data.length, sha256: sha256Hex(data), updatedAt: new Date() })
+      .where(eq(t.files.id, existing.id))
+      .returning()
+  } catch (error) {
+    await fileStorage().remove(storagePath).catch(() => {})
+    throw error
+  }
+  if (!updated) {
+    // 那一行刚被删了（运行被删）：不再写
+    await fileStorage().remove(storagePath).catch(() => {})
+    return existing
+  }
+  await fileStorage().remove(existing.storagePath).catch(() => {})
+  return updated
+}
+
 /** 删 agent 写的文件：先删行再删内容。被别处（图库、比物）引用着的删不了，抛 SpacePathError */
 export async function deleteSpaceFile(db: DbLike, row: FileRow) {
   try {

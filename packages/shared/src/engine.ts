@@ -279,7 +279,7 @@ export const builtinToolInputs = {
       .min(1)
       .max(300)
       .describe(
-        "在这次运行空间里的路径，带扩展名，例如 result.csv、state/progress.json、scripts/clean.py、报表.xlsx。同一路径再存就是覆盖（文件 id 不变）。不能以 attachments/ downloads/ screenshots/ tool-outputs/ clipboard/ 开头。文本和代码都能存（csv、md、json、txt、py、js、sh 等）；Excel 用 .xlsx 或 .xls（要给 sheets）"
+        "在这次运行空间里的路径，带扩展名，例如 result.csv、state/progress.json、scripts/clean.py、报表.xlsx。同一路径再存就是覆盖（文件 id 不变）。不能以 attachments/ downloads/ screenshots/ tool-outputs/ clipboard/ network/ 开头。文本和代码都能存（csv、md、json、txt、py、js、sh 等）；Excel 用 .xlsx 或 .xls（要给 sheets）"
       ),
     content: z
       .string()

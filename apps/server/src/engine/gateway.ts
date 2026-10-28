@@ -5,6 +5,7 @@
 // agent 用 code.run（tools）跑的脚本（18.1）：code.run 本身是一次调用，执行期间脚本经工具桥再调 call()（带 scriptStep、scriptCallId）。
 // call() 没有锁、可以重入（引擎自己是一个一个调的），所以不会死锁；脚本里不许再调 code.run（code.run 按运行排队，会等自己）。
 // 浏览器动作录下的代码、前后网址存进过程记录的 trace（3.2）。
+// 任务打开「允许直接调网站接口」时，浏览器工具调用期间网页发的请求（network/requests.jsonl 的 seq 范围）写进 trace.network（19.3）。
 import { jsonSchema, tool, type ToolSet } from "ai"
 import {
   BROWSER_TOOL_ID,
@@ -595,6 +596,9 @@ export class ToolGateway {
 
     let outcome: ToolOutcome
     const executeStarted = Date.now()
+    // 记接口：浏览器工具调用前记下 seq 走到哪，调完等这一步的请求记完、写文件，过程记录写上这一步的范围
+    const browserCall = this.browser && toolId.startsWith("browser.") ? this.browser : undefined
+    const networkMark = browserCall?.networkMark()
     try {
       outcome = await entry!.execute(decision.input, call)
     } catch (error) {
@@ -604,6 +608,7 @@ export class ToolGateway {
       }
     }
     const executeMs = Date.now() - executeStarted
+    const network = browserCall ? await browserCall.networkSettle(networkMark).catch(() => undefined) : undefined
     const secrets = outcome.secrets ?? []
     const output = await this.clipOutput(
       redactSecrets(outcome.output, secrets),
@@ -618,7 +623,10 @@ export class ToolGateway {
       input: redactSecrets(JSON.stringify(decision.input ?? {}), secrets),
       output,
       ms: Date.now() - started,
-      trace: traceOf(outcome, secrets, ownScriptTrace(toolId, decision.input, call.toolCallId, routineTrace)),
+      trace: traceOf(outcome, secrets, {
+        ...ownScriptTrace(toolId, decision.input, call.toolCallId, routineTrace),
+        ...(network ? { network } : {}),
+      }),
     })
     // code.run 的脚本停在要挂起的那一步：结果带着那一步的 signals、facts（引擎照常挂起），那一步自己已经过了调工具后的钩子，
     // 这里不再按它们触发规则、记检查点（不然「遇到验证码」的规则动作会做两遍）
