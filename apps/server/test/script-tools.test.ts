@@ -217,6 +217,18 @@ await ha.file.save({ path: "out/ok.txt", content: "ok" })`
     const events = await eventsOf(ctx.db, sessionId)
     expect(events.filter((event) => event.toolId === "run.finish" && event.trace?.scriptCallId)).toHaveLength(0)
   })
+
+  it("node 脚本 import 了 heyagent 却没带 tools（真模型常这样）：输出里提示带上 tools: true", async () => {
+    const { taskId } = await agentTask([
+      step([call("code.run", { language: "node", code: 'import ha from "heyagent"\nawait ha.log("x")' }, "call-no-tools")]),
+      step(finishWith("看过了")),
+    ])
+    const sessionId = await runNow(taskId)
+    await waitOutcome(sessionId)
+    const [output] = await codeRunOutputs(sessionId)
+    expect(output).toMatch(/Cannot find (package|module) 'heyagent'/)
+    expect(output).toContain("code.run 要带 tools: true 再跑一次")
+  })
 })
 
 describe("判断题 ha.judge", () => {

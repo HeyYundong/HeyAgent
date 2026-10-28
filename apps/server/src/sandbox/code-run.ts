@@ -414,7 +414,12 @@ async function runLocked(ctx: ToolContext, input: CodeRunInput, config: SandboxC
     stdout: await streamPart(ctx, "stdout", result.stdout, max, runId),
     stderr: await streamPart(ctx, "stderr", result.stderr, max, runId),
   })
-  if (!scriptRun) return { output: report, keepFull: true, facts }
+  if (!scriptRun) {
+    // 脚本 import 了 heyagent、却没带 tools：真模型常这样（docs/dev/solidify.md 18.5 的基准），一句话告诉它怎么改
+    const missingSdk = input.language === "node" && /Cannot find (?:package|module) 'heyagent'/.test(result.stderr.text)
+    const hint = missingSdk ? "\n提示：要在脚本里调这次运行的工具（import ha from \"heyagent\"），code.run 要带 tools: true 再跑一次。" : ""
+    return { output: `${report}${hint}`, keepFull: true, facts }
+  }
   const { bridge } = scriptRun
   const output = `${report}\n${formatScriptTools({
     stats: bridge.toolStats,
