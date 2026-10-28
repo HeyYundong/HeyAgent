@@ -18,6 +18,7 @@ import {
 import { eq, inArray } from "drizzle-orm"
 import { z } from "zod"
 
+import { readBrowserSettings } from "../data/config/settings.js"
 import { stripPageSections } from "../browser/page-brief.js"
 import { recordBrowserTiming } from "../browser/timing.js"
 import {
@@ -413,6 +414,15 @@ export class ToolGateway {
     return (await this.browser?.briefLines().catch(() => [])) ?? []
   }
 
+  /**
+   * 固化脚本停在要审批的那一步（docs/dev/solidify.md 17.2）：关网关时 Chrome 像等人处理验证码那样保留着，
+   * 人批准后脚本在同一个 Chrome 上按日志接着跑；过了保留时间才关（那时接着跑会交给 agent）
+   */
+  async holdBrowserForHuman() {
+    if (!this.browser) return
+    this.browser.holdMinutes ??= (await readBrowserSettings(this.ctx.db)).humanHoldMinutes
+  }
+
   /** 规则「截图存证」：这次运行开着 Chrome 时截当前页面；没有 Chrome、占着桌面时截桌面 */
   async screenshot(): Promise<{ fileId: string } | undefined> {
     return (await this.browser?.evidenceScreenshot()) ?? (await this.desktop?.evidenceScreenshot())
@@ -505,12 +515,12 @@ export class ToolGateway {
       await appendEvent(this.ctx.db, this.ctx.session.id, {
         kind: "rule",
         title: options.routineStep
-          ? `规则「${decision.ruleName}」：脚本的第 ${options.routineStep} 步 ${toolName} 要人审批，没做，交给 agent`
+          ? `规则「${decision.ruleName}」：脚本的第 ${options.routineStep} 步 ${toolName} 要人审批，停在这一步之前`
           : options.batchStep
             ? `规则「${decision.ruleName}」：批里的第 ${options.batchStep} 步 ${toolName} 要人审批，没做`
             : `规则「${decision.ruleName}」：拦下 ${toolName}，交给人审批`,
         detail: options.routineStep
-          ? `${decision.reason}固化脚本不发起审批：停在这一步之前，交给 agent 单独调用这一步（照常交给人审批）。`
+          ? `${decision.reason}固化脚本停在这一步之前，没做：普通运行交给人审批，批准后脚本接着跑这一步；固化试跑到这里就停。`
           : options.batchStep
             ? `${decision.reason}批里不做要审批的动作，已让 agent 单独调用这一步。`
             : decision.reason,

@@ -508,14 +508,19 @@ async function suspendWithResults(
   }
 }
 
-/** 规则要求审批：生成「审批工具调用」这件事，session 等人处理；这次调用和同一步里后面的调用都先存着，还没执行 */
+/**
+ * 规则要求审批：生成「审批工具调用」这件事，session 等人处理；这次调用和同一步里后面的调用都先存着，还没执行。
+ * routine：固化脚本的第 step 步要审批（docs/dev/solidify.md 17.2）：calls 是空的，待执行的那一步记在 pending.routineStep，
+ * 处理完按日志重放脚本、到这一步按人的决定做
+ */
 async function suspendForApproval(
   db: Db,
   session: SessionRow,
   snapshot: SessionSnapshot,
   calls: ModelToolCall[],
   done: GatewayResult,
-  approvedRuleIds: readonly string[]
+  approvedRuleIds: readonly string[],
+  routine?: { name: string; step: number }
 ): Promise<boolean> {
   const approval = done.approval!
   const input = maskSecretFields(JSON.stringify(approval.input ?? {}, null, 2))
@@ -523,16 +528,21 @@ async function suspendForApproval(
     input.length > 4000
       ? `${input.slice(0, 4000)}\n…（参数太长，只显示开头）`
       : input
-  const title = `审批工具调用：${done.toolName}`
-  const summary = `${approval.reason}批准就执行这次调用，拒绝就把理由告诉 agent。`
+  const where = routine ? `固化流程「${routine.name}」第 ${routine.step} 步` : ""
+  const title = routine ? `审批工具调用：${done.toolName}（${where}）` : `审批工具调用：${done.toolName}`
+  const summary = routine
+    ? `${approval.reason}这是${where}。批准就执行这一步、脚本接着跑，拒绝就把理由告诉 agent、由 agent 接着做。`
+    : `${approval.reason}批准就执行这次调用，拒绝就把理由告诉 agent。`
   const detail: HumanDetail = {
     sections: [
       { title: "为什么到了你这里", text: approval.reason },
       { title: "工具", text: `${done.toolName}（${done.toolId}）` },
-      { title: "参数", block: { title: "agent 要传的参数", text: shown } },
+      { title: "参数", block: { title: routine ? "脚本要传的参数" : "agent 要传的参数", text: shown } },
       {
         title: "来自",
-        text: `任务「${snapshot.task.title}」的运行 ${session.id}。拒绝时写上理由，agent 会看到。`,
+        text: routine
+          ? `任务「${snapshot.task.title}」的运行 ${session.id}，${where}。拒绝时写上理由，接着做的 agent 会看到。`
+          : `任务「${snapshot.task.title}」的运行 ${session.id}。拒绝时写上理由，agent 会看到。`,
       },
     ],
     primary: "批准",
@@ -565,6 +575,7 @@ async function suspendForApproval(
     approvedRuleIds: [...approvedRuleIds],
     ruleId: approval.ruleId,
     ruleName: approval.ruleName,
+    ...(routine ? { routineStep: routine.step } : {}),
   }
   try {
     const created = await db.transaction(async (tx) => {
@@ -578,7 +589,7 @@ async function suspendForApproval(
         ruleId: approval.ruleId,
         urgency: approval.risk === "money" ? 0 : 1,
         detail,
-        what: `等人审批：${done.toolName}`,
+        what: routine ? `等人审批：${done.toolName}（${where}）` : `等人审批：${done.toolName}`,
         pending,
       })
       if (!result) throw new RollbackSignal()
@@ -617,8 +628,10 @@ export async function runSession(
   }
   let messages: ModelMessage[] = []
   const isTest = first.kind === "routine_test"
-  // 这次先跑固化脚本：试跑每次进来都从头跑；普通运行快照里有固化流程、还没跑过（sessions.routine 为空）
-  const scriptFirst = Boolean(snapshot.routine) && (isTest || !first.routine)
+  // 这次先跑固化脚本：试跑每次进来都从头跑；普通运行快照里有固化流程、还没跑过（sessions.routine 为空），
+  // 或者脚本停下等人 / 进程中途被杀了，这次接着跑（state 是 suspended / running，docs/dev/solidify.md 17.2）
+  const scriptFirst =
+    Boolean(snapshot.routine) && (isTest || !first.routine || first.routine.state === "suspended" || first.routine.state === "running")
   try {
     // 执行模型：先跑脚本的运行等交给 agent 时再解析（脚本跑通就用不着）
     let resolved: ResolvedModel | undefined
@@ -771,74 +784,118 @@ export async function runSession(
       return finishRun(db, live, snapshot!, { text, ...(claim ? { claim } : {}) })
     }
 
+    /** 脚本报了办成、三方验收反问、agent 接着做（docs/dev/solidify.md 17.3）：不算脚本直接办成，也不算交给 agent */
+    const markAgentAfter = async (state: SessionRoutineState) => {
+      if (state.agentAfter) return
+      state.agentAfter = true
+      await db.update(t.sessions).set({ routine: state }).where(eq(t.sessions.id, sessionId))
+    }
+
     /**
-     * 先跑固化脚本（docs/dev/solidify.md 6.3）：跑通了照常收尾（办成的过「说做完了」的规则）；ha.fail("input") 按没办成收尾；
-     * 跑不通、要挂起、上次中断了的，追加交接的话（挂起的和挂起在同一个事务里落库）。返回 undefined = 交给 agent 接着做
+     * 先跑固化脚本（docs/dev/solidify.md 6.3、17.2）：跑通了照常收尾（办成的过「说做完了」的规则）；ha.fail("input") 按没办成收尾；
+     * 要挂起、要审批的：照常挂起 / 生成审批，不写交接的话（state = suspended），处理完再进来按日志接着跑；
+     * 上次进程中途被杀的（state 还是 running）也按日志接着跑。跑不通追加交接的话，返回 undefined = 交给 agent 接着做
      */
     const routinePhase = async (): Promise<RunOutcome | undefined> => {
       const routine = snapshot.routine!
       const current = first.routine
-      // 跑过了（交给 agent 以后挂起、交接再进来的）：直接 agent 循环
-      if (current && current.state !== "running") return undefined
-      let state: SessionRoutineState
-      let suspend: { plan: NonNullable<ToolOutcome["suspend"]> } | undefined
-      if (current) {
-        // 上次跑脚本时进程被杀：不确定最后一步做没做，交给 agent
-        state = {
-          ...current,
-          state: "fell_back",
-          stoppedAt: { step: current.steps, kind: "interrupted", reason: `跑到第 ${current.steps} 步时 worker 重启了，脚本中断` },
-          endedAt: new Date().toISOString(),
-          ms: Math.max(0, Date.now() - Date.parse(current.startedAt)),
-        }
-        await db.update(t.sessions).set({ routine: state }).where(eq(t.sessions.id, sessionId))
-        await appendEvent(db, sessionId, { kind: "error", title: `固化流程中断了（第 ${current.steps} 步）`, detail: "worker 重启，脚本没跑完，不确定最后一步做没做。" })
-      } else {
-        const result = await runRoutineScript({
-          db,
-          session: first,
-          snapshot: snapshot as RoutineSnapshotted,
-          gateway: gateway!,
-          mode: "run",
-          input: routineInputOf(snapshot),
-          signal: options.signal,
-        })
-        if (result.aborted) return "stopped"
-        state = result.state
-        if (state.state === "finished" && result.finish) {
-          const live = await loadSession(db, sessionId)
-          if (!live || live.status !== "running") return "stopped"
-          const claim = result.finish
-          if (claim.outcome !== "achieved") {
-            await closeGateway()
-            return finishRun(db, live, snapshot, { text: claim.summary, claim })
+      const resuming = current?.state === "suspended" || current?.state === "running"
+      if (current && !resuming) {
+        // 脚本报了办成、验收反问交给人以后继续的：agent 接着做
+        if (current.state === "finished") await markAgentAfter(current)
+        // 跑过了（交给 agent 以后挂起、交接再进来的）：直接 agent 循环
+        return undefined
+      }
+      // 停在审批那一步：人的决定在最近一条等待的 pending 上（calls 是空的，routineStep 是那一步）。取了就标处理完，
+      // 之后进程再被杀，日志里那一步是「批准了、正在做」，不会再按这个决定做第二遍
+      type Resume = NonNullable<Parameters<typeof runRoutineScript>[0]["resume"]>
+      let decision: Resume["decision"]
+      let declined: Resume["declined"]
+      if (resuming) {
+        const [wait] = await db
+          .select()
+          .from(t.sessionWaits)
+          .where(and(eq(t.sessionWaits.sessionId, sessionId), eq(t.sessionWaits.status, "fired")))
+          .orderBy(desc(t.sessionWaits.id))
+          .limit(1)
+        const pending = wait?.pending
+        if (pending?.routineStep !== undefined && pending.decision && pending.state !== "done") {
+          decision = {
+            how: pending.decision.how,
+            ...(pending.decision.note ? { note: pending.decision.note } : {}),
+            actorName: pending.decision.actorName,
+            approvedRuleIds: [...pending.approvedRuleIds, pending.ruleId],
           }
-          // 报了办成：照常过「说做完了」的规则（三方验收可能反问，那就进 agent 循环，所以先记一句脚本做了什么）
-          const note: ModelMessage = {
-            role: "user",
-            content: `（系统）这次运行按固化流程「${routine.name}」第 ${routine.version} 版跑完了（${state.steps} 步，没调执行模型），脚本报了办成：${claim.summary}${claim.evidence ? `\n依据：${claim.evidence}` : ""}`,
-          }
-          await appendMessage(db, sessionId, note)
-          messages = [...messages, note]
-          return agentSaysDone(claim.summary, claim)
+          await db.update(t.sessionWaits).set({ pending: { ...pending, state: "done" } }).where(eq(t.sessionWaits.id, wait!.id))
+        } else if (current.state === "suspended" && wait?.humanItemId && !pending) {
+          // 要人处理的事（登录页、验证码）被点了「处理不了」：重做那一步还会停在同一个地方，交给 agent
+          const [item] = await db.select({ resolution: t.humanItems.resolution }).from(t.humanItems).where(eq(t.humanItems.id, wait.humanItemId))
+          const resolution = item?.resolution as { how?: string; note?: string } | null | undefined
+          if (resolution?.how === "reject") declined = resolution.note ? { note: resolution.note } : {}
         }
-        if (state.state === "stopped") {
-          const stop = state.stoppedAt
-          if (stop?.kind !== "input") return "stopped"
-          // 输入本身有问题：记没办成，不交 agent
-          const live = await loadSession(db, sessionId)
-          if (!live || live.status !== "running") return "stopped"
+      }
+      const result = await runRoutineScript({
+        db,
+        session: first,
+        snapshot: snapshot as RoutineSnapshotted,
+        gateway: gateway!,
+        mode: "run",
+        input: routineInputOf(snapshot),
+        signal: options.signal,
+        ...(resuming ? { resume: { previous: current, ...(decision ? { decision } : {}), ...(declined ? { declined } : {}) } } : {}),
+      })
+      if (result.aborted) return "stopped"
+      const state = result.state
+      if (state.state === "finished" && result.finish) {
+        const live = await loadSession(db, sessionId)
+        if (!live || live.status !== "running") return "stopped"
+        const claim = result.finish
+        if (claim.outcome !== "achieved") {
           await closeGateway()
-          const claim = {
-            outcome: "not_achieved" as const,
-            summary: `固化流程发现输入有问题：${stop.reason}`,
-            evidence: `固化流程「${routine.name}」第 ${routine.version} 版在第 ${stop.step} 步停下：${stop.reason}`,
-            reason: `输入有问题：${stop.reason}`,
-            via: "finish" as const,
-          }
           return finishRun(db, live, snapshot, { text: claim.summary, claim })
         }
-        if (result.suspend) suspend = { plan: result.suspend.plan }
+        // 报了办成：照常过「说做完了」的规则（三方验收可能反问，那就进 agent 循环，所以先记一句脚本做了什么）
+        const note: ModelMessage = {
+          role: "user",
+          content: `（系统）这次运行按固化流程「${routine.name}」第 ${routine.version} 版跑完了（${state.steps} 步，没调执行模型），脚本报了办成：${claim.summary}${claim.evidence ? `\n依据：${claim.evidence}` : ""}`,
+        }
+        await appendMessage(db, sessionId, note)
+        messages = [...messages, note]
+        const outcome = await agentSaysDone(claim.summary, claim)
+        if (!outcome) await markAgentAfter(state)
+        return outcome
+      }
+      if (state.state === "stopped") {
+        const stop = state.stoppedAt
+        if (stop?.kind !== "input") return "stopped"
+        // 输入本身有问题：记没办成，不交 agent
+        const live = await loadSession(db, sessionId)
+        if (!live || live.status !== "running") return "stopped"
+        await closeGateway()
+        const claim = {
+          outcome: "not_achieved" as const,
+          summary: `固化流程发现输入有问题：${stop.reason}`,
+          evidence: `固化流程「${routine.name}」第 ${routine.version} 版在第 ${stop.step} 步停下：${stop.reason}`,
+          reason: `输入有问题：${stop.reason}`,
+          via: "finish" as const,
+        }
+        return finishRun(db, live, snapshot, { text: claim.summary, claim })
+      }
+      if (state.state === "suspended") {
+        // 停下等人：照常挂起（验证码、登录页、等浏览器）或生成「审批工具调用」，不交给 agent
+        const live = await loadSession(db, sessionId)
+        if (!live || live.status !== "running") return "stopped"
+        if (result.approval) {
+          // 批准后要在同一个 Chrome 上接着做：像等人处理验证码一样保留着（过了保留时间才关，那时接着跑会交给 agent）
+          await gateway!.holdBrowserForHuman()
+          const ok = await suspendForApproval(db, live, snapshot, [], result.approval.result, result.approval.approvedRuleIds, {
+            name: routine.name,
+            step: result.approval.step,
+          })
+          return ok ? "suspended" : "stopped"
+        }
+        const ok = await suspendWithResults(db, live, [], result.suspend!.plan)
+        return ok ? "suspended" : "stopped"
       }
       // 交给 agent：同一个网关、同一个 Chrome，从现在的页面接着做
       const text = await buildHandoff(db, { sessionId, routine, state, pageLines: () => gateway!.pageLines() })
@@ -848,12 +905,6 @@ export async function runSession(
         title: `交给 agent 接着做（固化流程停在第 ${state.stoppedAt?.step ?? state.steps} 步：${routineStopKindLabel[state.stoppedAt?.kind ?? "script_error"]}）`,
         detail: text,
       })
-      if (suspend) {
-        const live = await loadSession(db, sessionId)
-        if (!live || live.status !== "running") return "stopped"
-        const ok = await suspendWithResults(db, live, [message], suspend.plan)
-        return ok ? "suspended" : "stopped"
-      }
       await appendMessage(db, sessionId, message)
       messages = [...messages, message]
       return undefined
@@ -924,7 +975,8 @@ export async function runSession(
       .orderBy(desc(t.sessionWaits.id))
       .limit(1)
     const pending = pendingWait?.pending
-    if (pending?.decision && pending.state !== "done") {
+    // 固化脚本那一步的审批（pending.routineStep，calls 是空的）由上面的 routinePhase 处理，这里不管
+    if (pending?.decision && pending.state !== "done" && pending.routineStep === undefined) {
       const setState = (state: "executing" | "done") =>
         db
           .update(t.sessionWaits)

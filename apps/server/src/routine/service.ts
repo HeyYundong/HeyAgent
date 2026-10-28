@@ -73,7 +73,8 @@ async function recentStats(db: Db, taskId: string): Promise<RoutineSummary["rece
     .limit(RECENT_RUNS)
   const avg = (rows: { startedAt: Date; endedAt: Date | null }[]) =>
     rows.length ? Math.round(rows.reduce((sum, row) => sum + (row.endedAt!.getTime() - row.startedAt.getTime()), 0) / rows.length) : null
-  const direct = ran.filter((row) => row.routine?.state === "finished" && row.outcome === "achieved")
+  // 脚本报了办成、验收反问后 agent 接着做的（agentAfter）不算直接办成（docs/dev/solidify.md 17.3）
+  const direct = ran.filter((row) => row.routine?.state === "finished" && row.outcome === "achieved" && !row.routine.agentAfter)
   return {
     runs: ran.length,
     direct: direct.length,

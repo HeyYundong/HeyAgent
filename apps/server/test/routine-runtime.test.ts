@@ -13,7 +13,7 @@ import { takeCode } from "../src/browser/tools.js"
 import type { GatewayResult, ModelToolCall } from "../src/engine/gateway.js"
 import type { EventInput } from "../src/engine/records.js"
 import type { ToolOutcome } from "../src/engine/tools/builtin.js"
-import { shanghaiNow, ToolBridge, type BridgeGateway } from "../src/routine/runtime/bridge.js"
+import { shanghaiNow, ToolBridge, type BridgeGateway, type BridgeJournal, type JournalRow } from "../src/routine/runtime/bridge.js"
 import { commitLines, handoffText } from "../src/routine/runtime/handoff.js"
 import { LAUNCH_SCRIPT, SDK_DIR } from "../src/routine/runtime/run.js"
 import { TOOLS_SOCKET_NAME } from "../src/sandbox/runner.js"
@@ -31,7 +31,7 @@ class FakeGateway implements BridgeGateway {
   shots = 0
   private readonly risks: Record<string, Risk> = { "http.ext": "external", "http.read": "read" }
 
-  async call(call: ModelToolCall, options: { routineStep?: number }): Promise<GatewayResult> {
+  async call(call: ModelToolCall, options: { routineStep?: number; approvedRuleIds?: readonly string[] }): Promise<GatewayResult> {
     this.calls.push({ call, routineStep: options.routineStep })
     const input = (call.input ?? {}) as Record<string, unknown>
     const done = (outcome: ToolOutcome, extra: Partial<GatewayResult> = {}): GatewayResult => ({
@@ -81,7 +81,10 @@ class FakeGateway implements BridgeGateway {
 }
 
 /** 准备代码目录（routine.mjs + SDK），起工具桥，用本机 node 跑 launch.js */
-async function runScript(body: string, options: { mode?: "run" | "test"; trial?: boolean; maxCalls?: number; gateway?: FakeGateway; input?: Record<string, unknown> } = {}) {
+async function runScript(
+  body: string,
+  options: { mode?: "run" | "test"; trial?: boolean; maxCalls?: number; gateway?: FakeGateway; input?: Record<string, unknown>; journal?: BridgeJournal; approvedRuleIds?: string[] } = {}
+) {
   const root = await mkdtemp(join(tmpdir(), "heyagent-routine-"))
   dirs.push(root)
   const codeDir = join(root, "code")
@@ -118,6 +121,8 @@ async function runScript(body: string, options: { mode?: "run" | "test"; trial?:
       events.push(event)
     },
     onStop: (kind) => stops.push(kind),
+    ...(options.journal ? { journal: options.journal, browserInstanceId: () => "B-1" } : {}),
+    ...(options.approvedRuleIds ? { approvedRuleIds: options.approvedRuleIds } : {}),
   })
   const result = await directNodeRunner({
     language: "node",
@@ -278,6 +283,136 @@ describe("工具桥 + SDK（本机 node，假网关）", () => {
     const { bridge } = await runScript(`await ha.browser.navigate({ url: "x" })\n  this is not js`)
     expect(bridge.done?.ok).toBe(false)
     expect(bridge.done?.name).toBe("SyntaxError")
+  })
+})
+
+/** 存在内存里的重放日志：rows 是上次的（接着跑时按它重放），written 是这次写的（按 seq 留最后一次） */
+function memoryJournal(rows: JournalRow[] = []) {
+  const written = new Map<number, JournalRow>()
+  const journal: BridgeJournal = {
+    rows,
+    write: async (row) => {
+      written.set(row.seq, { ...row })
+    },
+  }
+  /** 上次的加这次写的：下一次接着跑用 */
+  const merged = () => {
+    const all = new Map(rows.map((row) => [row.seq, row]))
+    for (const [seq, row] of written) all.set(seq, row)
+    return [...all.values()].sort((a, b) => a.seq - b.seq)
+  }
+  return { journal, written, merged }
+}
+
+describe("重放日志（假网关）", () => {
+  const LOOKUP = `
+  await ha.log("开始")
+  const now = await ha.now()
+  await ha.browser.navigate({ url: "https://erp.example.com/orders" })
+  const seen = await ha.browser.waitAny({ found: "getByRole('row').nth(1)" })
+  const { rows } = await ha.browser.extract({ list: "getByRole('row')", fields: { 状态: "getByRole('cell').nth(3)" } })
+  await ha.tool("wait.tool", { now })
+  await ha.browser.click({ element: "保存", target: "getByRole('button', { name: '保存' })" })
+  return ha.finish({ outcome: "achieved", summary: seen + "：" + rows[0].状态 + " @" + now, evidence: "-" })`
+
+  it("记日志：每个请求一行（tool / log / now），浏览器动作记 Chrome；停下的那一步记 stop，后面的不记", async () => {
+    const memory = memoryJournal()
+    const first = await runScript(LOOKUP, { journal: memory.journal })
+    expect(first.bridge.stopped).toMatchObject({ step: 4, kind: "suspend", tool: "wait.tool" })
+    const rows = memory.merged()
+    expect(rows.map((row) => [row.seq, row.op, row.tool, row.stop, row.instanceId])).toEqual([
+      [1, "log", null, null, null],
+      [2, "now", null, null, null],
+      [3, "tool", "browser.navigate", null, "B-1"],
+      [4, "tool", "browser.wait_any", null, "B-1"],
+      [5, "tool", "browser.extract", null, "B-1"],
+      [6, "tool", "wait.tool", "suspend", null],
+    ])
+    expect(rows[4]!.reply).toMatchObject({ ok: true, data: { rows: [{ 状态: "已发货" }], total: 1 } })
+    expect(rows[1]!.reply).toMatchObject({ ok: true, data: expect.stringMatching(/\+08:00$/) })
+  })
+
+  it("接着跑：对得上的不真做、回记下的结果（ha.now 是上次的时间），非浏览器的挂起算做完了，之后真做；对不上就停", async () => {
+    const memory = memoryJournal()
+    await runScript(LOOKUP, { journal: memory.journal })
+    const rows = memory.merged()
+    const recordedNow = rows[1]!.reply!.data as string
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const again = memoryJournal(rows)
+    const resumed = await runScript(LOOKUP, { journal: again.journal })
+    expect(resumed.result.exitCode, resumed.result.stderr.text).toBe(0)
+    // 只真做了停下之后的：click、run.finish（wait.tool 是非浏览器的挂起，等到了就算做完）
+    expect(resumed.gateway.calls.map((each) => [each.call.toolName, each.routineStep])).toEqual([
+      ["browser.click", 5],
+      ["run.finish", 6],
+    ])
+    expect(resumed.state).toMatchObject({ steps: 6, replayed: 6, logs: ["开始"] })
+    // 用的是上次记下的时间（wait.tool 的参数里也带着它，hash 才对得上）
+    expect(resumed.bridge.finish?.summary).toBe(`found：已发货 @${recordedNow}`)
+    expect(resumed.bridge.stopped).toBeUndefined()
+    expect(resumed.events.filter((event) => event.title.startsWith("流程记录"))).toEqual([])
+    expect(resumed.events.find((event) => event.title.startsWith("脚本接着跑"))?.title).toBe("脚本接着跑：前 4 步按记录跳过，从第 5 步接着做")
+    expect([...again.written.keys()]).toEqual([7, 8])
+
+    // 脚本改了（走了别的路）：对不上，停下，网关一次都不调
+    const changed = await runScript(LOOKUP.replace('ha.log("开始")', 'ha.log("开始了")'), { journal: memoryJournal(rows).journal })
+    expect(changed.gateway.calls).toHaveLength(0)
+    expect(changed.bridge.stopped).toMatchObject({ step: 0, kind: "replay_mismatch" })
+    expect(changed.bridge.stopped!.reason).toContain("第 1 个请求（ha.log()）的参数和上次不一样")
+    const other = await runScript(LOOKUP.replace("await ha.log(\"开始\")\n", ""), { journal: memoryJournal(rows).journal })
+    expect(other.bridge.stopped!.reason).toContain("第 1 个请求上次是ha.log()，这次是ha.now()")
+  })
+
+  it("停下的那一步：审批批准 → 带着批准的规则真做；浏览器动作要人处理 → 重做；前面有没核对的提交 → 不重做（可能已经生效）", async () => {
+    const PAY = `
+  await ha.browser.navigate({ url: "https://pay.example.com" })
+  await ha.tool("approve.tool", { amount: 3 })
+  await ha.finish({ outcome: "achieved", summary: "付了", evidence: "-" })`
+    const memory = memoryJournal()
+    const first = await runScript(PAY, { journal: memory.journal })
+    expect(first.bridge.approval).toMatchObject({ step: 2, approvedRuleIds: [] })
+    expect(memory.merged().map((row) => [row.tool, row.stop, row.reply])).toEqual([
+      ["browser.navigate", null, { ok: true, text: "打开了 https://pay.example.com" }],
+      ["approve.tool", "approval", null],
+    ])
+    // 批准了：假网关看到 approvedRuleIds 就当规则放行
+    const gateway = new FakeGateway()
+    const original = gateway.call.bind(gateway)
+    const seen: (readonly string[] | undefined)[] = []
+    gateway.call = async (call, options) => {
+      if (call.toolName === "approve.tool" && options.approvedRuleIds?.includes("r1")) {
+        seen.push(options.approvedRuleIds)
+        return { toolId: call.toolName, toolName: call.toolName, outcome: { output: "付好了" }, output: "付好了", denied: false }
+      }
+      return original(call, options)
+    }
+    const approved = await runScript(PAY, { journal: memoryJournal(memory.merged()).journal, approvedRuleIds: ["r1"], gateway })
+    expect(seen).toEqual([["r1"]])
+    expect(approved.bridge.finish?.summary).toBe("付了")
+    expect(approved.state).toMatchObject({ steps: 3, replayed: 1 })
+
+    // 浏览器动作要人处理（登录页）：重做那一步
+    const login: JournalRow[] = [
+      { seq: 1, op: "tool", tool: "browser.navigate", inputHash: memory.merged()[0]!.inputHash, reply: { ok: true, text: "检测到登录页" }, stop: "suspend", instanceId: "B-1" },
+    ]
+    const relogin = await runScript(PAY.replace('ha.tool("approve.tool", { amount: 3 })', 'ha.log("登录好了")'), { journal: memoryJournal(login).journal })
+    expect(relogin.gateway.calls.map((each) => each.call.toolName)).toEqual(["browser.navigate", "run.finish"])
+
+    // 过了提交点还没核对，下一步做到一半中断了：不重做
+    const SAVE = `
+  await ha.commit("保存")
+  await ha.browser.click({ element: "保存", target: "getByRole('button', { name: '保存' })" })
+  await ha.verified("保存成功")
+  await ha.finish({ outcome: "achieved", summary: "存了", evidence: "-" })`
+    const saveMemory = memoryJournal()
+    await runScript(SAVE, { journal: saveMemory.journal })
+    const cut = saveMemory.merged().slice(0, 2)
+    cut[1] = { ...cut[1]!, reply: null }
+    const interrupted = await runScript(SAVE, { journal: memoryJournal(cut).journal })
+    expect(interrupted.gateway.calls).toHaveLength(0)
+    expect(interrupted.bridge.stopped).toMatchObject({ step: 1, kind: "interrupted", tool: "browser.click" })
+    expect(interrupted.bridge.stopped!.reason).toBe("过了提交点「保存」还没核对，click「保存」 可能已经生效，没有重做")
+    expect(interrupted.state.commits).toEqual([{ step: 0, label: "保存" }])
   })
 })
 

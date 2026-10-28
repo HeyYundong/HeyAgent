@@ -3,19 +3,22 @@
 // → 按工具桥记下的结果定这次脚本的结局，写进 sessions.routine。
 // 沙箱用 code.run 的同一套（sandbox/runner.ts），但不挂出网代理（脚本不能上网，和外面打交道只能经过工具桥），
 // 空间文件只读挂在 /workspace，内存 512 MB。上限：一次最多 1000 次工具调用、默认 10 分钟（要小于 runtime.maxRunMs）。
-// 这里只跑脚本、定结局；接下来怎么收尾（报结果、交给 agent、挂起）由引擎（engine/loop.ts）做。
+// 这里只跑脚本、定结局；接下来怎么收尾（报结果、交给 agent、挂起、审批）由引擎（engine/loop.ts）做。
+// 接着跑（docs/dev/solidify.md 17.2）：停下等人以后、进程中途被杀以后，从头再跑一遍脚本，工具桥按 routine_journal 重放。
+// 审批被拒绝、日志里有浏览器动作而这次运行的 Chrome 已经不在了：不重放，直接停下交给 agent。
 import { cp, mkdir, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 
 import { routineStopKindLabel, type RoutineSnapshot, type SessionRoutineState, type SessionSnapshot } from "@heyagent/shared"
-import { eq } from "drizzle-orm"
+import { asc, eq } from "drizzle-orm"
 import { z } from "zod"
 
+import { getBrowserManager } from "../../browser/manager.js"
 import type { Db } from "../../db/client.js"
 import * as t from "../../db/schema.js"
 import { listSpace, readFileData } from "../../files/service.js"
-import type { ToolGateway } from "../../engine/gateway.js"
+import type { GatewayResult, ToolGateway } from "../../engine/gateway.js"
 import type { AgentClaim } from "../../engine/outcome.js"
 import { appendEvent } from "../../engine/records.js"
 import { runtime, type SandboxConfig } from "../../engine/runtime.js"
@@ -29,7 +32,7 @@ import {
   type SandboxRunResult,
 } from "../../sandbox/runner.js"
 import { prepareWorkspace, saveManifest, sessionDirs } from "../../sandbox/workspace.js"
-import { ToolBridge, type BridgeGateway } from "./bridge.js"
+import { ToolBridge, type BridgeGateway, type BridgeJournal, type JournalRow } from "./bridge.js"
 
 const num = (name: string, fallback: number) => {
   const value = Number(process.env[name])
@@ -83,6 +86,16 @@ export interface RoutineRunContext {
   /** 这次的输入（普通运行 = routineInputOf(快照)；试跑 = 原来那次运行的输入） */
   input: Record<string, unknown>
   signal?: AbortSignal
+  /**
+   * 接着跑（普通运行，sessions.routine.state 是 suspended 或 running）：previous = 上次的脚本状态；
+   * decision = 停在审批那一步时人的决定（approvedRuleIds = 批准后真做时带的规则）
+   */
+  resume?: {
+    previous: SessionRoutineState
+    decision?: { how: "approve" | "reject"; note?: string; actorName: string; approvedRuleIds: string[] }
+    /** 停下等的那件要人办的事（登录页、验证码）被点了「处理不了」：不重放，交给 agent */
+    declined?: { note?: string }
+  }
 }
 
 export interface RoutineRunResult {
@@ -90,14 +103,57 @@ export interface RoutineRunResult {
   state: SessionRoutineState
   /** 普通运行：脚本报的结果（run.finish 真调过，引擎照常收尾） */
   finish?: AgentClaim
-  /** 要挂起：交接的话和挂起在同一个事务里落库 */
+  /** 要挂起：普通运行照常挂起（state = suspended），处理完接着跑；试跑照常挂起，继续后从头跑 */
   suspend?: { plan: SuspendPlan; output: string }
-  /** worker 要退出（signal）：脚本被杀，sessions.routine 还是 running，下次进来算中断 */
+  /** 要人审批（普通运行，state = suspended）：引擎生成「审批工具调用」；这一步没做 */
+  approval?: { result: GatewayResult; step: number; approvedRuleIds: string[] }
+  /** worker 要退出（signal）：脚本被杀，sessions.routine 还是 running，下次进来按日志接着跑 */
   aborted?: boolean
 }
 
 async function saveState(db: Db, sessionId: string, state: SessionRoutineState) {
   await db.update(t.sessions).set({ routine: state }).where(eq(t.sessions.id, sessionId))
+}
+
+/** 这次运行的重放日志（按 seq 排好） */
+export async function loadJournal(db: Db, sessionId: string): Promise<JournalRow[]> {
+  const rows = await db.select().from(t.routineJournal).where(eq(t.routineJournal.sessionId, sessionId)).orderBy(asc(t.routineJournal.seq))
+  return rows.map((row) => ({
+    seq: row.seq,
+    op: row.op as JournalRow["op"],
+    tool: row.tool,
+    inputHash: row.inputHash,
+    reply: row.reply ?? null,
+    stop: (row.stop as JournalRow["stop"]) ?? null,
+    instanceId: row.instanceId,
+  }))
+}
+
+/** 写一行日志（同一个 seq 再写就是改） */
+function journalOf(db: Db, sessionId: string, rows: JournalRow[]): BridgeJournal {
+  return {
+    rows,
+    write: async (row) => {
+      const values = { op: row.op, tool: row.tool, inputHash: row.inputHash, reply: row.reply, stop: row.stop, instanceId: row.instanceId, at: new Date() }
+      await db
+        .insert(t.routineJournal)
+        .values({ sessionId, seq: row.seq, ...values })
+        .onConflictDoUpdate({ target: [t.routineJournal.sessionId, t.routineJournal.seq], set: values })
+    },
+  }
+}
+
+/**
+ * 日志里有做完的浏览器动作，而这次运行的 Chrome 已经不在了（过了保留时间被关掉、worker 重启）或者换了一个：
+ * 页面不是上次的样子，不能按记录接着跑。返回原因；没问题返回 undefined
+ */
+function browserLost(rows: JournalRow[], current: string | undefined): string | undefined {
+  const used = rows.filter((row) => row.op === "tool" && row.tool?.startsWith("browser.") && row.reply && row.stop !== "suspend")
+  if (used.length === 0) return undefined
+  const last = used.at(-1)!.instanceId
+  if (!current) return "等人处理期间这次运行的 Chrome 已经关了（过了保留时间，或者 worker 重启了），页面不是上次的样子，脚本不能按记录接着跑"
+  if (last && last !== current) return `这次运行的 Chrome 换了（上次 ${last}，现在 ${current}），页面不是上次的样子，脚本不能按记录接着跑`
+  return undefined
 }
 
 /** 输入按 inputSchema 校验：不合格返回原因；schema 是空的、写得解析不了（程序检查管）就不校验 */
@@ -119,53 +175,115 @@ export function checkRoutineInput(schema: Record<string, unknown>, input: Record
 
 const seconds = (ms: number) => `${(ms / 1000).toFixed(1)} 秒`
 
-/** 跑一遍脚本。普通运行：sessions.routine 为空时才跑；试跑：每次进来都从头跑 */
+/**
+ * 跑一遍脚本。普通运行：sessions.routine 为空时从头跑、记重放日志；停下等人、进程被杀以后（resume）从头再跑、按日志重放。
+ * 试跑：每次进来都从头跑，不记日志
+ */
 export async function runRoutineScript(ctx: RoutineRunContext): Promise<RoutineRunResult> {
-  const { db, session, snapshot, mode } = ctx
+  const { db, session, snapshot, mode, resume } = ctx
   const routine = snapshot.routine
   const started = Date.now()
-  const state: SessionRoutineState = {
-    routineId: routine.id,
-    versionId: routine.versionId,
-    version: routine.version,
-    mode,
-    state: "running",
-    startedAt: new Date(started).toISOString(),
-    steps: 0,
-    commits: [],
-    input: ctx.input,
-  }
-  await saveState(db, session.id, state)
-  await appendEvent(db, session.id, {
-    kind: "plan",
-    title:
-      mode === "test"
-        ? `固化试跑：开始跑固化流程「${routine.name}」第 ${routine.version} 版的脚本`
-        : `按固化流程「${routine.name}」第 ${routine.version} 版跑（脚本，不调执行模型）`,
-  })
+  // 接着跑：步数、提交、日志按重放重新数一遍；用时接着上次的算（等人的时间不算）
+  const previous = resume?.previous
+  const baseMs = previous?.state === "suspended" ? (previous.ms ?? 0) : 0
+  const state: SessionRoutineState = previous
+    ? (() => {
+        const { stoppedAt: _stop, endedAt: _end, ms: _ms, logs: _logs, ...rest } = previous
+        return { ...rest, state: "running" as const, steps: 0, commits: [], resumes: (previous.resumes ?? 0) + 1, replayed: 0 }
+      })()
+    : {
+        routineId: routine.id,
+        versionId: routine.versionId,
+        version: routine.version,
+        mode,
+        state: "running",
+        startedAt: new Date(started).toISOString(),
+        steps: 0,
+        commits: [],
+        input: ctx.input,
+      }
 
   const end = async (patch: Partial<RoutineRunResult> = {}, stop?: SessionRoutineState["stoppedAt"]): Promise<RoutineRunResult> => {
     if (stop && !state.stoppedAt) state.stoppedAt = stop
     const finished = Boolean(patch.finish) || (mode === "test" && Boolean(state.recorded?.finish) && !state.stoppedAt)
-    state.state = finished ? "finished" : mode === "test" || ["cancelled", "input"].includes(state.stoppedAt?.kind ?? "") ? "stopped" : "fell_back"
+    const waiting = mode === "run" && !finished && Boolean(patch.suspend || patch.approval)
+    state.state = finished
+      ? "finished"
+      : waiting
+        ? "suspended"
+        : mode === "test" || ["cancelled", "input"].includes(state.stoppedAt?.kind ?? "")
+          ? "stopped"
+          : "fell_back"
     // 试跑：停下、跑完时截一张图（试跑报告「停下时的截图」）
     if (mode === "test") {
       const shot = await ctx.gateway.screenshot().catch(() => undefined)
       if (shot) state.screenshotFileId = shot.fileId
     }
     state.endedAt = new Date().toISOString()
-    state.ms = Date.now() - started
+    state.ms = baseMs + (Date.now() - started)
     await saveState(db, session.id, state)
     const stopped = state.stoppedAt
+    const step = stopped?.step ?? state.steps
     await appendEvent(db, session.id, {
-      kind: stopped && !finished ? (stopped.kind === "test_commit" || stopped.kind === "test_blocked" ? "plan" : "error") : "plan",
+      kind: finished || waiting || stopped?.kind === "test_commit" || stopped?.kind === "test_blocked" || !stopped ? "plan" : "error",
       title: finished
         ? `固化流程跑完了：${state.steps} 步 · ${seconds(state.ms)}`
-        : `固化流程停在第 ${stopped?.step ?? state.steps} 步：${routineStopKindLabel[stopped?.kind ?? "script_error"]}`,
+        : waiting
+          ? `固化流程在第 ${step} 步停下等人处理（${routineStopKindLabel[stopped?.kind ?? "suspend"]}），处理好以后接着跑`
+          : `固化流程停在第 ${step} 步：${routineStopKindLabel[stopped?.kind ?? "script_error"]}`,
       detail: stopped && !finished ? stopped.reason : null,
       ...(state.stoppedAt?.step ? { trace: { routineStep: state.stoppedAt.step } } : {}),
     })
     return { state, ...patch }
+  }
+
+  // 重放日志：普通运行才记。第一次跑先清掉（按理是空的）；接着跑读出来按它重放
+  let journal: BridgeJournal | undefined
+  if (mode === "run") {
+    if (!previous) await db.delete(t.routineJournal).where(eq(t.routineJournal.sessionId, session.id))
+    journal = journalOf(db, session.id, previous ? await loadJournal(db, session.id) : [])
+  }
+
+  if (previous) {
+    await saveState(db, session.id, state)
+    const pending = previous.stoppedAt
+    // 不用重放就交给 agent 的：步数、提交、日志照上次的
+    const keepPrevious = () => Object.assign(state, { steps: previous.steps, commits: previous.commits, ...(previous.logs ? { logs: previous.logs } : {}) })
+    const where = { ...(pending?.tool ? { tool: pending.tool } : {}), ...(pending?.label ? { label: pending.label } : {}) }
+    // 停在审批那一步、人拒绝了
+    if (resume.decision?.how === "reject") {
+      keepPrevious()
+      return end({}, {
+        step: pending?.step ?? previous.steps + 1,
+        kind: "rejected",
+        ...where,
+        reason: `${pending?.label ?? pending?.tool ?? "这一步"} 要人审批，${resume.decision.actorName}拒绝了。理由：${resume.decision.note || "没有写理由"}`,
+      })
+    }
+    // 登录页、验证码，人点了「处理不了」：重做还会停在同一个地方
+    if (resume.declined) {
+      keepPrevious()
+      return end({}, {
+        step: pending?.step ?? previous.steps,
+        kind: "suspend",
+        ...where,
+        reason: `要人处理的事被点了「处理不了」${resume.declined.note ? `（${resume.declined.note}）` : ""}，没有重做这一步`,
+      })
+    }
+    const lost = browserLost(journal?.rows ?? [], getBrowserManager()?.forSession(session.id)?.id)
+    if (lost) {
+      keepPrevious()
+      return end({}, { step: previous.steps, kind: "resume_lost", reason: lost })
+    }
+  } else {
+    await saveState(db, session.id, state)
+    await appendEvent(db, session.id, {
+      kind: "plan",
+      title:
+        mode === "test"
+          ? `固化试跑：开始跑固化流程「${routine.name}」第 ${routine.version} 版的脚本`
+          : `按固化流程「${routine.name}」第 ${routine.version} 版跑（脚本，不调执行模型）`,
+    })
   }
 
   const bad = checkRoutineInput(routine.inputSchema, ctx.input)
@@ -211,6 +329,9 @@ export async function runRoutineScript(ctx: RoutineRunContext): Promise<RoutineR
       if (kind === "cancelled") kill.abort()
       else graceTimer ??= setTimeout(() => kill.abort(), routineLimits.killGraceMs)
     },
+    ...(journal ? { journal } : {}),
+    ...(resume?.decision?.how === "approve" ? { approvedRuleIds: resume.decision.approvedRuleIds } : {}),
+    browserInstanceId: () => getBrowserManager()?.forSession(session.id)?.id,
   })
   // 脚本一直不调工具时也能停：定时看运行有没有被取消
   const watcher = setInterval(() => {
@@ -247,10 +368,10 @@ export async function runRoutineScript(ctx: RoutineRunContext): Promise<RoutineR
     await bridge.close()
   }
 
-  // worker 要退出：不定结局，sessions.routine 留在 running，下次进来按中断交给 agent
+  // worker 要退出：不定结局，sessions.routine 留在 running，下次进来按日志接着跑
   if (ctx.signal?.aborted && !bridge.stopped) return { state, aborted: true }
 
-  if (bridge.stopped) return end(bridge.suspend ? { suspend: bridge.suspend } : {})
+  if (bridge.stopped) return end(bridge.suspend ? { suspend: bridge.suspend } : bridge.approval && mode === "run" ? { approval: bridge.approval } : {})
   if (bridge.finish) return end({ finish: bridge.finish })
   if (mode === "test" && state.recorded?.finish) return end()
   const done = bridge.done

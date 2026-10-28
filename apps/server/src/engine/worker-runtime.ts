@@ -11,6 +11,7 @@ import { vmConfig } from "../desktop/vm/config.js"
 import { runVmJob, sweepVms, vmHealthTick } from "../desktop/vm/lifecycle.js"
 import { runImportRead } from "../imports/reader.js"
 import { handleCompileJob } from "../routine/compile.js"
+import { sweepRoutines } from "../routine/sweep.js"
 import type { Db } from "../db/client.js"
 import { cleanupSessionSandbox, sweepSandboxDirs, sweepThrottled } from "../sandbox/code-run.js"
 import * as t from "../db/schema.js"
@@ -258,6 +259,11 @@ export async function startEngineWorker(
   await boss.work<{ versionId: string }>(QUEUES.routineCompile, { ...polling, localConcurrency: 2 }, async ([job]) => {
     if (job) await handleCompileJob(db, job.data)
   })
+  // 固化的清扫（docs/dev/solidify.md 17.3）：每 5 分钟补发漏发、丢了的 routine.compile（写法同派活的清扫）
+  await boss.work(QUEUES.routineSweep, polling, async () => {
+    await sweepRoutines(db)
+  })
+  await boss.schedule(QUEUES.routineSweep, "*/5 * * * *", {}, { tz: SCHEDULE_TZ })
   // 系统开的桌面：一台一个操作（同一台排着的只留一个）。几台可以同时做（关机要等 2 分钟）
   await boss.work<{ desktopId: string }>(QUEUES.desktopVm, { ...polling, localConcurrency: 4 }, async ([job]) => job && (await runVmJob(db, job.data.desktopId)))
   if (options.desktopVmSweepMs !== false) await sweepVms(db).catch((error) => console.warn("[worker] 虚拟机对账出错", error))
