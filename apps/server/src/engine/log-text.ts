@@ -2,8 +2,11 @@
 // - clip / oneLine / clipBlocks / isToolError：固化员的材料（routine/material.ts）和复核都用；
 // - describeToolInput：工具参数写成人看得懂的样子（browser.batch 逐个动作列出来、浏览器动作给元素 / 定位 / 网址 / 填的值），
 //   别的工具照旧截 JSON；
-// - reviewLog：复核看的过程记录（engine/review.ts）：整次运行都覆盖到，最近几条详细，更早的每条压成一行，总字数有上限；
+// - reviewLog：复核（engine/review.ts）和三方验收（engine/verify.ts）看的过程记录：整次运行都覆盖到，最近几条详细，
+//   更早的每条压成一行，总字数有上限；读数据的工具（readsData）结果多给字数（合计另有上限）；
 //   库流程里的步骤（trace.library，docs/dev/routine-library.md 5.7）每次调用只留最近几步，前面的压成一行（同批的写法）。
+import { isRoutineToolId, type SessionSnapshot } from "@heyagent/shared"
+
 import type * as t from "../db/schema.js"
 
 type EventRow = typeof t.sessionEvents.$inferSelect
@@ -140,8 +143,40 @@ export function compactJsonOutput(output: string): string {
   return `${output.slice(0, at)}${output.slice(at).replace(/\n[ \t]*/g, "")}`
 }
 
-/** 读数据的工具（复核要核对读到的每一条）：结果多给字数（总量在 reviewLog 里另有上限）。browser.snapshot 的快照先压成文字行（compactSnapshot） */
-export const DATA_TOOLS = new Set(["browser.fetch", "browser.extract", "browser.snapshot", "browser.find", "browser.clipboard_read"])
+/**
+ * 读数据的内置工具（复核、三方验收要核对读到的每一条）：结果多给字数（总量在 reviewLog 里另有上限）。
+ * browser.snapshot 的快照先压成文字行（compactSnapshot），code.run 取退出码和 stdout（describeCodeRunOutput），排好版的 JSON 先压成一行。
+ * 另外还有：库流程（routine.<短名>，交回的值）、任务里的 HTTP 工具和 MCP 工具（id 是配置的，从快照里取，见 dataToolIdsOf）。
+ * 不算的：subagent.wait（子 agent 交回的字段另有「子 agent」一节）、skill.load（是做法说明，不是数据）
+ */
+export const DATA_TOOLS = new Set([
+  "browser.fetch",
+  "browser.extract",
+  "browser.snapshot",
+  "browser.find",
+  "browser.clipboard_read",
+  "browser.network_request",
+  "code.run",
+  "file.read",
+  "work.list",
+  "desktop.snapshot",
+  "desktop.clipboard",
+  "gallery.search",
+  "gallery.get",
+  "gallery.compare",
+  "compare.images",
+  "compare.get",
+  "compare.list",
+])
+
+/** 任务里配置的、会带回数据的工具：HTTP 工具、MCP 工具（id 是主管起的，只能从快照里认） */
+export function dataToolIdsOf(snapshot: Pick<SessionSnapshot, "tools"> | null | undefined): Set<string> {
+  return new Set((snapshot?.tools ?? []).filter((tool) => tool.source === "http" || tool.source === "mcp").map((tool) => tool.id))
+}
+
+/** 这个工具是不是读数据的：内置的读数据工具、库流程，或者 extra 里的（任务配置的 HTTP / MCP 工具） */
+export const isDataTool = (toolId: string | null, extra?: ReadonlySet<string>) =>
+  !!toolId && (DATA_TOOLS.has(toolId) || isRoutineToolId(toolId) || !!extra?.has(toolId))
 
 /** 批的结果里附的页面快照从这一行起（gateway.ts 的 runBatch：「页面快照：」单独一行） */
 const BATCH_SNAPSHOT_MARK = "\n页面快照：\n"
@@ -149,9 +184,9 @@ const BATCH_SNAPSHOT_MARK = "\n页面快照：\n"
 /** 批带了页面快照（agent 多半靠它读数据，docs/dev/sub-agents.md 21.6.5 第 4 条）：算进读数据的工具 */
 export const batchHasSnapshot = (output: string | null | undefined) => Boolean(output?.includes(BATCH_SNAPSHOT_MARK))
 
-/** 这条记录是不是读数据的（复核时结果多给字数）：读数据的工具，或带了页面快照的批 */
-export const readsData = (event: { toolId: string | null; output: string | null }) =>
-  DATA_TOOLS.has(event.toolId ?? "") || (event.toolId === "browser.batch" && batchHasSnapshot(event.output))
+/** 这条记录是不是读数据的（复核时结果多给字数）：读数据的工具（isDataTool），或带了页面快照的批 */
+export const readsData = (event: { toolId: string | null; output: string | null }, extra?: ReadonlySet<string>) =>
+  isDataTool(event.toolId, extra) || (event.toolId === "browser.batch" && batchHasSnapshot(event.output))
 
 /** 快照里不要的标记：ref、鼠标样式、焦点、标题级别 */
 const SNAPSHOT_NOISE = /\s*\[(?:ref|cursor|level)=[^\]]*\]|\s*\[active\]/g
@@ -209,9 +244,48 @@ export function batchSnapshotText(output: string | null | undefined): string {
   return at < 0 ? "" : compactSnapshot(output.slice(at + BATCH_SNAPSHOT_MARK.length))
 }
 
+/** 太长时留开头 1/3、结尾 2/3，中间写省略了几字（脚本的输出：开头是在做什么，结尾多半是结果） */
+export function clipMiddle(value: string, max: number): string {
+  if (value.length <= max) return value
+  const head = Math.floor(max / 3)
+  const tail = Math.max(0, max - head)
+  return `${value.slice(0, head)}…（中间省略 ${value.length - head - tail} 字）…${value.slice(value.length - tail)}`
+}
+
+/** code.run 输出里各段的标题行（sandbox/code-run.ts 的 formatCodeRunOutput、formatScriptTools） */
+const CODE_RUN_PARTS = ["stdout", "stderr", "脚本调的工具"] as const
+
+/**
+ * code.run 的结果写成文字：退出码那几行（写回了哪些文件、访问了哪些主机）、stdout（脚本算出、打印的数据，排好版的 JSON 先压成一行）、
+ * stderr、脚本调的工具。总共大约 max 字：别的几段各最多 300 字（max 的 1/4），剩下的都给 stdout，太长的留开头和结尾
+ */
+export function describeCodeRunOutput(output: string, max: number): string {
+  const marks = CODE_RUN_PARTS.map((label) => ({ label, at: output.indexOf(`\n--- ${label} ---\n`) }))
+    .filter((each) => each.at >= 0)
+    .sort((a, b) => a.at - b.at)
+  const head = oneLine(output.slice(0, marks[0]?.at ?? output.length).trim())
+  const parts = new Map<string, string>()
+  marks.forEach((mark, index) => {
+    const start = mark.at + `\n--- ${mark.label} ---\n`.length
+    parts.set(mark.label, output.slice(start, marks[index + 1]?.at ?? output.length).trim())
+  })
+  const stdout = parts.get("stdout")
+  const stderr = parts.get("stderr")
+  const tools = parts.get("脚本调的工具")
+  const sideMax = Math.min(300, Math.max(60, Math.floor(max / 4)))
+  const side = [
+    clip(head, sideMax),
+    stderr ? `stderr：${oneLine(clipMiddle(stderr, sideMax))}` : "",
+    tools ? `脚本调的工具：${oneLine(clip(tools, sideMax))}` : "",
+  ]
+  const room = Math.max(100, max - side.reduce((sum, part) => sum + part.length + 1, 0) - 10)
+  const out = stdout ? `stdout：${oneLine(clipMiddle(compactJsonOutput(stdout), room))}` : ""
+  return [side[0], out, side[1], side[2]].filter(Boolean).join(" ")
+}
+
 /**
  * 一次工具调用的结果写成文字：批给逐步的 ✓ / ✗，带了页面快照的再附压过的快照（最多 dataMax 字，agent 多半是从这里读到数据的）；
- * browser.snapshot 的快照先压成文字行；别的给开头 max 字（排好版的 JSON 先压成一行再截）
+ * browser.snapshot 的快照先压成文字行；code.run 给退出码和 stdout（describeCodeRunOutput）；别的给开头 max 字（排好版的 JSON 先压成一行再截）
  */
 export function describeToolOutput(toolId: string | null, output: string | null, max: number, dataMax = max): string {
   if (toolId === "browser.batch") {
@@ -222,20 +296,71 @@ export function describeToolOutput(toolId: string | null, output: string | null,
     }
   }
   if (toolId === "browser.snapshot" && output) return clip(compactSnapshot(output), max)
+  if (toolId === "code.run" && output) return describeCodeRunOutput(output, max)
   return oneLine(clip(output ? compactJsonOutput(output) : output, max))
 }
 
 // ---------- 复核看的过程记录 ----------
 
-/** 详细的几条里，读数据的工具结果合计最多多少字、每条最多多少字 */
-export const DATA_OUTPUT_BUDGET = 8000
-export const DATA_OUTPUT_MAX = 2000
+/** 复核、三方验收的系统提示里讲过程记录怎么读的几条（两边一样） */
+export const LOG_FORMAT_NOTES = [
+  "- 过程记录覆盖整次运行：较早的每条压成一行，最近的详细；工具调用的 #k 是整次运行里的序号。标「流程第 n 步」的是固化流程（脚本）做的，和 agent 做的一样算数。",
+  "- 一次 browser_batch（过程记录里的 browser.batch）连着做好几步，每步做没做看结果里的 ✓ / ✗；几步填的值不同就是做了几件不同的事，不是重复。批里每一步在它前面也单独记了一条（标「第 b 批第 n 步」），批那条是汇总，不是又做了一遍。批的结果后面「最后的页面快照」是批做完时页面上的文字（压过：一行用 ⏎ 隔开，表格的一行各格用 | 连），和 browser.snapshot 的结果一样是页面上真有的内容，agent 多半是从这里读到数据的。",
+  "- 读数据的工具（网站接口、HTTP 工具、code.run、file.read 等）的结果是工具真拿到的内容，agent 多半从这里拿到数据：排好版的 JSON 压成了一行，code.run 给退出码和 stdout；太长的截过，截掉的部分看不到。",
+]
+
+/**
+ * 详细的几条里，读数据的工具结果合计最多多少字、每条最少 / 最多多少字。
+ * 2026-10-29 从 8000 / 2000 放宽到 12000 / 4000：HTTP 工具、code.run、file.read 等也算读数据了，大家分同一个份额；
+ * 一条 HTTP / 接口的返回（几十条记录的 JSON）压成一行常有三四千字。份额按需分（shareBudget）：短的拿多少用多少，省下的给长的，
+ * 所以合计放宽了、短的多了也不浪费。最近 30 条全是读数据的时每条正好 400 字（不比原来的 300 字少），合计不超过 12000 字
+ */
+export const DATA_OUTPUT_BUDGET = 12_000
+export const DATA_OUTPUT_MIN = 300
+export const DATA_OUTPUT_MAX = 4000
+
+/**
+ * 复核、三方验收看的过程记录：最近 30 条详细，更早的每条压成一行、合计最多 1.2 万字（读数据的另有 DATA_OUTPUT_BUDGET）。
+ * 整段过程记录最多大约：较早的 1.2 万 + 最近 30 条（参数最多 600 字、结果 300 字，批的参数 2000 字）+ 读数据的 1.2 万，
+ * 一般远少于这些
+ */
+export const REVIEW_LOG: ReviewLogOptions = { recent: 30, budget: 12_000 }
+
+/**
+ * 复核、三方验收的输入（一整段文字）最多多少字，超了从中间截掉（开头是目标、检查点和报告，末尾是最近的过程记录）。
+ * 2026-10-29 从 6 万（只有复核有上限）放宽到 8 万，三方验收也用：读数据的工具多了，份额从 8000 放到 12000。
+ * 8 万字大约 5～8 万 token：复核用的便宜模型（deepseek-v4.1-flash 等）和验收模型上下文都在 12.8 万以上；一般的运行远少于这些
+ */
+export const EVIDENCE_PROMPT_MAX = 80_000
+
+/** 输入太长时从中间截掉：留开头 6 成、结尾 4 成 */
+export const clipPrompt = (prompt: string, max = EVIDENCE_PROMPT_MAX) =>
+  prompt.length > max ? `${prompt.slice(0, max * 0.6)}\n…（中间太长，省略）…\n${prompt.slice(-max * 0.4)}` : prompt
 
 export interface ReviewLogOptions {
   /** 最近几条照详细的写（参数、结果各 300 字；读数据的工具结果多给，见 DATA_OUTPUT_BUDGET） */
   recent: number
   /** 更早的（每条压成一行）合计最多多少字：超了留最早的一段和较近的一段，中间写省略了几条 */
   budget: number
+  /** 任务里配置的、会带回数据的工具 id（HTTP、MCP 工具，dataToolIdsOf） */
+  dataTools?: ReadonlySet<string>
+}
+
+/**
+ * 一个份额按需分给几条：从要得少的分起，每条最多拿「剩下的 ÷ 还没分的条数」（不少于 min、不多于 max），用不完的留给后面要得多的。
+ * 返回每条的上限（和 needs 同顺序）。条数 × min 超过 budget 时每条照样给 min
+ */
+export function shareBudget(needs: number[], budget: number, min: number, max: number): number[] {
+  const order = needs.map((need, index) => ({ need, index })).sort((a, b) => a.need - b.need)
+  const caps = new Array<number>(needs.length).fill(min)
+  let left = budget
+  order.forEach(({ need, index }, n) => {
+    const share = Math.floor(left / (order.length - n))
+    const cap = Math.min(max, Math.max(min, share))
+    caps[index] = cap
+    left -= Math.min(need, cap)
+  })
+  return caps
 }
 
 /** 批里的每一步在网关里也单独记了一条（在批那条的前面）：认出来标「第 b 批第 n 步」，批那条是汇总 */
@@ -316,7 +441,7 @@ function foldLibrarySteps(events: EventRow[]): LogItem[] {
 }
 
 /**
- * 复核看的过程记录（工具调用、规则、人的处理），整次运行都覆盖到：
+ * 复核、三方验收看的过程记录（工具调用、规则、人的处理），整次运行都覆盖到：
  * 最近 recent 条照原来的详细程度（参数、结果各 300 字，参数写成人看得懂的样子）；更早的每条压成一行（工具名 + 关键参数 + 结果开头），
  * 合计超过 budget 字时留最早的一段和较近的一段，中间写「中间 n 条省略」。
  * 工具调用带整次运行里的序号（#k）；固化流程做的标「流程第 n 步」；批里的步骤标「第 b 批第 n 步」
@@ -350,16 +475,27 @@ export function reviewLog(events: EventRow[], options: ReviewLogOptions): { line
   const items = foldLibrarySteps(events)
   const cut = Math.max(0, items.length - options.recent)
   // 详细的几条：填的值给全（例如提交的汇总有好几行），参数、结果各 300 字（批的参数 2000 字）。
-  // 读数据的工具（browser.fetch、browser.extract 等，见 readsData）的结果合计 DATA_OUTPUT_BUDGET 字，平分，每条 300～2000 字
+  // 读数据的工具（readsData：browser.fetch、browser.extract、HTTP 工具、code.run、file.read 等）的结果合计 DATA_OUTPUT_BUDGET 字，
+  // 按需分（shareBudget），每条 300～4000 字
   // （基准 E：接口读的 5 页只看得到每页第一条，复核把对的运行判成没办成）
   // 带了页面快照的批、browser.snapshot、browser.find、browser.clipboard_read 也算（S5：agent 从批的快照里读到电话、评分，复核看不到，判成没办成）
-  const dataCount = items.slice(cut).filter((item) => !("placeholder" in item) && item.kind === "tool" && readsData(item)).length
-  const dataMax = Math.min(DATA_OUTPUT_MAX, Math.max(300, Math.floor(DATA_OUTPUT_BUDGET / Math.max(1, dataCount))))
-  const resultMax = (event: EventRow) => (DATA_TOOLS.has(event.toolId ?? "") ? dataMax : 300)
-  const detailed = (event: EventRow) =>
-    event.kind === "tool"
-      ? `- #${toolNo.get(event.seq)} 调用 ${event.title}（${event.toolId ?? ""}）${tags(event)}：参数 ${describeToolInput(event.toolId, event.input, event.toolId === "browser.batch" ? 2000 : 600, 300)} → 结果 ${describeToolOutput(event.toolId, event.output, resultMax(event), dataMax) || "（没有输出）"}`
-      : `- ${event.kind === "rule" ? "规则" : "人"}：${event.title}${tags(event)}${event.detail ? `（${clip(event.detail, 200)}）` : ""}`
+  const extra = options.dataTools
+  const isData = (event: EventRow) => event.kind === "tool" && readsData(event, extra)
+  const dataEvents = items.slice(cut).filter((item): item is EventRow => !("placeholder" in item) && isData(item))
+  const need = (event: EventRow) =>
+    event.toolId === "browser.batch"
+      ? batchSnapshotText(event.output).length
+      : describeToolOutput(event.toolId, event.output, DATA_OUTPUT_MAX + 1).length
+  const caps = shareBudget(dataEvents.map(need), DATA_OUTPUT_BUDGET, DATA_OUTPUT_MIN, DATA_OUTPUT_MAX)
+  const dataCap = new Map(dataEvents.map((event, index) => [event.seq, caps[index]!]))
+  const detailed = (event: EventRow) => {
+    if (event.kind !== "tool")
+      return `- ${event.kind === "rule" ? "规则" : "人"}：${event.title}${tags(event)}${event.detail ? `（${clip(event.detail, 200)}）` : ""}`
+    const cap = dataCap.get(event.seq)
+    // 批：逐步的 ✓ / ✗ 照旧，附的页面快照用份额；别的读数据的工具整条结果用份额
+    const resultMax = cap !== undefined && event.toolId !== "browser.batch" ? cap : 300
+    return `- #${toolNo.get(event.seq)} 调用 ${event.title}（${event.toolId ?? ""}）${tags(event)}：参数 ${describeToolInput(event.toolId, event.input, event.toolId === "browser.batch" ? 2000 : 600, 300)} → 结果 ${describeToolOutput(event.toolId, event.output, resultMax, cap ?? 300) || "（没有输出）"}`
+  }
   // 更早的每条压成一行：较早的条数少时每行多给些（读到的电话、提交的内容别被截掉），多时少给，合计按 budget；
   // 读数据的工具结果给两倍（还在 budget 里）
   const perLine = Math.min(900, Math.max(160, Math.floor(options.budget / Math.max(1, cut))))
@@ -368,7 +504,7 @@ export function reviewLog(events: EventRow[], options: ReviewLogOptions): { line
   const valueMax = Math.min(120, Math.max(VALUE_MAX, Math.floor(perLine / 8)))
   const compact = (event: EventRow) =>
     event.kind === "tool"
-      ? `- #${toolNo.get(event.seq)} ${event.toolId ?? event.title} ${mark(event)}${tags(event)} ${describeToolInput(event.toolId, event.input, event.toolId === "browser.batch" ? Math.max(600, perLine) : inputMax, valueMax)} → ${describeToolOutput(event.toolId, event.output, DATA_TOOLS.has(event.toolId ?? "") ? outputMax * 2 : outputMax, outputMax * 2) || "（没有输出）"}`
+      ? `- #${toolNo.get(event.seq)} ${event.toolId ?? event.title} ${mark(event)}${tags(event)} ${describeToolInput(event.toolId, event.input, event.toolId === "browser.batch" ? Math.max(600, perLine) : inputMax, valueMax)} → ${describeToolOutput(event.toolId, event.output, isDataTool(event.toolId, extra) ? outputMax * 2 : outputMax, outputMax * 2) || "（没有输出）"}`
       : `- ${event.kind === "rule" ? "规则" : "人"}：${event.title}${tags(event)}${event.detail ? `（${oneLine(clip(event.detail, 80))}）` : ""}`
 
   const line = (each: (event: EventRow) => string) => (item: LogItem) => ("placeholder" in item ? item.placeholder : each(item))

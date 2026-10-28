@@ -1,6 +1,7 @@
 // 复核的证据（docs/dev/run-outcome.md 第 5 节）：过程记录覆盖整次运行（最近 30 条详细、更早的压成一行、有上限、中间省略）；
 // 工具参数写成人看得懂的样子（browser.batch 逐个动作带值、批里的步骤和汇总认得出来）；固化流程跑的运行多一节「固化流程的记录」；
-// 三方验收的证据（loadEvidence 不带 fullLog）照旧。真实的测试库，直接在库里写运行和过程记录，不调模型。
+// 三方验收的证据（verify.ts 的 loadEvidence、buildVerifyPrompt）和复核一样用 reviewLog；读数据的工具（接口、HTTP 工具、code.run、file.read 等）
+// 结果多给字数、合计有上限。真实的测试库，直接在库里写运行和过程记录，不调模型。
 import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -10,11 +11,24 @@ import { eq } from "drizzle-orm"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
 import * as t from "../src/db/schema.js"
-import { batchSnapshotText, compactSnapshot, DATA_OUTPUT_BUDGET, describeToolInput, describeToolOutput, reviewLog } from "../src/engine/log-text.js"
+import {
+  batchSnapshotText,
+  compactSnapshot,
+  DATA_OUTPUT_BUDGET,
+  DATA_OUTPUT_MAX,
+  DATA_OUTPUT_MIN,
+  describeCodeRunOutput,
+  describeToolInput,
+  describeToolOutput,
+  EVIDENCE_PROMPT_MAX,
+  REVIEW_LOG,
+  reviewLog,
+  shareBudget,
+} from "../src/engine/log-text.js"
 import { buildReviewPrompt } from "../src/engine/review.js"
 import { configureEngine } from "../src/engine/runtime.js"
 import { buildSnapshot } from "../src/engine/sessions.js"
-import { loadEvidence } from "../src/engine/verify.js"
+import { buildVerifyPrompt, loadCheckpoints, loadEvidence } from "../src/engine/verify.js"
 import { createTask } from "./engine-helpers.js"
 import { setupApp, type TestApp } from "./helpers.js"
 
@@ -232,9 +246,23 @@ describe("读数据的工具：结果的 JSON 压成一行、多给字数（基�
       Array.from({ length: 30 }, (_, index) => ({ kind: "tool", title: "调网站接口", toolId: "browser.fetch", input: "{}", output: fetchOutput(index) }))
     )
     const results = reviewLog(many, { recent: 30, budget: 12_000 }).lines.map((line) => line.slice(line.indexOf("→ 结果 ") + 5))
-    // 平分到每条不到 300 字时按原来的 300 字给（不比原来少）
-    expect(DATA_OUTPUT_BUDGET / 30).toBeLessThan(300)
-    expect(Math.max(...results.map((line) => line.length))).toBeLessThanOrEqual(302)
+    // 30 条都要得多：平分，每条 400 字（不比原来的 300 字少），合计不超过份额
+    expect(DATA_OUTPUT_BUDGET / 30).toBe(400)
+    expect(Math.max(...results.map((line) => line.length))).toBeLessThanOrEqual(402)
+    expect(results.reduce((sum, line) => sum + line.length, 0)).toBeLessThanOrEqual(DATA_OUTPUT_BUDGET + 30 * 2)
+  })
+
+  it("份额按需分：短的拿多少用多少，省下的给长的；每条不少于 300、不多于 4000", () => {
+    const caps = shareBudget([100, 100, 100, 20_000], 12_000, DATA_OUTPUT_MIN, DATA_OUTPUT_MAX)
+    expect(caps[3]).toBe(4000)
+    expect(caps.slice(0, 3).every((cap) => cap >= 100)).toBe(true)
+    expect(shareBudget([5000, 5000, 5000, 5000], 12_000, 300, 4000)).toEqual([3000, 3000, 3000, 3000])
+    expect(shareBudget([500, 9000, 9000], 12_000, 300, 4000)).toEqual([4000, 4000, 4000])
+    // 省下的给长的：平分是每条 2400，短的只用 500，其余四条各 2875
+    expect(shareBudget([500, 9000, 9000, 9000, 9000], 12_000, 300, 4000)).toEqual([2400, 2875, 2875, 2875, 2875])
+    expect(shareBudget([], 12_000, 300, 4000)).toEqual([])
+    // 条数 × 300 超过份额：每条照样 300
+    expect(shareBudget(new Array(50).fill(1000), 12_000, 300, 4000).every((cap) => cap === 300)).toBe(true)
   })
 })
 
@@ -399,19 +427,132 @@ describe("固化流程跑的运行", () => {
   })
 })
 
-describe("三方验收的证据照旧", () => {
-  it("loadEvidence 不带 fullLog：最近 events 条（默认 60），参数和结果各截原样 JSON 300 字", async () => {
-    const events = longRunEvents()
-    const { session } = await insertRun(events)
+describe("三方验收和复核看同样的过程记录：读数据的工具（HTTP 工具、code.run、file.read）结果看得到", () => {
+  /** 一个 HTTP 工具（任务配置的，id 是主管起的）：返回 12 张订单，要的那张在后面 */
+  const HTTP_TOOL = { id: "erp.orders", name: "查订单", summary: "查订单", description: "查订单", source: "http", risk: "read" }
+  const orders = Array.from({ length: 12 }, (_, i) => ({
+    orderNo: `SO-2026-${String(i + 1).padStart(4, "0")}`,
+    buyer: `买家${i + 1}`,
+    status: i === 10 ? "已发货" : "待付款",
+    amount: (i + 1) * 101.5,
+    tracking: i === 10 ? "YT-88442211" : null,
+  }))
+  const httpOutput = `HTTP 200\n${JSON.stringify({ total: 12, orders }, null, 2)}`
+  /** code.run：stdout 前面是一大段过程，最后一行是算出来的合计 */
+  const codeOutput = [
+    "退出码 0 · 用时 1.2 秒",
+    "写回空间：新建 result.csv",
+    "--- stdout ---",
+    ...Array.from({ length: 40 }, (_, i) => `处理第 ${i + 1} 行：单价 ${(i + 1) * 3.5} 元 × 数量 ${i + 2}`),
+    "合计金额：87654.32 元，共 40 行",
+    "--- stderr ---",
+    "DeprecationWarning: 某个包要升级",
+  ].join("\n")
+  /** file.read：附件里的说明，要的值在第 600 字以后 */
+  const fileOutput = `供货说明.txt（共 1400 字，从第 0 字开始）：\n${"这一段是说明文字，没有要核对的数据。".repeat(40)}\n结算账号：6222-0000-1111-2222，联系人周敏`
+
+  function dataRun(): EventInput[] {
+    return [
+      { kind: "tool", title: "读附件", toolId: "file.read", input: { path: "attachments/供货说明.txt" }, output: fileOutput },
+      { kind: "tool", title: "查订单", toolId: "erp.orders", input: { buyer: "买家11" }, output: httpOutput },
+      { kind: "tool", title: "运行代码", toolId: "code.run", input: { language: "python", file: "scripts/sum.py" }, output: codeOutput },
+      ...Array.from({ length: 6 }, () => ({ kind: "tool" as const, title: "列出文件", toolId: "file.list", input: {}, output: "result.csv" })),
+      { kind: "tool", title: "报结果", toolId: "run.finish", input: { outcome: "achieved", summary: "都查到了" }, output: "好" },
+    ]
+  }
+  const KEYS = ["YT-88442211", "SO-2026-0011", "合计金额：87654.32 元", "6222-0000-1111-2222"]
+  const withHttpTool = { snapshotPatch: { tools: [HTTP_TOOL] as unknown as SessionSnapshot["tools"] } }
+
+  it("要核对的值都在 300 字以外（以前三方验收每条结果截到 300 字，看不到）", () => {
+    for (const [output, key] of [
+      [httpOutput, "YT-88442211"],
+      [codeOutput, "87654.32"],
+      [fileOutput, "6222-0000-1111-2222"],
+    ] as const)
+      expect(output.indexOf(key)).toBeGreaterThan(300)
+  })
+
+  it("code.run：给退出码、写回的文件和 stdout（太长的留开头和结尾），stderr 另起", () => {
+    const text = describeCodeRunOutput(codeOutput, 600)
+    expect(text).toMatch(/^退出码 0 · 用时 1\.2 秒 ⏎ 写回空间：新建 result\.csv stdout：处理第 1 行/)
+    expect(text).toContain("合计金额：87654.32 元，共 40 行")
+    expect(text).toContain("…（中间省略")
+    expect(text).toContain("stderr：DeprecationWarning")
+    expect(text.length).toBeLessThan(650)
+    // 沙箱没起来这种只有一行的
+    expect(describeToolOutput("code.run", "沙箱没起来：没有 bwrap", 300)).toBe("沙箱没起来：没有 bwrap")
+    // stdout 是排好版的 JSON：压成一行
+    expect(describeCodeRunOutput(`退出码 0 · 用时 0.1 秒\n--- stdout ---\n${JSON.stringify({ a: 1, b: [1, 2] }, null, 2)}`, 600)).toBe('退出码 0 · 用时 0.1 秒 stdout：{"a": 1,"b": [1,2]}')
+  })
+
+  it("复核的输入、三方验收的输入里都看得到 HTTP 工具、code.run、file.read 读到的值", async () => {
+    const { session, snapshot } = await insertRun(dataRun(), withHttpTool)
+    const review = (await buildReviewPrompt(ctx.db, session, snapshot, "都查到了", false)).prompt
+    for (const key of KEYS) expect(review).toContain(key)
+    // HTTP 工具的 JSON 压成一行
+    expect(review).toContain('"orderNo": "SO-2026-0011","buyer": "买家11","status": "已发货"')
+
     const evidence = await loadEvidence({ db: ctx.db, session }, false)
-    expect(evidence.logInfo).toBeUndefined()
-    expect(evidence.log.length).toBe(Math.min(60, events.length))
-    expect(evidence.log[0]).toBe('- 调用 打开网页（browser.navigate）：参数 {"url":"http://shop.test/admin/products/new"} → 结果 ### Page\n- Page URL: http://shop.test/admin/products/new')
-    const batch = evidence.log.find((line) => line.includes("（browser.batch）"))!
-    expect(batch).toContain('参数 {"actions":[{"tool":"click"')
-    expect(batch.split("→ 结果")[0]!.length).toBeLessThan(360)
-    const limited = await loadEvidence({ db: ctx.db, session }, false, { events: 30 })
-    expect(limited.log.length).toBe(30)
-    expect(limited.log.at(-1)).toContain("- 调用 报结果（run.finish）")
+    const verify = buildVerifyPrompt({
+      ctx: { snapshot },
+      checkpoints: await loadCheckpoints({ db: ctx.db, session }),
+      finalText: "都查到了",
+      notes: [],
+      artifacts: evidence.artifacts,
+      log: evidence.log,
+      logInfo: evidence.logInfo,
+      imageNames: [],
+    })
+    for (const key of KEYS) expect(verify).toContain(key)
+    expect(verify).toContain("整次运行共 10 条，其中工具调用 10 次）")
+    expect(verify).toContain('- #2 调用 查订单（erp.orders）：参数 {"buyer":"买家11"} → 结果 HTTP 200 ⏎ {"total": 12')
+  })
+
+  it("HTTP 工具要从快照里认：不知道它是 HTTP 工具时照旧只给 300 字", () => {
+    const rows = [{ kind: "tool", title: "查订单", toolId: "erp.orders", input: "{}", output: httpOutput }].map((row, index) => ({
+      id: index + 1,
+      sessionId: "R-h",
+      seq: index + 1,
+      at: new Date(),
+      detail: null,
+      trace: null,
+      ...row,
+    })) as unknown as (typeof t.sessionEvents.$inferSelect)[]
+    expect(reviewLog(rows, REVIEW_LOG).lines.join("\n")).not.toContain("YT-88442211")
+    expect(reviewLog(rows, { ...REVIEW_LOG, dataTools: new Set(["erp.orders"]) }).lines.join("\n")).toContain("YT-88442211")
+  })
+
+  it("很长的运行：读数据的结果合计不超过份额，较早的不超过 1.2 万字，复核和三方验收的输入都在上限里", async () => {
+    const big = (n: number) =>
+      `HTTP 200\n${JSON.stringify({ page: n, rows: Array.from({ length: 80 }, (_, i) => ({ id: `${n}-${i}`, name: `记录${n}-${i}`, note: "说明".repeat(10) })) }, null, 2)}`
+    const hugeCode = ["退出码 0 · 用时 3 秒", "--- stdout ---", ...Array.from({ length: 2000 }, (_, i) => `第 ${i} 行输出`), "--- stderr ---", "警告".repeat(500)].join("\n")
+    const events: EventInput[] = []
+    for (let i = 0; i < 60; i++) {
+      events.push({ kind: "tool", title: "查订单", toolId: "erp.orders", input: { page: i }, output: big(i) })
+      events.push({ kind: "tool", title: "运行代码", toolId: "code.run", input: { language: "python", code: "print(1)\n".repeat(200) }, output: hugeCode })
+      events.push({ kind: "tool", title: "读附件", toolId: "file.read", input: { path: `a${i}.txt` }, output: `a${i}.txt（共 10000 字）：\n${"内容".repeat(5000)}` })
+      events.push({ kind: "tool", title: "调网站接口", toolId: "browser.fetch", input: { url: `https://shop.test/api?p=${i}` }, output: big(i) })
+    }
+    const { session, snapshot } = await insertRun(events, withHttpTool)
+    const evidence = await loadEvidence({ db: ctx.db, session }, false)
+    expect(evidence.logInfo).toMatchObject({ total: 240, tools: 240, recent: 30, earlier: 210 })
+    const lines = evidence.log
+    const split = lines.indexOf("（以下是最近的 30 条，详细）")
+    expect(lines.slice(1, split).join("\n").length).toBeLessThanOrEqual(REVIEW_LOG.budget + 200)
+    const results = lines.slice(split + 1).map((line) => line.slice(line.indexOf("→ 结果 ") + 5))
+    expect(results).toHaveLength(30)
+    // 30 条全是读数据的：每条 400 字左右（不少于 300），合计不超过份额（code.run 的省略标记多几个字）
+    for (const line of results) expect(line.length).toBeGreaterThanOrEqual(DATA_OUTPUT_MIN)
+    expect(results.reduce((sum, line) => sum + line.length, 0)).toBeLessThanOrEqual(DATA_OUTPUT_BUDGET + 30 * 30)
+    // 整段过程记录：较早的 1.2 万 + 最近 30 条（参数最多 600 字）+ 读数据的份额
+    expect(lines.join("\n").length).toBeLessThanOrEqual(REVIEW_LOG.budget + DATA_OUTPUT_BUDGET + 30 * 30 + 30 * 700)
+
+    const review = (await buildReviewPrompt(ctx.db, session, snapshot, "都做完了", false)).prompt
+    expect(review.length).toBeLessThanOrEqual(EVIDENCE_PROMPT_MAX + 20)
+    const verify = buildVerifyPrompt({ ctx: { snapshot }, checkpoints: [], finalText: "都做完了", notes: [], artifacts: evidence.artifacts, log: evidence.log, logInfo: evidence.logInfo, imageNames: [] })
+    expect(verify.length).toBeLessThanOrEqual(EVIDENCE_PROMPT_MAX + 20)
+    // 以前的三方验收只有最近 60 条；现在整次运行都覆盖到（第 1 条压成一行也在）
+    expect(verify).toContain("- #1 erp.orders ✓")
+    expect(verify).toContain("- #240 调用 调网站接口（browser.fetch）")
   })
 })
