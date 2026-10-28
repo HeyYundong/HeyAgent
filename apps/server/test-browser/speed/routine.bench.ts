@@ -158,6 +158,13 @@ async function runScenario(scenario: SpeedScenario) {
   for (let tryNo = 1; tryNo <= AGENT_TRIES && !source; tryNo++) {
     const run = await runOnce(scenario, taskId)
     write({ label: LABEL, scenario, step: "agent", tryNo, ...run })
+    if (run.status === "done" && run.correct === run.total && run.outcome !== "achieved") {
+      // 站点判分全对、复核却判没办成（复核看错了）：像人一样「改结果」，再拿它固化。记一行，复核的准确率另算
+      const fixed = await mutate(ctx.app, "sessions.setOutcome", wang, { id: run.sessionId, outcome: "achieved", reason: "基准站点判分全对，复核判错了" })
+      if (!fixed.data) throw new Error(JSON.stringify(fixed.error))
+      write({ label: LABEL, scenario, step: "fix-outcome", tryNo, sessionId: run.sessionId, reviewSaid: run.outcome })
+      run.outcome = "achieved"
+    }
     if (run.outcome === "achieved" && run.correct === run.total) source = run
   }
   if (!source) {
