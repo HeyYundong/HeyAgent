@@ -993,8 +993,8 @@ export async function buildMaterial(
     parts.push(
       [
         "## 这是一个被派的任务",
-        `声明的参数（脚本的输入 = 这些参数，都是字符串）：\n${dispatch.params.map((param) => `- ${param.name}${param.required ? "（必填）" : "（可选）"}${param.description ? `：${param.description}` : ""}`).join("\n") || "（没有参数）"}`,
-        `要交回的结果（用 ha.work.report 交，outputSchema = 这些字段）：\n${dispatch.results.map((result) => `- ${result.name}${result.required ? "（必交）" : "（可选）"}${result.description ? `：${result.description}` : ""}`).join("\n") || "（没有声明）"}`,
+        `声明的参数（脚本的输入 = 这些参数，都是字符串；inputSchema 由程序照它生成，不用写）：\n${dispatch.params.map((param) => `- ${param.name}${param.required ? "（必填）" : "（可选）"}${param.description ? `：${param.description}` : ""}`).join("\n") || "（没有参数）"}`,
+        `要交回的结果（用 ha.work.report 交；outputSchema 由程序照它生成，不用写）：\n${dispatch.results.map((result) => `- ${result.name}${result.required ? "（必交）" : "（可选）"}${result.description ? `：${result.description}` : ""}`).join("\n") || "（没有声明）"}`,
       ].join("\n")
     )
   // 库流程里面的步骤不算这次运行「用过的子工具」：脚本里调库流程，不自己做那些步骤

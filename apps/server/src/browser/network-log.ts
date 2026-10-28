@@ -5,8 +5,9 @@
 // - browser.fetch 自己发的不记（过程记录里有）：工具执行期间方法和网址对得上的那一个跳过；跟着跳转的只记最后一跳；
 // - 上限：500 个、2 MB、同一个方法 + 网址 3 次；请求体 2 KB、返回体 20 KB；到了上限写一行 end，之后不再记；
 // - 打码按整个字段名；请求头只记名字；cookie、Set-Cookie 不记；
-// - seq 在一个请求记下来（收完返回）时编；行先攒在内存里，每次浏览器工具调用结束、网关关闭时有新行就整份覆盖写一次；
-//   Chrome 换了、进程重启以后先读已有的文件，seq 接着编。
+// - seq 在网页发出请求时编（按发出的先后；最后没记下的请求号码空着），文件里按 seq 排。晚收完的请求（例如网页不读返回体的，
+//   拿到返回头 5 秒以后才照拿到的记）也带着发出时的号，算在发出它的那一步（trace.network），不会落到后面别的工具调用里；
+// - 行先攒在内存里，每次浏览器工具调用结束、网关关闭时有新行就整份覆盖写一次；Chrome 换了、进程重启以后先读已有的文件，seq 接着编。
 import {
   isWriteMethod,
   NETWORK_LOG_MAX_BYTES,
@@ -76,6 +77,8 @@ function authSchemes(headers: Record<string, string>, names: string[]): Record<s
 
 interface Sent {
   requestId: string
+  /** 发出时编的号（记下来的那一行用它） */
+  seq: number
   type: "xhr" | "fetch"
   method: string
   url: string
@@ -119,10 +122,14 @@ const META_SCRIPT = `[...document.querySelectorAll("meta[name]")].map((meta) => 
 
 export class NetworkLog {
   private readonly deps: NetworkLogDeps
-  /** 已经记下的行（序列化好的，不含 end 行） */
-  private readonly lines: string[] = []
+  /** 已经记下的行（序列化好的，不含 end 行），按 seq 排 */
+  private readonly lines: { seq: number; text: string }[] = []
+  /** 记下了的 seq（算一步的范围用） */
+  private readonly recorded = new Set<number>()
+  /** 编了号、还没记完的请求：likely = 拿到了返回头、看样子会记（写请求，或返回 JSON / 纯文字） */
+  private readonly pending = new Map<number, { likely: boolean }>()
   private bytes = 0
-  /** 最后一个编了号的 seq */
+  /** 最后一个编了号的 seq（网页发出请求时编） */
   seq = 0
   /** 读完已有文件时 seq 走到了哪（这个 Chrome 是在一次工具调用里开的：之后记的都算那一步） */
   loadedSeq = 0
@@ -163,12 +170,14 @@ export class NetworkLog {
         this.ended = line.data
         continue
       }
-      this.lines.push(raw)
+      this.lines.push({ seq: line.data.seq, text: raw })
+      this.recorded.add(line.data.seq)
       this.bytes += Buffer.byteLength(raw) + 1
       this.seq = Math.max(this.seq, line.data.seq)
       const key = `${line.data.method} ${line.data.url}`
       this.sameUrl.set(key, (this.sameUrl.get(key) ?? 0) + 1)
     }
+    this.lines.sort((a, b) => a.seq - b.seq)
     this.loadedSeq = this.seq
   }
 
@@ -179,7 +188,8 @@ export class NetworkLog {
 
   /** 文件现在的内容（一行一个 JSON；到了上限最后一行是 end） */
   serialize(): string {
-    const all = this.ended ? [...this.lines, JSON.stringify(this.ended)] : this.lines
+    const texts = this.lines.map((line) => line.text)
+    const all = this.ended ? [...texts, JSON.stringify(this.ended)] : texts
     return all.length ? `${all.join("\n")}\n` : ""
   }
 
@@ -194,7 +204,7 @@ export class NetworkLog {
     } catch {
       return false
     }
-    return this.lines.some((text) => {
+    return this.lines.some(({ text }) => {
       try {
         const line = JSON.parse(text) as NetworkRequestLine
         const each = new URL(line.url)
@@ -213,6 +223,23 @@ export class NetworkLog {
       const at = this.own.indexOf(entry)
       if (at >= 0) this.own.splice(at, 1)
     }
+  }
+
+  /**
+   * 一步（一次浏览器工具调用）的 seq 范围：mark 是这一步开始时的 seq，这一步里发出、已经记下的（还没收完、但拿到了返回头、
+   * 看样子会记的也算）。之前发出、这一步里才记下的不算（它们的号在前面）。没有就 undefined
+   */
+  stepRange(mark: number): { first: number; last: number } | undefined {
+    let first = Infinity
+    let last = -Infinity
+    const take = (seq: number) => {
+      if (seq <= mark) return
+      first = Math.min(first, seq)
+      last = Math.max(last, seq)
+    }
+    for (const seq of this.recorded) take(seq)
+    for (const [seq, state] of this.pending) if (state.likely) take(seq)
+    return last >= first ? { first, last } : undefined
   }
 
   /** 等路上的请求记完（最多 ms 毫秒）：工具调用结束时调，这一步触发的请求编进这一步的 seq 范围 */
@@ -256,8 +283,8 @@ export class NetworkLog {
     this.dirty = true
   }
 
-  /** 记一行（编 seq、查上限）。测试也直接用它 */
-  push(line: Omit<NetworkRequestLine, "seq">): NetworkRequestLine | undefined {
+  /** 记一行（查上限）：seq 是发出时编的号；不给就现编一个（测试直接用它）。没记下返回 undefined */
+  push(line: Omit<NetworkRequestLine, "seq">, seq?: number): NetworkRequestLine | undefined {
     if (this.ended) {
       this.ended.skipped++
       this.dirty = true
@@ -271,15 +298,18 @@ export class NetworkLog {
       this.end(`一次运行最多记 ${NETWORK_LOG_MAX_REQUESTS} 个请求`)
       return undefined
     }
-    const full: NetworkRequestLine = { seq: this.seq + 1, ...line }
+    const full: NetworkRequestLine = { seq: seq ?? this.seq + 1, ...line }
     const text = JSON.stringify(full)
     const size = Buffer.byteLength(text) + 1
     if (this.bytes + size > NETWORK_LOG_MAX_BYTES - END_RESERVE) {
       this.end(`文件到了 ${Math.round(NETWORK_LOG_MAX_BYTES / 1024 / 1024)} MB 上限`)
       return undefined
     }
-    this.seq = full.seq
-    this.lines.push(text)
+    this.seq = Math.max(this.seq, full.seq)
+    let at = this.lines.length
+    while (at > 0 && this.lines[at - 1]!.seq > full.seq) at--
+    this.lines.splice(at, 0, { seq: full.seq, text })
+    this.recorded.add(full.seq)
     this.bytes += size
     this.sameUrl.set(key, same + 1)
     this.dirty = true
@@ -291,10 +321,17 @@ export class NetworkLog {
     const sent = new Map<string, Sent>()
     /** requestWillBeSentExtraInfo 的头里有没有 cookie（实际发出去的请求带没带） */
     const cookies = new Map<string, boolean>()
+    /** 这个请求不记了（或记完了）：号码空着、不再算「在路上」 */
     const forget = (id: string) => {
+      const item = sent.get(id)
+      if (item) this.pending.delete(item.seq)
       sent.delete(id)
       cookies.delete(id)
       this.inflight.delete(id)
+    }
+    const settled = (id: string, item: Sent) => {
+      this.inflight.delete(id)
+      this.pending.delete(item.seq)
     }
     session.on("Network.requestWillBeSent", (event) => {
       const e = event as unknown as WillBeSent
@@ -315,8 +352,12 @@ export class NetworkLog {
         this.end(this.ended.reason)
         return
       }
+      // 发出时编号：晚收完的也算在发出它的那一步
+      const seq = ++this.seq
+      this.pending.set(seq, { likely: false })
       sent.set(e.requestId, {
         requestId: e.requestId,
+        seq,
         type,
         method,
         url: e.request.url,
@@ -341,6 +382,8 @@ export class NetworkLog {
       item.responseType = lowerHeaders(e.response.headers ?? {})["content-type"] ?? e.response.mimeType ?? ""
       const flight = this.inflight.get(e.requestId)
       if (flight) flight.respondedAt = Date.now()
+      const state = this.pending.get(item.seq)
+      if (state) state.likely = isWriteMethod(item.method) || /json|^text\/plain/i.test(item.responseType)
       const respondedAt = e.timestamp
       const record = async () => {
         this.responded.delete(record)
@@ -350,7 +393,7 @@ export class NetworkLog {
         cookies.delete(e.requestId)
         await this.finish(session, mainFrameId, item, { cookie, endedAt: respondedAt ?? item.timestamp })
           .catch(() => {})
-          .finally(() => this.inflight.delete(e.requestId))
+          .finally(() => settled(e.requestId, item))
       }
       this.responded.add(record)
       setTimeout(() => void record(), UNFINISHED_RECORD_MS).unref?.()
@@ -364,7 +407,7 @@ export class NetworkLog {
       cookies.delete(e.requestId)
       void this.finish(session, mainFrameId, item, { cookie, endedAt: e.timestamp })
         .catch((error: unknown) => console.warn(`[browser] 记网页请求出错：${(error as Error).message}`))
-        .finally(() => this.inflight.delete(e.requestId))
+        .finally(() => settled(e.requestId, item))
     })
     session.on("Network.loadingFailed", (event) => {
       const e = event as { requestId: string; timestamp: number; errorText?: string; canceled?: boolean }
@@ -375,12 +418,12 @@ export class NetworkLog {
       cookies.delete(e.requestId)
       // 没拿到返回的只读请求不记（多半是取消的轮询）；会改东西的照记，写清原因
       if (!isWriteMethod(item.method)) {
-        this.inflight.delete(e.requestId)
+        settled(e.requestId, item)
         return
       }
       void this.finish(session, mainFrameId, item, { cookie, endedAt: e.timestamp, error: e.canceled ? "被取消了" : e.errorText || "没拿到返回" })
         .catch(() => {})
-        .finally(() => this.inflight.delete(e.requestId))
+        .finally(() => settled(e.requestId, item))
     })
     await session.send("Network.enable", NETWORK_BUFFER)
   }
@@ -449,7 +492,7 @@ export class NetworkLog {
       ...(isJson ? { shape: shapeOf(json) } : {}),
       ...(response ? { responseBody: response.text, ...(response.omitted ? { responseOmitted: response.omitted } : {}) } : {}),
       ms: Math.max(0, Math.round((end.endedAt - item.timestamp) * 1000)),
-    })
+    }, item.seq)
   }
 
   /** 请求头里有 csrf、xsrf 类的：看它的值等于页面里哪个 <meta name> 的 content，或者哪个（不是 HttpOnly 的）cookie 的值。值不记 */

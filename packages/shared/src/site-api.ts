@@ -143,7 +143,7 @@ export const NETWORK_RESPONSE_BODY_BYTES = 20 * 1024
  * browser.fetch 自己发的不记（过程记录里有）。
  */
 export const networkRequestLineSchema = z.object({
-  /** 这次运行里的第几个（从 1 开始）；过程记录的 trace.network 按它对上 */
+  /** 这次运行里的第几个（从 1 开始，网页发出时编；最后没记下的请求号码空着）；过程记录的 trace.network 按它对上 */
   seq: z.number().int().positive(),
   /** 发出的时间（ISO，带毫秒） */
   at: z.string(),

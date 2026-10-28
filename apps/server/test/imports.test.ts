@@ -368,8 +368,8 @@ describe("导入全流程", () => {
     const apikey = stored.find((secret) => secret.name === "APIKEY")!
     expect(decryptText(ctx.keyring, apikey.enc, { table: "secrets", id: apikey.id, version: apikey.version })).toBe(SECRETS.apikey)
     expect(stored.map((secret) => secret.name)).toEqual(expect.arrayContaining(["API_KEY", "PRIVATE_KEY", "PASSWORD", "OPENAI_API_KEY", "AUTH_TOKEN"]))
-    // 通知上传的人
-    const [notice] = await ctx.db.select().from(t.notifications).where(eq(t.notifications.link, `#/imports?id=${id}`))
+    // 通知上传的人（状态写好以后才发：等它到）
+    const notice = await waitFor(async () => (await ctx.db.select().from(t.notifications).where(eq(t.notifications.link, `#/imports?id=${id}`)))[0], { what: "读完了的通知" })
     expect(notice).toMatchObject({ userId: "u-lin", title: "「demo-agent.zip」读完了，整理出 2 个任务，等你确认" })
   })
 
@@ -692,8 +692,9 @@ describe("读包失败", () => {
     expect(row.status).toBe("failed")
     expect(row.error).toBe("模型调用失败（已重试 3 次）：上游挂了")
     expect(row.readLog.at(-1)!.status).toBe("error")
-    const [notice] = await ctx.db.select().from(t.notifications).where(eq(t.notifications.link, `#/imports?id=${row.id}`))
-    expect(notice!.title).toBe("「demo-agent.zip」没读成")
+    // 先记「没读成」再发通知：等通知到（有期限），不能读到状态就马上查
+    const notice = await waitFor(async () => (await ctx.db.select().from(t.notifications).where(eq(t.notifications.link, `#/imports?id=${row.id}`)))[0], { what: "没读成的通知" })
+    expect(notice.title).toBe("「demo-agent.zip」没读成")
   })
 
   it("方案改了两次还不对：没读成", async () => {

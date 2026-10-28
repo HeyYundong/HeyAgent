@@ -250,9 +250,9 @@ describe("记接口（假 CDP 连接）", () => {
     request(session, { url: "https://shop.example.com/api/save", method: "PUT", fail: "net::ERR_CONNECTION_RESET" })
     await log.drain(1000)
 
-    // seq 按记下来（收完返回）的先后编；这里按网址排好再比
+    // seq 在网页发出请求时编（目标能记的 XHR、fetch 才编），最后没记下的（不是 JSON 的 GET）号码空着；这里按网址排好再比
     const got = (lines(log) as NetworkRequestLine[]).sort((a, b) => a.url.localeCompare(b.url))
-    expect(got.map((line) => line.seq).sort()).toEqual([1, 2, 3, 4, 5])
+    expect(got.map((line) => line.seq).sort()).toEqual([1, 3, 5, 6, 7])
     expect(got.map((line) => [line.method, line.url])).toEqual([
       ["GET", `https://shop.example.com/api/items?page=1&token=${M}`],
       ["GET", "https://shop.example.com/api/plain"],
@@ -357,6 +357,42 @@ describe("记接口（假 CDP 连接）", () => {
     expect(lines(log)).toHaveLength(2)
   })
 
+  it("一步的范围只算这一步发出的请求：前一步发出、这一步才记下的（网页不读返回体）不算进这一步；文件按 seq 排（site-api 浏览器测试时过时不过）", async () => {
+    const { log, session } = await setup()
+    // 第一步（打开页面）：网页发了一个不读返回体的请求，只拿到返回头；还有一个一直没回的（长轮询）
+    const navigate = log.seq
+    session.emit("Network.requestWillBeSent", { requestId: "r-unread", type: "Fetch", timestamp: 100, wallTime: Date.now() / 1000, request: { url: "https://shop.example.com/api/unread", method: "GET", headers: {} } })
+    session.emit("Network.responseReceived", { requestId: "r-unread", timestamp: 100.2, response: { status: 200, headers: { "Content-Type": "application/json" } } })
+    session.emit("Network.requestWillBeSent", { requestId: "r-poll", type: "Fetch", timestamp: 100, wallTime: Date.now() / 1000, request: { url: "https://shop.example.com/api/poll", method: "GET", headers: {} } })
+    await log.drain(50)
+    // 还没记下，但拿到了 JSON 的返回头，算这一步；一直没回的不算
+    expect(log.stepRange(navigate)).toEqual({ first: 1, last: 1 })
+    // 第二步：工具自己发的不记；这一步里 unread 才照拿到的记下（5 秒到了或网关收尾），它的号还是 1
+    const second = log.seq
+    const unexpect = log.expectOwn("GET", "https://shop.example.com/api/items?page=1")
+    request(session, { url: "https://shop.example.com/api/items?page=1", body: "{}" })
+    unexpect()
+    await log.recordResponded()
+    await log.drain(50)
+    expect(log.stepRange(second)).toBeUndefined()
+    expect(log.stepRange(navigate)).toEqual({ first: 1, last: 1 })
+    // 第三步：网页又发了一个，它在这一步
+    const third = log.seq
+    request(session, { url: "https://shop.example.com/api/hello", body: "{}" })
+    await log.drain(50)
+    expect(log.stepRange(third)).toEqual({ first: 3, last: 3 })
+    // 长轮询后来回来了：号是 2，排在 unread 和 hello 中间，不进第二、三步
+    session.emit("Network.responseReceived", { requestId: "r-poll", timestamp: 109, response: { status: 200, headers: { "Content-Type": "application/json" } } })
+    session.emit("Network.loadingFinished", { requestId: "r-poll", timestamp: 109.1 })
+    await log.drain(200)
+    expect((lines(log) as NetworkRequestLine[]).map((line) => [line.seq, line.url.split("/api/")[1]])).toEqual([
+      [1, "unread"],
+      [2, "poll"],
+      [3, "hello"],
+    ])
+    expect(log.stepRange(third)).toEqual({ first: 3, last: 3 })
+  })
+
   it("设了白名单：和页面落在同一条里的子域名也记", async () => {
     const { log, session } = await setup(undefined, ["example.com"])
     request(session, { url: "https://api.example.com/v1/items", body: "[]" })
@@ -415,12 +451,13 @@ describe("记接口（假 CDP 连接）", () => {
     await again.log.drain(1000)
     await again.log.flush()
     const got = (lines(again.log) as NetworkRequestLine[]).map((line) => [line.seq, line.url.split("page=")[1]])
+    // 第 5 个（page=1 的第 4 次）到了同一网址的上限没记，号码空着
     expect(got).toEqual([
       [1, "1"],
       [2, "1"],
       [3, "2"],
       [4, "1"],
-      [5, "3"],
+      [6, "3"],
     ])
   })
 })

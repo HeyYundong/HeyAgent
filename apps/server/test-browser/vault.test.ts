@@ -1,6 +1,8 @@
-// 真浏览器：登录、cookie 轮换、两个 session 交替时的合并写回、登录探测失败不写回（m2.md 验收）。
+// 真浏览器：登录、cookie 轮换、两个 Chrome 交替写回时的合并、登录探测失败不写回（m2.md 验收）。
+// 每个 Chrome 配置同一时间只给一个运行用（2026-10-19 起）：同一个配置上能同时开着的是一个运行的 Chrome 和人「打开 Chrome」的那个，
+// 合并写回就用这两个测。afterEach 关掉没关的 Chrome，一个用例失败不连累后面的。
 import { eq } from "drizzle-orm"
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest"
 
 import type { BrowserManager } from "../src/browser/manager.js"
 import { loadVault } from "../src/browser/vault.js"
@@ -44,6 +46,14 @@ afterAll(async () => {
   await site?.close()
 })
 
+/** 收尾：还开着的 Chrome 都关掉（不写回），后面的用例能用这个 Chrome 配置 */
+afterEach(async () => {
+  for (const instance of manager.list()) {
+    if (instance.kind === "session" && instance.sessionId) await manager.releaseSession(instance.sessionId, { reason: "测试收尾" }).catch(() => {})
+    else await instance.close({ writeBack: false, reason: "测试收尾" }).catch(() => {})
+  }
+})
+
 describe("登录和保险箱", () => {
   it("打开 Chrome 登录 → 人登录 → 关闭：登录态合并进保险箱，账号变成正常", async () => {
     const opened = await mutate(ctx.app, "browser.openForLogin", wang, { profileId, accountId })
@@ -71,11 +81,16 @@ describe("登录和保险箱", () => {
     expect(rows).toEqual([])
   })
 
-  it("两个 session 交替：A 轮换了 sid、B 加了偏好，先后写回，合并结果两样都在；新 session 用合并后的登录态", async () => {
+  it("运行的 Chrome 和人打开的 Chrome 交替：A 轮换了 sid、B 加了偏好，先后写回，合并结果两样都在；新 session 用合并后的登录态", async () => {
     const before = await loadVault(ctx.db, ctx.keyring, profileId)
     const firstSid = before.state.cookies.find((cookie) => cookie.name === "sid")!.value
     const a = await manager.acquireForSession({ sessionId: await newSession("R-V-A"), profileId, allowedDomains: [] })
-    const b = await manager.acquireForSession({ sessionId: await newSession("R-V-B"), profileId, allowedDomains: [] })
+    // 同一个配置不能再给第二个运行：登记时就拒绝（每个 Chrome 同一时间只给一个运行用）
+    await expect(manager.acquireForSession({ sessionId: await newSession("R-V-B"), profileId, allowedDomains: [] })).rejects.toThrow("正在被别的运行用")
+    // 人在浏览器页「打开 Chrome」：不挂运行，可以和运行的 Chrome 同时开着
+    const opened = await mutate(ctx.app, "browser.openForLogin", wang, { profileId, accountId })
+    expect(opened.error).toBeUndefined()
+    const b = manager.get(opened.data.browserId as string)!
     const pageA = a.currentPage()!
     const pageB = b.currentPage()!
     await pageA.goto(site.url(SHOP, "/me"))
@@ -84,16 +99,16 @@ describe("登录和保险箱", () => {
     await pageB.goto(site.url(SHOP, "/me"))
     expect(await pageB.textContent("#who")).toContain(`sid=${firstSid}`)
     await pageB.goto(site.url(SHOP, "/pref"))
-    // 打开平台域名下的网址时拿到了租约
+    // 运行打开平台域名下的网址时拿到了租约
     expect(a.leased.has(accountId)).toBe(true)
-    expect(b.leased.has(accountId)).toBe(true)
     const rotated = (await a.exportState()).cookies.find((cookie) => cookie.name === "sid")!.value
     expect(rotated).not.toBe(firstSid)
 
     const closedA = await manager.releaseSession("R-V-A", { reason: "测试" })
     expect(closedA.summary).toMatchObject({ vaultVersion: before.version + 1, probes: [{ accountId, ok: true }] })
-    const closedB = await manager.releaseSession("R-V-B", { reason: "测试" })
-    expect(closedB.summary?.vaultVersion).toBe(before.version + 2)
+    const closedB = await mutate(ctx.app, "browser.close", wang, { browserId: b.id })
+    expect(closedB.error).toBeUndefined()
+    expect(closedB.data.saved.vaultVersion).toBe(before.version + 2)
     const merged = await loadVault(ctx.db, ctx.keyring, profileId)
     const values = Object.fromEntries(merged.state.cookies.map((cookie) => [cookie.name, cookie.value]))
     expect(values.sid).toBe(rotated)
