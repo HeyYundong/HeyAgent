@@ -7,7 +7,7 @@
 // 传进来的 run 是 sessions.list 的摘要（不带过程）：标题、检查点、验收先显示；过程按 id 另取（sessions.get），取到前是骨架屏。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
-import { BrainIcon, ChevronRightIcon, CircleAlertIcon, CircleCheckIcon, CircleStopIcon, EllipsisIcon, FlagIcon, FoldVerticalIcon, ListTreeIcon, PauseIcon, PlayIcon, SaveIcon, ScanSearchIcon, SearchXIcon, SendIcon, ShieldIcon, TriangleAlertIcon, UserIcon, WorkflowIcon, WrenchIcon, type LucideIcon } from "lucide-react"
+import { BrainIcon, ChevronRightIcon, CircleAlertIcon, CodeIcon, ListOrderedIcon, ScaleIcon, CircleCheckIcon, CircleStopIcon, EllipsisIcon, FlagIcon, FoldVerticalIcon, ListTreeIcon, PauseIcon, PlayIcon, SaveIcon, ScanSearchIcon, SearchXIcon, SendIcon, ShieldIcon, TriangleAlertIcon, UserIcon, WorkflowIcon, WrenchIcon, type LucideIcon } from "lucide-react"
 
 import { OutcomeBadge } from "@/components/shell/outcome-badge"
 import { DetailPanel, DetailSection, EmptyState } from "@/components/shell/simple-page"
@@ -45,6 +45,7 @@ import { RunSpaceButton } from "./run-space"
 import { RunDigestSection } from "./run-digest"
 import { RunOutcomeSection } from "./run-outcome"
 import { canSolidify, isRoutineTest, RoutineRunLine, SolidifyDialog } from "./run-routine"
+import { CODE_RUN_TOOL_ID, groupScriptEvents, isErrorStep, judgeOf, parseToolsSummary, TOOLS_SUMMARY_LINE } from "./run-script"
 
 const EVENT_ICON: Record<RunEventKind, LucideIcon> = { plan: ListTreeIcon, think: BrainIcon, tool: WrenchIcon, checkpoint: FlagIcon, rule: ShieldIcon, wait: PauseIcon, resume: PlayIcon, human: UserIcon, verify: ScanSearchIcon, done: CircleCheckIcon, error: TriangleAlertIcon }
 
@@ -131,9 +132,7 @@ export function RunDetail({ task, run }: { task: TaskDef; run?: SessionSummary }
           : `${run.eventCount} 条记录`}
       >
         {events ? (
-          <Trace className="gap-3">
-            {events.map((event, index) => <EventRow key={event.seq} event={event} run={run} running={run.status === "running" && index === events.length - 1} />)}
-          </Trace>
+          <EventList events={events} run={run} />
         ) : detail.isError ? (
           <p className="text-muted-foreground">过程没取到，稍后再试。</p>
         ) : (
@@ -150,6 +149,48 @@ function EventsSkeleton({ count }: { count: number }) {
     <div className="flex flex-col gap-3">
       {Array.from({ length: Math.min(count, 6) }, (_, index) => <Skeleton key={index} className="h-4 w-full" />)}
     </div>
+  )
+}
+
+/** 过程：agent 用 code.run（tools）写的脚本做的步骤收成一组，放在那次 code.run 下面（还在跑的单独一组） */
+function EventList({ events, run }: { events: RunEvent[]; run: SessionSummary }) {
+  const items = React.useMemo(() => groupScriptEvents(events), [events])
+  const lastSeq = run.status === "running" ? events.at(-1)?.seq : undefined
+  return (
+    <Trace className="gap-3">
+      {items.map((item) => item.kind === "script" ? (
+        <ScriptSteps key={`script-${item.steps[0]!.seq}`} steps={item.steps} run={run} lastSeq={lastSeq} pending />
+      ) : item.script ? (
+        <div key={item.event.seq} className="flex flex-col gap-1">
+          <EventRow event={item.event} run={run} running={item.event.seq === lastSeq} />
+          <ScriptSteps steps={item.script} run={run} lastSeq={lastSeq} />
+        </div>
+      ) : (
+        <EventRow key={item.event.seq} event={item.event} run={run} running={item.event.seq === lastSeq} />
+      ))}
+    </Trace>
+  )
+}
+
+/** 一次 code.run 的脚本做的步骤：缩进一层、能收起；步骤多（超过 8 步）默认收起。pending = 还没等到那次 code.run 的结果（脚本还在跑，或者中断了） */
+function ScriptSteps({ steps, run, lastSeq, pending = false }: { steps: RunEvent[]; run: SessionSummary; lastSeq?: number; pending?: boolean }) {
+  const errors = steps.filter(isErrorStep).length
+  const live = pending && lastSeq !== undefined && steps.some((step) => step.seq === lastSeq)
+  return (
+    <TraceCollapsible defaultOpen={pending || steps.length <= 8} className="pl-5.5">
+      <TraceCollapsibleTrigger>
+        <TraceLine status={live ? "running" : undefined}>
+          <TraceIcon><ListOrderedIcon /></TraceIcon>
+          <TraceTitle>{pending ? (live ? `脚本在跑，已经做了 ${steps.length} 步` : `脚本做的 ${steps.length} 步（没等到运行代码的结果）`) : `脚本做的 ${steps.length} 步`}</TraceTitle>
+          {errors > 0 && <TraceDescription>出错 {errors} 次</TraceDescription>}
+        </TraceLine>
+      </TraceCollapsibleTrigger>
+      <TraceCollapsibleContent>
+        <Trace className="gap-2">
+          {steps.map((step) => <EventRow key={step.seq} event={step} run={run} running={step.seq === lastSeq} />)}
+        </Trace>
+      </TraceCollapsibleContent>
+    </TraceCollapsible>
   )
 }
 
@@ -185,14 +226,39 @@ function EventRow({ event, run, running }: { event: RunEvent; run: SessionSummar
     )
   }
   const meta = eventMeta(event)
+  const status = running ? "running" : event.kind === "error" ? "error" : undefined
+  const routineBadge = event.trace?.routineStep && <Badge variant="outline">流程</Badge>
+  // 固化流程里的判断（ha.judge）：一行写问题 → 答案，下面一行理由
+  const judge = judgeOf(event)
+  if (judge) {
+    return (
+      <div className="flex flex-col gap-0.5">
+        <TraceLine status={status} title={event.title}>
+          <TraceIcon><ScaleIcon /></TraceIcon>
+          {routineBadge}
+          <Badge variant="secondary">判断</Badge>
+          <TraceTitle>{judge.question}</TraceTitle>
+          {judge.answer && <><TraceDescription>→</TraceDescription><span className={judge.answer.length <= 12 ? "shrink-0 font-medium text-foreground" : "min-w-0 truncate font-medium text-foreground"}>{judge.answer}</span></>}
+          <TraceDescription>{at}</TraceDescription>
+          {meta && <TraceDescription className="hidden sm:inline">· {meta}</TraceDescription>}
+        </TraceLine>
+        {/* 窄屏上问题常被截断，下面再写一遍全文 */}
+        <p className="pl-5.5 text-xs text-muted-foreground sm:hidden">问题：{judge.question}</p>
+        {judge.reason && <p className="pl-5.5 text-xs text-muted-foreground">理由：{judge.reason}</p>}
+        {event.detail && <p className="pl-5.5 text-xs whitespace-pre-line text-muted-foreground">{event.detail}</p>}
+      </div>
+    )
+  }
   const tag = eventTag(event)
   const RowIcon = tag?.icon ?? Icon
+  const scriptStep = event.trace?.scriptStep
   const line = (
-    <TraceLine status={running ? "running" : event.kind === "error" ? "error" : undefined}>
+    <TraceLine status={status}>
       <TraceIcon><RowIcon /></TraceIcon>
-      {event.trace?.routineStep && <Badge variant="outline">流程</Badge>}
+      {routineBadge}
+      {scriptStep && <Badge variant="outline"><CodeIcon data-icon="inline-start" />脚本</Badge>}
       {tag && <Badge variant={tag.variant}>{tag.label}</Badge>}
-      <TraceTitle>{event.title}</TraceTitle>
+      <TraceTitle>{scriptStep ? `第 ${scriptStep} 步 · ${event.title}` : event.title}</TraceTitle>
       <TraceDescription>{at}</TraceDescription>
       {meta && <TraceDescription className="hidden sm:inline">· {meta}</TraceDescription>}
     </TraceLine>
@@ -214,6 +280,7 @@ function EventRow({ event, run, running }: { event: RunEvent; run: SessionSummar
       <TraceCollapsibleContent className="flex flex-col gap-2 text-xs">
         <span>工具：{toolName(event.toolId ?? "")}（{event.toolId}）{meta && ` · ${meta}`}</span>
         {event.trace?.routineStep && <span className="text-muted-foreground">固化流程的脚本做的第 {event.trace.routineStep} 步</span>}
+        {scriptStep && <span className="text-muted-foreground">agent 写的脚本（运行代码）做的第 {scriptStep} 步</span>}
         {event.detail && <span>{event.detail}</span>}
         {codeRun ? <CodeRunView call={codeRun} output={event.output} /> : (
           <>
@@ -237,7 +304,6 @@ const IoBlock = ({ title, text }: { title: string; text: string }) => (
 
 // ---------- 运行代码 ----------
 
-const CODE_RUN_TOOL_ID = "code.run"
 const CODE_LANGUAGE = { python: { label: "Python", highlight: "python" }, node: { label: "Node.js", highlight: "javascript" }, bash: { label: "bash", highlight: "bash" } } as const
 
 interface CodeRunCall {
@@ -247,6 +313,8 @@ interface CodeRunCall {
   args: string[]
   stdin?: string
   timeout?: number
+  /** 脚本能调这次运行的工具（docs/dev/solidify.md 18.1） */
+  tools: boolean
 }
 
 /** code.run 的输入（JSON 字符串）；不是预期的形状就返回 undefined，调用方退回通用显示 */
@@ -272,6 +340,7 @@ function parseCodeRunInput(raw: string | undefined): CodeRunCall | undefined {
     args: Array.isArray(input.args) ? input.args.filter((arg): arg is string => typeof arg === "string") : [],
     stdin: typeof input.stdin === "string" && input.stdin ? input.stdin : undefined,
     timeout: typeof input.timeout === "number" ? input.timeout : undefined,
+    tools: input.tools === true,
   }
 }
 
@@ -285,6 +354,8 @@ interface CodeRunResult {
   notes: string[]
   stdout?: string
   stderr?: string
+  /** 带工具的脚本：末尾「脚本调了 n 次工具：……；停在第 k 步：……」那一段（18.1） */
+  tools?: string
 }
 
 const STDOUT_MARK = "--- stdout ---"
@@ -302,11 +373,16 @@ function parseCodeRunOutput(raw: string | undefined): CodeRunResult | undefined 
   const exitCode = exit ? Number(exit[1]) : undefined
   const outAt = lines.indexOf(STDOUT_MARK)
   const errAt = lines.indexOf(STDERR_MARK, outAt + 1)
-  const headEnd = [outAt, errAt].filter((at) => at >= 0).sort((a, b) => a - b)[0] ?? lines.length
-  // stdout、stderr 两段：标记行的下一行起，到下一个标记（或结尾）前
-  const section = (from: number, to: number) => (from < 0 ? undefined : lines.slice(from + 1, to < 0 ? undefined : to).join("\n").replace(/\n+$/, ""))
-  const stdout = section(outAt, errAt)
-  const stderr = section(errAt, -1)
+  // 工具汇总接在最后：取最后一个以「脚本调了 n 次工具」开头的行（stdout 里碰巧有同样开头的行，也是更早的那些）
+  const toolsAt = lines.findLastIndex((line, at) => at > 0 && TOOLS_SUMMARY_LINE.test(line))
+  const marks = [outAt, errAt, toolsAt].filter((at) => at >= 0).sort((a, b) => a - b)
+  const headEnd = marks[0] ?? lines.length
+  const nextMark = (from: number) => marks.find((at) => at > from) ?? lines.length
+  // stdout、stderr 两段：标记行的下一行起，到下一个标记（或结尾）前；工具汇总从它那一行起
+  const section = (from: number) => (from < 0 ? undefined : lines.slice(from + 1, nextMark(from)).join("\n").replace(/\n+$/, ""))
+  const stdout = section(outAt)
+  const stderr = section(errAt)
+  const tools = toolsAt < 0 ? undefined : lines.slice(toolsAt, nextMark(toolsAt)).join("\n").trim()
   return {
     summary: sandboxFailed ? [first] : first.split(" · "),
     exitCode,
@@ -314,6 +390,7 @@ function parseCodeRunOutput(raw: string | undefined): CodeRunResult | undefined 
     notes: lines.slice(1, headEnd).filter((line) => line.trim()),
     stdout: stdout || undefined,
     stderr: stderr || undefined,
+    tools: tools || undefined,
   }
 }
 
@@ -328,6 +405,7 @@ function CodeRunView({ call, output }: { call: CodeRunCall; output: string | und
         {call.file && <span>运行 <span className="font-mono">{call.file}</span></span>}
         {call.args.length > 0 && <span className="text-muted-foreground">参数 <span className="font-mono">{call.args.join(" ")}</span></span>}
         {call.timeout !== undefined && <span className="text-muted-foreground">最多跑 {call.timeout} 秒</span>}
+        {call.tools && <span className="text-muted-foreground">脚本能调这次运行的工具</span>}
       </div>
       {call.code !== undefined && <CodeView code={call.code} language={language.highlight} title="代码" className="max-h-96" />}
       {call.stdin !== undefined && <IoBlock title="标准输入" text={call.stdin} />}
@@ -339,6 +417,7 @@ function CodeRunView({ call, output }: { call: CodeRunCall; output: string | und
           {result.notes.map((note, index) => <span key={index} className="text-muted-foreground">{note}</span>)}
           {result.stdout && <IoBlock title="stdout" text={result.stdout} />}
           {result.stderr && <IoBlock title="stderr" text={result.stderr} />}
+          {result.tools && <ScriptToolsSummary text={result.tools} />}
         </>
       ) : (
         output && <IoBlock title="输出" text={output} />
@@ -356,6 +435,28 @@ function CodeRunSummaryPart({ part, result }: { part: string; result: CodeRunRes
   }
   if (part.startsWith("超时（") || part.startsWith("沙箱没起来")) return <Badge variant="destructive">{part}</Badge>
   return <span className="text-muted-foreground">{part}</span>
+}
+
+/** 带工具的脚本调了哪些工具：「脚本调了 n 次工具」一个徽章，后面每个工具几次；停在第 k 步单独一行 */
+function ScriptToolsSummary({ text }: { text: string }) {
+  const summary = parseToolsSummary(text)
+  return (
+    <div className="flex flex-col gap-1">
+      {summary.head && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <Badge variant="outline"><WrenchIcon data-icon="inline-start" />{summary.head}</Badge>
+          {summary.counts.map((part, index) => <span key={index}>{part}</span>)}
+        </div>
+      )}
+      {summary.stops.map((stop, index) => (
+        <div key={index} className="flex flex-wrap items-center gap-2">
+          <Badge variant="destructive">{stop.head}</Badge>
+          {stop.rest && <span>{stop.rest}</span>}
+        </div>
+      ))}
+      {summary.others.map((line, index) => <span key={index} className="text-muted-foreground">{line}</span>)}
+    </div>
+  )
 }
 
 /** agent 用「写下步骤」（plan.set）定的最后一版步骤；负责人或主管可以整体覆盖到任务的步骤里 */
