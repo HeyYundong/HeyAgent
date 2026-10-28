@@ -30,6 +30,7 @@ import { buildHandoff } from "../routine/runtime/handoff.js"
 import { runRoutineScript, type RoutineSnapshotted } from "../routine/runtime/run.js"
 import { afterRunSettled } from "../routine/after-run.js"
 import { endRoutineTestInTx } from "../routine/runtime/test-end.js"
+import { resolveAutoMemory } from "../memory/retrieval.js"
 import { maybeCompact } from "./compact.js"
 import {
   ToolGateway,
@@ -613,9 +614,10 @@ export async function runSession(
 ): Promise<RunOutcome> {
   const first = await loadSession(db, sessionId)
   if (!first || first.status !== "running") return "skipped"
-  const snapshot = first.snapshot
   // 没有快照的只有 M0 种子里的演示 session，引擎不碰它们
-  if (!snapshot) return "skipped"
+  if (!first.snapshot) return "skipped"
+  // 自动挑选记忆（docs/dev/memory-retrieval.md 3.5）：建系统提示之前挑一次、写回快照；挂起再继续、进程重启接着跑都不再挑。出错不挡运行
+  const snapshot = await resolveAutoMemory(db, sessionId, first.snapshot)
   const started = Date.now()
   let gateway: ToolGateway | undefined
   let closed = false

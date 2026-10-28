@@ -33,6 +33,8 @@ import {
 
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
+import { memoryEmbedInfos } from "../memory/embed.js"
+import { runMemoryUseOf } from "../memory/retrieval.js"
 import { parseCompiledText } from "./config/rules.js"
 
 const iso = (value: Date) => value.toISOString()
@@ -328,13 +330,16 @@ export async function listSessions(db: Db, filter: SessionFilter = {}): Promise<
 
 /** 一个 session 的全部：摘要 + 全部过程（按 seq） */
 export async function loadSession(db: Db, id: string): Promise<SessionRun | undefined> {
-  const [[summary], events] = await Promise.all([
+  const [[summary], events, [snapshotRow]] = await Promise.all([
     listSessions(db, { ids: [id] }),
     db.select().from(t.sessionEvents).where(eq(t.sessionEvents.sessionId, id)).orderBy(asc(t.sessionEvents.seq)),
+    db.select({ snapshot: t.sessions.snapshot }).from(t.sessions).where(eq(t.sessions.id, id)),
   ])
   if (!summary) return undefined
   return {
     ...summary,
+    // 这次用了哪些记忆（docs/dev/memory-retrieval.md 6.2）：从快照里取；没有快照的演示数据没有
+    ...(snapshotRow?.snapshot ? { memoryUse: runMemoryUseOf(snapshotRow.snapshot) } : {}),
     events: events.map((event) =>
       compact({
         seq: event.seq,
@@ -420,6 +425,8 @@ export async function listMemories(db: Db, now = new Date()): Promise<MemoryRef[
     .from(t.humanItems)
     .where(and(eq(t.humanItems.status, "open"), eq(t.humanItems.kind, "memory")))
   const reviewBy = new Map(reviewItems.map((row) => [row.memoryId, row.id]))
+  // 生效的记忆在当前 embedding 模型下算没算好（自动挑选记忆，docs/dev/memory-retrieval.md 6.3）；没设模型时是空的
+  const embedBy = await memoryEmbedInfos(db)
   return rows.map(({ memory, lastUsedTaskId }) =>
     compact({
       id: memory.id,
@@ -438,6 +445,7 @@ export async function listMemories(db: Db, now = new Date()): Promise<MemoryRef[
         lastUsed: memory.lastUsedAt && lastUsedTaskId ? `最近一次：${relativeDayText(iso(memory.lastUsedAt), now)}，${lastUsedTaskId} 的运行开始时读到` : undefined,
       }),
       reviewItemId: memory.status === "pending" ? reviewBy.get(memory.id) : undefined,
+      embed: memory.status === "active" ? embedBy.get(memory.id) : undefined,
     })
   )
 }

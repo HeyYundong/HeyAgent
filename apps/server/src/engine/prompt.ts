@@ -98,9 +98,16 @@ export function buildSystemPrompt(
     )
   }
 
-  if (snapshot.memories.length) {
+  // 手选的记忆是人明确要它遵守的；自动挑的（docs/dev/memory-retrieval.md 5.2）只是「可能相关」，挑错了 agent 能忽略。相似度只给人看，不写进提示
+  const memoryLine = (memory: SessionSnapshot["memories"][number]) => `- [${memory.appliesTo}] ${memory.content}`
+  const manualMemories = snapshot.memories.filter((memory) => !memory.auto)
+  const autoMemories = snapshot.memories.filter((memory) => memory.auto).sort((a, b) => b.auto!.score - a.auto!.score)
+  if (manualMemories.length) {
+    sections.push(`## 记忆（人审核过的，必须遵守）\n${manualMemories.map(memoryLine).join("\n")}`)
+  }
+  if (autoMemories.length) {
     sections.push(
-      `## 记忆（人审核过的，必须遵守）\n${snapshot.memories.map((memory) => `- [${memory.appliesTo}] ${memory.content}`).join("\n")}`
+      `## 可能相关的记忆（系统按这次要办的事从记忆库里自动挑的，人审核过；和这次的事有关就照做，无关的忽略）\n${autoMemories.map(memoryLine).join("\n")}`
     )
   }
 

@@ -14,6 +14,7 @@ import { env } from "./env.js"
 import { startGalleryEmbeddings } from "./gallery/background.js"
 import { loadKeyring } from "./lib/crypto.js"
 import { ChangeHub } from "./live/hub.js"
+import { startMemoryEmbeddings } from "./memory/embed.js"
 
 const { db, pool } = createDb(env.databaseUrl)
 const auth = createAuth(db, { secret: env.authSecret, baseURL: env.authUrl, trustedOrigins: env.trustedOrigins })
@@ -29,6 +30,8 @@ await hub.start()
 await initEngineClient(db)
 // 图库：后台补算向量（换了 embedding 模型、传图时模型调用失败）
 const stopGalleryEmbeddings = startGalleryEmbeddings(db)
+// 记忆：后台算向量（自动挑选记忆用，docs/dev/memory-retrieval.md 2.3），和图库共用 embedding 模型
+const stopMemoryEmbeddings = startMemoryEmbeddings(db)
 
 const app = createApp({ db, auth, hub, keyring })
 const server = serve({ fetch: app.fetch, port: env.port, hostname: env.host }, (info) => {
@@ -49,6 +52,7 @@ async function shutdown(signal: string) {
   console.log(`收到 ${signal}，正在关闭`)
   stopOpenRouterRetry()
   stopGalleryEmbeddings()
+  stopMemoryEmbeddings()
   server.close()
   await hub.stop()
   await pool.end()

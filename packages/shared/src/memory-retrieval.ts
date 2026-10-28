@@ -55,13 +55,14 @@ export const AUTO_MEMORY_INLINE_EMBED_MAX = 64
 export const AUTO_MEMORY_TIMEOUT_MS = 20_000
 
 /**
- * 相似度门槛（余弦相似度）：低于它的不挑。各模型分数分布不一样，按模型给；没标定过的用 AUTO_MEMORY_MIN_SCORE。
- * 0.6 是没标定前的占位值，上线前要按设计第 9.3 节用真模型标定一次再改
+ * 相似度门槛（余弦相似度）：低于它的不挑。各模型分数分布不一样，按模型给；没标定过的用 AUTO_MEMORY_MIN_SCORE（0.6，占位值）。
+ * 标定见设计第 9.3 节（2026-10-28，spikes/memory-retrieval/2026-10-28/）
  */
 export const AUTO_MEMORY_MIN_SCORE = 0.6
 
 const MIN_SCORES: Record<string, number> = {
-  "google/gemini-embedding-2": 0.6,
+  // 2026-10-28 标定：该挑的 0.64～0.83（平均 0.77），不该挑的 0.55～0.79（平均 0.65）；0.70 留住 89% 该挑的、挡掉 88% 不该挑的（别的类的挡掉 94%）
+  "google/gemini-embedding-2": 0.7,
 }
 
 /** 某个 embedding 模型（服务 id/模型名）挑记忆的相似度门槛 */
@@ -96,7 +97,7 @@ export const autoMemorySnapshotSchema = z.object({
   notReady: z.number().int().optional(),
   /** 拿来挑的文字（截到 AUTO_MEMORY_QUERY_MAX_CHARS） */
   query: z.string().optional(),
-  /** skipped / failed 的原因（给人看的一句话） */
+  /** skipped / failed 的原因（给人看的一句话）；done 但一条都没过门槛时写最像的那条，例如「最像的是 m-007（0.52），没到门槛 0.70」 */
   reason: z.string().optional(),
 })
 export type AutoMemorySnapshot = z.infer<typeof autoMemorySnapshotSchema>

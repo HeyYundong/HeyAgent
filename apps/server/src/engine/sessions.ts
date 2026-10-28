@@ -295,6 +295,8 @@ export async function buildSnapshot(
     ...(browser ? { browser } : {}),
     ...(desktop ? { desktop } : {}),
     ...(routine ? { routine } : {}),
+    // 自动挑选记忆（docs/dev/memory-retrieval.md 5.1）：这里不调模型（在调用方的事务里），worker 进这次运行时再挑；固化试跑不挑
+    ...(task.autoMemory && !extra.routineTest ? { autoMemory: { status: "pending" as const, limit: task.autoMemoryLimit } } : {}),
   }
 }
 
