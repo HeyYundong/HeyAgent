@@ -1,5 +1,5 @@
 {
-  "id": "165d54f7-096c-4a29-be73-477d6d32c761",
+  "id": "7d013e7b-a885-4bef-a44c-1f20dec7c2b8",
   "prevId": "530b6754-89ba-4955-8d08-6abe5cc54086",
   "version": "7",
   "dialect": "postgresql",
@@ -4100,6 +4100,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "embed_error": {
+          "name": "embed_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "embed_tried_at": {
+          "name": "embed_tried_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -4179,6 +4191,88 @@
           "value": "(\"memories\".\"source_kind\" = 'human' and \"memories\".\"source_by_id\" is not null) or (\"memories\".\"source_kind\" = 'agent' and \"memories\".\"source_task_id\" is not null and \"memories\".\"source_evidence\" is not null)"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.memory_embeddings": {
+      "name": "memory_embeddings",
+      "schema": "",
+      "columns": {
+        "memory_id": {
+          "name": "memory_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "model_id": {
+          "name": "model_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content_hash": {
+          "name": "content_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "embedding": {
+          "name": "embedding",
+          "type": "vector(1024)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "memory_embeddings_model_id_idx": {
+          "name": "memory_embeddings_model_id_idx",
+          "columns": [
+            {
+              "expression": "model_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "memory_embeddings_memory_id_memories_id_fk": {
+          "name": "memory_embeddings_memory_id_memories_id_fk",
+          "tableFrom": "memory_embeddings",
+          "tableTo": "memories",
+          "columnsFrom": [
+            "memory_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "memory_embeddings_memory_id_model_id_pk": {
+          "name": "memory_embeddings_memory_id_model_id_pk",
+          "columns": [
+            "memory_id",
+            "model_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.model_defaults": {
@@ -4818,13 +4912,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'{}'::text[]"
-        },
-        "http_suggestions": {
-          "name": "http_suggestions",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
         },
         "fail_reason": {
           "name": "fail_reason",
@@ -7271,13 +7358,6 @@
           "notNull": true,
           "default": false
         },
-        "allow_browser_fetch": {
-          "name": "allow_browser_fetch",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
         "desktop_ids": {
           "name": "desktop_ids",
           "type": "text[]",
@@ -7337,6 +7417,20 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
+        },
+        "auto_memory": {
+          "name": "auto_memory",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "auto_memory_limit": {
+          "name": "auto_memory_limit",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 5
         },
         "created_at": {
           "name": "created_at",

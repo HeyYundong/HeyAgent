@@ -3,6 +3,7 @@
 import { z } from "zod"
 
 import { sessionDesktopSnapshotSchema } from "./desktop.js"
+import { autoMemorySnapshotSchema, snapshotMemoryAutoSchema } from "./memory-retrieval.js"
 import { routineSnapshotSchema } from "./routine.js"
 import {
   checkpointKindSchema,
@@ -51,9 +52,15 @@ export const sessionSnapshotSchema = z.object({
    * 2026-10-20 以前的快照里还可能有 reviewEnabled（复核开关，已经去掉），读的时候忽略
    */
   reviewModelId: z.string().optional(),
+  /**
+   * 给 agent 的记忆：手选的（建任务时选的）在前；自动挑的（docs/dev/memory-retrieval.md）在后、带 auto（相似度）。
+   * 自动挑的不是开始运行的那个事务里写的：worker 进这次运行时挑好，追加到这里，同时把 autoMemory 改成 done / skipped / failed
+   */
   memories: z.array(
-    z.object({ id: z.string(), content: z.string(), appliesTo: z.string() })
+    z.object({ id: z.string(), content: z.string(), appliesTo: z.string(), auto: snapshotMemoryAutoSchema.optional() })
   ),
+  /** 自动挑选记忆：任务开着才有（固化试跑不挑）。pending = 还没挑；加这个字段之前开始的运行没有 */
+  autoMemory: autoMemorySnapshotSchema.optional(),
   /** 任务记忆：这个任务自己积累的经验（加这个字段之前开始的运行没有） */
   taskMemory: z.array(z.string()).optional(),
   skills: z.array(

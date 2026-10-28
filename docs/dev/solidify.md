@@ -466,7 +466,7 @@ P1 验收：
 ### P3：接口
 
 - 记接口、`browser.fetch`、HTTP 工具建议（第 10 节）。
-- 多个任务共用的流程库：像技能一样在配置页管理、建任务时选。
+- 多个任务共用的流程库：像技能一样在配置页管理、建任务时选。设计见 `docs/dev/routine-library.md`（2026-10-28 草稿）。
 
 ## 14. 要你定的
 
@@ -934,10 +934,12 @@ P1 验收：
 3. 固化员看到这些接口时，读数据改用接口：从一页页点变成直接取；
 4. 要 token 的接口（`browser.fetch` 调不了），固化员建议主管建一个 HTTP 工具。只建议，不自动建。
 
+> 2026-10-28 监工审过，两处按推荐定：没设白名单时只能调同源的；记接口时存返回体开头 20 KB，按字段名打码。
+
 ### 19.1 开关和快照
 
 - 任务加 `allowBrowserFetch`（界面「允许直接调网站接口」），默认关。放在「允许在网页里执行脚本」「允许看画面」下面。
-- 表：`tasks.allow_browser_fetch`（boolean，默认 false，迁移 0033）。
+- 表：`tasks.allow_browser_fetch`（boolean，默认 false，迁移 0034）。
 - 开始运行时冻进 `snapshot.browser.allowFetch`（老快照没有 = 关）。
 - 关着时：没有 `browser.fetch` 这个工具，也不记接口。
 - 助手改任务时认这个字段（`allowBrowserFetch`，已接好）。
@@ -1163,7 +1165,7 @@ P1 验收：
 - 参数清单、要准备的密钥名；
 - 依据：哪几个请求的 seq。
 
-**规整**（`compile.ts`），存进 `routine_versions.http_suggestions`（`HttpToolSuggestion[]`，迁移 0033）：
+**规整**（`compile.ts`），存进 `routine_versions.http_suggestions`（`HttpToolSuggestion[]`，迁移 0034）：
 
 - 请求头数组变成对象，空的 body 去掉，参数都补 `type: "string"`；
 - 按 `http-template.ts` 的 `syncHttpParams` 对齐参数和模板；
@@ -1285,7 +1287,7 @@ P1 验收：
 | `packages/shared/src/site-api.ts`（新） | `BROWSER_FETCH_TOOL`；方法、只读方法、`isWriteMethod`；超时、大小上限；不许设的请求头 `fetchHeaderForbidden`；`fetchCsrfSchema`；输入 `browserFetchInputSchema`；给脚本的 `browserFetchDataSchema`；打码 `SITE_SECRET_KEYS` / `siteSecretKey`；`NETWORK_LOG_PATH` 和记接口的上限；一行的格式 `networkRequestLineSchema`、`networkLogEndLineSchema`、`networkLogLineSchema` |
 | `packages/shared/src/routine.ts` | `eventTraceSchema.network`；`httpToolSuggestionSchema`、`HTTP_TOOL_SUGGESTIONS_MAX`；`RoutineVersion.httpToolSuggestions`；`RoutineSummary.versions[].httpToolSuggestions`（条数） |
 | `packages/shared` 其余 | 任务输入 `allowBrowserFetch`（默认 false）、任务 `allowBrowserFetch`；快照 `browser.allowFetch`（默认 false）；运行文件 `kind` 加 `network` |
-| `apps/server/drizzle/0033_site_api.sql` | `tasks.allow_browser_fetch`（默认 false）、`routine_versions.http_suggestions`（jsonb，默认 `[]`） |
+| `apps/server/drizzle/0034_site_api.sql` | `tasks.allow_browser_fetch`（默认 false）、`routine_versions.http_suggestions`（jsonb，默认 `[]`） |
 | `apps/server/src` | 读写任务（`data/config/tasks.ts`、`data/loaders.ts`）、快照（`engine/sessions.ts`）、助手（`assistant/tools.ts`、`prompt.ts`）带上开关；`routine/service.ts` 返回建议；`files/service.ts`：`FileKind`、运行文件的种类、只读目录加 `network`；`routine/prompt.ts`：`httpSuggestionOutputSchema`（还没接进 `compileOutputSchema`） |
 | `apps/server/sandbox-sdk/heyagent/index.d.ts` | `FetchArgs`、`FetchResult`、`ha.browser.fetch`（`index.js` 还没有） |
 | `apps/web/src` | 任务弹窗的表单值、导入向导的默认值带上 `allowBrowserFetch`（勾选框还没有）；文件种类的名字「网页请求」 |

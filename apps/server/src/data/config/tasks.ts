@@ -150,6 +150,9 @@ function columns(input: TaskInput, modelId: string, verifyModelId: string | null
     // 固化（docs/dev/solidify.md 17.1）：null = 按默认（被派的、定时的开）
     autoSolidify: input.autoSolidify ?? null,
     routineSkipTest: input.routineSkipTest,
+    // 自动挑选记忆（docs/dev/memory-retrieval.md 第 4 节）
+    autoMemory: input.autoMemory,
+    autoMemoryLimit: input.autoMemoryLimit,
   }
 }
 
