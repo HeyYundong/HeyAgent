@@ -21,5 +21,5 @@ exec podman run --rm --init --shm-size=2g \
   --network host --userns=keep-id \
   -v "$ROOT:$ROOT" -w "$ROOT/apps/server" \
   -e TZ=Asia/Shanghai -e NODE_ENV=test -e OPENROUTER_API_KEY -e TEST_DATABASE_URL \
-  -e SPEED_FILE="${SPEED_FILE:-speed}" -e ROUTINE_SOLIDIFY_MODEL -e SPEED_TOOLS -e SPEED_LABEL="$LABEL" -e SPEED_SCENARIOS="$SCENARIOS" -e SPEED_REPEAT="$REPEAT" -e SPEED_OUT="$ROOT/.dev/speed/$LABEL.jsonl" \
+  -e SPEED_FILE="${SPEED_FILE:-speed}" -e ROUTINE_SOLIDIFY_MODEL -e SPEED_TOOLS -e SPEED_MODEL_VISION -e SPEED_LABEL="$LABEL" -e SPEED_SCENARIOS="$SCENARIOS" -e SPEED_REPEAT="$REPEAT" -e SPEED_OUT="$ROOT/.dev/speed/$LABEL.jsonl" \
   "$IMAGE" node node_modules/vitest/vitest.mjs run --config vitest.speed.config.ts

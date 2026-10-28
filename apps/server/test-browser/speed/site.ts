@@ -153,7 +153,8 @@ const productForm = () => `<h1>新建商品</h1>
 <label>类目 <select name="category"><option value="">请选择</option>${CATEGORIES.map((each) => `<option>${each}</option>`).join("")}</select></label>
 <label><input type="checkbox" name="tax" value="1"> 含税</label>
 <button type="submit">提交</button>
-</form>`
+</form>
+<p><a href="/a/list">已录入的商品</a></p>`
 
 export async function startSpeedSite(): Promise<SpeedSite> {
   const results: SpeedResults = { products: new Map(), productSubmits: 0, pasted: new Map(), pasteCount: 0, needsRound: 0, orders: new Map(), orderSubmits: 0 }
@@ -200,15 +201,26 @@ export async function startSpeedSite(): Promise<SpeedSite> {
         })
         return
       }
+      // 真的存过才提示「已保存」（以前只看网址参数：复核发现 ?saved=P-999 也弹，就不认这个提示了）
       const saved = url.searchParams.get("saved")
       const notice = cookieOf(req, "notice") !== "seen"
-      const overlay = saved
+      const overlay = saved && results.products.has(saved)
         ? `<div class="mask" id="savedMask"><div class="box" role="dialog" aria-label="保存成功"><p>已保存商品 ${saved}。</p><button onclick="document.getElementById('savedMask').remove()">继续录入</button></div></div>`
         : notice
           ? `<div class="mask" id="noticeMask"><div class="box" role="dialog" aria-label="系统公告"><h2>系统公告</h2><p>本周六 22:00 起系统维护两小时，请提前保存数据。</p><button onclick="document.cookie='notice=seen; path=/'; document.getElementById('noticeMask').remove()">我知道了</button></div></div>`
           : ""
       return send(200, page("新建商品 - ERP", productForm() + overlay))
     }
+    if (path === "/a/list")
+      return send(
+        200,
+        page(
+          "已录入的商品 - ERP",
+          `<h1>已录入的商品（共 ${results.products.size} 个）</h1><table><tr><th>编号</th><th>名称</th><th>单价（元）</th><th>起订量</th><th>类目</th><th>含税</th></tr>${[...results.products.entries()]
+            .map(([code, each]) => `<tr><td>${code}</td><td>${each.name}</td><td>${each.price}</td><td>${each.moq}</td><td>${each.category}</td><td>${each.tax ? "是" : "否"}</td></tr>`)
+            .join("")}</table><p><a href="/a/new">继续录入</a></p>`
+        )
+      )
 
     // ---------- B 搜索汇总 ----------
     if (path === "/b/search") {

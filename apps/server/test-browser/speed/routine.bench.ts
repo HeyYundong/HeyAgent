@@ -46,9 +46,11 @@ function goalOf(scenario: SpeedScenario) {
   return `在线文档 ${site.url("/c/doc")} 是一张字母图片表，按 ${LETTERS.join("、")} 每行放一张图：图片到 ${site.url("/c/search?q=letter+A")} 这样的网址搜（把 A 换成对应字母），选「大写字母 X」那张（X 是这一行的字母），复制图片，贴进文档里这个字母那一行的图片格。${LETTERS.length} 行都贴好、没有贴错的后结束。`
 }
 
-async function ensureModel(id: string, providerId: string) {
+/** vision：模型能不能看图（执行、复核用的 DeepSeek V4.1 Flash 能看图：复核才带得上最后一张截图，和正式环境一样） */
+async function ensureModel(id: string, providerId: string, vision: boolean) {
   const [model] = await ctx.db.select().from(t.models).where(eq(t.models.id, id))
-  if (!model) await ctx.db.insert(t.models).values({ id, providerId, name: id, contextK: 1000, priceIn: 0.3, priceOut: 1.2 })
+  if (!model) await ctx.db.insert(t.models).values({ id, providerId, name: id, contextK: 1000, priceIn: 0.3, priceOut: 1.2, vision })
+  else if (model.vision !== vision) await ctx.db.update(t.models).set({ vision }).where(eq(t.models.id, id))
 }
 
 async function useRealModels() {
@@ -63,8 +65,8 @@ async function useRealModels() {
   if (old) await ctx.db.update(t.secrets).set({ enc, version, masked: mask(apiKey) }).where(eq(t.secrets.id, secretId))
   else await ctx.db.insert(t.secrets).values({ id: secretId, scope: "model_provider", refId: provider.id, name: "api_key", version, enc, masked: mask(apiKey) })
   await ctx.db.update(t.modelProviders).set({ apiKeySecretId: secretId, status: "ok", baseUrl: "https://openrouter.ai/api/v1" }).where(eq(t.modelProviders.id, provider.id))
-  await ensureModel(MODEL, provider.id)
-  await ensureModel(SOLIDIFY_MODEL, provider.id)
+  await ensureModel(MODEL, provider.id, process.env.SPEED_MODEL_VISION !== "0")
+  await ensureModel(SOLIDIFY_MODEL, provider.id, false)
   // 模型页「固化」的默认模型
   await ctx.db
     .insert(t.modelDefaults)

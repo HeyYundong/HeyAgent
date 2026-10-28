@@ -178,6 +178,20 @@ describe("复核看的过程记录", () => {
     expect(log).toMatchObject({ total: 400, tools: 400, recent: 30, earlier: 370 })
   })
 
+  it("较早的条数少时每行多给些：读到的电话不被截掉；详细的几条里提交的整段内容给全（基准 B：复核说义乌那家的电话被截断）", () => {
+    const now = new Date()
+    const detail = "义乌市晨光日用品有限公司 联系人 陈晓 电话 0579-85512301 评分 4.6 所在地 义乌"
+    const rows = [
+      { kind: "tool", title: "读取列表", toolId: "browser.extract", input: JSON.stringify({ list: "table tr" }), output: `| 字段 | 值 |\n|---|---|\n${"| 说明 | 很长的说明文字 |\n".repeat(3)}| 详情 | ${detail} |` },
+      ...Array.from({ length: 40 }, () => ({ kind: "tool", title: "看页面", toolId: "browser.snapshot", input: "{}", output: "好" })),
+    ].map((row, index) => ({ id: index + 1, sessionId: "R-y", seq: index + 1, at: now, detail: null, trace: null, ...row })) as unknown as (typeof t.sessionEvents.$inferSelect)[]
+    const log = reviewLog(rows, { recent: 30, budget: 12_000 })
+    expect(log.earlier).toBe(11)
+    expect(log.lines.join("\n")).toContain("0579-85512301 评分 4.6")
+    const summary = ["义乌市晨光日用品有限公司,0579-85512301,4.6", "永康市铭泰五金制品厂,0579-87120456,4.8", "深圳市光源照明科技有限公司,0755-26651188,4.4"].join("\n")
+    expect(describeToolInput("browser.type", JSON.stringify({ element: "汇总", text: summary }), 600, 300)).toContain("深圳市光源照明科技有限公司,0755-26651188,4.4")
+  })
+
   it("不到 30 条：全部详细，不加「较早的」那一段", async () => {
     const { session, snapshot } = await insertRun(longRunEvents().slice(0, 5))
     const { prompt } = await buildReviewPrompt(ctx.db, session, snapshot, "报告", false)

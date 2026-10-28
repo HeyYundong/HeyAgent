@@ -52,7 +52,10 @@ async function useRealModel() {
   else await ctx.db.insert(t.secrets).values({ id: secretId, scope: "model_provider", refId: provider.id, name: "api_key", version, enc, masked: mask(apiKey) })
   await ctx.db.update(t.modelProviders).set({ apiKeySecretId: secretId, status: "ok", baseUrl: "https://openrouter.ai/api/v1" }).where(eq(t.modelProviders.id, provider.id))
   const [model] = await ctx.db.select().from(t.models).where(eq(t.models.id, MODEL))
-  if (!model) await ctx.db.insert(t.models).values({ id: MODEL, providerId: provider.id, name: MODEL, contextK: 1000, priceIn: 0.3, priceOut: 1.2 })
+  // 能看图（DeepSeek V4.1 Flash 能）：复核带得上最后一张截图，和正式环境一样
+  const vision = process.env.SPEED_MODEL_VISION !== "0"
+  if (!model) await ctx.db.insert(t.models).values({ id: MODEL, providerId: provider.id, name: MODEL, contextK: 1000, priceIn: 0.3, priceOut: 1.2, vision })
+  else if (model.vision !== vision) await ctx.db.update(t.models).set({ vision }).where(eq(t.models.id, MODEL))
   configureEngine({ modelFactory: undefined })
 }
 

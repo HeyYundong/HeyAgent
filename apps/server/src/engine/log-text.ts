@@ -51,8 +51,8 @@ const SKIP_KEYS = new Set(["ref", "startRef", "endRef", "snapshot"])
 /** 单独处理过的参数 */
 const HANDLED_KEYS = new Set(["element", "startElement", "endElement", "target", "url", "key", "text", "values", "fields", "list", "outcomes"])
 
-/** 一个浏览器动作的参数：元素 / 定位 / 网址 / 按键 / 填的值，别的参数 key=值（每个值截 40 字左右） */
-export function describeBrowserArgs(input: Record<string, unknown>): string {
+/** 一个浏览器动作的参数：元素 / 定位 / 网址 / 按键 / 填的值，别的参数 key=值（填的值每个最多 valueMax 字，默认 40） */
+export function describeBrowserArgs(input: Record<string, unknown>, valueMax = VALUE_MAX): string {
   const parts: string[] = []
   const element = short(input.element) || short(input.startElement)
   if (element) parts.push(`「${element}」`)
@@ -60,15 +60,15 @@ export function describeBrowserArgs(input: Record<string, unknown>): string {
   if (str(input.endElement)) parts.push(`→「${short(input.endElement)}」`)
   if (str(input.url)) parts.push(short(input.url, 120))
   if (str(input.key)) parts.push(`按键 ${short(input.key)}`)
-  if (str(input.text)) parts.push(`填「${short(input.text)}」`)
-  if (Array.isArray(input.values)) parts.push(`选「${input.values.map((value) => short(value)).join("、")}」`)
+  if (str(input.text)) parts.push(`填「${short(input.text, valueMax)}」`)
+  if (Array.isArray(input.values)) parts.push(`选「${input.values.map((value) => short(value, valueMax)).join("、")}」`)
   if (Array.isArray(input.fields))
     parts.push(
       input.fields
         .map((field) => {
           const each = (field ?? {}) as Record<string, unknown>
           const name = short(each.name) || short(each.target) || "（没写名字）"
-          return `${name}=${"value" in each ? short(each.value) : "（没填值）"}`
+          return `${name}=${"value" in each ? short(each.value, valueMax) : "（没填值）"}`
         })
         .join("、")
     )
@@ -84,13 +84,13 @@ export function describeBrowserArgs(input: Record<string, unknown>): string {
 }
 
 /** browser.batch 的参数：逐个动作列出来「1. click「继续录入」 2. fill_form 编号=P-106、…」 */
-export function describeBatch(input: Record<string, unknown>): string {
+export function describeBatch(input: Record<string, unknown>, valueMax = VALUE_MAX): string {
   const actions = Array.isArray(input.actions) ? (input.actions as { tool?: unknown; input?: unknown }[]) : []
   if (!actions.length) return "（没有动作）"
   return actions
     .map((action, index) => {
       const tool = batchActionToolId(str(action?.tool) || "?").replace(/^browser\./, "")
-      const args = action?.input && typeof action.input === "object" ? describeBrowserArgs(action.input as Record<string, unknown>) : ""
+      const args = action?.input && typeof action.input === "object" ? describeBrowserArgs(action.input as Record<string, unknown>, valueMax) : ""
       return `${index + 1}. ${tool}${!args || args.startsWith("「") ? args : ` ${args}`}`
     })
     .join(" ")
@@ -98,9 +98,9 @@ export function describeBatch(input: Record<string, unknown>): string {
 
 /**
  * 一次工具调用的参数写成文字：browser.batch 逐个动作列出来；别的浏览器动作给元素 / 定位 / 网址 / 填的值；
- * 其它工具（和解析不了的：存的时候截断了）照旧截 JSON。max：最多多少字
+ * 其它工具（和解析不了的：存的时候截断了）照旧截 JSON。max：最多多少字；valueMax：填的值每个最多多少字
  */
-export function describeToolInput(toolId: string | null, input: string | null, max: number): string {
+export function describeToolInput(toolId: string | null, input: string | null, max: number, valueMax = VALUE_MAX): string {
   if (!input) return "{}"
   if (toolId?.startsWith("browser.")) {
     let parsed: unknown
@@ -110,7 +110,7 @@ export function describeToolInput(toolId: string | null, input: string | null, m
       parsed = undefined
     }
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      const text = toolId === "browser.batch" ? describeBatch(parsed as Record<string, unknown>) : describeBrowserArgs(parsed as Record<string, unknown>)
+      const text = toolId === "browser.batch" ? describeBatch(parsed as Record<string, unknown>, valueMax) : describeBrowserArgs(parsed as Record<string, unknown>, valueMax)
       return clip(text, max) || "（没有参数）"
     }
   }
@@ -213,16 +213,22 @@ export function reviewLog(events: EventRow[], options: ReviewLogOptions): { line
   }
   const mark = (event: EventRow) => (isToolError(event) ? "✗ 出错" : "✓")
 
+  // 详细的几条：填的值给全（例如提交的汇总有好几行），参数、结果各 300 字（批的参数 2000 字）
   const detailed = (event: EventRow) =>
     event.kind === "tool"
-      ? `- #${toolNo.get(event.seq)} 调用 ${event.title}（${event.toolId ?? ""}）${tags(event)}：参数 ${describeToolInput(event.toolId, event.input, event.toolId === "browser.batch" ? 2000 : 300)} → 结果 ${describeToolOutput(event.toolId, event.output, 300) || "（没有输出）"}`
+      ? `- #${toolNo.get(event.seq)} 调用 ${event.title}（${event.toolId ?? ""}）${tags(event)}：参数 ${describeToolInput(event.toolId, event.input, event.toolId === "browser.batch" ? 2000 : 600, 300)} → 结果 ${describeToolOutput(event.toolId, event.output, 300) || "（没有输出）"}`
       : `- ${event.kind === "rule" ? "规则" : "人"}：${event.title}${tags(event)}${event.detail ? `（${clip(event.detail, 200)}）` : ""}`
+  // 更早的每条压成一行：较早的条数少时每行多给些（读到的电话、提交的内容别被截掉），多时少给，合计按 budget
+  const cut = Math.max(0, events.length - options.recent)
+  const perLine = Math.min(900, Math.max(160, Math.floor(options.budget / Math.max(1, cut))))
+  const inputMax = Math.min(500, Math.max(120, Math.floor(perLine * 0.55)))
+  const outputMax = Math.min(400, Math.max(60, Math.floor(perLine * 0.45)))
+  const valueMax = Math.min(120, Math.max(VALUE_MAX, Math.floor(perLine / 8)))
   const compact = (event: EventRow) =>
     event.kind === "tool"
-      ? `- #${toolNo.get(event.seq)} ${event.toolId ?? event.title} ${mark(event)}${tags(event)} ${describeToolInput(event.toolId, event.input, event.toolId === "browser.batch" ? 600 : 200)} → ${describeToolOutput(event.toolId, event.output, 60) || "（没有输出）"}`
+      ? `- #${toolNo.get(event.seq)} ${event.toolId ?? event.title} ${mark(event)}${tags(event)} ${describeToolInput(event.toolId, event.input, event.toolId === "browser.batch" ? Math.max(600, perLine) : inputMax, valueMax)} → ${describeToolOutput(event.toolId, event.output, outputMax) || "（没有输出）"}`
       : `- ${event.kind === "rule" ? "规则" : "人"}：${event.title}${tags(event)}${event.detail ? `（${oneLine(clip(event.detail, 80))}）` : ""}`
 
-  const cut = Math.max(0, events.length - options.recent)
   const earlier = clipBlocks(events.slice(0, cut).map(compact), options.budget)
   const recent = events.slice(cut).map(detailed)
   const lines = cut

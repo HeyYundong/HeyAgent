@@ -240,6 +240,7 @@ const RULES = [
   "15. 过程里用过的工具都能在脚本里用：「任务里的工具」一节写了每个工具（组工具是这次用过的子工具）在 SDK 里怎么调。有包装的用包装（ha.browser.copyImage、ha.browser.clipboardPaste……）；没有包装的用 ha.tool(\"工具 id\", 参数)，id 照过程记录里写（例如 \"browser.navigate_back\"），参数和 agent 那次调用的一样，快照 ref 换成定位。不要因为 SDK 没有某个包装就说不适合。",
   "16. agent 按坐标（x、y）做的操作（browser.mouse_click_xy、按坐标复制图片……），脚本里换成定位（target）：页面布局、窗口大小、内容一变，坐标就不对了。从前后的快照、录下的代码、图片的 alt 文字、元素的文字里找定位（例如 getByRole('img', { name: '大写字母 X' })、locator('img[alt=\"大写字母 X\"]')）；实在找不到定位的，照用坐标，写进 assumptions。",
   "17. 复制图片再贴到别处：const { fileId } = await ha.browser.copyImage({ element, target }) → ha.browser.click 点到要放的位置（格子、编辑区）→ await ha.commit(\"贴第 n 张图\") → await ha.browser.clipboardPaste({ fileId })，贴完读回来核对（ha.browser.extract 读格子里的 img 或 waitAny 等图出现）再 ha.verified。粘贴会改页面上的内容，前面一定 ha.commit；一行行贴的写成循环，每一行前 commit。",
+  "18. 读回核对（ha.verified 之前）看页面上稳定、看得见的东西：文字、图片的 alt、条数、有没有这个元素、提示语（「已保存」）。不要比对 src、href、id、class 这类属性值的格式或随机部分（刚贴进去的图 src 是 blob:，刷新以后才是 data:；id 每次不一样）。试跑走到第一次 ha.commit 就停，后面的核对没被试过：照过程里 agent 当时是怎么确认做成的来写（它看了哪一页、读到了什么），拿不准时宽一些（例如格子里有图就算贴上了），确实没做成才 ha.fail。",
   "",
   "只输出要求的 JSON。",
 ].join("\n")
