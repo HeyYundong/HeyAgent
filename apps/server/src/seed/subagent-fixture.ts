@@ -1,5 +1,6 @@
 // 子 agent 的演示数据（开发、测试用，不进正式环境；docs/dev/sub-agents.md 第 13 节）：一个选了「拆给子 agent」的任务，
-// 一次父运行在等子 agent，拆了 4 个：2 个办成（一个交回了字段和文件）、1 个没办成、1 个排队。网页的「子 agent」区块、子运行详情靠它做样子。
+// 一次父运行在等子 agent，拆了 5 个：2 个办成（一个交回了字段和文件）、1 个没办成、1 个排队、1 个排队时就被停掉（「没开始」）。
+// 用时按秒（从轮到开始算，不算排队）：15 秒、1 分 20 秒、42 秒。网页的「子 agent」区块、子运行详情靠它做样子。
 // 运行只插页面要的几列和快照（子快照照 shared 的 deriveSubSnapshot 派生），没有消息，不能「继续」，只用来看。
 import {
   deriveSubSnapshot,
@@ -23,6 +24,8 @@ import { saveFile } from "../files/service.js"
 
 const nextNo = async (db: Db, seq: string) => Number((await db.execute<{ n: string }>(sql`select nextval(${seq}) as n`)).rows[0]!.n)
 const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000)
+/** 子 agent 是 28 分钟前拆出来的 */
+const SPLIT_AT = 28
 
 /** 插入演示数据，返回 { 任务, 父运行, 子运行 } */
 export async function insertSubagentFixtures(db: Db): Promise<{ taskId: string; parentId: string; childIds: string[] }> {
@@ -70,13 +73,15 @@ export async function insertSubagentFixtures(db: Db): Promise<{ taskId: string; 
 
   type Spec = {
     item: SubagentItemInput
-    status: "done" | "waiting"
+    status: "done" | "waiting" | "failed"
     outcome?: "achieved" | "not_achieved"
     outcomeBy?: "agent" | "rule"
     reason?: string
     result?: SubResult
     cost: number
-    start: number
+    /** 拆出来以后第几秒轮到（排队结束）；不给 = 一直没轮到 */
+    ran?: number
+    /** 拆出来以后第几秒结束 */
     end?: number
     file?: string
   }
@@ -88,8 +93,8 @@ export async function insertSubagentFixtures(db: Db): Promise<{ taskId: string; 
       outcomeBy: "agent",
       result: { summary: "页面 A 能打开，标题是 Example A，状态码 200；明细存在 out/a.json", evidence: "browser_navigate 返回 200，页面标题 Example A", data: { 标题: "Example A", 状态码: 200 } },
       cost: 0.05,
-      start: 28,
-      end: 20,
+      ran: 1,
+      end: 16,
       file: "out/a.json",
     },
     {
@@ -99,8 +104,8 @@ export async function insertSubagentFixtures(db: Db): Promise<{ taskId: string; 
       outcomeBy: "agent",
       result: { summary: "页面 B 能打开，标题是 Example B，状态码 200", evidence: "页面标题 Example B", data: { 标题: "Example B", 状态码: 200 } },
       cost: 0.04,
-      start: 28,
-      end: 18,
+      ran: 2,
+      end: 82,
     },
     {
       item: { title: "查页面 C", goal: "打开页面 C，记下标题和状态码，交回这两个字段", input: { 网址: "https://example.invalid/c" }, results: ["标题", "状态码"] },
@@ -110,17 +115,28 @@ export async function insertSubagentFixtures(db: Db): Promise<{ taskId: string; 
       reason: "页面打不开：域名解析不到",
       result: { summary: "页面 C 打不开（域名解析不到），试了两次", evidence: "browser_navigate 报 ERR_NAME_NOT_RESOLVED" },
       cost: 0.03,
-      start: 28,
-      end: 22,
+      ran: 16,
+      end: 58,
     },
     {
       item: { title: "查页面 D", goal: "打开页面 D，记下标题和状态码，交回这两个字段", input: { 网址: "https://example.com/d" }, results: ["标题", "状态码"] },
       status: "waiting",
       cost: 0,
-      start: 28,
+    },
+    {
+      item: { title: "查页面 E", goal: "打开页面 E，记下标题和状态码，交回这两个字段", input: { 网址: "https://example.com/e" }, results: ["标题", "状态码"] },
+      status: "failed",
+      outcome: "not_achieved",
+      outcomeBy: "rule",
+      reason: "父 agent 停掉的：只要前 4 个页面",
+      cost: 0,
+      end: 60,
     },
   ]
   const childIds: string[] = []
+  // 拆出来的时间只取一次：各个时间点按它往后数秒，用时是整秒
+  const splitAt = minutesAgo(SPLIT_AT).getTime()
+  const afterSplit = (seconds: number) => new Date(splitAt + seconds * 1000)
   for (const [index, spec] of specs.entries()) {
     const n = index + 1
     const id = subSessionId(parentId, n)
@@ -132,8 +148,8 @@ export async function insertSubagentFixtures(db: Db): Promise<{ taskId: string; 
       status: spec.status,
       modelId: snapshot.modelId,
       triggeredBy: "sub",
-      startedAt: minutesAgo(spec.start),
-      endedAt: spec.end ? minutesAgo(spec.end) : null,
+      startedAt: afterSplit(0),
+      endedAt: spec.end !== undefined ? afterSplit(spec.end) : null,
       snapshot,
       createdById: admin.id,
       parentSessionId: parentId,
@@ -145,11 +161,24 @@ export async function insertSubagentFixtures(db: Db): Promise<{ taskId: string; 
       outcomeBy: spec.outcomeBy ?? null,
       outcomeReason: spec.reason ?? (spec.outcome === "achieved" ? spec.result?.evidence : null) ?? null,
       subResult: spec.result ?? null,
+      ...(spec.status === "failed" ? { error: spec.reason ?? null } : {}),
     })
-    await appendEvent(db, id, { kind: "plan", title: "运行开始", detail: `父运行 ${parentId} 拆出来的第 ${n} 个子 agent「${spec.item.title}」`, at: minutesAgo(spec.start) })
-    if (spec.status === "waiting")
-      await db.insert(t.sessionWaits).values({ sessionId: id, what: SUBAGENT_QUEUED_WHAT, triggerKind: "event", event: subagentQueueEvent(parentId), createdAt: minutesAgo(spec.start) })
-    else await appendEvent(db, id, { kind: "done", title: spec.outcome === "achieved" ? "agent 报办成" : "agent 报没办成", detail: spec.result?.summary ?? null, at: minutesAgo(spec.end ?? 0) })
+    await appendEvent(db, id, { kind: "plan", title: "运行开始", detail: `父运行 ${parentId} 拆出来的第 ${n} 个子 agent「${spec.item.title}」`, at: afterSplit(0) })
+    // 排名额的等待：轮到的记 fired（页面的用时从这里算），一直没轮到的还在等或被停掉时作废
+    await db.insert(t.sessionWaits).values({
+      sessionId: id,
+      what: SUBAGENT_QUEUED_WHAT,
+      triggerKind: "event",
+      event: subagentQueueEvent(parentId),
+      createdAt: afterSplit(0),
+      ...(spec.ran !== undefined
+        ? { status: "fired" as const, firedCause: "event" as const, firedAt: afterSplit(spec.ran) }
+        : spec.status === "failed"
+          ? { status: "cancelled" as const, firedCause: "cancel" as const, firedAt: afterSplit(spec.end ?? 0) }
+          : {}),
+    })
+    if (spec.status === "failed") await appendEvent(db, id, { kind: "error", title: "已停掉", detail: spec.reason ?? null, at: afterSplit(spec.end ?? 0) })
+    else if (spec.status === "done") await appendEvent(db, id, { kind: "done", title: spec.outcome === "achieved" ? "agent 报办成" : "agent 报没办成", detail: spec.result?.summary ?? null, at: afterSplit(spec.end ?? 0) })
     if (spec.file) await saveFile(db, { data: Buffer.from(JSON.stringify(spec.result?.data ?? {}, null, 2)), name: "a.json", mime: "application/json", kind: "artifact", sessionId: id, path: spec.file })
     childIds.push(id)
   }

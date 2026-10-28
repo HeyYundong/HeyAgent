@@ -15,7 +15,7 @@ import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
 import { appendEvent } from "../engine/records.js"
 import type { Keyring } from "../lib/crypto.js"
-import { BrowserUnavailableError } from "./chrome.js"
+import { BrowserUnavailableError, ChromeStartAbortedError } from "./chrome.js"
 import { GostPool } from "./gost.js"
 import { autoLogin, loadAccountPassword, loginModelId, type AutoLoginResult } from "./auto-login.js"
 import { BrowserInstance, type CloseSummary, type ProbeResult } from "./instance.js"
@@ -116,20 +116,25 @@ export class BrowserManager {
     next?.()
   }
 
-  /** 等一个空位（FIFO）。超时抛错 */
-  private async waitSlot(instance: BrowserInstance) {
+  /** 等一个空位（FIFO）。超时抛错；运行被停掉（signal）时不再等 */
+  private async waitSlot(instance: BrowserInstance, signal?: AbortSignal) {
     const deadline = Date.now() + QUEUE_TIMEOUT_MS
     while (this.used() >= (await this.maxPerWorker())) {
       if (this.stopping) throw new BrowserBusyError("worker 正在退出")
+      if (signal?.aborted) throw new ChromeStartAbortedError()
       const remaining = deadline - Date.now()
       if (remaining <= 0) throw new BrowserBusyError(`这台 worker 的 Chrome 一直是满的，排了 ${Math.round(QUEUE_TIMEOUT_MS / 60_000)} 分钟没排上`)
       await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, Math.min(remaining, 15_000))
-        this.slotWaiters.push(() => {
+        const done = () => {
           clearTimeout(timer)
+          signal?.removeEventListener("abort", done)
           resolve()
-        })
+        }
+        const timer = setTimeout(done, Math.min(remaining, 15_000))
+        signal?.addEventListener("abort", done, { once: true })
+        this.slotWaiters.push(done)
       })
+      if (signal?.aborted) throw new ChromeStartAbortedError()
       if (instance.state === "closing") throw new BrowserBusyError("排队时被取消了")
     }
   }
@@ -145,6 +150,8 @@ export class BrowserManager {
     /** 任务打开了「允许直接调网站接口」（快照的 browser.allowFetch）：记下网页自己调的接口 */
     recordNetwork?: boolean
     onQueued?: (used: number, max: number) => Promise<void>
+    /** 运行被停掉时 abort（engine/stop-watch.ts）：排队的不再排、正在起的 Chrome 马上杀掉 */
+    signal?: AbortSignal
   }): Promise<BrowserInstance> {
     const existing = this.forSession(input.sessionId)
     if (existing && existing.profileId === input.profileId) {
@@ -170,10 +177,11 @@ export class BrowserManager {
     try {
       if (full) {
         await input.onQueued?.(this.used(), max)
-        await this.waitSlot(instance)
+        await this.waitSlot(instance, input.signal)
         await instance.setState("starting")
       }
-      await instance.start()
+      await instance.start(input.signal)
+      if (input.signal?.aborted) throw new ChromeStartAbortedError()
       await instance.setState("running")
       return instance
     } catch (error) {

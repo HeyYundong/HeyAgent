@@ -75,6 +75,7 @@ import {
   type Judged,
 } from "./outcome.js"
 import { pendingReview, performReview, reviewEventTitle, reviewModelFor } from "./review.js"
+import { watchRunStop } from "./stop-watch.js"
 import { suspendInTx } from "./waits.js"
 
 /** 这次 runSession 怎么停下的（不是运行的结果：结果在 sessions.outcome） */
@@ -427,7 +428,8 @@ async function callWithRetry(
         title: `模型调用出错，${Math.round(wait / 1000)} 秒后重试（第 ${attempt + 1} 次）`,
         detail: (error as Error).message,
       })
-      await sleep(wait)
+      // 等重试时运行被停掉：马上停（抛 AbortError，调用方按停掉处理）
+      await sleep(wait, undefined, input.abortSignal ? { signal: input.abortSignal } : undefined)
     }
   }
 }
@@ -654,6 +656,10 @@ export async function runSession(
   // 自动挑选记忆（docs/dev/memory-retrieval.md 3.5）：建系统提示之前挑一次、写回快照；挂起再继续、进程重启接着跑都不再挑。出错不挡运行
   const snapshot = await resolveAutoMemory(db, sessionId, first.snapshot)
   const started = Date.now()
+  // 运行被停掉（人取消、父结束连带停子运行、清扫）时 abort：正在调的模型、正在起的 Chrome 马上停（stop-watch.ts，21.3 第 4 条）。
+  // 固化脚本还是用 options.signal（它自己在每次工具调用前看状态、取消时杀脚本）
+  const stopWatch = watchRunStop(db, sessionId)
+  const signal = options.signal ? AbortSignal.any([options.signal, stopWatch.signal]) : stopWatch.signal
   let gateway: ToolGateway | undefined
   let closed = false
   // 资源（工具连接、Chrome）先关，过程记录写好，最后才写最终状态（M2 留下的先后顺序问题）
@@ -678,7 +684,7 @@ export async function runSession(
         await failSession(db, first, snapshot, (error as Error).message)
         return "failed"
       }
-    gateway = await ToolGateway.create(db, first, snapshot)
+    gateway = await ToolGateway.create(db, first, snapshot, { signal })
     // 父运行（选了「拆给子 agent」）：花费按「父 + 子」合计，系统提示写名额（docs/dev/sub-agents.md 4.3、6.4）
     const hasSubagents = first.kind === "run" && snapshot.tools.some((tool) => tool.id === SUBAGENT_START_TOOL_ID)
     const system = buildSystemPrompt(snapshot, gateway.names(), hasSubagents ? { subagent: await readSubagentSettings(db) } : {})
@@ -703,6 +709,8 @@ export async function runSession(
         const done: GatewayResult = await gateway!.call(call, {
           approvedRuleIds: approved,
         })
+        // 做的时候运行被停掉了：结果不记（「已停掉」后面没有别的过程记录）
+        if (done.stopped) return "stopped"
         if (done.approval) {
           const ok = await suspendForApproval(
             db,
@@ -1081,7 +1089,7 @@ export async function runSession(
     let lastInputTokens: number | undefined
 
     for (;;) {
-      if (options.signal?.aborted) return "stopped"
+      if (signal.aborted) return "stopped"
       const session = await loadSession(db, sessionId)
       if (!session || session.status !== "running") return "stopped"
 
@@ -1153,10 +1161,10 @@ export async function runSession(
           system,
           messages,
           tools,
-          abortSignal: options.signal,
+          abortSignal: signal,
         })
       } catch (error) {
-        if (options.signal?.aborted) return "stopped"
+        if (signal.aborted) return "stopped"
         const reason =
           error instanceof ModelConfigError
             ? error.message
@@ -1166,8 +1174,10 @@ export async function runSession(
         return "failed"
       }
       lastInputTokens = result.tokensIn
+      // 调模型的时候运行被停掉了（中止信号还没到、模型先回来了）：回复不记、不算钱，直接停（21.3 第 4 条）
+      if (await gateway.stopped()) return "stopped"
 
-      // 用量和花费累计到 session（不管状态，钱已经花了）
+      // 用量和花费累计到 session
       await db
         .update(t.sessions)
         .set({
@@ -1243,7 +1253,7 @@ export async function runSession(
       if (outcome) return outcome
     }
   } catch (error) {
-    if (options.signal?.aborted) return "stopped"
+    if (signal.aborted) return "stopped"
     // 引擎自己的意外错误：写清楚原因标失败；连数据库都写不了就抛给 pg-boss 重试
     await closeGateway().catch(() => {})
     const session = await loadSession(db, sessionId)
@@ -1256,6 +1266,7 @@ export async function runSession(
       )
     return "failed"
   } finally {
+    stopWatch.dispose()
     await closeGateway()
   }
 }

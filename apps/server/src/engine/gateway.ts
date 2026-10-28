@@ -16,6 +16,7 @@ import {
   DESKTOP_TOOL_ID,
   GALLERY_TOOL_ID,
   builtinToolInputs,
+  isRunEnded,
   toolSchemaOf,
   type EventTrace,
   type LibraryTrace,
@@ -91,6 +92,8 @@ export interface GatewayResult {
   /** 交给模型的文字（截断、隐藏密钥之后） */
   output: string
   denied: boolean
+  /** 工具做完时运行已经被停掉了（取消、父结束、清扫）：这次调用没记进过程，调用方不要再记结果、直接停（docs/dev/sub-agents.md 21.3 第 4 条） */
+  stopped?: boolean
   /** M3：规则要求先审批，工具还没执行（调用方让 session 等人处理） */
   approval?: {
     ruleId: string
@@ -222,12 +225,15 @@ export class ToolGateway {
     db: Db
     session: SessionRow
     snapshot: SessionSnapshot
+    /** 运行被停掉时 abort（engine/stop-watch.ts）：正在起的 Chrome 跟着停 */
+    signal?: AbortSignal
   }
 
   private constructor(ctx: {
     db: Db
     session: SessionRow
     snapshot: SessionSnapshot
+    signal?: AbortSignal
   }) {
     this.ctx = ctx
     this.mcp = new McpPool(ctx.db)
@@ -236,12 +242,14 @@ export class ToolGateway {
   static async create(
     db: Db,
     session: SessionRow,
-    snapshot: SessionSnapshot
+    snapshot: SessionSnapshot,
+    options: { signal?: AbortSignal } = {}
   ): Promise<ToolGateway> {
     const gateway = new ToolGateway({
       db,
       session,
       snapshot: await withCurrentHttpSpecs(db, snapshot),
+      ...(options.signal ? { signal: options.signal } : {}),
     })
     await gateway.build()
     return gateway
@@ -691,6 +699,8 @@ export class ToolGateway {
     const executeMs = Date.now() - executeStarted
     const network = browserCall ? await browserCall.networkSettle(networkMark).catch(() => undefined) : undefined
     const secrets = outcome.secrets ?? []
+    // 做的时候运行被停掉了：「已停掉」后面不再记这次的结果，也不跑调工具后的钩子
+    if (await this.stopped()) return { toolId, toolName, outcome, output: outcome.output, denied: false, stopped: true }
     const output = await this.clipOutput(
       redactSecrets(outcome.output, secrets),
       outcome,
@@ -902,6 +912,7 @@ export class ToolGateway {
         : {}),
       ...(images.length ? { images } : {}),
     }
+    if (await this.stopped()) return { toolId, toolName, outcome, output: outcome.output, denied: false, stopped: true }
     const output = await this.clipOutput(
       outcome.output,
       outcome,
@@ -926,6 +937,18 @@ export class ToolGateway {
       .from(t.sessions)
       .where(eq(t.sessions.id, this.ctx.session.id))
     return row?.status === "running"
+  }
+
+  /**
+   * 运行已经被停掉了（库里已经是结束的状态：人取消、父结束、清扫）：之后到的工具结果不再记。
+   * 只看库：worker 退出（signal 也会 abort）时运行没结束，结果照常记，交给下一个 worker 接着跑
+   */
+  async stopped() {
+    const [row] = await this.ctx.db
+      .select({ status: t.sessions.status })
+      .from(t.sessions)
+      .where(eq(t.sessions.id, this.ctx.session.id))
+    return row ? isRunEnded(row.status) : false
   }
 
   async close() {

@@ -1852,7 +1852,7 @@ const r = await ha.routine("supplier_quote", { 工厂链接: url })   // → Rou
 - **运行的种类**：`sessions.kind` 多 `sub`（子运行），`triggered_by = sub`，`parent_session_id` = 父运行，编号 `<父运行编号>.<n>`（例如 `R-12-3.2`，n 从 1 往上数，补拆的接着数）。按父取子一律带 `kind = 'sub'`（被派的运行也写了 `parent_session_id`）。看子运行的权限同看父运行（同一个任务）。
 - **内置工具**（模型看到的名字）：`subagent_start`「拆给子 agent」（任务里选，进 `tools` 表、规则页能挂规则）；`subagent_wait`「等子 agent」、`subagent_cancel`「停掉子 agent」（选了前者自动带上）。输入见 shared 的 `subagentStartInputSchema` / `subagentWaitInputSchema` / `subagentCancelInputSchema`。只有父运行（`kind = run`）能用；子快照里没有这三个，固化脚本、`code.run` 的脚本里调一律 `step_error`。
 - **tRPC**：
-  - `sessions.subagents({ parentId }) → SubagentRow[]`（按 n）：`{ id, n, title, goal, state, outcome?, outcomeReason?, outcomeBy?, costUsd, startedAt, endedAt?, waitingWhat?, delivered }`。`state`：`queued` 排队（等 `subagent.queue:<父>`）/ `running` 执行中 / `waiting` 挂起等资源（等待浏览器、等待桌面）/ `needs_human` 等人处理 / `ended` 结束（出错、被停掉的 `outcomeReason` 是错误原因）。
+  - `sessions.subagents({ parentId }) → SubagentRow[]`（按 n）：`{ id, n, title, goal, state, outcome?, outcomeReason?, outcomeBy?, costUsd, startedAt, ranAt?, endedAt?, waitingWhat?, delivered }`（`startedAt` 是拆出来的时间，`ranAt` 是排队轮到、开始执行的时间，一次没轮到的没有；页面的用时按 `endedAt − ranAt` 算）。`state`：`queued` 排队（等 `subagent.queue:<父>`）/ `running` 执行中 / `waiting` 挂起等资源（等待浏览器、等待桌面）/ `needs_human` 等人处理 / `ended` 结束（出错、被停掉的 `outcomeReason` 是错误原因）。
   - `sessions.list` / `sessions.page` / `sessions.get` 的 `SessionSummary` 多：`sub?: { n, title }`（子运行才有，父运行编号是 `parentSessionId`）；`subagents?: { total, queued, running, needsHuman, ended, achieved, costUsd }`（拆过的父运行才有；`running` 含等浏览器、等桌面；`costUsd` 只是子运行的合计，页面显示「父 + 子」要自己加 `costUsd`）。`kind` 按 id 取时可能是 `sub`。
   - `sessions.get` 的 `SessionRun` 多 `subGoal?`（子运行才有）：`{ n, title, goal, input, results: [{ name, value? }], files: [{ id, name, mime, size, url }] }`（交了的字段带 `value`；文件是拆的时候给它读的，只读）。
   - `sessions.list`（不按 id 取）、`sessions.page`、看板、助手的 `list_sessions`、定时「上一次没跑完就跳过」都不含子运行；会话页「今天花了」含子运行。
@@ -1866,4 +1866,4 @@ const r = await ha.routine("supplier_quote", { 工厂链接: url })   // → Rou
 - **空间文件**：父运行的空间（`engine.sessionFiles`、`file.list`）多只读目录 `subs/<n>/`，是第 n 个子 agent 空间里的文件（路径照它在子空间里的），来源「子 agent」；`subs/` 是保留目录，agent 不能往里写。子 agent 拿到的父运行文件（拆的时候给的 `fileIds`）在它空间的 `attachments/<原路径>`，只读。
 - **审计**：开出子运行 `session.subagent.start`（target 父运行，detail `{ ids }`）、停掉子运行 `session.subagent.stop`（target 子运行，detail `{ reason }`），都记系统（`actorId` 为空）。
 - **实时推送**：`sessions` 表变了多失效 `sessions.subagents`；推来的 id 是子运行编号时，父运行的 `sessions.get` 也失效（摘要上的 `subagents` 跟着变，shared `liveTargets`）。
-- **演示数据**：`pnpm --filter @heyagent/server dev:subagent-fixture`（加 `--test` 进测试库）：一个父运行在等子 agent，拆了 4 个（2 个办成、1 个没办成、1 个排队）。
+- **演示数据**：`pnpm --filter @heyagent/server dev:subagent-fixture`（加 `--test` 进测试库）：一个父运行在等子 agent，拆了 5 个（2 个办成、1 个没办成、1 个排队、1 个排队时被停掉；用时 15 秒、1 分 20 秒、42 秒、没开始）。

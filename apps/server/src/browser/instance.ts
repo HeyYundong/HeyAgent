@@ -16,7 +16,7 @@ import * as t from "../db/schema.js"
 import { loadSecretById } from "../engine/secrets.js"
 import type { Keyring } from "../lib/crypto.js"
 import { startCdpTap, type CdpTap } from "./cdp-tap.js"
-import { BrowserUnavailableError, CHROME_BIN, chromeAvailable, killGroup, startChrome, startXvfb, type ChromeHandle, type XvfbHandle } from "./chrome.js"
+import { BrowserUnavailableError, CHROME_BIN, ChromeStartAbortedError, chromeAvailable, killGroup, startChrome, startXvfb, type ChromeHandle, type XvfbHandle } from "./chrome.js"
 import { judgePage, probeLooksLoggedIn, type PageFacts } from "./detect.js"
 import { startDownloadCapture, type DownloadCapture } from "./downloads.js"
 import type { GostPool } from "./gost.js"
@@ -200,8 +200,9 @@ export class BrowserInstance {
     this.lastActiveAt = Date.now()
   }
 
-  /** 起 Xvfb + Chrome，连上编排器的 CDP，装登录态 */
-  async start() {
+  /** 起 Xvfb + Chrome，连上编排器的 CDP，装登录态。signal：运行被停掉时 abort，正在起的 Chrome 马上杀掉（chrome.ts） */
+  async start(signal?: AbortSignal) {
+    if (signal?.aborted) throw new ChromeStartAbortedError()
     if (!chromeAvailable()) throw new BrowserUnavailableError(`这台机器上没有 Chrome（${CHROME_BIN}），浏览器只能在 worker 镜像里用`)
     const { db } = this.deps
     const [profile] = await db.select().from(t.browserProfiles).where(eq(t.browserProfiles.id, this.profileId))
@@ -236,7 +237,8 @@ export class BrowserInstance {
     mkdirSync(this.outputDir, { recursive: true })
     mkdirSync(join(this.dir, "tmp"), { recursive: true })
     this.xvfb = await startXvfb()
-    this.chrome = await startChrome({
+    this.chrome = await startChrome(
+      {
       userDataDir,
       display: this.xvfb.display,
       locale: profile.locale ?? undefined,
@@ -244,7 +246,9 @@ export class BrowserInstance {
       proxyServer,
       proxyHost,
       tmpDir: join(this.dir, "tmp"),
-    })
+      },
+      signal
+    )
     // noDefaults：不让 Playwright 给已有页面开 focus emulation，后台标签页的可见性和真人使用时一样（实测）
     this.browser = await chromium.connectOverCDP(this.chrome.wsEndpoint, { noDefaults: true })
     const context = this.browser.contexts()[0]

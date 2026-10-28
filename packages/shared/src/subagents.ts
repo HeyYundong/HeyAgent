@@ -222,7 +222,10 @@ export const subagentRowSchema = z.object({
   outcomeReason: z.string().optional(),
   outcomeBy: runOutcomeBySchema.optional(),
   costUsd: z.number(),
+  /** 拆出来的时间（含排队） */
   startedAt: isoTime,
+  /** 开始执行的时间（排队轮到的时候；没排过队的是 startedAt）。一次没轮到过就被停掉的没有（页面写「没开始」） */
+  ranAt: isoTime.optional(),
   endedAt: isoTime.optional(),
   /** 挂起时在等什么（排队、等待浏览器、等人处理的那句话） */
   waitingWhat: z.string().optional(),

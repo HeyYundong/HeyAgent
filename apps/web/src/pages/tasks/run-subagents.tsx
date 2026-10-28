@@ -6,7 +6,7 @@
 import type { ReactNode } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { ChevronRightIcon, CircleCheckIcon, GitForkIcon } from "lucide-react"
-import { duration, isSubagentQueueEvent, startText, subagentStateLabel, type SessionSummary, type SubagentGoalView, type SubagentRow } from "@heyagent/shared"
+import { isSubagentQueueEvent, startText, subagentStateLabel, type SessionSummary, type SubagentGoalView, type SubagentRow } from "@heyagent/shared"
 
 import { MarkdownView } from "@/components/markdown"
 import { FileList } from "@/components/files"
@@ -20,6 +20,7 @@ import { Spinner } from "@/components/ui/spinner"
 import { href } from "@/lib/router"
 import { trpc } from "@/lib/trpc"
 
+import { took } from "../imports/parts"
 import { money } from "./parts"
 import { ParamsTable } from "./work-parts"
 
@@ -91,10 +92,20 @@ export function SubagentsSection({ run }: { run: SessionSummary }) {
   )
 }
 
+/**
+ * 用时：从开始执行（排队轮到）算到结束，不算排队，按秒写（「15 秒」「1 分 20 秒」）；一次没轮到就结束的写「没开始」；
+ * 还在跑的写什么时候开始的，排队中的不写
+ */
+function subagentTimeText(row: Pick<SubagentRow, "state" | "ranAt" | "endedAt">): string | undefined {
+  if (!row.ranAt) return row.state === "ended" ? "没开始" : undefined
+  if (row.state === "ended") return `用时 ${took(Date.parse(row.endedAt ?? row.ranAt) - Date.parse(row.ranAt))}`
+  return `${startText(row.ranAt)} 开始`
+}
+
 /** 一个子 agent：整行是链接（链接铺满这一行），结果徽章浮在链接上面，悬停能看原因 */
 function SubagentItem({ row }: { row: SubagentRow }) {
   const goal = row.goal.split("\n").find((line) => line.trim())?.trim() ?? ""
-  const time = row.state === "queued" ? undefined : row.endedAt ? `用时 ${duration(Date.parse(row.endedAt) - Date.parse(row.startedAt))}` : `${startText(row.startedAt)} 开始`
+  const time = subagentTimeText(row)
   return (
     <Item variant="outline" size="sm" className="relative">
       <ItemContent className="min-w-0">

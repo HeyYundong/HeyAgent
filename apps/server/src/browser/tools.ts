@@ -18,7 +18,7 @@
 import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { extname, join } from "node:path"
 
-import { eq, lt, sql } from "drizzle-orm"
+import { and, eq, lt, sql } from "drizzle-orm"
 import {
   BROWSER_FETCH_TOOL,
   browserFetchInputSchema,
@@ -93,6 +93,8 @@ interface Ctx {
   db: Db
   session: SessionRow
   snapshot: SessionSnapshot
+  /** 运行被停掉时 abort（engine/stop-watch.ts）：正在起的 Chrome 马上停 */
+  signal?: AbortSignal
 }
 
 const fail = (output: string): ToolOutcome => ({ output, isError: true })
@@ -759,6 +761,15 @@ export class BrowserTools {
     await this.ctx.db.update(t.sessions).set({ browserProfileId: profileId }).where(eq(t.sessions.id, this.ctx.session.id))
   }
 
+  /** 第一次挑的 Chrome 一次都没起来：清掉分配（排队等 worker 空位时、登记后已经记下了） */
+  private async unassign(profileId: string) {
+    if (this.assigned === profileId) this.assigned = undefined
+    await this.ctx.db
+      .update(t.sessions)
+      .set({ browserProfileId: null })
+      .where(and(eq(t.sessions.id, this.ctx.session.id), eq(t.sessions.browserProfileId, profileId)))
+  }
+
   /** 还没分到 Chrome 时可以挑的：允许的里现在空闲的，按配置的顺序（position、创建时间）。空数组 = 都被占着 */
   private async freeProfiles(): Promise<string[]> {
     const ids = this.profiles.map((profile) => profile.id)
@@ -773,14 +784,14 @@ export class BrowserTools {
     if (!manager) return fail("这个进程不能开浏览器（只有带 Chrome 的 worker 能开）")
     // 开着的（包括等人处理时保留着的）接着用
     if (this.instance && this.instance.state !== "closing" && (!this.assigned || this.instance.profileId === this.assigned)) return this.instance
-    // 已经分到了：只用它，被别的运行占着就等它
+    // 已经分到了（打开过、中途断了的，或者 agent 用 browser.use 指定的）：只用它，被别的运行占着就等它
     if (this.assigned) {
       const profileId = this.assigned
       try {
         return await this.open(manager, profileId)
       } catch (error) {
         if (error instanceof ProfileFullError) return this.busyOutcome(profileId)
-        return this.startFailed(error, profileId)
+        return this.startFailed(error, profileId, { keep: true })
       }
     }
     // 第一次分配：按顺序挑空闲的；挑的时候还空着、登记时被别的运行抢先了，就换下一个（这时还没真正用上任何 Chrome）
@@ -789,16 +800,22 @@ export class BrowserTools {
         return await this.open(manager, profileId)
       } catch (error) {
         if (error instanceof ProfileFullError) continue
-        return this.startFailed(error, profileId)
+        // Chrome 起来了、后面（MCP）出错的算打开过，钉住；一次都没起来的不钉住，下次照第一次那样挑空闲的（21.3 第 2 条）
+        const opened = this.instance?.profileId === profileId && this.instance.state !== "closing"
+        return this.startFailed(error, profileId, { keep: opened })
       }
     }
     // 都被占着：任务只允许一个就等它，否则等任一允许的空出来（叫醒后重新挑）
     return this.busyOutcome(this.profiles.length === 1 ? this.profiles[0]!.id : undefined)
   }
 
-  /** 登记上了、Chrome 没起来：也算分到了这个 Chrome（下次还用它，不换） */
-  private async startFailed(error: unknown, profileId: string): Promise<ToolOutcome> {
-    await this.assign(profileId).catch(() => {})
+  /**
+   * Chrome 没起来。keep：已经分到的（打开过、中途断了，或 agent 指定的）、Chrome 起来了后面出错的，还算分到这个 Chrome（下次还用它，不换）；
+   * 第一次挑的、一次都没起来的：不钉住（清掉分配），下次照第一次那样挑空闲的，免得它被别的运行拿走后一直等它（docs/dev/sub-agents.md 21.3 第 2 条）
+   */
+  private async startFailed(error: unknown, profileId: string, options: { keep: boolean }): Promise<ToolOutcome> {
+    if (options.keep) await this.assign(profileId).catch(() => {})
+    else await this.unassign(profileId).catch(() => {})
     const message = (error as Error).message
     if (/gost|代理/.test(message)) await this.warnProxy(message, profileId)
     return fail(`浏览器起不来：${message}`)
@@ -813,6 +830,7 @@ export class BrowserTools {
       profileId,
       allowedDomains: snapshot.browser?.allowedDomains ?? [],
       recordNetwork: this.allowFetch,
+      ...(this.ctx.signal ? { signal: this.ctx.signal } : {}),
       onQueued: async (used, max) => {
         await this.assign(profileId)
         await appendEvent(db, session.id, {

@@ -1,7 +1,8 @@
 // 起 Xvfb 和有界面的 Chrome、按进程组关掉。参数照 docs/research/m0-browser-spike.md 第 3 节（实测过）。
 // 只在 worker 镜像里能真正跑起来（要 Xvfb 和 Google Chrome）；开发机上调用会报「没有 Chrome」。
 import { spawn, type ChildProcess } from "node:child_process"
-import { existsSync, readdirSync, readFileSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs"
+import { join } from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 
 export const CHROME_BIN = process.env.CHROME_BIN || "/opt/google/chrome/chrome"
@@ -141,9 +142,63 @@ export interface ChromeHandle {
 /** Chrome 的 stderr 里有大量 dbus 报错，不影响功能，日志里过滤掉 */
 const NOISE = /dbus|Failed to connect to the bus|org\.freedesktop|Fontconfig|gpu_init|viz_main/i
 
-export async function startChrome(options: ChromeOptions): Promise<ChromeHandle> {
-  if (!chromeAvailable()) throw new BrowserUnavailableError(`这台机器上没有 Chrome（${CHROME_BIN}），浏览器只能在 worker 镜像里用`)
-  await waitNetworkSettled()
+/**
+ * 起 Chrome 的参数（测试可以改）：每次等「DevTools listening」最多 timeoutMs；超时（机器忙时常见）自动再起 retries 次。
+ */
+export const chromeStart = {
+  timeoutMs: Number(process.env.HEYAGENT_CHROME_START_TIMEOUT_MS) > 0 ? Number(process.env.HEYAGENT_CHROME_START_TIMEOUT_MS) : 30_000,
+  retries: 1,
+}
+
+/** Chrome 启动超时（等不到 DevTools 的地址）：能自动再试一次 */
+export class ChromeStartTimeoutError extends BrowserUnavailableError {}
+
+/** 运行已经停掉了，不再起 Chrome（正在起的已经杀掉） */
+export class ChromeStartAbortedError extends BrowserUnavailableError {
+  constructor() {
+    super("运行已经停掉了，不再起 Chrome")
+    this.name = "AbortError"
+  }
+}
+
+/**
+ * 同一个进程（worker）里起 Chrome 一个一个来（docs/dev/sub-agents.md 21.3 第 3 条）：几个子 agent 同时起 Chrome、机器又忙时，
+ * 一起初始化 profile 容易一起超时。排在前面的起好或失败了才放下一个；排队的时间不算进启动超时。
+ */
+let startQueue: Promise<void> = Promise.resolve()
+
+/** 等前面的都起完，返回放下一个的函数。排队时运行被停掉：不再等，抛 ChromeStartAbortedError（自己那一格照样在前面的起完后放掉） */
+async function takeStartTurn(signal?: AbortSignal): Promise<() => void> {
+  let release!: () => void
+  const mine = new Promise<void>((resolve) => (release = resolve))
+  const previous = startQueue
+  startQueue = previous.then(() => mine)
+  if (!signal) {
+    await previous
+    return release
+  }
+  try {
+    await new Promise<void>((resolve, reject) => {
+      if (signal.aborted) return reject(new ChromeStartAbortedError())
+      const onAbort = () => reject(new ChromeStartAbortedError())
+      signal.addEventListener("abort", onAbort, { once: true })
+      void previous.then(() => {
+        signal.removeEventListener("abort", onAbort)
+        resolve()
+      })
+    })
+  } catch (error) {
+    void previous.then(release)
+    throw error
+  }
+  return release
+}
+
+/** 起一次：等到 DevTools 的地址；超时、退出、运行被停掉时整组杀掉再抛错（不留半起的 Chrome） */
+async function launchOnce(options: ChromeOptions, signal?: AbortSignal): Promise<ChromeHandle> {
+  if (signal?.aborted) throw new ChromeStartAbortedError()
+  // 上一次没起来留下的锁（同一个 user-data-dir 再起时 Chrome 会以为已经有一个在跑）
+  for (const name of ["SingletonLock", "SingletonSocket", "SingletonCookie"]) rmSync(join(options.userDataDir, name), { force: true })
   const proc = spawn(CHROME_BIN, chromeArgs(options), {
     env: {
       PATH: process.env.PATH ?? "/usr/bin:/bin",
@@ -159,28 +214,65 @@ export async function startChrome(options: ChromeOptions): Promise<ChromeHandle>
     detached: true,
   })
   const tail: string[] = []
-  const wsEndpoint = await new Promise<string>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new BrowserUnavailableError(`Chrome 启动超时：${tail.join("")}`)), 30_000)
-    proc.stderr!.on("data", (chunk) => {
-      const text = String(chunk)
-      for (const line of text.split("\n")) if (line.trim() && !NOISE.test(line)) tail.push(`${line}\n`)
-      tail.splice(0, Math.max(0, tail.length - 30))
-      const match = /DevTools listening on (ws:\/\/\S+)/.exec(text)
-      if (match) {
+  let onAbort: (() => void) | undefined
+  try {
+    const wsEndpoint = await new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new ChromeStartTimeoutError(`Chrome 启动超时（${Math.round(chromeStart.timeoutMs / 1000)} 秒）：${tail.join("")}`)), chromeStart.timeoutMs)
+      onAbort = () => {
         clearTimeout(timer)
-        resolve(match[1]!)
+        reject(new ChromeStartAbortedError())
       }
+      signal?.addEventListener("abort", onAbort, { once: true })
+      proc.stderr!.on("data", (chunk) => {
+        const text = String(chunk)
+        for (const line of text.split("\n")) if (line.trim() && !NOISE.test(line)) tail.push(`${line}\n`)
+        tail.splice(0, Math.max(0, tail.length - 30))
+        const match = /DevTools listening on (ws:\/\/\S+)/.exec(text)
+        if (match) {
+          clearTimeout(timer)
+          resolve(match[1]!)
+        }
+      })
+      proc.once("error", (error) => {
+        clearTimeout(timer)
+        reject(new BrowserUnavailableError(`起不了 Chrome：${error.message}`))
+      })
+      proc.once("exit", (code, exitSignal) => {
+        clearTimeout(timer)
+        reject(new BrowserUnavailableError(`Chrome 退出了（code=${code} signal=${exitSignal}）：${tail.join("")}`))
+      })
     })
-    proc.once("error", (error) => {
-      clearTimeout(timer)
-      reject(new BrowserUnavailableError(`起不了 Chrome：${error.message}`))
-    })
-    proc.once("exit", (code, signal) => {
-      clearTimeout(timer)
-      reject(new BrowserUnavailableError(`Chrome 退出了（code=${code} signal=${signal}）：${tail.join("")}`))
-    })
-  })
-  return { proc, wsEndpoint }
+    return { proc, wsEndpoint }
+  } catch (error) {
+    await killGroup(proc, 2000)
+    throw error
+  } finally {
+    if (onAbort) signal?.removeEventListener("abort", onAbort)
+  }
+}
+
+/**
+ * 起 Chrome：同一个进程里排队一个一个起；启动超时自动再起一次（运行没被停掉的话）；signal abort（运行被停掉）时马上杀掉、不等超时
+ */
+export async function startChrome(options: ChromeOptions, signal?: AbortSignal): Promise<ChromeHandle> {
+  if (!chromeAvailable()) throw new BrowserUnavailableError(`这台机器上没有 Chrome（${CHROME_BIN}），浏览器只能在 worker 镜像里用`)
+  await waitNetworkSettled()
+  const release = await takeStartTurn(signal)
+  try {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await launchOnce(options, signal)
+      } catch (error) {
+        if (!(error instanceof ChromeStartTimeoutError) || attempt >= chromeStart.retries || signal?.aborted) {
+          if (error instanceof ChromeStartTimeoutError && attempt > 0) error.message = error.message.replace("Chrome 启动超时（", `Chrome 启动超时（试了 ${attempt + 1} 次，每次 `)
+          throw error
+        }
+        console.warn(`[browser] Chrome 启动超时，再起一次：${(error as Error).message.slice(0, 200)}`)
+      }
+    }
+  } finally {
+    release()
+  }
 }
 
 function groupPids(pgid: number) {

@@ -1,4 +1,4 @@
-// pnpm --filter @heyagent/server dev:subagent-fixture：往开发库插子 agent 的演示数据（一个父运行拆了 4 个子 agent：2 个办成、1 个没办成、1 个排队），
+// pnpm --filter @heyagent/server dev:subagent-fixture：往开发库插子 agent 的演示数据（一个父运行拆了 5 个子 agent：2 个办成、1 个没办成、1 个排队、1 个排队时被停掉），
 // 做运行详情的「子 agent」区块时用。加 --test 插进测试库。不清空任何数据，正式环境不能跑。
 import { createDb } from "../db/client.js"
 import { env } from "../env.js"
