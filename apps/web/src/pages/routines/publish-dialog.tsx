@@ -9,6 +9,7 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import { Controller, useForm, useWatch, type Control } from "react-hook-form"
 import { TriangleAlertIcon, UploadIcon } from "lucide-react"
 import {
+  defaultLibrarySummary,
   defaultRoutineSlug,
   riskLabel,
   routineLibraryPublishInputSchema,
@@ -90,11 +91,11 @@ export function PublishDialog({ open, onOpenChange, routineId: fixedRoutine, ver
     if (!form.getFieldState("title").isDirty) form.setValue("title", detail.data.title)
     if (!form.getFieldState("summary").isDirty) form.setValue("summary", detail.data.summary)
   }, [detail.data, form])
-  // 第一次发布：什么时候用默认取步骤说明的第一行（4.2）
+  // 第一次发布：什么时候用默认取流程的名字，没有就用来源任务的标题（4.2；步骤说明的第一行说的是怎么做，不合适）
   React.useEffect(() => {
     if (listed || !versionRow.data || dirtyFields.summary) return
-    form.setValue("summary", versionRow.data.description.split("\n").map((line) => line.trim()).find(Boolean) ?? "")
-  }, [versionRow.data, listed, dirtyFields.summary, form])
+    form.setValue("summary", defaultLibrarySummary({ name: versionRow.data.name, taskTitle: candidate?.taskTitle }))
+  }, [versionRow.data, candidate?.taskTitle, listed, dirtyFields.summary, form])
 
   const compat = preview.data?.compat ?? []
   const problems = preview.data?.problems ?? []
@@ -207,7 +208,7 @@ export function PublishDialog({ open, onOpenChange, routineId: fixedRoutine, ver
               <Field data-invalid={!!errors.summary}>
                 <FieldLabel htmlFor="publish-summary">什么时候用</FieldLabel>
                 <Textarea id="publish-summary" rows={2} placeholder="例如：要知道某家工厂报了什么价时用" aria-invalid={!!errors.summary} {...form.register("summary")} />
-                <FieldDescription>给模型看的一句话，agent 平时靠它决定用不用。默认是步骤说明的第一行。</FieldDescription>
+                <FieldDescription>给模型看的一句话，agent 平时靠它决定用不用。默认是流程的名字，最好改成「要……时用」，写清什么情况下用它。</FieldDescription>
                 <FieldError errors={[errors.summary]} />
               </Field>
               {routineId && version > 0 && (

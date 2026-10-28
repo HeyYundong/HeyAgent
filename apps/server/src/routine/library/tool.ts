@@ -6,7 +6,8 @@
 // 3. 起工具桥 mode = tool：每一步 gateway.call()，调用 id `<这次的调用 id>-l<步>`，trace.library（callId = 这次的调用 id，depth 1）；
 //    要审批 → 停在它前面、不发起审批（同 browser.batch）；会改东西的 browser.fetch 前要有自己的 ha.commit（库流程都是固化脚本，19.5 的规矩照用）；
 //    ha.finish / ha.work.report 收进交回值，ha.checkpoint.mark 不做（过程里记一句「库流程里的检查点不算」）；不记重放日志；
-// 4. 结局：报了结果 → 交回值（routineReturnSchema，文字 + data；not_achieved 不算出错）；ha.fail("input") → 出错「输入有问题：…」；
+// 4. 结局：报了结果 → 交回值（routineReturnSchema，文字 + data；not_achieved 不算出错），文字里也写做过的步骤（同交接的步骤行）、
+//    办成的写清「交回的值是照固定步骤从页面上读到的，直接用」（18.3 第 1 条：不写的话 agent 会再一条条打开页面核对）；ha.fail("input") → 出错「输入有问题：…」；
 //    别的停下 → 出错，文字是交接的话（handoff.ts 的步骤行按 trace.library.callId 取），data 是 routineToolStopDataSchema；
 //    要挂起 → 同 code.run（tools）：结果带 suspend、signals、facts，引擎照常挂起，库流程不接着跑（交接的话里写清停在哪）；
 // 5. 上限：routineLimits 的次数、时间，时间还要压在这次运行剩下的时间里；
@@ -213,12 +214,19 @@ export async function executeLibraryTool(
     }
     await record({ result: value.outcome, steps })
     const data = returnDataText(value.data, 2000)
+    // 做过的步骤（同停下时交接的步骤行）：agent 看得到交回的值是怎么拿到的，办成了就直接用，不用再自己打开页面核对
+    const stepLines = await libraryStepLines(db, session.id, call.toolCallId)
+    const where = routine.requires.toolIds.includes("browser") ? "从页面上读到的" : "得到的"
     const lines = [
       `${head}跑完了：${steps} 步 · ${seconds(ms)}。`,
       `结果：${value.outcome === "achieved" ? "办成" : "没办成"}。${value.summary}`,
       ...(value.evidence ? [`依据：${value.evidence}`] : []),
       ...(value.reason ? [`原因：${value.reason}`] : []),
       ...(data ? [`交回：${data}`] : []),
+      ...(stepLines.length ? ["做过的步骤：", ...stepLines] : []),
+      value.outcome === "achieved"
+        ? `交回的值是流程照上面的固定步骤${where}，流程里核对过，直接用，不要再打开页面核对一遍。`
+        : "流程照固定步骤做完了、没办成：看上面的原因，再决定怎么接着做。",
       ...(await pageLines()),
       // 最后一行是交回值的 JSON（routineReturnSchema）：网页按它显示结局
       JSON.stringify(value),

@@ -415,7 +415,7 @@ export async function insertRoutineLibraryFixtures(db: Db): Promise<{ routines: 
       { at, kind: "tool", title: "开始跑流程「打开 1688 询盘页」第 1 版", toolId: routineToolId("login_inbox"), input: {}, output: "进入流程「打开 1688 询盘页」第 1 版", ms: 5, trace: { ...extra(1), ...lib(A, 2, 1, callId, 1), ...callOf(B, 1, bCall) } },
       { at: at + 1, kind: "tool", title: "打开 1688 询盘页", toolId: "browser.navigate", input: { url: INBOX_URL }, output: `### Page\n- URL: ${INBOX_URL}\n- Title: 询盘列表`, ms: 1_400, trace: { ...extra(2), ...lib(B, 1, 1, bCall, 2), code: `await page.goto('${INBOX_URL}');`, urlAfter: INBOX_URL, title: "询盘列表" } },
       { at: at + 2, kind: "tool", title: "等询盘列表出来", toolId: "browser.wait_any", input: { outcomes: { list: "getByRole('heading', { name: '询盘列表' })" } }, output: "出现了：list", ms: 300, trace: { ...extra(3), ...lib(B, 1, 2, bCall, 2) } },
-      { at: at + 2, kind: "plan", title: "流程「打开 1688 询盘页」跑完：2 步 · 交回 —", trace: { ...extra(3), ...lib(A, 2, 1, callId, 1), ...callOf(B, 1, bCall) } },
+      { at: at + 2, kind: "plan", title: "流程「打开 1688 询盘页」跑完：2 步 · 1.7 秒", trace: { ...extra(3), ...lib(A, 2, 1, callId, 1), ...callOf(B, 1, bCall) } },
       { at: at + 4, kind: "tool", title: "打开工厂店铺", toolId: "browser.navigate", input: { url }, output: `### Page\n- URL: ${url}\n- Title: 工厂店铺`, ms: 1_600, trace: { ...extra(4), ...lib(A, 2, 2, callId, 1), code: `await page.goto('${url}');`, urlAfter: url, title: "工厂店铺" } },
     ]
     if (stopAt === 3) {
@@ -501,7 +501,7 @@ console.log(JSON.stringify(out))
       list.push(...inner)
       step = enterStep + 6
       at += 9
-      list.push({ at, kind: "plan", title: `流程「查 1688 工厂的报价和起订量」跑完：6 步 · 交回 报价=${quoteRow(factory).报价}、起订量=${quoteRow(factory).起订量}、交期=${quoteRow(factory).交期}`, trace: { scriptStep: step, scriptCallId: callId, ...callOf(A, 2, enterCall) } })
+      list.push({ at, kind: "plan", title: `流程「查 1688 工厂的报价和起订量」跑完：4 步 · 8.6 秒 · 交回 报价=${quoteRow(factory).报价}、起订量=${quoteRow(factory).起订量}、交期=${quoteRow(factory).交期}`, trace: { scriptStep: step, scriptCallId: callId, ...callOf(A, 2, enterCall) } })
       at += 1
     })
     list.push(

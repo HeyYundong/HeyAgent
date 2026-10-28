@@ -4,7 +4,8 @@
 // - 判断事件：kind = plan、标题「流程判断：问题 → 答案（理由）」，拆成问题、答案、理由；
 // - code.run 输出末尾「--- 脚本调的工具 ---」那一段（服务端 sandbox/code-run.ts 的 formatScriptTools）拆成几段；
 // - browser.fetch 那一行的方法、网址、状态码（第 19 节）；
-// - 库流程（docs/dev/routine-library.md 5.7、9.3）：里面的步骤带 trace.library，按 callId 收到调它的那一行下面（两层的再套一层）。
+// - 库流程（docs/dev/routine-library.md 5.7、9.3）：里面的步骤带 trace.library，按 callId 收到调它的那一行下面（两层的再套一层）；
+//   脚本里 ha.routine 调的，后面那条「流程『…』跑完 / 停下」按 callId 并进进入那一行（group.end），照 agent 调的写法显示结局。
 import { BROWSER_FETCH_TOOL, isRoutineToolId, routineReturnSchema, routineToolId, routineToolStopDataSchema } from "@heyagent/shared"
 import type { RoutineToolStopData, RunEvent } from "@heyagent/shared"
 
@@ -65,6 +66,11 @@ export interface LibraryGroup {
   /** agent 调的（工具 routine.<短名>，步骤先记、工具那一行跑完才记，在步骤后面）；脚本里 ha.routine 调的（进入那一步在步骤前面） */
   via: "tool" | "script"
   steps: LibraryNode<RunEvent>[]
+  /**
+   * 脚本里 ha.routine 调的：工具桥出来时记的那条「流程『…』跑完 / 自己停下了 / 没跑完」（kind = plan，trace.libraryCall.callId 相同）。
+   * 并进进入那一行显示结局，不再单独占一行（18.3 第 4 条）
+   */
+  end?: RunEvent
 }
 
 /** 过程里的一项：原来的一项（带上它的库流程步骤），或一组没认到「进入」那一行的库流程步骤 */
@@ -79,7 +85,9 @@ const isRoutineCall = (event: RunEvent | undefined) => event?.kind === "tool" &&
  *   脚本里 ha.routine 进入那一步；「流程『…』跑完」那一条也带 libraryCall，但不是工具调用，照普通一项放在后面）；
  * - 没有 libraryCall 的老数据按位置认：脚本调的（步骤同时带 routineStep / scriptStep，或者第 2 层）是第一步前面最近的一行
  *   routine.* 工具调用，agent 调的是最后一步后面第一行（工具调用跑完才记）。slugOf：知道库流程编号对应的短名时，只认工具 id 对得上的那一行。
- * 认不到的组单独成一项（没等到结果、中途断了）
+ * 认不到的组单独成一项（没等到结果、中途断了）。
+ * 「跑完」那一条（不是工具调用、trace.libraryCall.callId 对得上这一层认到主人的一次调用）并进那一组的 end，不单独成一项；
+ * 一步都没做的调用（没有组）有「跑完」那一条时也给它一个空组，好把结局并进去
  */
 export function nestLibrary<T>(items: T[], eventOf: (item: T) => RunEvent | undefined, depth = 1, slugOf?: (routineId: string) => string | undefined): LibraryNode<T>[] {
   const groups = new Map<string, { group: Omit<LibraryGroup, "steps">; events: RunEvent[]; first: number; last: number }>()
@@ -120,6 +128,21 @@ export function nestLibrary<T>(items: T[], eventOf: (item: T) => RunEvent | unde
     owner.set(found, key)
     claimed.add(found)
   }
+  // 「跑完」那一条：这一层里不是工具调用、带 libraryCall 的（不在任何一组里）
+  const ends = new Map<string, number>()
+  items.forEach((item, index) => {
+    const event = eventOf(item)
+    const callId = event?.trace?.libraryCall?.callId
+    if (callId && !isRoutineCall(event) && !member.has(index) && !ends.has(callId)) ends.set(callId, index)
+  })
+  // 一步都没做的调用：没有组，进入那一行和「跑完」那一条都在，给它一个空组
+  for (const [callId, index] of byCall) {
+    if (groups.has(callId) || !ends.has(callId)) continue
+    const library = eventOf(items[index]!)!.trace!.libraryCall!
+    groups.set(callId, { group: { callId, routineId: library.routineId, version: library.version, depth, via: "script" }, events: [], first: index, last: index })
+    owner.set(index, callId)
+    claimed.add(index)
+  }
   // 老数据（没有 libraryCall）按位置认；带 libraryCall 的那一行是别的调用的，不抢
   const fits = (index: number, routineId: string) => {
     const event = eventOf(items[index]!)
@@ -141,14 +164,20 @@ export function nestLibrary<T>(items: T[], eventOf: (item: T) => RunEvent | unde
       claimed.add(found)
     }
   }
+  // 认到主人的组才并「跑完」那一条（没认到的组照旧单独成一项，「跑完」也照旧一行）
+  const owned = new Set(owner.values())
+  const merged = new Map<number, string>()
+  for (const [callId, index] of ends) if (owned.has(callId)) merged.set(index, callId)
+  const endOf = new Map([...merged].map(([index, callId]) => [callId, eventOf(items[index]!)!]))
   const build = (key: string): LibraryGroup => {
     const entry = groups.get(key)!
-    return { ...entry.group, steps: nestLibrary(entry.events, (event) => event, depth + 1, slugOf) }
+    const end = endOf.get(key)
+    return { ...entry.group, steps: nestLibrary(entry.events, (event) => event, depth + 1, slugOf), ...(end ? { end } : {}) }
   }
   const out: LibraryNode<T>[] = []
   const placed = new Set<string>()
-  const owned = new Set(owner.values())
   items.forEach((item, index) => {
+    if (merged.has(index)) return
     const key = member.get(index)
     if (key) {
       if (owned.has(key) || placed.has(key)) return
@@ -183,6 +212,25 @@ export function libraryResultText(event: RunEvent, steps: number, stopText: (sto
     return { text: `停下了，交回 agent${first ? `：${first.replace(/^出错[：:]\s*/, "")}` : ""}`, failed: true }
   }
   return { text: `跑完 · ${took}`, failed: false }
+}
+
+/**
+ * 脚本里 ha.routine 调的那一行的结局：按并进来的「跑完」那一条（group.end）写，照 agent 调的写法（跑完 · 几步 · 用时 · 交回 / 停在哪）。
+ * 用时取那一条标题里写的（工具桥算的整次调用），没写的（停下的）按两条的时间差；ms 给那一行的用时显示。没有「跑完」那一条返回 undefined
+ */
+export function libraryEndResult(enter: RunEvent, group: LibraryGroup): { text: string; failed: boolean; ms?: number; detail?: string } | undefined {
+  const end = group.end
+  if (!end) return undefined
+  const gap = Date.parse(end.at) - Date.parse(enter.at)
+  const body = end.title.replace(/^流程「.*?」(?=跑完|自己停下了|没跑完)/, "")
+  const done = /^跑完：(\d+) 步(?: · ([\d.]+) 秒)?(.*)$/.exec(body)
+  const ms = done?.[2] ? Math.round(Number(done[2]) * 1000) : Number.isFinite(gap) && gap >= 0 ? gap : undefined
+  const took = ms === undefined ? "" : ms >= 1000 ? `${(ms / 1000).toFixed(1)} 秒` : `${ms} 毫秒`
+  const detail = end.detail || undefined
+  if (done) return { text: [`跑完`, `${done[1]} 步`, took].filter(Boolean).join(" · ") + done[3]!, failed: false, ...(ms !== undefined ? { ms } : {}) }
+  const stop = body.replace(/^没跑完，/, "")
+  // 停下的：同 agent 调的，只写停在哪（用时在那一行上）
+  return { text: stop, failed: true, ...(ms !== undefined ? { ms } : {}), ...(detail ? { detail } : {}) }
 }
 
 /** 输出里的 JSON：整段是 JSON，或者最后一行 / 第一个「{」到最后一个「}」是 JSON */

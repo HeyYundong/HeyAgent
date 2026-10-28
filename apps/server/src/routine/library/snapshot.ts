@@ -20,6 +20,7 @@ import { and, eq, inArray } from "drizzle-orm"
 
 import type { DbOrTx } from "../../data/config/common.js"
 import * as t from "../../db/schema.js"
+import { withSourceDeclared } from "./analyze.js"
 
 const emptyRequires = (): RoutineRequires => ({ toolIds: [], browser: {}, routines: [] })
 
@@ -37,9 +38,11 @@ export async function freezeLibraryRoutines(
   while (wave.length) {
     // 在事务里：同一个连接上不能并发查询，按顺序来
     const rows = await db
-      .select({ entry: t.routineLibrary, version: t.routineVersions })
+      .select({ entry: t.routineLibrary, version: t.routineVersions, dispatch: t.tasks.dispatch })
       .from(t.routineLibrary)
       .leftJoin(t.routineVersions, and(eq(t.routineVersions.routineId, t.routineLibrary.routineId), eq(t.routineVersions.version, t.routineLibrary.publishedVersion)))
+      .leftJoin(t.routines, eq(t.routines.id, t.routineLibrary.routineId))
+      .leftJoin(t.tasks, eq(t.tasks.id, t.routines.taskId))
       .where(inArray(t.routineLibrary.slug, wave))
     const next: string[] = []
     for (const slug of wave) {
@@ -67,7 +70,9 @@ export async function freezeLibraryRoutines(
         })
         continue
       }
-      const { entry, version } = row
+      const { entry } = row
+      // 输入、交回的说明：固化员没写的按来源任务（被派的）声明的补上，给模型的工具参数带着说明
+      const version = withSourceDeclared(row.version, row.dispatch)
       const unavailable =
         entry.status === "paused" ? `停用了${entry.pausedReason ? `：${entry.pausedReason}` : ""}` : entry.status === "withdrawn" ? "撤下了" : undefined
       out.set(slug, {
@@ -159,6 +164,7 @@ export function libraryPromptSection(routines: readonly LibraryRoutineSnapshot[]
     lines.push(
       "下面这些是别的任务办成过、固化成脚本的流程。事情里有一段正好是它做的，先调它，比你一步步做快得多：",
       ...usable.map((routine) => `- ${toolNames?.get(routine.toolId) ?? modelName(routine.toolId)}「${routine.name}」：${routine.summary}`),
+      "流程办成时交回的结果是它照固定步骤从页面上读到、核对过的（工具结果里有做过的步骤和依据），直接用，不要再一条条打开页面去核对；没办成或停下的，再自己处理。",
       "流程停下交回给你时，从它停下的那一页接着做；同样的输入不要马上再调一次，除非你确认是偶然的（页面没加载完）。"
     )
   }

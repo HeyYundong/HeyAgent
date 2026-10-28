@@ -10,7 +10,9 @@ import * as t from "../src/db/schema.js"
 import * as tools from "../src/data/config/tools.js"
 import { buildSnapshot } from "../src/engine/sessions.js"
 import { syncBuiltinTools } from "../src/engine/tools/builtin-defs.js"
-import { analyzeLibraryCode, findLibraryCycle, libraryDepthOf, libraryRisk, routineToolDescription } from "../src/routine/library/analyze.js"
+import { analyzeLibraryCode, findLibraryCycle, libraryDepthOf, libraryDescriptionSteps, libraryRisk, routineToolDescription } from "../src/routine/library/analyze.js"
+import { libraryPromptSection } from "../src/routine/library/snapshot.js"
+import { stepLinesOf } from "../src/routine/runtime/handoff.js"
 import { checkRoutine } from "../src/routine/checks.js"
 import { buildMaterial, compactLog, librarySection, networkSection, sdkCallOf, stepRefs, toolsSection } from "../src/routine/material.js"
 import { compileSystemPrompt } from "../src/routine/prompt.js"
@@ -177,6 +179,56 @@ describe("分析（纯函数）", () => {
     expect(plain).toContain("会真的提交：保存")
     expect(plain).not.toContain("浏览器")
   })
+
+  it("给别的任务看的「做什么」：去掉交回、报结果的行（半行的去掉那一半），「派活的『X』」写成「输入的『X』」，重新编号", () => {
+    const description = [
+      "1. 打开记录搜索页 https://erp.example.com/search",
+      "2. 按派活的「编号」在搜索框输入并回车",
+      "3. 等搜索结果里出现编号完全一致的那一条，同时等「没有找到」和报错提示",
+      "4. 读出详情页表格里的状态，交回状态",
+      "5. 通过 work_report 交回状态和更新时间，并 finish 报办成",
+      "6. 用 ha.finish 报没办成（查不到时）",
+    ].join("\n")
+    expect(libraryDescriptionSteps(description)).toEqual([
+      "1. 打开记录搜索页 https://erp.example.com/search",
+      "2. 按输入的「编号」在搜索框输入并回车",
+      "3. 等搜索结果里出现编号完全一致的那一条，同时等「没有找到」和报错提示",
+      "4. 读出详情页表格里的状态",
+    ])
+    const text = routineToolDescription({ summary: "s", description, inputSchema: {}, outputSchema: {}, commits: [], usesBrowser: true })
+    expect(text).not.toMatch(/work_report|finish|派活|报办成|报没办成/)
+    expect(text).toContain("4. 读出详情页表格里的状态\n要的输入")
+    // 没编号的照样过滤，不加编号
+    expect(libraryDescriptionSteps("打开列表\n交回结果\n\n读状态")).toEqual(["打开列表", "读状态"])
+  })
+
+  it("办成时的步骤行：wait_any 写等到的那一种和它的定位（看得出核对了什么）", () => {
+    const rows = [
+      { kind: "tool" as const, title: "navigate", detail: null, toolId: "browser.navigate", input: JSON.stringify({ url: "https://erp.example.com/a" }), output: "ok", trace: null },
+      {
+        kind: "tool" as const,
+        title: "wait_any",
+        detail: null,
+        toolId: "browser.wait_any",
+        input: JSON.stringify({ outcomes: { heading: "getByRole('heading', { name: '编号 A-1' })", error: "getByRole('alert')" } }),
+        output: "等到了「heading」（0.3 秒）。",
+        trace: null,
+      },
+    ]
+    const lines = stepLinesOf(rows as never, (row) => rows.indexOf(row as never) + 1)
+    expect(lines).toEqual([
+      "1. navigate「https://erp.example.com/a」 ✓",
+      "2. wait_any「heading / error」 → heading（getByRole('heading', { name: '编号 A-1' })） ✓",
+    ])
+  })
+
+  it("系统提示「固化好的流程」：办成交回的结果直接用，不要再一条条打开页面核对", () => {
+    const routine = { toolId: "routine.record_status", name: "查一条记录", summary: "要查一条记录时用", selected: true } as LibraryRoutineSnapshot
+    const text = libraryPromptSection([routine])!
+    expect(text).toContain("routine_record_status「查一条记录」：要查一条记录时用")
+    expect(text).toContain("流程办成时交回的结果是它照固定步骤从页面上读到、核对过的")
+    expect(text).toContain("直接用，不要再一条条打开页面去核对；没办成或停下的，再自己处理")
+  })
 })
 
 // ---------- 发布 ----------
@@ -218,7 +270,8 @@ describe("发布", () => {
     expect(candidates.find((each) => each.routineId === routineId)).toMatchObject({ taskId, library: null, versions: [{ version: 1 }] })
     const seen = await preview({ routineId, version: 1, slug: "record_status" })
     expect(seen.data).toMatchObject({ requires: { toolIds: ["browser"], browser: {}, routines: [] }, risk: "read", problems: [], compat: [], affected: { tasks: [], routines: [] } })
-    expect(seen.data.toolDescription).toContain("什么时候用：打开列表")
+    // 没登记时「什么时候用」默认是流程的名字（不是步骤说明的第一行「打开列表」）
+    expect(seen.data.toolDescription).toContain("什么时候用：查一条记录\n")
     const res = await publish(lin, { routineId, version: 1, slug: "record_status" })
     expect(res.data).toEqual({ routineId, version: 1 })
     expect(await entryOf(routineId)).toMatchObject({ slug: "record_status", status: "listed", publishedVersion: 1, risk: "read", failStreak: 0, publishedById: "u-lin", title: "查一条记录" })
@@ -239,6 +292,52 @@ describe("发布", () => {
     await publish(lin, { routineId, version: 1, slug: "changed_name" })
     expect((await entryOf(routineId))!.slug).toBe("record_status")
     expect(await toolRow("routine.changed_name")).toBeUndefined()
+  })
+
+  it("被派的来源任务：输入、交回的说明按声明的参数、结果补上（固化员没写的），工具说明、tools 那一行、详情、快照里的工具参数都有；「什么时候用」没名字时用来源任务的标题", async () => {
+    const { routineId, taskId } = await sourceRoutine(
+      [
+        {
+          code: READ_ONLY,
+          name: "",
+          inputSchema: { type: "object", properties: { 编号: { type: "string" }, 备注: { type: "string", description: "固化员写的" } }, required: ["编号"] },
+          outputSchema: { type: "object", properties: { 状态: { type: "string" } } },
+        },
+      ],
+      { title: "按编号查状态" }
+    )
+    await ctx.db
+      .update(t.tasks)
+      .set({
+        dispatch: {
+          params: [
+            { name: "编号", description: "要查的记录的编号", required: true, dedupe: true },
+            { name: "备注", description: "声明里的备注", required: false, dedupe: false },
+          ],
+          results: [{ name: "状态", description: "详情页上的状态", required: true }],
+          maxRunning: 1,
+        },
+      })
+      .where(eq(t.tasks.id, taskId))
+    const seen = await preview({ routineId, version: 1, slug: "declared_one" })
+    expect(seen.data.problems).toEqual([])
+    expect(seen.data.toolDescription).toContain("什么时候用：按编号查状态\n")
+    expect(seen.data.toolDescription).toMatch(/- p\d（编号）：要查的记录的编号（必填）/)
+    expect(seen.data.toolDescription).toMatch(/- p\d（备注）：固化员写的/)
+    expect(seen.data.toolDescription).toContain("- 状态：详情页上的状态")
+    expect((await publish(lin, { routineId, version: 1, slug: "declared_one", summary: "要查一条记录的状态时用" })).data).toEqual({ routineId, version: 1 })
+    expect((await toolRow("routine.declared_one"))!.description).toMatch(/- p\d（编号）：要查的记录的编号（必填）/)
+    // 存的那一版没改；详情的输入 / 交回表、快照用补过的
+    const [stored] = await ctx.db.select().from(t.routineVersions).where(eq(t.routineVersions.routineId, routineId))
+    expect(stored!.inputSchema).toEqual({ type: "object", properties: { 编号: { type: "string" }, 备注: { type: "string", description: "固化员写的" } }, required: ["编号"] })
+    const detail = (await query(ctx.app, "routineLibrary.get", wang, { routineId })).data
+    expect(detail.version.inputSchema.properties.编号).toEqual({ type: "string", description: "要查的记录的编号" })
+    expect(detail.version.outputSchema.properties.状态).toEqual({ type: "string", description: "详情页上的状态" })
+    const caller = await createTask(ctx.db, { modelId: EXEC, toolIds: ["routine.declared_one", "browser"] })
+    const snapshot = await buildSnapshot(ctx.db, caller, { source: "manual", runAttachments: [] })
+    const frozen = snapshot.libraryRoutines!.find((routine) => routine.slug === "declared_one")!
+    expect((frozen.inputSchema.properties as Record<string, unknown>).编号).toEqual({ type: "string", description: "要查的记录的编号" })
+    expect((frozen.outputSchema.properties as Record<string, unknown>).状态).toEqual({ type: "string", description: "详情页上的状态" })
   })
 
   it("要的工具和风险：带提交、会花钱的 HTTP 工具、只读的 HTTP 工具、直接调接口、调别的库流程（传递）", async () => {
@@ -743,6 +842,13 @@ describe("固化员", () => {
     const plain = await buildMaterial(ctx.db, { sourceSessionId: plainSession, routineId: plainRoutine!.id })
     expect(plain.library).toBe(false)
     expect(plain.text).not.toContain("任务选的库流程")
+  })
+
+  it("提示词：evidence 要写出核对了什么；description 不写交回、报结果，不写「派活的…」", () => {
+    const text = compileSystemPrompt("SDK")
+    expect(text).toContain("evidence 写依据：写出核对了什么、在哪看到的")
+    expect(text).toContain("不能只写「查到了」")
+    expect(text).toContain("交回结果、报办成（ha.work.report、ha.finish）不算一步，不写")
   })
 
   it("提示词：有库流程才加「用 ha.routine 调同一个」那一条，编号接在最后", () => {

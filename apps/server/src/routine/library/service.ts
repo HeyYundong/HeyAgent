@@ -14,6 +14,7 @@ import {
   LIBRARY_CALLS_PAGE,
   LIBRARY_RECENT_STOPS,
   LIBRARY_STATS_WINDOW,
+  defaultLibrarySummary,
   missingRoutineRequires,
   routineBrowserFlagLabel,
   routineRequiresSchema,
@@ -37,7 +38,7 @@ import { tasksUsingRef, usedByText } from "../../data/config/tasks.js"
 import type { Db } from "../../db/client.js"
 import * as t from "../../db/schema.js"
 import { notifyUsers } from "../../engine/notify.js"
-import { analyzeForPublish, analyzeLibraryCode, compatWithPublished, defaultLibrarySummary, routineToolDescription } from "./analyze.js"
+import { analyzeForPublish, analyzeLibraryCode, compatWithPublished, routineSource, routineToolDescription, withSourceDeclared } from "./analyze.js"
 
 /** 流程页的链接（通知用） */
 export const libraryLink = (routineId: string) => `#/routines?id=${encodeURIComponent(routineId)}`
@@ -178,17 +179,20 @@ function callersOf<E extends Pick<EntryRow, "slug" | "status" | "requires">>(ent
 export async function getLibraryEntry(db: Db, routineId: string): Promise<RoutineLibraryDetail> {
   const entry = await requireEntry(db, routineId)
   const toolId = routineToolId(entry.slug)
-  const [source] = await db
-    .select({ taskId: t.tasks.id, title: t.tasks.title, ownerId: t.tasks.ownerId })
+  const [found] = await db
+    .select({ taskId: t.tasks.id, title: t.tasks.title, ownerId: t.tasks.ownerId, dispatch: t.tasks.dispatch })
     .from(t.routines)
     .innerJoin(t.tasks, eq(t.tasks.id, t.routines.taskId))
     .where(eq(t.routines.id, routineId))
-  if (!source) throw notFound("固化流程", routineId)
-  const [version] = await db
+  if (!found) throw notFound("固化流程", routineId)
+  const { dispatch, ...source } = found
+  const [stored] = await db
     .select()
     .from(t.routineVersions)
     .where(and(eq(t.routineVersions.routineId, routineId), eq(t.routineVersions.version, entry.publishedVersion)))
-  if (!version) throw notFound("固化流程的版本", `${routineId} 第 ${entry.publishedVersion} 版`)
+  if (!stored) throw notFound("固化流程的版本", `${routineId} 第 ${entry.publishedVersion} 版`)
+  // 输入、交回表的说明：固化员没写的按来源任务声明的补上
+  const version = withSourceDeclared(stored, dispatch)
   const proven = (await provenVersions(db, [routineId])).get(routineId) ?? []
   const publishes = await db
     .select()
@@ -384,11 +388,14 @@ interface PreviewCore extends RoutineLibraryPreview {
 async function previewCore(db: DbOrTx, input: { routineId: string; version: number; slug?: string }): Promise<PreviewCore> {
   const [routine] = await db.select({ id: t.routines.id }).from(t.routines).where(eq(t.routines.id, input.routineId))
   if (!routine) throw notFound("固化流程", input.routineId)
-  const [versionRow] = await db
+  const [stored] = await db
     .select()
     .from(t.routineVersions)
     .where(and(eq(t.routineVersions.routineId, input.routineId), eq(t.routineVersions.version, input.version)))
-  if (!versionRow) throw notFound("固化流程的版本", `${input.routineId} 第 ${input.version} 版`)
+  if (!stored) throw notFound("固化流程的版本", `${input.routineId} 第 ${input.version} 版`)
+  // 被派的来源任务：输入、交回的说明按声明的补上（工具说明、tools 那一行都用补过的）
+  const source = await routineSource(db, input.routineId)
+  const versionRow = withSourceDeclared(stored, source?.dispatch)
   const entry = await loadEntry(db, input.routineId)
   // 短名发布后不能改：有登记就用登记的
   const slug = entry?.slug ?? input.slug?.trim() ?? ""
@@ -403,7 +410,7 @@ async function previewCore(db: DbOrTx, input: { routineId: string; version: numb
       ? { tasks: await affectedTasks(db, routineToolId(entry.slug), analysis.requires), routines: await routineCallers(db, entry.slug, entries) }
       : { tasks: [], routines: [] }
   const toolDescription = routineToolDescription({
-    summary: entry?.summary ?? defaultLibrarySummary(versionRow.description),
+    summary: entry?.summary ?? defaultLibrarySummary({ name: versionRow.name, taskTitle: source?.title }),
     description: versionRow.description,
     inputSchema: versionRow.inputSchema,
     outputSchema: versionRow.outputSchema,
@@ -534,11 +541,12 @@ export async function updateLibraryEntry(ctx: WriteCtx, input: { routineId: stri
     await tx.update(t.routineLibrary).set({ title: input.title, summary: input.summary, updatedAt: new Date() }).where(eq(t.routineLibrary.routineId, input.routineId))
     // 撤下的没有 tools 那一行：重新发布时再写
     if (entry.status !== "withdrawn") {
-      const [version] = await tx
+      const [stored] = await tx
         .select()
         .from(t.routineVersions)
         .where(and(eq(t.routineVersions.routineId, input.routineId), eq(t.routineVersions.version, entry.publishedVersion)))
-      if (!version) throw notFound("固化流程的版本", `${input.routineId} 第 ${entry.publishedVersion} 版`)
+      if (!stored) throw notFound("固化流程的版本", `${input.routineId} 第 ${entry.publishedVersion} 版`)
+      const version = withSourceDeclared(stored, (await routineSource(tx, input.routineId))?.dispatch)
       await writeToolRow(tx, { routineId: input.routineId, slug: entry.slug, title: input.title, summary: input.summary, risk: entry.risk, version, requires: requiresOf(entry.requires) })
     }
     const changed = [...(entry.title !== input.title ? ["title"] : []), ...(entry.summary !== input.summary ? ["summary"] : [])]

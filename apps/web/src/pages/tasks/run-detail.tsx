@@ -5,7 +5,8 @@
 // 子 agent（docs/dev/sub-agents.md 11.1，run-subagents.tsx）：拆过的父运行在「结果」后加「子 agent」区块、花费写「含子 agent」；
 // 子运行 meta 写「第 2 个子 agent · 父运行 R-12-3」，检查点的位置换成「子目标」，不显示改结果、总结、固化（结果是子 agent 自报的，不复核）。
 // 流程库（docs/dev/routine-library.md 9.3）：库流程里的步骤（trace.library）按 callId 收在调它的那一行下面（run-script.ts 的 nestLibrary），两层的再套一层；
-// agent 调的那一行写「流程『…』第 3 版」+「库流程」，下面一行结局（跑完 · 7 步 · 4.8 秒 · 交回 …，或停在第几步、交回 agent）。
+// agent 调的那一行写「流程『…』第 3 版」+「库流程」，下面一行结局（跑完 · 7 步 · 4.8 秒 · 交回 …，或停在第几步、交回 agent）；
+// 脚本里 ha.routine 调的同样写：后面那条「跑完」按 callId 并进进入那一行（用时是整次调用的），不再单独一行。
 // 运行代码（code.run）的步骤单独显示：语言、代码、退出码、stdout / stderr（格式见 docs/dev/session-space.md 3.2）；解析不了就退回通用的输入 / 输出。
 // 不带页面级布局和返回链接，放进任何 768px 宽的抽屉都能用（任务页、Session 页的抽屉都直接放它）。
 // 传进来的 run 是 sessions.list 的摘要（不带过程）：标题、检查点、验收先显示；过程按 id 另取（sessions.get），取到前是骨架屏。
@@ -52,7 +53,7 @@ import { RunOutcomeSection } from "./run-outcome"
 import { canSolidify, isRoutineTest, RoutineRunLine, SolidifyDialog } from "./run-routine"
 import { costText, isQueuedSubRun, isSubRun, SubagentsSection, SubGoalSection, SubRunSource } from "./run-subagents"
 import { stopReasonText } from "./routine-parts"
-import { CODE_RUN_TOOL_ID, fetchCallOf, groupScriptEvents, isErrorStep, judgeOf, libraryResultText, libraryStepCount, nestLibrary, parseToolsSummary, TOOLS_MARK, type EventItem, type LibraryGroup, type LibraryNode } from "./run-script"
+import { CODE_RUN_TOOL_ID, fetchCallOf, groupScriptEvents, isErrorStep, judgeOf, libraryEndResult, libraryResultText, libraryStepCount, nestLibrary, parseToolsSummary, TOOLS_MARK, type EventItem, type LibraryGroup, type LibraryNode } from "./run-script"
 
 const EVENT_ICON: Record<RunEventKind, LucideIcon> = { plan: ListTreeIcon, think: BrainIcon, tool: WrenchIcon, checkpoint: FlagIcon, rule: ShieldIcon, wait: PauseIcon, resume: PlayIcon, human: UserIcon, verify: ScanSearchIcon, done: CircleCheckIcon, error: TriangleAlertIcon }
 
@@ -192,7 +193,7 @@ function EventList({ events, run }: { events: RunEvent[]; run: SessionSummary })
           <div key={item.event.seq} className="flex flex-col gap-1">
             <EventRow event={item.event} run={run} running={item.event.seq === lastSeq} library={node.library} />
             {item.script && <ScriptSteps steps={item.script} run={run} lastSeq={lastSeq} />}
-            {node.library && <LibrarySteps group={node.library} run={run} lastSeq={lastSeq} />}
+            {node.library && node.library.steps.length > 0 && <LibrarySteps group={node.library} run={run} lastSeq={lastSeq} />}
           </div>
         )
       })}
@@ -209,7 +210,7 @@ function StepNodes({ nodes, run, lastSeq }: { nodes: LibraryNode<RunEvent>[]; ru
     return (
       <div key={step.seq} className="flex flex-col gap-1">
         <EventRow event={step} run={run} running={step.seq === lastSeq} library={node.library} />
-        <LibrarySteps group={node.library} run={run} lastSeq={lastSeq} />
+        {node.library.steps.length > 0 && <LibrarySteps group={node.library} run={run} lastSeq={lastSeq} />}
       </div>
     )
   })
@@ -301,7 +302,9 @@ function EventRow({ event, run, running, library }: { event: RunEvent; run: Sess
       </Marker>
     )
   }
-  const meta = eventMeta(event)
+  // 脚本里 ha.routine 进入的那一行：并进来的「跑完」那一条给出整次调用的用时、结局（run-script.ts 的 libraryEndResult）
+  const routineEnd = library?.end && event.kind === "tool" ? libraryEndResult(event, library) : undefined
+  const meta = eventMeta(routineEnd?.ms !== undefined ? { ...event, ms: routineEnd.ms } : event)
   const status = running ? "running" : event.kind === "error" ? "error" : undefined
   const routineBadge = event.trace?.routineStep && <Badge variant="outline">流程</Badge>
   // 固化流程里的判断（ha.judge）：一行写问题 → 答案，下面一行理由
@@ -332,8 +335,10 @@ function EventRow({ event, run, running, library }: { event: RunEvent; run: Sess
   const scriptStep = event.trace?.scriptStep
   const inLibrary = event.trace?.library
   const routineTitle = routineCall ? `流程「${toolName(event.toolId!)}」${library ? `第 ${library.version} 版` : ""}` : undefined
-  // agent 调的（工具结果在这一行）：下面一行写结局；脚本里进入的那一步只是进入，结局在后面「跑完」那一条
-  const routineResult = routineCall && !scriptStep && !event.trace?.routineStep && !inLibrary ? libraryResultText(event, library ? libraryStepCount(library) : 0, stopReasonText) : undefined
+  // agent 调的（工具结果在这一行）：下面一行写结局；脚本里进入的那一步：结局在后面「跑完」那一条，并进来以后同样写在下面一行
+  const routineResult = routineCall && !scriptStep && !event.trace?.routineStep && !inLibrary
+    ? libraryResultText(event, library ? libraryStepCount(library) : 0, stopReasonText)
+    : routineEnd
   // 直接调网站接口：方法、路径和参数（悬停看完整网址）、状态码（2xx outline，4xx、5xx destructive）；出错的（没拿到返回）照常标出
   const fetchCall = fetchCallOf(event)
   const fetchFailed = !!fetchCall && isErrorStep(event)
@@ -392,6 +397,7 @@ function EventRow({ event, run, running, library }: { event: RunEvent; run: Sess
     <div className="flex flex-col gap-0.5">
       {row}
       <p className={routineResult.failed ? "pl-5.5 text-xs text-destructive" : "pl-5.5 text-xs text-muted-foreground"}>{routineResult.text}</p>
+      {routineEnd?.detail && <p className="pl-5.5 text-xs whitespace-pre-line text-muted-foreground">{routineEnd.detail}</p>}
     </div>
   )
 }

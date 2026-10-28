@@ -211,6 +211,13 @@ describe("agent 调（一次工具调用）", () => {
     expect(result).toContain("流程「查状态」第 1 版跑完了：2 步")
     expect(result).toContain("结果：办成。A-1 的状态是 已发货")
     expect(result).toContain("交回：状态=已发货，件数=3")
+    // 办成也写做过的步骤（同停下时的步骤行），说清交回的值直接用，不用再自己核对（18.3 第 1 条）
+    expect(result).toContain("做过的步骤：")
+    expect(result).toContain("1. file.save「lib/A-1.txt」 ✓")
+    expect(result).toContain("2. file.read「lib/A-1.txt」 ✓")
+    expect(result).toContain("交回的值是流程照上面的固定步骤得到的")
+    expect(result).toContain("直接用，不要再打开页面核对一遍")
+    expect(script.promptText(0)).toContain("流程办成时交回的结果是它照固定步骤从页面上读到、核对过的")
     const events = await eventsOf(ctx.db, sessionId)
     const inner = events.filter((event) => event.kind === "tool" && event.trace?.library)
     expect(inner.map((event) => [event.toolId, event.trace?.library])).toEqual([

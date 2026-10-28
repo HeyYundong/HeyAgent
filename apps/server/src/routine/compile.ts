@@ -18,6 +18,7 @@ import {
   SITE_SECRET_MASK,
   snakeName,
   syncHttpParams,
+  withDeclaredDescriptions,
   type HttpToolSuggestion,
   type RoutineTestReport,
   type RoutineTestRound,
@@ -446,8 +447,9 @@ async function draft(db: Db, loaded: Loaded) {
       .set({
         ...fields,
         code: clip(output.code, CODE_MAX),
-        ...(check.inputSchema ? { inputSchema: check.inputSchema } : {}),
-        ...(check.outputSchema ? { outputSchema: check.outputSchema } : {}),
+        // 被派的任务：固化员没写的参数、结果说明按声明的补上（不靠模型；流程库给别的任务看的说明用它）
+        ...(check.inputSchema ? { inputSchema: withDeclaredDescriptions(check.inputSchema, material.dispatch?.params ?? []) } : {}),
+        ...(check.outputSchema ? { outputSchema: withDeclaredDescriptions(check.outputSchema, material.dispatch?.results ?? []) } : {}),
       })
       .where(eq(t.routineVersions.id, version.id))
     if (problems.length) {
