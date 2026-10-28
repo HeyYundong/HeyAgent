@@ -581,6 +581,7 @@ export class BrowserInstance {
     this.viewer.close(options.reason)
     if (this.urlWrite) clearTimeout(this.urlWrite)
     // 记下的接口最后写一次（网关关闭时已经写过；Chrome 意外退出时这里兜底）
+    await this.network?.recordResponded()
     await this.network?.flush()
     await this.downloads?.close()
     await this.mcp?.close()

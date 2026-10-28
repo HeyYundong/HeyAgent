@@ -1471,6 +1471,7 @@ export class BrowserTools {
   async close(reason = "运行停下了") {
     // 后台的存档截图先存完（关 Chrome 之前）；记下的接口写一次（两次调用之间页面自己发的）
     await Promise.allSettled([...this.pendingSaves])
+    await this.instance?.network?.recordResponded()
     await this.instance?.network?.flush()
     const manager = getBrowserManager()
     const { db, session } = this.ctx
