@@ -22,6 +22,8 @@ export interface EngineRuntime {
   ) => LanguageModel | Promise<LanguageModel>
   /** 测试用：图库的 embedding 直接给出向量（1024 维）。不设就调默认 embedding 模型 */
   embedFactory?: (input: { modelId: string; inputs: EmbedInput[] }) => number[][] | Promise<number[][]>
+  /** 测试用：自动挑选记忆最多等多久（毫秒）。不设用 shared 的 AUTO_MEMORY_TIMEOUT_MS（20 秒） */
+  autoMemoryTimeoutMs?: number
   /** 文件存放目录 */
   filesDir: string
   /** 模型或网络出错时重试几次、第一次等多久（毫秒，之后翻倍） */

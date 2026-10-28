@@ -13,14 +13,14 @@ const CONCEPTS = `## 平台的概念
 - 定时：cron 表达式（分 时 日 月 周，按 ${TIME_ZONE} 时间），例如 0 9 * * * 是每天 09:00，0 9 * * 1-5 是每个工作日 09:00；null 表示不定时，只手动运行。
 - 运行：任务的一次执行（编号 R-…），有状态、过程、花费，还有过程中的截图、产物等文件。你只能查，不能发起或取消。
 - 任务记忆：某个任务自己的经验，一条一句话，这个任务每次运行开始时全部给 agent。
-- 全局记忆：可以给多个任务用的经验（编号 m-…），要在任务的 memoryIds 里选上才会被读到。agent 提的记忆要人审核（pending），批准后生效。
+- 全局记忆：可以给多个任务用的经验（编号 m-…）。在任务的 memoryIds 里选上的（手选）每次运行一定会读到；任务开着「自动挑选记忆」时，运行开始还会按这次要办的事从记忆库里按内容再挑几条相关的（来自网页、没核实的不会被自动挑，要用就手选）。agent 提的记忆要人审核（pending），批准后生效。
 - 技能：一份 SKILL.md 操作手册（编号 sk-…），教 agent 怎么做某类事。新建的是草稿，发布（published）后任务才能选用；agent 提的修改建议要人采纳或拒绝。
 - 规则：「什么情况下 → 怎么办」的约束（编号 rl-…），例如调用某类工具前先让人确认。文字要先由系统翻译成「系统理解为……」，人确认后才生效；任务要在 ruleIds 里选上。
 - 工具：agent 能调用的能力。内置工具由系统提供；HTTP 接口工具是一个请求模板（{参数} 由 agent 填，{{名字}} 是存在服务器上的密钥）；MCP 服务器提供一组工具。
 - 待办：人加的「到点 / 按 cron / 等到某个事件，让某个任务的 agent 去做一件事」（编号 td-…）。待办挂在任务上（任务详情的「什么时候跑」）。另外还有「要人办的事」（审批、登录、验收争议、记忆和技能的审核），在「会话」页的「等人处理」里，那些你只能看。`
 
 const FIELDS = `## 各类配置的字段（改的工具用）
-- 任务（create_task / update_task）：title 要 agent 做什么（一句话）；goal 做到什么算完成；steps 步骤 [{ text, wait, checkpoint? }]；schedule { cron, text } 或 null；modelId 执行模型（不填用默认的执行模型）；verifyModelId 验收模型（不填用默认的；不能和执行模型同一家）；reviewModelId 复核模型（运行结束一定复核，三方验收通过的除外；不填用默认复核模型，没有默认的必须填）；ownerId 负责人（不填是自己，只有主管能指定别人）；enabled 启用；memoryIds / skillIds / toolIds / ruleIds 挂的全局记忆、技能（要已发布）、工具、规则（要已生效）；browserProfileIds 能用的 Chrome 配置（空 = 全部）；allowedDomains 网址白名单（空 = 不限）；allowBrowserEvaluate 允许在网页里执行脚本；allowBrowserVision 允许看画面（agent 截图看、按坐标点，在线表格、画布类网页用得上）；allowBrowserFetch 允许直接调网站接口（agent 和固化脚本带着浏览器的登录态调网页自己用的接口，读列表、翻页快得多；默认关）；desktopIds 能用的桌面（选了「桌面」工具时，空 = 全部）；allowDesktopVision 允许看桌面画面（读不到界面控件的软件要截图看）；cronSkipIfRunning 定时到点时上一次没跑完就跳过；autoSolidify 办成后自动固化成流程（true / false，null = 按默认：被派的、定时的任务开，别的关）；routineSkipTest 固化时不试跑（会自动存草稿的网站用）。
+- 任务（create_task / update_task）：title 要 agent 做什么（一句话）；goal 做到什么算完成；steps 步骤 [{ text, wait, checkpoint? }]；schedule { cron, text } 或 null；modelId 执行模型（不填用默认的执行模型）；verifyModelId 验收模型（不填用默认的；不能和执行模型同一家）；reviewModelId 复核模型（运行结束一定复核，三方验收通过的除外；不填用默认复核模型，没有默认的必须填）；ownerId 负责人（不填是自己，只有主管能指定别人）；enabled 启用；memoryIds / skillIds / toolIds / ruleIds 挂的全局记忆、技能（要已发布）、工具、规则（要已生效）；browserProfileIds 能用的 Chrome 配置（空 = 全部）；allowedDomains 网址白名单（空 = 不限）；allowBrowserEvaluate 允许在网页里执行脚本；allowBrowserVision 允许看画面（agent 截图看、按坐标点，在线表格、画布类网页用得上）；allowBrowserFetch 允许直接调网站接口（agent 和固化脚本带着浏览器的登录态调网页自己用的接口，读列表、翻页快得多；默认关）；desktopIds 能用的桌面（选了「桌面」工具时，空 = 全部）；allowDesktopVision 允许看桌面画面（读不到界面控件的软件要截图看）；cronSkipIfRunning 定时到点时上一次没跑完就跳过；autoSolidify 办成后自动固化成流程（true / false，null = 按默认：被派的、定时的任务开，别的关）；routineSkipTest 固化时不试跑（会自动存草稿的网站用）；autoMemory 自动挑选记忆（运行开始时按任务标题、目标、步骤和这次的说明，从记忆库里再挑相关的几条，新建时不填 = 开）；autoMemoryLimit 自动挑的最多几条（1～20，默认 5）。
 - 任务记忆（add_task_memory / update_task_memory / delete_task_memory）：taskId、content；改和删用 list_task_memory 里的数字 id。
 - 待办（create_todo / update_todo / delete_todo）：taskId 让哪个任务去做；title 要做的事；trigger 什么时候：{ kind: "time", at: "2026-10-20T09:00" }（${TIME_ZONE} 时间）/ { kind: "cron", cron, text? } / { kind: "event", event: 事件名或一句话, fallbackDays: 最多等几天 } / { kind: "time_or_event", at, event }。
 - 全局记忆（create_memory / update_memory / archive_memory / delete_memory / approve_memory / reject_memory）：content 内容；appliesTo 适用于哪里（一个简短的标签）。

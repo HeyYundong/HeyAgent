@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm"
 import { memoryId, type Actor, type MemoryInput } from "@heyagent/shared"
 
 import * as t from "../../db/schema.js"
+import { kickMemoryEmbeddings } from "../../memory/embed.js"
 import { assertCan, audit, conflict, nextNo, notFound, type DbOrTx, type Tx, type WriteCtx } from "./common.js"
 import { tasksUsingRef, usedByText } from "./tasks.js"
 
@@ -23,23 +24,29 @@ export async function insertMemory(tx: Tx, actor: Actor, input: MemoryInput, aud
 
 export async function createMemory(ctx: WriteCtx, input: MemoryInput) {
   assertCan(ctx.actor, "config.manage", {}, "只有主管能新建记忆")
-  return ctx.db.transaction((tx) => insertMemory(tx, ctx.actor, input))
+  const result = await ctx.db.transaction((tx) => insertMemory(tx, ctx.actor, input))
+  // 叫醒后台算向量（自动挑选记忆用）；不叫也就晚一分钟
+  kickMemoryEmbeddings()
+  return result
 }
 
 export async function updateMemory(ctx: WriteCtx, input: MemoryInput & { id: string }) {
   assertCan(ctx.actor, "config.manage", {}, "只有主管能修改记忆")
-  return ctx.db.transaction(async (tx) => {
+  const result = await ctx.db.transaction(async (tx) => {
     const before = await loadMemory(tx, input.id)
     if (before.status === "pending") throw conflict("这条记忆还在等审核，先批准或拒绝（这里或「会话」的「等人处理」里）")
     await tx.update(t.memories).set({ content: input.content, appliesTo: input.appliesTo }).where(eq(t.memories.id, input.id))
     await audit(tx, ctx.actor.id, "memory.update", "memories", input.id, { changed: (["content", "appliesTo"] as const).filter((key) => before[key] !== input[key]) })
     return { id: input.id }
   })
+  // 内容改了要重算向量（判断在 SQL 里，这里只是让后台早点算）
+  kickMemoryEmbeddings()
+  return result
 }
 
 /** 审核：只有审核人（或主管）能批；同时把待办里对应的那件事标成已处理 */
 async function review(ctx: WriteCtx, input: { id: string; reason?: string }, approve: boolean) {
-  return ctx.db.transaction(async (tx) => {
+  const result = await ctx.db.transaction(async (tx) => {
     const memory = await loadMemory(tx, input.id)
     assertCan(ctx.actor, "humanItem.resolve", { assigneeId: memory.reviewerId ?? "" }, "这条记忆不是分给你审核的")
     if (memory.status !== "pending") throw conflict("这条记忆已经审核过了")
@@ -53,6 +60,9 @@ async function review(ctx: WriteCtx, input: { id: string; reason?: string }, app
     await audit(tx, ctx.actor.id, approve ? "memory.approve" : "memory.reject", "memories", input.id, { humanItemIds: items.map((item) => item.id), ...(input.reason ? { reason: input.reason } : {}) })
     return { id: input.id, status: approve ? ("active" as const) : ("rejected" as const) }
   })
+  // 批准了就生效，要算向量
+  if (approve) kickMemoryEmbeddings()
+  return result
 }
 
 export const approveMemory = (ctx: WriteCtx, input: { id: string }) => review(ctx, input, true)

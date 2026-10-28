@@ -165,13 +165,13 @@ curl -s -b 'better-auth.session_token=<COOKIE>' -H 'content-type: application/js
 | `me.get` | 登录即可 | 无 | `Me`：`id name title isAdmin email needsMeCount`。`needsMeCount` = 等我处理的事，主管算全部未处理的，员工只算分给自己的 | `NOT_FOUND`（用户被删了） |
 | `staff.list` | 登录即可 | 无 | `Staff[]`：`id name title isAdmin`。全部的人，用来把 id 显示成名字 | |
 | `platforms.list` | 登录即可 | 无 | `Platform[]`：`id name`，按 position | |
-| `tasks.list` | 登录即可 | 无 | `TaskDef[]`，新建的在前。字段：`id title goal steps[]{id text wait checkpoint?} ownerId createdAt enabled schedule?{cron text} nextRunAt? modelId memoryIds skillIds toolIds ruleIds`。`toolIds` 不含每个任务都自带的内置工具 | |
+| `tasks.list` | 登录即可 | 无 | `TaskDef[]`，新建的在前。字段：`id title goal steps[]{id text wait checkpoint?} ownerId createdAt enabled schedule?{cron text} nextRunAt? modelId memoryIds skillIds toolIds ruleIds autoMemory autoMemoryLimit`（后两项见第 21 节）。`toolIds` 不含每个任务都自带的内置工具 | |
 | `tasks.get` | 登录即可 | `{ id }` | `TaskDef` | `NOT_FOUND` |
 | `sessions.list` | 登录即可 | `{ taskId? }`（可整个省略） | `SessionSummary[]`，开始时间新的在前：**不带过程**（`events`），见下面「SessionRun」 | 见下面「SessionRun」 |
 | `sessions.page` | 登录即可 | `sessionPageInputSchema`：`{ group: "running"\|"human"\|"waiting"\|"verifying"\|"ended"（默认 running）, mine?, source?, taskId?, outcome?, q?(≤200), sort: "started"\|"ended"（默认 started）, dir: "asc"\|"desc"（默认 desc）, page(≥1，默认 1), pageSize(1-200，默认 50) }` | `SessionPage`：`{ items: SessionSummary[]; total; page; pageSize; counts: { running human waiting verifying ended }; spentToday; endedOutcome: { achieved, notAchieved } }` | 会话页用，见下面「sessions.page」 |
-| `sessions.get` | 登录即可 | `{ id }` | `SessionRun`（摘要 + 全部过程） | `NOT_FOUND` |
+| `sessions.get` | 登录即可 | `{ id }` | `SessionRun`（摘要 + 全部过程 + `memoryUse?` 这次用了哪些记忆，见第 21 节） | `NOT_FOUND` |
 | `todos.board` | 登录即可 | 无 | `{ humanItems: HumanItem[]; humanTodos: HumanTodo[] }`：还没处理的「要人办的事」（按急迫程度 `urgency` 小的在前，再按时间）和有效的「人加的待办」（新的在前） | 名字沿用以前的待办看板。要人办的事给会话页「等人处理」和运行详情顶上的处理面板用，人加的待办给任务详情「什么时候跑」用（2026-10-20 去掉「待办」页，见 `docs/dev/todos-into-sessions.md`） |
-| `memories.list` | 登录即可 | 无 | `MemoryRef[]`，按 id。含已拒绝、已归档的，页面自己筛。`note.lastUsed` 是服务端按当前时间生成的文字；待审核的带 `reviewItemId` | |
+| `memories.list` | 登录即可 | 无 | `MemoryRef[]`，按 id。含已拒绝、已归档的，页面自己筛。`note.lastUsed` 是服务端按当前时间生成的文字；待审核的带 `reviewItemId`；生效的带 `embed?`（自动挑选用的向量算没算好，见第 21 节） | |
 | `skills.list` | 登录即可 | 无 | `Skill[]`：带 `version updatedAt body toolIds`，有待审核的修改建议时带 `suggestion{taskId summary reviewerId createdAt itemId?}` | |
 | `rules.list` | 登录即可 | 无 | `RuleRef[]`：`id name trigger action toolIds compiledTrigger? compile?`。`compiledTrigger` 是人确认过、正在执行的翻译结果（`CompiledRule`），`compile` 是生效状态和「系统理解为」，见第 11.1 节 | |
 | `tools.list` | 登录即可 | 无 | `{ tools: Tool[]; mcpServers: McpServer[]; savedSecrets: Record<名字, {by byId at}> }`。HTTP 工具的模板里密钥只以 `{{名字}}` 出现；`McpServer.env` 是每行「名字=••••」 | |
@@ -242,6 +242,8 @@ curl -s -b 'better-auth.session_token=<COOKIE>' -H 'content-type: application/js
 | `schedule` | `{ cron, text? } 或 null` | **是**（必须带这个键，`null` = 只跑一次） | `cron` 是 5 段（分 时 日 月 周，上海时间），不合法会 `BAD_REQUEST`；`text` ≤100，不填就用 cron 原文 |
 | `enabled` | boolean | 否 | 默认 `true`。关掉就不会运行，也不会按定时运行 |
 | `memoryIds` `skillIds` `toolIds` `ruleIds` | string[] | 否 | 默认空，各最多 200 个，都要存在。只有 `active` 的记忆、`published` 的技能会在运行时进快照；每个任务自带的内置工具不用传（传了也不存） |
+| `autoMemory` | boolean | 否 | 自动挑选记忆（第 21 节）。**不传 = 开**；改任务是整份替换，不传也会变回开，要保留原值就带上 |
+| `autoMemoryLimit` | integer | 否 | 自动挑的最多几条，1～20，默认 5 |
 
 | 接口 | 谁能调 | 输入 | 返回 | 主要错误 | 审计 / 推送 / 副作用 |
 |---|---|---|---|---|---|
@@ -1595,3 +1597,15 @@ claude mcp add --transport http heyagent-compare http://<host>:8080/api/compare/
 | `browser.wait_any`「等结果」 | `{ outcomes: { 名字: 定位 }, timeout?（秒，默认 10，最多 60） }` | 等到的名字（`data: { matched }`）；定位可以写 `url=片段`；超时是出错，文字带页面概况 |
 
 定位认两种写法：录下来的 JS 写法（`getByRole('button', { name: '查询' }).nth(1)` 等，只认白名单方法和字面量参数）和选择器字符串（`role=…`、`text=…`、CSS）。另外：HTTP 工具返回 JSON 时 `ToolOutcome.data` 是解析后的对象；`file.read` 读表格时 `data` 是 `{ sheet, header, rows, total }`。
+
+## 21. 记忆按内容自动挑选（2026-10-28）
+
+设计、门槛标定见 `docs/dev/memory-retrieval.md`。代码：`apps/server/src/memory/embed.ts`（向量）、`memory/retrieval.ts`（挑）；约定在 `packages/shared/src/memory-retrieval.ts`。**没有新的 tRPC 过程、HTTP 接口、权限、审计 action、实时推送的表。**
+
+- `tasks.list`：`TaskDef` 多 `autoMemory`（boolean）、`autoMemoryLimit`（1～20）。`tasks.create` / `tasks.update` 的输入多这两项，不传 = 开 / 5（见 4.2 的字段表）。迁移前已有的任务是关的。
+- `memories.list`：`MemoryRef.embed?: { state: "ready" | "pending" | "failed", error? }`：这条记忆在当前 embedding 模型下的向量算好了 / 还没算（刚建、刚改、刚换模型）/ 算失败（`error` 是原因，后台 10 分钟后重试）。只有「生效」的记忆、而且设了 embedding 模型（`models.overview` 的 `defaults.embed`）时才有。`webUnverified` 的也会算，但不会被自动挑，页面自己按 `webUnverified` 写。
+- `sessions.get`：`SessionRun.memoryUse?`（`sessions.list`、`sessions.page` 的摘要里没有）：`{ items[]{ id appliesTo content auto?{score} }, auto?: AutoMemorySnapshot, taskMemoryCount }`。`items` 手选的在前（建任务时的顺序）、自动挑的在后（`auto.score` 从高到低，4 位小数）；`auto` 是快照里的挑选情况：`status`（`pending` 还没挑 / `done` 挑过了，可能 0 条 / `skipped` 没挑 / `failed` 出错）、`limit`、`at`、`modelId`、`minScore`、`candidates`（参与挑选几条）、`notReady`（生效但向量没算好、这次没参与的）、`query`（拿来挑的文字）、`reason`（skipped / failed 的原因；`done` 但一条都没过门槛时是「最像的是 m-007（0.52），没到门槛 0.70」）；任务没开自动挑选、加这个功能以前的运行没有 `auto`。没有快照的演示运行没有 `memoryUse`。
+- 快照（`SessionSnapshot`）：`memories[]` 每条多可选的 `auto: { score }`（有 = 自动挑的）；多可选的 `autoMemory`（同上）。开始运行时只写 `{ status: "pending", limit }`，worker 进这次运行、建系统提示之前挑一次，写回 `sessions.snapshot`（推 `sessions`），追加一条 `plan` 过程（「自动挑了 N 条记忆」「没有够像的记忆」「没自动挑记忆」「自动挑记忆没做成」），给挑中的记忆写 `lastUsedAt`（推 `memories`）。固化试跑不挑。
+- 记忆的向量存 `memory_embeddings`（`memory_id, model_id` 主键，`content_hash = md5(applies_to || E'\n' || content)`），API 进程的后台循环算（一批 32 条，没活干时每分钟看一次）；失败写 `memories.embed_error` / `embed_tried_at`（推 `memories`）。记忆新建、修改、审核通过、换 embedding 模型后会叫醒它。
+- 系统提示：手选的照旧在「## 记忆（人审核过的，必须遵守）」；自动挑的另起「## 可能相关的记忆（……和这次的事有关就照做，无关的忽略）」，不写相似度。
+- 助手：`create_task` / `update_task` 能设 `autoMemory`、`autoMemoryLimit`（`update_task` 不给就保持原值）；新建任务的卡片上这两项是默认值时不列。

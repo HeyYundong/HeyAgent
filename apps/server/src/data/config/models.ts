@@ -9,6 +9,7 @@ import { defaultsAfterRemove, modelFamily, OPENROUTER_DEFAULT_URL, providerKindL
 import type { Db } from "../../db/client.js"
 import * as t from "../../db/schema.js"
 import { kickGalleryEmbeddings } from "../../gallery/background.js"
+import { kickMemoryEmbeddings } from "../../memory/embed.js"
 import { decryptText, type Keyring } from "../../lib/crypto.js"
 import { assertCan, audit, badRequest, conflict, deleteSecret, notFound, putSecret, type DbOrTx, type WriteCtx } from "./common.js"
 import { usedByText } from "./tasks.js"
@@ -705,7 +706,10 @@ export async function deleteProvider(ctx: WriteCtx, input: { id: string }) {
     await audit(tx, ctx.actor.id, "model_provider.delete", "model_providers", input.id, { name: before.name, defaults: next })
     return { id: input.id, defaults: next, embedChanged: next.embed !== current.embed }
   })
-  if (result.embedChanged) kickGalleryEmbeddings()
+  if (result.embedChanged) {
+    kickGalleryEmbeddings()
+    kickMemoryEmbeddings()
+  }
   return { id: result.id, defaults: result.defaults }
 }
 
@@ -784,7 +788,11 @@ export async function setModelDefaults(ctx: WriteCtx, input: ModelDefaults) {
     return { after, embedChanged: before.embed !== after.embed }
   })
   // 换了图库的 embedding 模型：后台用新模型把所有图重算一遍（重算完之前搜索还用旧模型的向量）
-  if (embedChanged) kickGalleryEmbeddings()
+  // 记忆的向量也一样（自动挑选记忆和图库共用 embedding 模型）
+  if (embedChanged) {
+    kickGalleryEmbeddings()
+    kickMemoryEmbeddings()
+  }
   return after
 }
 

@@ -4,6 +4,8 @@
 // 全部以当前登录的人的身份（WriteCtx.actor）调用，权限、事务、审计都由 data/config 负责，这里不绕过。
 // 模型看到的名字用 snake_case，label 是 Trace 上显示的中文。
 import {
+  AUTO_MEMORY_DEFAULT,
+  AUTO_MEMORY_LIMIT_DEFAULT,
   can,
   hasPlainSecret,
   httpParamsOf,
@@ -653,6 +655,8 @@ export const TOOLS: Record<string, ToolDef> = {
           if (key === "cronSkipIfRunning" && value === true) continue
           if (key === "autoSolidify" && value === null) continue
           if (key === "routineSkipTest" && value === false) continue
+          if (key === "autoMemory" && value === AUTO_MEMORY_DEFAULT) continue
+          if (key === "autoMemoryLimit" && value === AUTO_MEMORY_LIMIT_DEFAULT) continue
         }
         fields.push({ label, after: clip(await format(key, value)) })
       }
