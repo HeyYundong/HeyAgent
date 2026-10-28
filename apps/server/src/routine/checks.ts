@@ -1,7 +1,7 @@
 // 固化流程的程序检查（docs/dev/solidify.md 5.5、15.3 第 4 条）：固化员交出来的脚本在试跑、交给人之前先过一遍。
 // 只是第一道关，挡住明显不对的写法，让固化员早点改：真正的边界是沙箱（不能上网、碰不到库和密钥）和工具网关（每一步过规则、白名单）。
 // 所以这里宁可严一点：只许 import ha from "heyagent"，不许 eval / Function / require / 动态 import / process / globalThis，
-// 用到的工具都要在这个任务里，两个 JSON Schema 要像样，要有 export default 的函数。
+// 用到的工具都要在这个任务里（ha.judge 不是工具，用这次运行的执行模型，18.2），两个 JSON Schema 要像样，要有 export default 的函数。
 import { parse, type Node } from "acorn"
 import { z } from "zod"
 
@@ -39,6 +39,12 @@ const SDK_TOP: Record<string, string | null> = {
   fail: null,
   log: null,
   now: null,
+  // 判断题（18.2）：工具桥用这次运行的执行模型答，不是任务里的工具
+  judge: null,
+  // 错误的类型（catch 里 error instanceof ha.StepError）
+  StepError: null,
+  Denied: null,
+  RoutineStop: null,
   finish: "run.finish",
   // 下面这几个要看后面的函数名
   browser: null,
@@ -108,6 +114,14 @@ function propName(member: AnyNode): string | undefined {
   const property = member.property as AnyNode
   if (!member.computed && property.type === "Identifier") return property.name as string
   if (member.computed && property.type === "Literal" && typeof property.value === "string") return property.value
+  return undefined
+}
+
+/** 对象字面量里一项的键名（{ question: … }、{ "question": … }）；算出来的键是 undefined */
+function propKey(property: AnyNode): string | undefined {
+  const keyNode = property.key as AnyNode
+  if (!property.computed && keyNode.type === "Identifier") return keyNode.name as string
+  if (keyNode.type === "Literal" && typeof keyNode.value === "string") return keyNode.value
   return undefined
 }
 
@@ -272,6 +286,21 @@ export function checkRoutine(input: RoutineCheckInput): RoutineCheckResult {
           if (!call) problems.push(`${at(node)}：ha.tool 要直接调用：ha.tool("工具 id", { … })`)
           else if (!id) problems.push(`${at(node)}：ha.tool 的第一个参数要直接写工具 id 的字符串`)
           else need(id, `ha.tool("${id}")`)
+        }
+        if (top === "judge") {
+          const call = parent?.type === "CallExpression" && key === "callee" ? parent : undefined
+          const first = (call?.arguments as AnyNode[] | undefined)?.[0]
+          if (!call) problems.push(`${at(node)}：ha.judge 要直接调用：ha.judge({ question, data, choices })`)
+          else if (!first) problems.push(`${at(node)}：ha.judge 要给参数 { question, data, choices }`)
+          else if (first.type === "ObjectExpression") {
+            // { ...args }、{ [name]: … } 看不出有没有 question，不报
+            const keys = (first.properties as AnyNode[]).map((each) => (each.type === "Property" ? propKey(each) : undefined))
+            if (!keys.includes("question") && !keys.includes(undefined)) problems.push(`${at(node)}：ha.judge 要写 question（判断什么、按什么标准）`)
+            const choices = (first.properties as AnyNode[]).find((each) => each.type === "Property" && propKey(each) === "choices")?.value as AnyNode | undefined
+            const items = choices?.type === "ArrayExpression" ? (choices.elements as (AnyNode | null)[]) : undefined
+            if (items && !items.some((each) => each?.type === "SpreadElement") && items.length < 2)
+              problems.push(`${at(node)}：ha.judge 的 choices 至少要两个选项（不给选项就不写 choices）`)
+          }
         }
         if (top === "fail") {
           const call = parent?.type === "CallExpression" && key === "callee" ? parent : undefined

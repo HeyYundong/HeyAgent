@@ -628,3 +628,187 @@ describe("默认模型「固化」", () => {
     expect((await query(ctx.app, "models.overview", lin)).data.defaults.solidify).toBe(SOLIDIFIER)
   })
 })
+
+// ---------- 第二期第二批（docs/dev/solidify.md 18.1、18.2）：判断题 ha.judge、agent 运行中写的脚本 ----------
+
+const JUDGE_CODE = `import ha from "heyagent"
+
+export default async function run(input) {
+  await ha.browser.navigate({ url: "https://erp.example.com/orders" })
+  await ha.browser.type({ element: "单号输入框", target: "getByLabel('单号')", text: input.单号 })
+  const { rows } = await ha.browser.extract({ list: "getByRole('row')", fields: { 状态: "getByRole('cell').nth(3)" }, limit: 3 })
+  const { answer, reason } = await ha.judge({
+    question: "哪一行是这张单现在的状态？",
+    data: rows.map((row, i) => ({ 编号: String(i + 1), 状态: row.状态 })),
+    choices: rows.map((_, i) => String(i + 1)),
+  })
+  await ha.log(\`选了第 \${answer} 行：\${reason}\`)
+  const picked = rows[Number(answer) - 1]
+  await ha.work.report({ data: { 状态: picked.状态 } })
+  return ha.finish({ outcome: "achieved", summary: picked.状态, evidence: reason })
+}`
+
+/** agent 运行中写的循环脚本（code.run 的 code 参数） */
+const AGENT_SCRIPT = `import ha from "heyagent"
+const rows = ["PSS-001", "PSS-002"]
+for (const no of rows) {
+  await ha.browser.type({ element: "单号输入框", target: "getByLabel('单号')", text: no })
+  await ha.browser.click({ element: "查询", target: "getByRole('button', { name: '查询' })" })
+}`
+
+/** 在一次运行的过程后面接着加几条 */
+async function appendEvents(sessionId: string, events: { kind: "tool" | "plan" | "rule"; title: string; toolId?: string; input?: string; output?: string; trace?: Record<string, unknown> }[]) {
+  const [last] = await ctx.db.select({ seq: sql<number>`max(${t.sessionEvents.seq})` }).from(t.sessionEvents).where(eq(t.sessionEvents.sessionId, sessionId))
+  const start = Number(last?.seq ?? 0)
+  await ctx.db.insert(t.sessionEvents).values(
+    events.map((event, index) => ({ sessionId, seq: start + index + 1, at: new Date(), kind: event.kind, title: event.title, toolId: event.toolId ?? null, input: event.input ?? null, output: event.output ?? null, trace: event.trace ?? null }))
+  )
+  await ctx.db.update(t.sessions).set({ eventSeq: start + events.length }).where(eq(t.sessions.id, sessionId))
+}
+
+/** agent 用 code.run（tools）跑了一个脚本：脚本做的步骤（带 scriptStep，先落）、一条判断、最后是 code.run 自己那条 */
+const agentScriptEvents = (callId: string, code: string) => [
+  { kind: "tool" as const, title: "输入文字", toolId: "browser.type", input: JSON.stringify({ element: "单号输入框", target: "getByLabel('单号')", text: "PSS-001" }), output: "已输入", trace: { scriptStep: 1, scriptCallId: callId, code: "await page.getByLabel('单号').fill('PSS-001');" } },
+  { kind: "tool" as const, title: "点击（出错）", toolId: "browser.click", input: JSON.stringify({ element: "查询", target: "getByRole('button', { name: '查询' })" }), output: "超时", trace: { scriptStep: 2, scriptCallId: callId } },
+  { kind: "plan" as const, title: "流程判断：哪一行最符合 → 1（第一行是最新的）", trace: { scriptStep: 3, scriptCallId: callId } },
+  { kind: "tool" as const, title: "运行代码", toolId: "code.run", input: JSON.stringify({ language: "node", code, tools: true, timeout: 120 }), output: `退出码 0\n${"输出".repeat(400)}\n脚本调了 2 次工具：browser.type 1 次、browser.click 1 次（出错 1 次）` },
+]
+
+describe("判断题 ha.judge 和 agent 写的脚本（18.1、18.2）", () => {
+  it("提示词：规矩第 9、10、14 条和例 5；SDK 说明里还没有 judge 就补上，有了不重复", async () => {
+    const { compileOutputSchema, JUDGE_DTS } = await import("../src/routine/prompt.js")
+    const system = compileSystemPrompt("declare const ha: {}")
+    for (const each of ["ha.judge", "尽量给 choices", "只有每一步都要看内容判断", "只用来选路", "不要把 answer、reason 的文字原样填进会改东西的表单", "例 5", "choices: [...rows.map", "agent 运行中写的脚本", "可以照它的写法写循环"]) expect(system).toContain(each)
+    expect(system).toContain(JUDGE_DTS)
+    // index.d.ts 里有 judge 了（A3 写的）：不再补
+    const withJudge = compileSystemPrompt("interface Heyagent { judge(args: { question: string }): Promise<{ answer: string; reason: string }> }")
+    expect(withJudge).not.toContain(JUDGE_DTS)
+    // 内置的说明里有 judge
+    expect(SDK_FALLBACK).toContain("judge(args: { question: string; data?: unknown; choices?: string[] })")
+    expect(compileOutputSchema.shape.suitable.description).toContain("ha.judge")
+  })
+
+  it("程序检查：ha.judge 不要任务里的工具；要写 question；choices 至少两个；ha.StepError 认得", () => {
+    const toolIds = ["browser", "run.finish", "work.report"]
+    const ok = checkRoutine({ code: JUDGE_CODE, inputSchema: INPUT_SCHEMA, outputSchema: OUTPUT_SCHEMA, toolIds, dispatch: DISPATCH, sampleInput: { 单号: "PSS-001" } })
+    expect(ok.problems).toEqual([])
+    expect(ok.usedTools).toEqual(["browser", "run.finish", "work.report"])
+    const wrap = (body: string) => `import ha from "heyagent"\nexport default async function run(input) {\n${body}\n}`
+    const problemsOf = (body: string, ids: string[] = []) => checkRoutine({ code: wrap(body), inputSchema: INPUT_SCHEMA, outputSchema: OUTPUT_SCHEMA, toolIds: ids }).problems
+    // 一个工具都没有的任务也能用 judge
+    expect(problemsOf(`const r = await ha.judge({ question: "是不是差评", data: input.单号, choices: ["是", "否"] }); await ha.log(r.answer)`)).toEqual([])
+    expect(problemsOf(`const args = { question: "x" }; await ha.judge({ ...args })`)).toEqual([])
+    expect(problemsOf(`try { await ha.log("x") } catch (error) { if (error instanceof ha.StepError || error instanceof ha.Denied || error instanceof ha.RoutineStop) await ha.log("y") }`)).toEqual([])
+    expect(problemsOf(`await ha.judge({ data: "x", choices: ["是", "否"] })`).join()).toContain("要写 question")
+    expect(problemsOf(`await ha.judge({ question: "x", choices: ["是"] })`).join()).toContain("choices 至少要两个")
+    expect(problemsOf(`await ha.judge()`).join()).toContain("要给参数")
+    expect(problemsOf(`const f = ha.judge`).join()).toContain("ha.judge 要直接调用")
+    // 展开的选项看不出几个，不报
+    expect(problemsOf(`const list = ["a", "b"]; await ha.judge({ question: "x", choices: [...list] })`)).toEqual([])
+  })
+
+  it("材料：agent 脚本的原文完整给（不截到 300 字），它做的步骤标「脚本 k 第 n 步」；不带 tools 的 code.run 不算；一样的脚本不重复给", async () => {
+    const taskId = await dispatchedTask()
+    const source = await sourceRun(taskId)
+    const longScript = `${AGENT_SCRIPT}\n// ${"注释".repeat(400)}`
+    await appendEvents(source, [
+      { kind: "tool", title: "运行代码", toolId: "code.run", input: JSON.stringify({ language: "python", code: "print(1)" }), output: "1" },
+      ...agentScriptEvents("call-1", longScript),
+      ...agentScriptEvents("call-2", longScript),
+    ])
+    const [routine] = await ctx.db.insert(t.routines).values({ id: `RT-s-${taskId}`, taskId }).returning()
+    const material = await buildMaterial(ctx.db, { sourceSessionId: source, routineId: routine!.id })
+    const text = material.text
+    expect(text).toContain("## agent 运行中写的脚本（code.run 带 tools）")
+    expect(text).toContain(longScript)
+    expect(text).toContain("### 脚本 1：调了 2 次工具，code.run 跑完了")
+    expect(text).toContain("### 脚本 2：调了 2 次工具，code.run 跑完了\n和脚本 1 一字不差。")
+    expect(text.split(longScript).length).toBe(2)
+    // 过程：先是那次 code.run（不带原文），后面跟它做的步骤
+    expect(text).toMatch(/#\d+ code\.run ✓：agent 运行中写的循环脚本（脚本 1，原文见「agent 运行中写的脚本」）/)
+    expect(text).toContain('参数（不含原文）：{"language":"node","tools":true,"timeout":120}')
+    expect(text).toMatch(/输出结尾：….*脚本调了 2 次工具/)
+    expect(text).toMatch(/#\d+ browser\.type ✓（脚本 1 第 1 步）/)
+    expect(text).toMatch(/#\d+ browser\.click ✗ 出错（脚本 2 第 2 步）/)
+    expect(text).toContain("- 脚本 1 第 3 步：流程判断：哪一行最符合 → 1（第一行是最新的）")
+    const log = text.slice(text.indexOf("## 这次运行的过程"))
+    expect(log.indexOf("agent 运行中写的循环脚本（脚本 1")).toBeLessThan(log.indexOf("（脚本 1 第 1 步）"))
+    expect(log.indexOf("（脚本 1 第 3 步")).toBeLessThan(log.indexOf("agent 运行中写的循环脚本（脚本 2"))
+    // 不带 tools 的 python 照普通工具调用列
+    expect(text).toMatch(/#\d+ code\.run ✓\n {2}参数：\{"language":"python","code":"print\(1\)"\}/)
+  })
+
+  it("材料：脚本太长截到 2 万字；合计超出预算留后面的；参数存的时候截断了取得到开头；用文件跑的按 file.save / file.edit 推出原文，推不出读空间里的文件；找不到 code.run 的步骤也列出来", async () => {
+    const { AGENT_SCRIPT_MAX, agentScriptsSection, collectAgentScripts, compactLog, jsonStringPrefix, resolveAgentScripts } = await import("../src/routine/material.js")
+    type Row = Parameters<typeof collectAgentScripts>[0][number]
+    let seq = 0
+    const row = (patch: Partial<Row>): Row => ({ sessionId: "R-x", seq: ++seq, at: new Date(), kind: "tool", title: "x", toolId: null, input: null, output: null, detail: null, ms: null, tokensIn: null, tokensOut: null, trace: null, ...patch }) as Row
+
+    // 太长：截到 2 万字
+    const huge = `// 开头\n${"x".repeat(AGENT_SCRIPT_MAX + 5000)}`
+    const [long] = collectAgentScripts([row({ toolId: "code.run", input: JSON.stringify({ language: "node", code: huge, tools: true }) })])
+    const section = agentScriptsSection([long!])
+    expect(section).toContain("// 开头")
+    expect(section).toContain(`后面 ${huge.length - AGENT_SCRIPT_MAX} 字省略`)
+    expect(section.length).toBeLessThan(AGENT_SCRIPT_MAX + 1000)
+
+    // 合计超出预算：留后面的
+    const many = collectAgentScripts([1, 2, 3].map((n) => row({ toolId: "code.run", input: JSON.stringify({ language: "node", code: `// 第 ${n} 个\n${"y".repeat(15_000)}`, tools: true }) })))
+    const budgeted = agentScriptsSection(many)
+    expect(budgeted).toContain("// 第 3 个")
+    expect(budgeted).toContain("// 第 2 个")
+    expect(budgeted).not.toContain("// 第 1 个")
+    expect(budgeted).toContain("### 脚本 1：调了 0 次工具，code.run 跑完了\n（原文省略")
+
+    // 参数存的时候截断了（records.ts 超过 5 万字截断）：JSON 解析不了，取 code 的开头
+    const raw = JSON.stringify({ language: "node", code: 'const a = "引号\\n"\n' + "z".repeat(60_000), tools: true }).slice(0, 50_000) + "\n…（已截断）"
+    expect(jsonStringPrefix(raw, "code")).toMatch(/^const a = "引号\\n"\nzzz/)
+    const steps = [row({ toolId: "browser.click", trace: { scriptStep: 1, scriptCallId: "c-9" } })]
+    const [cut] = collectAgentScripts([...steps, row({ toolId: "code.run", input: raw })])
+    expect(cut).toMatchObject({ note: "参数存的时候截断了，只有开头", steps })
+    expect(cut!.code!.startsWith('const a = "引号\\n"')).toBe(true)
+
+    // 用空间里的文件跑：file.save 之后 file.edit 改过，推出 code.run 那时的内容（之后再改的不算）
+    seq = 0
+    const events = [
+      row({ toolId: "file.save", input: JSON.stringify({ path: "scripts/loop.mjs", content: 'import ha from "heyagent"\nawait ha.log("旧")' }) }),
+      row({ toolId: "file.edit", input: JSON.stringify({ path: "./scripts/loop.mjs", edits: [{ old: '"旧"', new: '"新"' }] }) }),
+      row({ toolId: "code.run", input: JSON.stringify({ language: "node", file: "scripts/loop.mjs", tools: true }) }),
+      row({ toolId: "file.edit", input: JSON.stringify({ path: "scripts/loop.mjs", edits: [{ old: '"新"', new: '"更新"' }] }) }),
+      row({ toolId: "code.run", input: JSON.stringify({ language: "node", file: "scripts/other.mjs", tools: true }) }),
+      row({ toolId: "code.run", input: JSON.stringify({ language: "node", file: "scripts/gone.mjs", tools: true }) }),
+    ]
+    const scripts = collectAgentScripts(events)
+    await resolveAgentScripts(scripts, events, async (path) => (path === "scripts/other.mjs" ? "// 空间里的文件" : undefined))
+    expect(scripts.map((each) => each.code)).toEqual(['import ha from "heyagent"\nawait ha.log("新")', "// 空间里的文件", undefined])
+    expect(scripts[1]!.note).toContain("运行结束时空间里的这个文件")
+    expect(agentScriptsSection(scripts)).toContain("### 脚本 3（空间文件 scripts/gone.mjs）：调了 0 次工具，code.run 跑完了\n（没有原文：过程里推不出当时的内容，空间里也找不到这个文件）")
+
+    // 找不到 code.run 的（中途被打断）：步骤照样列出来，标脚本几第几步
+    seq = 0
+    const orphan = [row({ toolId: "browser.navigate", input: "{}", trace: { scriptStep: 1, scriptCallId: "c-lost" } }), row({ kind: "rule", title: "拦下：删除" })]
+    const log = compactLog(orphan, [])
+    expect(log[0]).toContain("code.run（找不到记录）：agent 运行中写的循环脚本（脚本 1")
+    expect(log[1]).toContain("#2 browser.navigate ✓（脚本 1 第 1 步）")
+    expect(log[2]).toBe("- 规则：拦下：删除")
+  })
+
+  it("固化员（假模型）看着 agent 的脚本写出带 ha.judge 的脚本：过了程序检查，进试跑", async () => {
+    const taskId = await dispatchedTask()
+    const source = await sourceRun(taskId)
+    await appendEvents(source, agentScriptEvents("call-9", AGENT_SCRIPT))
+    const { data } = await compile(source)
+    const model = useModel(SOLIDIFIER, [good({ code: JUDGE_CODE, assumptions: ["第 3 步用 ha.judge 挑哪一行"] })])
+    await handleCompileJob(ctx.db, { versionId: data.versionId })
+    const version = await versionRow(data.versionId)
+    expect(version).toMatchObject({ status: "testing", round: 1, code: JUDGE_CODE, assumptions: ["第 3 步用 ha.judge 挑哪一行"] })
+    const prompt = model.promptText(0)
+    expect(prompt).toContain("ha.judge")
+    // promptText 是消息的 JSON：换行、引号都转义了
+    expect(prompt).toContain(JSON.stringify(AGENT_SCRIPT).slice(1, -1))
+    expect(prompt).toContain("（脚本 1 第 1 步）")
+    const test = await sessionRow(ctx.db, `${data.versionId}-t1`)
+    expect(test).toMatchObject({ kind: "routine_test", status: "running" })
+    expect(test!.snapshot!.routine).toMatchObject({ code: JUDGE_CODE })
+  })
+})
