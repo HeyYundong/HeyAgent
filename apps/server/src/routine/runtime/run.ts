@@ -33,6 +33,7 @@ import {
 } from "../../sandbox/runner.js"
 import { prepareWorkspace, saveManifest, sessionDirs } from "../../sandbox/workspace.js"
 import { ToolBridge, type BridgeGateway, type BridgeJournal, type JournalRow } from "./bridge.js"
+import { judgeForRun } from "./judge.js"
 
 const num = (name: string, fallback: number) => {
   const value = Number(process.env[name])
@@ -332,6 +333,8 @@ export async function runRoutineScript(ctx: RoutineRunContext): Promise<RoutineR
     ...(journal ? { journal } : {}),
     ...(resume?.decision?.how === "approve" ? { approvedRuleIds: resume.decision.approvedRuleIds } : {}),
     browserInstanceId: () => getBrowserManager()?.forSession(session.id)?.id,
+    // ha.judge：用这次运行的执行模型（试跑照常调；普通运行接着跑时按日志回记下的答案）
+    judge: (request, trace) => judgeForRun({ db, session, snapshot, ...(ctx.signal ? { signal: ctx.signal } : {}) }, request, trace),
   })
   // 脚本一直不调工具时也能停：定时看运行有没有被取消
   const watcher = setInterval(() => {

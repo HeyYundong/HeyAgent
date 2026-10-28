@@ -2,6 +2,8 @@
 // 依次做：调工具前的钩子（范围、参数校验、M3 的规则）→ 执行（内置 / HTTP / MCP）→ 截断大块输出（全文存文件）→ 落库 → 调工具后的钩子。
 // 模型没有任何绕过的路径。browser.batch（连着做几步，docs/dev/browser-speed.md A）在这里展开：每一步都当成一次普通调用走 call()。
 // 固化脚本（docs/dev/solidify.md 第 4 节）也一样：工具桥（routine/runtime/bridge.ts）把脚本的每次调用交给 call()，带上 routineStep。
+// agent 用 code.run（tools）跑的脚本（18.1）：code.run 本身是一次调用，执行期间脚本经工具桥再调 call()（带 scriptStep、scriptCallId）。
+// call() 没有锁、可以重入（引擎自己是一个一个调的），所以不会死锁；脚本里不许再调 code.run（code.run 按运行排队，会等自己）。
 // 浏览器动作录下的代码、前后网址存进过程记录的 trace（3.2）。
 import { jsonSchema, tool, type ToolSet } from "ai"
 import {
@@ -63,7 +65,8 @@ interface ToolEntry {
   def: SnapshotTool
   jsonSchema: Record<string, unknown>
   validator: z.ZodType
-  execute: (input: unknown) => Promise<ToolOutcome>
+  /** call = 这次的模型调用（code.run 带 tools 时要它的 id 记进脚本每一步的 trace） */
+  execute: (input: unknown, call: ModelToolCall) => Promise<ToolOutcome>
 }
 
 export interface ModelToolCall {
@@ -94,13 +97,13 @@ export interface GatewayResult {
 }
 
 /** 过程记录的 trace：录下的代码（隐藏密钥）、前后网址、脚本的第几步；什么都没有返回 undefined */
-function traceOf(outcome: ToolOutcome, secrets: string[], routineStep?: number): EventTrace | undefined {
+function traceOf(outcome: ToolOutcome, secrets: string[], step?: EventTrace): EventTrace | undefined {
   const trace: EventTrace = {
     ...(outcome.code ? { code: redactSecrets(maskSecretFields(outcome.code), secrets) } : {}),
     ...(outcome.trace?.urlBefore ? { urlBefore: outcome.trace.urlBefore } : {}),
     ...(outcome.trace?.urlAfter ? { urlAfter: outcome.trace.urlAfter } : {}),
     ...(outcome.trace?.title ? { title: outcome.trace.title } : {}),
-    ...(routineStep ? { routineStep } : {}),
+    ...step,
   }
   return Object.keys(trace).length ? trace : undefined
 }
@@ -264,7 +267,13 @@ export class ToolGateway {
           def: this.adjustBuiltin(def),
           jsonSchema: builtinJsonSchema(id),
           validator: builtinToolInputs[id],
-          execute: (input) => executeBuiltin(this.ctx, id, input),
+          // code.run 带 tools：脚本经工具桥回到这个网关（docs/dev/solidify.md 18.1）
+          execute: (input, call) =>
+            executeBuiltin(
+              id === "code.run" ? { ...this.ctx, scriptTools: { gateway: this, callId: call.toolCallId } } : this.ctx,
+              id,
+              input
+            ),
         })
       } else if (def.source === "http" && def.http) {
         const spec = def.http
@@ -476,6 +485,10 @@ export class ToolGateway {
       batchStep?: number
       /** 固化脚本的第几次工具调用（从 1 开始）：过程记录写进 trace.routineStep；要人审批时不发起审批，脚本停在这一步之前 */
       routineStep?: number
+      /** agent 用 code.run（tools）跑的脚本里第几次调用（从 1 开始）：过程记录写进 trace.scriptStep；要人审批时不发起审批，脚本停在这一步之前 */
+      scriptStep?: number
+      /** 哪一次 code.run（模型的工具调用 id）：过程记录写进 trace.scriptCallId */
+      scriptCallId?: string
     } = {}
   ): Promise<GatewayResult> {
     const entry = this.entryFor(call.toolName)
@@ -510,20 +523,28 @@ export class ToolGateway {
         : JSON.stringify(call.input ?? {})
     const decision = await runBeforeToolHooks(hookCtx)
     const beforeMs = Date.now() - started
-    const routineTrace: EventTrace | undefined = options.routineStep ? { routineStep: options.routineStep } : undefined
+    const routineTrace: EventTrace | undefined = options.routineStep
+      ? { routineStep: options.routineStep }
+      : options.scriptStep
+        ? { scriptStep: options.scriptStep, ...(options.scriptCallId ? { scriptCallId: options.scriptCallId } : {}) }
+        : undefined
     if (decision.action === "ask_human") {
       await appendEvent(this.ctx.db, this.ctx.session.id, {
         kind: "rule",
         title: options.routineStep
           ? `规则「${decision.ruleName}」：脚本的第 ${options.routineStep} 步 ${toolName} 要人审批，停在这一步之前`
-          : options.batchStep
-            ? `规则「${decision.ruleName}」：批里的第 ${options.batchStep} 步 ${toolName} 要人审批，没做`
-            : `规则「${decision.ruleName}」：拦下 ${toolName}，交给人审批`,
+          : options.scriptStep
+            ? `规则「${decision.ruleName}」：code.run 脚本的第 ${options.scriptStep} 步 ${toolName} 要人审批，没做`
+            : options.batchStep
+              ? `规则「${decision.ruleName}」：批里的第 ${options.batchStep} 步 ${toolName} 要人审批，没做`
+              : `规则「${decision.ruleName}」：拦下 ${toolName}，交给人审批`,
         detail: options.routineStep
           ? `${decision.reason}固化脚本停在这一步之前，没做：普通运行交给人审批，批准后脚本接着跑这一步；固化试跑到这里就停。`
-          : options.batchStep
-            ? `${decision.reason}批里不做要审批的动作，已让 agent 单独调用这一步。`
-            : decision.reason,
+          : options.scriptStep
+            ? `${decision.reason}脚本里不做要审批的动作，脚本停在这一步之前，已让 agent 单独调用这一步。`
+            : options.batchStep
+              ? `${decision.reason}批里不做要审批的动作，已让 agent 单独调用这一步。`
+              : decision.reason,
         toolId,
         input: redactSecrets(maskSecretFields(inputText), []),
         trace: routineTrace,
@@ -569,7 +590,7 @@ export class ToolGateway {
     let outcome: ToolOutcome
     const executeStarted = Date.now()
     try {
-      outcome = await entry!.execute(decision.input)
+      outcome = await entry!.execute(decision.input, call)
     } catch (error) {
       outcome = {
         output: `工具出错：${(error as Error).message}`,
@@ -591,9 +612,15 @@ export class ToolGateway {
       input: redactSecrets(JSON.stringify(decision.input ?? {}), secrets),
       output,
       ms: Date.now() - started,
-      trace: traceOf(outcome, secrets, options.routineStep),
+      trace: traceOf(outcome, secrets, routineTrace),
     })
-    await runAfterToolHooks({ ...hookCtx, input: decision.input, outcome })
+    // code.run 的脚本停在要挂起的那一步：结果带着那一步的 signals、facts（引擎照常挂起），那一步自己已经过了调工具后的钩子，
+    // 这里不再按它们触发规则、记检查点（不然「遇到验证码」的规则动作会做两遍）
+    await runAfterToolHooks({
+      ...hookCtx,
+      input: decision.input,
+      outcome: outcome.nested ? { ...outcome, signals: undefined, facts: outcome.nested.facts } : outcome,
+    })
     // 浏览器动作的分段用时：规则钩子、工具里面各段（MCP、扫页面、检测……）、落库和调工具后的钩子
     if (outcome.timings) {
       const totalMs = Date.now() - started
