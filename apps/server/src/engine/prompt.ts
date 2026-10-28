@@ -12,7 +12,17 @@ import {
   WORK_LIST_TOOL_ID,
   WORK_REPORT_TOOL_ID,
   type SessionSnapshot,
+  type SnapshotTool,
 } from "@heyagent/shared"
+
+import { libraryPromptSection } from "../routine/library/snapshot.js"
+
+/**
+ * 库流程的工具这次给不给模型（docs/dev/routine-library.md 6.2）：快照里冻了、用得了才给；停用、缺工具的不给（系统提示另写一行原因）。
+ * 网关组工具清单、系统提示列工具都按它
+ */
+export const isLibraryToolUsable = (snapshot: Pick<SessionSnapshot, "libraryRoutines">, tool: Pick<SnapshotTool, "id" | "source">) =>
+  tool.source !== "routine" || Boolean(snapshot.libraryRoutines?.some((routine) => routine.toolId === tool.id && routine.selected && !routine.unavailable))
 
 /** 没有检查点的运行不给 checkpoint.mark（工具网关组工具清单、系统提示列工具都按它） */
 export const isCheckpointToolHidden = (snapshot: Pick<SessionSnapshot, "checkpoints">, toolId: string) =>
@@ -22,7 +32,7 @@ export const isCheckpointToolHidden = (snapshot: Pick<SessionSnapshot, "checkpoi
  * 任务同时有「运行代码」和「浏览器」时，「运行代码」那一节加的几句（docs/dev/solidify.md 18.1）：重复的活写 node 脚本，
  * 用 code.run（tools: true）一次做完；附上 SDK（apps/server/sandbox-sdk/heyagent）函数的简要说明
  */
-export function scriptToolsLines(run: string): string[] {
+export function scriptToolsLines(run: string, routines = false): string[] {
   return [
     `- 要重复做很多次同样的操作（录几十行、读几十页、每一行做同样的几步）时，写一段 node 脚本，用 ${run}（language: "node"，tools: true）一次做完，不要一步一步调工具：`,
     "  - 先手动做一遍（一两行），弄清每一步的定位和页面的反应，再写循环；",
@@ -36,6 +46,11 @@ export function scriptToolsLines(run: string): string[] {
     "  - ha.file.read({ path | fileId, … }) → 表格是 { header, rows, total }，文本是文字；ha.file.save({ path, content | sheets })；ha.tool(工具 id, 参数) → { text, data }",
     "  - ha.judge({ question, data?, choices? }) → { answer, reason }：要看内容判断的那一步交给执行模型答（尽量给 choices，answer 只会是其中之一；每次都花钱）",
     "  - ha.commit(说明) 在会改东西的动作前、ha.verified(说明) 核对后、ha.log(文字) 记一条过程、ha.now() 现在的时间",
+    ...(routines
+      ? [
+          "  - ha.routine(短名, 输入) → { outcome, summary, reason?, data }：调「固化好的流程」那一节里的流程（短名是工具名 routine_ 后面那段，输入照它的参数原名写），循环里每一行调一次；没办成不抛错，看 outcome",
+        ]
+      : []),
   ]
 }
 
@@ -139,11 +154,15 @@ export function buildSystemPrompt(
   const hasCheckpoints = snapshot.checkpoints.length > 0
   // 「报没完成」（旧）：2026-10-19 到 10-20 开始的运行快照里有它（没有 run.finish）
   const notDoneName = !finishName && snapshot.tools.some((tool) => tool.id === RUN_NOT_DONE_TOOL_ID) ? (toolNames.get(RUN_NOT_DONE_TOOL_ID) ?? "run_not_done") : undefined
-  const toolLines = snapshot.tools.filter((tool) => !isCheckpointToolHidden(snapshot, tool.id)).map(
+  const toolLines = snapshot.tools.filter((tool) => !isCheckpointToolHidden(snapshot, tool.id) && isLibraryToolUsable(snapshot, tool)).map(
     (tool) =>
       `- ${toolNames.get(tool.id) ?? tool.id}（${tool.name}，${riskLabel[tool.risk]}）：${tool.summary}`
   )
   sections.push(`## 工具\n${toolLines.join("\n")}`)
+
+  // 流程库（docs/dev/routine-library.md 4.2）：只在这次有库流程时出现；用不了的在末尾写一行原因
+  const library = libraryPromptSection(snapshot.libraryRoutines ?? [], toolNames)
+  if (library) sections.push(library)
 
   if (snapshot.tools.some((tool) => tool.id === WORK_DISPATCH_TOOL_ID)) {
     const name = toolNames.get(WORK_DISPATCH_TOOL_ID) ?? "work_dispatch"
@@ -288,7 +307,7 @@ export function buildSystemPrompt(
         "- 常用包已装好：Python 有 pandas、numpy、openpyxl、xlrd、python-dateutil、requests、beautifulsoup4、lxml，另有 jq、curl。别的用 pip install 或 npm install -g 装，装好的包这次运行里一直有效。",
         "- 沙箱里没有密钥、没有环境变量，也碰不到平台的数据和接口；要访问需要登录的系统，用别的工具。",
         "- 默认 60 秒超时（timeout 最多 600 秒），内存有上限；超时整组进程被杀掉。退出码不为 0 不算工具出错，自己看 stdout / stderr 判断。",
-        ...(snapshot.browser ? scriptToolsLines(run) : []),
+        ...(snapshot.browser ? scriptToolsLines(run, Boolean(snapshot.libraryRoutines?.some((routine) => routine.selected && !routine.unavailable))) : []),
       ].join("\n")
     )
   }

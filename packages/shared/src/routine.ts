@@ -92,6 +92,12 @@ export const eventTraceSchema = z.object({
   network: z.object({ first: z.number().int().positive(), last: z.number().int().positive() }).optional(),
   /** 库流程里的一步（docs/dev/routine-library.md 5.7）：哪个库流程、第几版、里面第几步、哪次调用、第几层 */
   library: libraryTraceSchema.optional(),
+  /**
+   * 这条记录本身是一次库流程调用（流程库 A 包加的，只做加法；不用 library：带 library 的是库流程里面的步骤）：
+   * agent 调的工具 routine.<短名> 那一条、脚本里进入（ha.routine）那一步、出来时记的那一条「流程『…』跑完」。
+   * callId 是这次调用的 id：里面步骤的 trace.library.callId 等于它，界面按它把步骤收在这一条下面（同 code.run 那一条的 scriptCallId）
+   */
+  libraryCall: z.object({ callId: z.string(), routineId: z.string(), version: z.number().int() }).optional(),
 })
 export type EventTrace = z.infer<typeof eventTraceSchema>
 

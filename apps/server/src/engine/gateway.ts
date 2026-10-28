@@ -6,6 +6,9 @@
 // call() 没有锁、可以重入（引擎自己是一个一个调的），所以不会死锁；脚本里不许再调 code.run（code.run 按运行排队，会等自己）。
 // 浏览器动作录下的代码、前后网址存进过程记录的 trace（3.2）。
 // 任务打开「允许直接调网站接口」时，浏览器工具调用期间网页发的请求（network/requests.jsonl 的 seq 范围）写进 trace.network（19.3）。
+// 流程库（docs/dev/routine-library.md 5.2、5.6）：快照里任务选了、用得了的库流程各一个工具（参数按 inputSchema 转，执行是
+// routine/library/tool.ts 起沙箱跑整段脚本，里面每一步再回到 call()，带 library）；只因为被调才冻进来的不给模型，
+// 只在脚本 ha.routine 进入时用（inline：过规则、记一步，不真执行）。
 import { jsonSchema, tool, type ToolSet } from "ai"
 import {
   BROWSER_TOOL_ID,
@@ -13,7 +16,9 @@ import {
   DESKTOP_TOOL_ID,
   GALLERY_TOOL_ID,
   builtinToolInputs,
+  toolSchemaOf,
   type EventTrace,
+  type LibraryTrace,
   type Risk,
   type SessionSnapshot,
   type SnapshotTool,
@@ -33,7 +38,8 @@ import {
 } from "../browser/tools.js"
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
-import { saveFile, spacePathOf } from "../files/service.js"
+import { listSpace, saveFile, spacePathOf } from "../files/service.js"
+import { executeLibraryTool, type LibraryToolContext } from "../routine/library/tool.js"
 import { compareToolEntries } from "../compare/tools.js"
 import { DesktopTools } from "../desktop/tools.js"
 import { galleryToolEntries } from "../gallery/tools.js"
@@ -42,7 +48,7 @@ import {
   runBeforeToolHooks,
   type ToolCallContext,
 } from "./hooks.js"
-import { isCheckpointToolHidden } from "./prompt.js"
+import { isCheckpointToolHidden, isLibraryToolUsable } from "./prompt.js"
 import { appendEvent } from "./records.js"
 import { runtime } from "./runtime.js"
 import { maskSecretFields, redactSecrets } from "./secrets.js"
@@ -203,6 +209,10 @@ async function withCurrentHttpSpecs(
 
 export class ToolGateway {
   private readonly entries: ToolEntry[] = []
+  /** 只因为被调才冻进快照的库流程（不给模型，只在脚本 ha.routine 进入时用） */
+  private readonly hidden: ToolEntry[] = []
+  /** 网关建起来的时间（≈ 这一轮运行开始）：库流程当工具跑时，时间压在这一轮剩下的时间里 */
+  private readonly createdAt = Date.now()
   private readonly mcp: McpPool
   /** 任务选了「浏览器」时的整组浏览器工具（M2） */
   private browser?: BrowserTools
@@ -262,6 +272,21 @@ export class ToolGateway {
       if (def.id === COMPARE_TOOL_ID && def.source === "builtin") {
         for (const entry of compareToolEntries(this.ctx))
           this.entries.push({ ...entry, name: safeName(entry.id, taken) })
+        continue
+      }
+      // 流程库：用得了的才给（停用、缺工具的系统提示里另写一行原因）
+      if (def.source === "routine") {
+        const routine = this.ctx.snapshot.libraryRoutines?.find((each) => each.toolId === def.id)
+        if (!routine || !isLibraryToolUsable(this.ctx.snapshot, def)) continue
+        const { jsonSchema: schema } = toolSchemaOf(routine.inputSchema)
+        this.entries.push({
+          id: def.id,
+          name: safeName(def.id, taken),
+          def,
+          jsonSchema: schema,
+          validator: zodFromJsonSchema(schema),
+          execute: (input, call) => executeLibraryTool(this.libraryContext(), routine, (input ?? {}) as Record<string, unknown>, call),
+        })
         continue
       }
       const name = safeName(def.id, taken)
@@ -338,6 +363,32 @@ export class ToolGateway {
           })
         }
       }
+    }
+    // 库流程调的库流程（任务没选，跟着冻进来）：只在脚本 ha.routine 进入时用，不给模型
+    for (const routine of this.ctx.snapshot.libraryRoutines ?? []) {
+      if (routine.selected || routine.unavailable || this.entries.some((entry) => entry.id === routine.toolId)) continue
+      this.hidden.push({
+        id: routine.toolId,
+        name: routine.toolId,
+        def: { id: routine.toolId, name: routine.name, summary: routine.summary, description: routine.description, source: "routine", risk: routine.risk, routineId: routine.routineId },
+        jsonSchema: { type: "object", additionalProperties: true },
+        validator: z.record(z.string(), z.unknown()),
+        execute: async () => ({ output: "这个库流程只能在脚本里用 ha.routine 调", isError: true }),
+      })
+    }
+  }
+
+  /** 库流程当工具跑的上下文（routine/library/tool.ts） */
+  private libraryContext(): LibraryToolContext {
+    const { db, session, snapshot } = this.ctx
+    return {
+      db,
+      session,
+      snapshot,
+      gateway: this,
+      remainingMs: () => runtime.maxRunMs - (Date.now() - this.createdAt),
+      files: async () =>
+        (await listSpace(db, session.id, snapshot.attachments.map((file) => file.id))).map((entry) => ({ id: entry.row.id, name: entry.row.name, mime: entry.row.mime })),
     }
   }
 
@@ -421,7 +472,7 @@ export class ToolGateway {
 
   /** 工具的 id 和风险（固化试跑判断「会不会对外发送、改东西」用）；本任务没有这个工具返回 undefined */
   toolInfo(toolName: string): { id: string; risk?: Risk } | undefined {
-    const entry = this.entryFor(toolName)
+    const entry = this.entryFor(toolName, true)
     return entry ? { id: entry.id, risk: entry.def.risk } : undefined
   }
 
@@ -462,10 +513,12 @@ export class ToolGateway {
     return new Map(this.entries.map((entry) => [entry.id, entry.name]))
   }
 
-  private entryFor(toolName: string) {
+  /** hidden：也找只给 ha.routine 用的库流程 */
+  private entryFor(toolName: string, hidden = false) {
     return (
       this.entries.find((entry) => entry.name === toolName) ??
-      this.entries.find((entry) => entry.id === toolName)
+      this.entries.find((entry) => entry.id === toolName) ??
+      (hidden ? this.hidden.find((entry) => entry.id === toolName) : undefined)
     )
   }
 
@@ -496,9 +549,13 @@ export class ToolGateway {
       scriptStep?: number
       /** 哪一次 code.run（模型的工具调用 id）：过程记录写进 trace.scriptCallId */
       scriptCallId?: string
+      /** 库流程里的一步（docs/dev/routine-library.md 5.7）：过程记录写进 trace.library；要人审批时不发起审批，流程停在这一步之前 */
+      library?: LibraryTrace
+      /** 脚本里进入库流程（ha.routine，5.6）：照常过规则、记一条过程，不真执行（库流程的代码在同一个沙箱里跑） */
+      inline?: boolean
     } = {}
   ): Promise<GatewayResult> {
-    const entry = this.entryFor(call.toolName)
+    const entry = this.entryFor(call.toolName, options.inline)
     if (entry?.id === BATCH_TOOL && this.browser)
       return this.callBatch(call, entry, this.browser)
     // 不在本任务里的内置工具：也换回原来的 id，过程里好认
@@ -521,8 +578,9 @@ export class ToolGateway {
         call.invalid && typeof call.input === "string"
           ? { __raw: call.input }
           : call.input,
-      allowedToolIds: new Set(this.entries.map((each) => each.id)),
-      inputSchema: entry?.validator,
+      allowedToolIds: new Set([...this.entries, ...(options.inline ? this.hidden : [])].map((each) => each.id)),
+      // 进入库流程：工具桥已经按 inputSchema 校验过（参数名是脚本的写法，不是给模型的 p<n>）
+      inputSchema: options.inline && entry ? z.record(z.string(), z.unknown()) : entry?.validator,
     }
     const inputText =
       typeof call.input === "string"
@@ -530,10 +588,25 @@ export class ToolGateway {
         : JSON.stringify(call.input ?? {})
     const decision = await runBeforeToolHooks(hookCtx)
     const beforeMs = Date.now() - started
-    const routineTrace: EventTrace | undefined = options.routineStep
+    const stepTrace: EventTrace | undefined = options.routineStep
       ? { routineStep: options.routineStep }
       : options.scriptStep
         ? { scriptStep: options.scriptStep, ...(options.scriptCallId ? { scriptCallId: options.scriptCallId } : {}) }
+        : undefined
+    // 库流程：里面的一步带 trace.library；调库流程本身（agent 调的工具、脚本里进入）那一条带 libraryCall（不带 library），里面的步骤按它的 callId 归
+    const calledRoutine = entry?.def.source === "routine" ? this.ctx.snapshot.libraryRoutines?.find((each) => each.toolId === entry.id) : undefined
+    const routineTrace: EventTrace | undefined =
+      stepTrace || options.library || calledRoutine
+        ? {
+            ...stepTrace,
+            ...(options.library ? { library: options.library } : {}),
+            ...(calledRoutine ? { libraryCall: { callId: call.toolCallId, routineId: calledRoutine.routineId, version: calledRoutine.version } } : {}),
+          }
+        : undefined
+    /** 库流程里的一步（agent 调的库流程，没有调用方脚本的第几步）：哪个流程 */
+    const libraryStep =
+      options.library && !options.routineStep && !options.scriptStep
+        ? `流程「${this.ctx.snapshot.libraryRoutines?.find((each) => each.routineId === options.library!.routineId)?.name ?? options.library.routineId}」的第 ${options.library.step} 步`
         : undefined
     if (decision.action === "ask_human") {
       await appendEvent(this.ctx.db, this.ctx.session.id, {
@@ -542,16 +615,20 @@ export class ToolGateway {
           ? `规则「${decision.ruleName}」：脚本的第 ${options.routineStep} 步 ${toolName} 要人审批，停在这一步之前`
           : options.scriptStep
             ? `规则「${decision.ruleName}」：code.run 脚本的第 ${options.scriptStep} 步 ${toolName} 要人审批，没做`
-            : options.batchStep
-              ? `规则「${decision.ruleName}」：批里的第 ${options.batchStep} 步 ${toolName} 要人审批，没做`
-              : `规则「${decision.ruleName}」：拦下 ${toolName}，交给人审批`,
+            : libraryStep
+              ? `规则「${decision.ruleName}」：${libraryStep} ${toolName} 要人审批，没做`
+              : options.batchStep
+                ? `规则「${decision.ruleName}」：批里的第 ${options.batchStep} 步 ${toolName} 要人审批，没做`
+                : `规则「${decision.ruleName}」：拦下 ${toolName}，交给人审批`,
         detail: options.routineStep
           ? `${decision.reason}固化脚本停在这一步之前，没做：普通运行交给人审批，批准后脚本接着跑这一步；固化试跑到这里就停。`
           : options.scriptStep
             ? `${decision.reason}脚本里不做要审批的动作，脚本停在这一步之前，已让 agent 单独调用这一步。`
-            : options.batchStep
-              ? `${decision.reason}批里不做要审批的动作，已让 agent 单独调用这一步。`
-              : decision.reason,
+            : libraryStep
+              ? `${decision.reason}库流程里不做要审批的动作，流程停在这一步之前，交回 agent 单独调用这一步。`
+              : options.batchStep
+                ? `${decision.reason}批里不做要审批的动作，已让 agent 单独调用这一步。`
+                : decision.reason,
         toolId,
         input: redactSecrets(maskSecretFields(inputText), []),
         trace: routineTrace,
@@ -600,7 +677,11 @@ export class ToolGateway {
     const browserCall = this.browser && toolId.startsWith("browser.") ? this.browser : undefined
     const networkMark = browserCall?.networkMark()
     try {
-      outcome = await entry!.execute(decision.input, call)
+      if (options.inline) {
+        // 进入库流程：这里只记一步，库流程的代码由 SDK 在同一个沙箱里跑
+        const routine = this.ctx.snapshot.libraryRoutines?.find((each) => each.toolId === toolId)
+        outcome = { output: `开始跑流程「${toolName}」${routine ? `第 ${routine.version} 版` : ""}` }
+      } else outcome = await entry!.execute(decision.input, call)
     } catch (error) {
       outcome = {
         output: `工具出错：${(error as Error).message}`,

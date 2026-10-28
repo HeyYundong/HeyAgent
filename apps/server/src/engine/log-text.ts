@@ -2,7 +2,8 @@
 // - clip / oneLine / clipBlocks / isToolError：固化员的材料（routine/material.ts）和复核都用；
 // - describeToolInput：工具参数写成人看得懂的样子（browser.batch 逐个动作列出来、浏览器动作给元素 / 定位 / 网址 / 填的值），
 //   别的工具照旧截 JSON；
-// - reviewLog：复核看的过程记录（engine/review.ts）：整次运行都覆盖到，最近几条详细，更早的每条压成一行，总字数有上限。
+// - reviewLog：复核看的过程记录（engine/review.ts）：整次运行都覆盖到，最近几条详细，更早的每条压成一行，总字数有上限；
+//   库流程里的步骤（trace.library，docs/dev/routine-library.md 5.7）每次调用只留最近几步，前面的压成一行（同批的写法）。
 import type * as t from "../db/schema.js"
 
 type EventRow = typeof t.sessionEvents.$inferSelect
@@ -184,6 +185,45 @@ function batchMembers(events: EventRow[]) {
   return { member, batches }
 }
 
+/** 一次库流程调用里留几步（最近的），前面的压成一行 */
+const LIBRARY_KEEP_STEPS = 3
+
+type LogItem = EventRow | { placeholder: string }
+
+/**
+ * 库流程里的步骤（trace.library，按 callId 归成一次调用）：每次调用只留最近 LIBRARY_KEEP_STEPS 条，前面的换成一行
+ * 「流程 RT-n 第 v 版（这次调用）前 k 步省略」，放在省掉的第一条的位置。调库流程那一条（agent 调的工具、脚本里进入那一步）照常列出
+ */
+function foldLibrarySteps(events: EventRow[]): LogItem[] {
+  const groups = new Map<string, EventRow[]>()
+  for (const event of events) {
+    const library = event.trace?.library
+    if (!library) continue
+    const group = groups.get(library.callId) ?? []
+    group.push(event)
+    groups.set(library.callId, group)
+  }
+  const dropped = new Set<number>()
+  const placeholders = new Map<number, string>()
+  for (const group of groups.values()) {
+    if (group.length <= LIBRARY_KEEP_STEPS) continue
+    const cut = group.slice(0, group.length - LIBRARY_KEEP_STEPS)
+    for (const event of cut) dropped.add(event.seq)
+    const library = group[0]!.trace!.library!
+    const steps = new Set(cut.map((event) => event.trace!.library!.step)).size
+    placeholders.set(
+      cut[0]!.seq,
+      `- 库流程 ${library.routineId} 第 ${library.version} 版（这次调用 ${library.callId}）：前 ${steps} 步（${cut.length} 条记录）省略，下面是最近的几步，跑完的结果见调用它的那一条`
+    )
+  }
+  if (dropped.size === 0) return events
+  return events.flatMap((event): LogItem[] => {
+    const placeholder = placeholders.get(event.seq)
+    if (placeholder) return [{ placeholder }]
+    return dropped.has(event.seq) ? [] : [event]
+  })
+}
+
 /**
  * 复核看的过程记录（工具调用、规则、人的处理），整次运行都覆盖到：
  * 最近 recent 条照原来的详细程度（参数、结果各 300 字，参数写成人看得懂的样子）；更早的每条压成一行（工具名 + 关键参数 + 结果开头），
@@ -200,6 +240,8 @@ export function reviewLog(events: EventRow[], options: ReviewLogOptions): { line
     const out: string[] = []
     if (event.trace?.routineStep) out.push(`流程第 ${event.trace.routineStep} 步`)
     if (event.trace?.scriptStep) out.push(`agent 脚本第 ${event.trace.scriptStep} 步`)
+    if (event.trace?.library) out.push(`库流程 ${event.trace.library.routineId} 第 ${event.trace.library.step} 步`)
+    if (event.trace?.libraryCall && event.toolId?.startsWith("routine.")) out.push("调库流程")
     const inBatch = member.get(event.seq)
     if (inBatch) out.push(`第 ${inBatch.batch} 批第 ${inBatch.step} 步`)
     const batch = batches.get(event.seq)
@@ -218,8 +260,10 @@ export function reviewLog(events: EventRow[], options: ReviewLogOptions): { line
     event.kind === "tool"
       ? `- #${toolNo.get(event.seq)} 调用 ${event.title}（${event.toolId ?? ""}）${tags(event)}：参数 ${describeToolInput(event.toolId, event.input, event.toolId === "browser.batch" ? 2000 : 600, 300)} → 结果 ${describeToolOutput(event.toolId, event.output, 300) || "（没有输出）"}`
       : `- ${event.kind === "rule" ? "规则" : "人"}：${event.title}${tags(event)}${event.detail ? `（${clip(event.detail, 200)}）` : ""}`
+  // 库流程里的步骤每次调用只留最近几步
+  const items = foldLibrarySteps(events)
   // 更早的每条压成一行：较早的条数少时每行多给些（读到的电话、提交的内容别被截掉），多时少给，合计按 budget
-  const cut = Math.max(0, events.length - options.recent)
+  const cut = Math.max(0, items.length - options.recent)
   const perLine = Math.min(900, Math.max(160, Math.floor(options.budget / Math.max(1, cut))))
   const inputMax = Math.min(500, Math.max(120, Math.floor(perLine * 0.55)))
   const outputMax = Math.min(400, Math.max(60, Math.floor(perLine * 0.45)))
@@ -229,8 +273,9 @@ export function reviewLog(events: EventRow[], options: ReviewLogOptions): { line
       ? `- #${toolNo.get(event.seq)} ${event.toolId ?? event.title} ${mark(event)}${tags(event)} ${describeToolInput(event.toolId, event.input, event.toolId === "browser.batch" ? Math.max(600, perLine) : inputMax, valueMax)} → ${describeToolOutput(event.toolId, event.output, outputMax) || "（没有输出）"}`
       : `- ${event.kind === "rule" ? "规则" : "人"}：${event.title}${tags(event)}${event.detail ? `（${oneLine(clip(event.detail, 80))}）` : ""}`
 
-  const earlier = clipBlocks(events.slice(0, cut).map(compact), options.budget)
-  const recent = events.slice(cut).map(detailed)
+  const line = (each: (event: EventRow) => string) => (item: LogItem) => ("placeholder" in item ? item.placeholder : each(item))
+  const earlier = clipBlocks(items.slice(0, cut).map(line(compact)), options.budget)
+  const recent = items.slice(cut).map(line(detailed))
   const lines = cut
     ? [`（以下第 1～${cut} 条是较早的记录，每条压成一行）`, ...earlier, `（以下是最近的 ${recent.length} 条，详细）`, ...recent]
     : recent

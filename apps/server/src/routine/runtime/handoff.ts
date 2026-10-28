@@ -1,5 +1,6 @@
 // 固化脚本跑不通、交给 agent 时的那段话（docs/dev/solidify.md 6.4）：脚本做了哪几步（每步 ✓ / ✗）、停在哪、为什么，
 // 会改东西的步骤做没做、核对没有，现在的页面。步骤从过程记录里取（trace.routineStep），worker 重启后中断的也能写出来。
+// 库流程当工具调、跑不通时交回 agent 的话（docs/dev/routine-library.md 5.5）也用这里的步骤行，按 trace.library.callId 取。
 import { routineStopKindLabel, type RoutineSnapshot, type SessionRoutineState } from "@heyagent/shared"
 import { and, asc, eq, isNotNull, sql } from "drizzle-orm"
 
@@ -24,23 +25,28 @@ const parse = (text: string | null) => {
   }
 }
 
-/** 脚本做的每一步一行（同一步有好几条记录时取最后一条：规则拦下、出错、做完） */
-export async function routineStepLines(db: Db, sessionId: string): Promise<string[]> {
-  const rows = await db
-    .select({
-      kind: t.sessionEvents.kind,
-      title: t.sessionEvents.title,
-      detail: t.sessionEvents.detail,
-      toolId: t.sessionEvents.toolId,
-      input: t.sessionEvents.input,
-      output: t.sessionEvents.output,
-      trace: t.sessionEvents.trace,
-    })
-    .from(t.sessionEvents)
-    .where(and(eq(t.sessionEvents.sessionId, sessionId), isNotNull(t.sessionEvents.toolId), sql`${t.sessionEvents.trace} ? 'routineStep'`))
-    .orderBy(asc(t.sessionEvents.seq))
-  const byStep = new Map<number, (typeof rows)[number]>()
-  for (const row of rows) if (row.trace?.routineStep) byStep.set(row.trace.routineStep, row)
+type StepRow = Pick<typeof t.sessionEvents.$inferSelect, "kind" | "title" | "detail" | "toolId" | "input" | "output" | "trace">
+
+const stepColumns = {
+  kind: t.sessionEvents.kind,
+  title: t.sessionEvents.title,
+  detail: t.sessionEvents.detail,
+  toolId: t.sessionEvents.toolId,
+  input: t.sessionEvents.input,
+  output: t.sessionEvents.output,
+  trace: t.sessionEvents.trace,
+}
+
+/**
+ * 一组过程记录写成步骤行（docs/dev/routine-library.md 5.5，固化脚本、库流程共用）：stepOf 取每条记录是第几步，
+ * 同一步有好几条记录时取最后一条（规则拦下、出错、做完）；步骤太多时开头留几步、结尾留几步
+ */
+export function stepLinesOf(rows: readonly StepRow[], stepOf: (row: StepRow) => number | undefined): string[] {
+  const byStep = new Map<number, StepRow>()
+  for (const row of rows) {
+    const step = stepOf(row)
+    if (step && row.toolId) byStep.set(step, row)
+  }
   const lines = [...byStep.entries()]
     .sort(([a], [b]) => a - b)
     .map(([step, row]) => {
@@ -56,6 +62,26 @@ export async function routineStepLines(db: Db, sessionId: string): Promise<strin
     })
   if (lines.length <= HEAD_STEPS + TAIL_STEPS) return lines
   return [...lines.slice(0, HEAD_STEPS), `…（中间 ${lines.length - HEAD_STEPS - TAIL_STEPS} 步省略）`, ...lines.slice(-TAIL_STEPS)]
+}
+
+/** 脚本做的每一步一行（trace.routineStep） */
+export async function routineStepLines(db: Db, sessionId: string): Promise<string[]> {
+  const rows = await db
+    .select(stepColumns)
+    .from(t.sessionEvents)
+    .where(and(eq(t.sessionEvents.sessionId, sessionId), isNotNull(t.sessionEvents.toolId), sql`${t.sessionEvents.trace} ? 'routineStep'`))
+    .orderBy(asc(t.sessionEvents.seq))
+  return stepLinesOf(rows, (row) => row.trace?.routineStep)
+}
+
+/** 一次库流程调用里做的每一步一行（trace.library.callId = 这次调用；按 trace.library.step 排） */
+export async function libraryStepLines(db: Db, sessionId: string, callId: string): Promise<string[]> {
+  const rows = await db
+    .select(stepColumns)
+    .from(t.sessionEvents)
+    .where(and(eq(t.sessionEvents.sessionId, sessionId), isNotNull(t.sessionEvents.toolId), sql`${t.sessionEvents.trace}->'library'->>'callId' = ${callId}`))
+    .orderBy(asc(t.sessionEvents.seq))
+  return stepLinesOf(rows, (row) => row.trace?.library?.step)
 }
 
 /** 会改东西的步骤做没做、核对没有 */

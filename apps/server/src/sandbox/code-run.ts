@@ -4,6 +4,7 @@
 // 带 tools（docs/dev/solidify.md 18.1，只认 node）：不起出网代理，改起工具桥（mode = agent，挂到 /tmp/.tools），SDK 拷进代码目录的
 // node_modules/heyagent/，用 SDK 的 agent-launch.js 启动脚本（import "heyagent" 在 /workspace 里的脚本也能找到）。脚本的每次调用经工具桥
 // 回到这次运行的网关（ctx.scriptTools）；输出后面加一段「脚本调了 n 次工具…停在第 k 步…」；停在要挂起的一步时结果带上 suspend，引擎照常挂起。
+// 脚本里能 ha.routine 调任务选了的库流程（docs/dev/routine-library.md 5.6）：代码目录里另放 routines/<短名>.mjs，每一层写一行调用记录。
 import { randomBytes } from "node:crypto"
 import { existsSync } from "node:fs"
 import { cp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises"
@@ -30,8 +31,10 @@ import {
 import { appendEvent } from "../engine/records.js"
 import { runtime, type SandboxConfig } from "../engine/runtime.js"
 import type { ToolContext, ToolOutcome } from "../engine/tools/builtin.js"
+import { libraryModules } from "../routine/library/snapshot.js"
 import { ToolBridge } from "../routine/runtime/bridge.js"
 import { judgeForRun } from "../routine/runtime/judge.js"
+import { callRecorder, writeLibraryModules } from "../routine/runtime/run.js"
 import { EgressProxy, type ProxyReport } from "./proxy.js"
 import {
   bwrapRunner,
@@ -289,8 +292,11 @@ async function runLocked(ctx: ToolContext, input: CodeRunInput, config: SandboxC
       await rm(dirs.code, { recursive: true, force: true }).catch(() => {})
       await mkdir(dirs.code, { recursive: true })
       if (input.code !== undefined) await writeFile(join(dirs.code, `main.${EXT[input.language]}`), input.code)
-      // 带 tools：SDK 跑的时候拷进去，不用重建镜像
-      if (tools) await cp(SDK_DIR, join(dirs.code, "node_modules", "heyagent"), { recursive: true })
+      // 带 tools：SDK 跑的时候拷进去，不用重建镜像；库流程放 routines/<短名>.mjs（ha.routine 载入）
+      if (tools) {
+        await cp(SDK_DIR, join(dirs.code, "node_modules", "heyagent"), { recursive: true })
+        await writeLibraryModules(dirs.code, libraryModules(ctx.snapshot))
+      }
     } catch (error) {
       return fail(`沙箱没起来：准备代码目录时出错（${(error as Error).message}）`)
     }
@@ -486,6 +492,8 @@ async function startScriptBridge(ctx: ToolContext, tools: NonNullable<ToolContex
       else graceTimer ??= setTimeout(() => kill.abort(), scriptToolLimits.killGraceMs)
     },
     judge: (request, trace) => judgeForRun({ db, session, snapshot }, request, trace),
+    ...(snapshot.libraryRoutines?.length ? { library: { routines: snapshot.libraryRoutines } } : {}),
+    recordCall: callRecorder(db, session),
   })
   // 脚本一直不调工具时也能停：定时看运行有没有被取消
   const watcher = setInterval(() => {
@@ -503,6 +511,8 @@ async function startScriptBridge(ctx: ToolContext, tools: NonNullable<ToolContex
       if (graceTimer) clearTimeout(graceTimer)
       await bridge.idle()
       await bridge.close()
+      // 还没出来的库流程（脚本停在里面了）：各记一行调用记录
+      await bridge.settleFrames()
     },
   }
 }
