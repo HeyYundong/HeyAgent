@@ -202,12 +202,28 @@ wait_worker() {
   exit 1
 }
 
-# 停 pod 并删掉（数据卷保留）。先 podman pod stop 给 60 秒：postgres 收到 SIGINT 后要写完关机检查点，
-# 开发机的盘慢时要十几秒，默认 10 秒一到就被强杀，下次启动要做崩溃恢复（2026-10-28 重建时遇到）。
-# Podman 3.4 的 play kube 不认 terminationGracePeriodSeconds，所以在脚本里先停；停好后 --down 只负责删除
+# 停 pod 并删掉（数据卷保留）。要一个个停，不能直接 podman pod stop：
+# pod 共享 PID 命名空间（pod.yaml 的 shareProcessNamespace，给 worker 回收僵尸进程用），PID 1 是 infra（pause）。
+# pod stop 会把 infra 和其他容器同时停，pause 一退出，内核就把命名空间里剩下的进程全部强杀，
+# 正在写关机检查点的 postgres 也在里面，下次启动要做崩溃恢复（2026-10-28、10-29 重建时都遇到，-t 再大也没用）。
+# 所以：先停 web、worker、api（数据库没了连接），再单独停 postgres，给 60 秒写完关机检查点
+# （开发机的盘慢，实测要十几秒，默认 10 秒会被强杀），infra 这时还活着；最后才 pod stop、play kube --down 删除。
+# 容器不存在（第一次部署、上次没起全）就跳过
 stop_pod() {
-  podman pod stop -t 60 "$POD" >/dev/null
-  "${PLAY[@]}" --down "$YAML" >/dev/null
+  local name clients=()
+  for name in web worker api; do
+    if podman container exists "$POD-$name"; then clients+=("$POD-$name"); fi
+  done
+  if [ "${#clients[@]}" -gt 0 ]; then
+    podman stop -t 30 "${clients[@]}" >/dev/null
+  fi
+  if podman container exists "$POD-postgres"; then
+    podman stop -t 60 "$POD-postgres" >/dev/null
+  fi
+  if pod_exists; then
+    podman pod stop -t 60 "$POD" >/dev/null
+    "${PLAY[@]}" --down "$YAML" >/dev/null
+  fi
 }
 
 down() {
