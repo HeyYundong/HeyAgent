@@ -1,12 +1,12 @@
 // 系统开的桌面（docs/dev/desktop-vm.md）：存放位置识别、本机资源、模板（建 → 装 Windows → 装软件 → 做成模板）、
 // 从模板建桌面（写时复制的盘、复制状态文件、分端口、自动登记地址）、开关机 / 重启 / 重置 / 删除、内存不够、权限、
-// 分配时排除模板和关着的桌面、对账（容器没了、退出了、该开没开）。
+// 分配时排除模板和关着的桌面、对账（容器没了、退出了、该开没开）、开机时端口被占自动换。
 // Podman 是假的（podman-fake.ts，unix socket），「开机」时在分到的端口上起假的桌面服务和 Windows-MCP（desktop-helpers.ts）。
 import { createHash } from "node:crypto"
 import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs"
 import { chmod, readFile, readdir, stat, writeFile } from "node:fs/promises"
 import { createServer, type Server, type Server as HttpServer } from "node:http"
-import { createServer as createTcpServer, type AddressInfo } from "node:net"
+import { connect, createServer as createTcpServer, type AddressInfo, type Server as TcpServer, type Socket } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -21,6 +21,7 @@ import { attachDesktopViewRelay } from "../src/desktop/view-relay.js"
 import { vmConfig } from "../src/desktop/vm/config.js"
 import { makeReadOnly, reconcileVm, removeDir, sweepVms, vmHealthTick } from "../src/desktop/vm/lifecycle.js"
 import { demux, podmanFor } from "../src/desktop/vm/podman.js"
+import { portFree } from "../src/desktop/vm/ports.js"
 import { detectDiskKind, devNumbers, discoverStorages } from "../src/desktop/vm/storage.js"
 import { buildSnapshot } from "../src/engine/sessions.js"
 import { startFakeAgent, startFakeMcp, type FakeAgent, type FakeMcp } from "./desktop-helpers.js"
@@ -128,7 +129,11 @@ async function startServices(container: FakeContainer) {
   const ports = container.spec.portmappings as { host_port: number; container_port: number }[]
   const target = await loadDesktopTarget(ctx.db, ctx.keyring, desktopId)
   const agent = await startFakeAgent(target!.key, { port: ports.find((port) => port.container_port === 8001)!.host_port })
-  const mcp = await startFakeMcp(target!.key, { port: ports.find((port) => port.container_port === 8000)!.host_port })
+  // 端口被占（listen 报 EADDRINUSE）时假 Podman 回 500：已经起来的桌面服务也关掉，不留着占端口
+  const mcp = await startFakeMcp(target!.key, { port: ports.find((port) => port.container_port === 8000)!.host_port }).catch(async (error: unknown) => {
+    await agent.close()
+    throw error
+  })
   fakeVms.set(container.name, { agent, mcp })
 }
 
@@ -608,6 +613,183 @@ describe("从模板建的桌面", () => {
     await sweepVms(ctx.db)
     await waitState(vmId, "stopped")
     expect(podman.containers.has(name)).toBe(false)
+  })
+})
+
+describe("开机时端口被占", () => {
+  // 默认端口段在系统的临时端口段里：开机时可能正好有一条对外连接占着要用的端口。开机前先试 listen，占着就换；Podman 报被占也换
+  let portVmId: string
+  const holders: TcpServer[] = []
+  /** 开发机 Podman 3.4.4 实测：slirp4netns 端口转发绑不上时 start 报的错 */
+  const SLIRP_TAKEN = (name: string) =>
+    `unable to start container "id-${name}": error from slirp4netns while setting up port redirection: map[desc:bad request: add_hostfwd: slirp_add_hostfwd failed]`
+
+  /**
+   * 占着一个端口（别的程序已经占着的不用再占）。用 listen 占：Node 主动指定本地端口的连接带 SO_REUSEADDR，
+   * 和同样带 SO_REUSEADDR 的 listen 不冲突，模拟不了；系统自动分端口的对外连接见第一个测试开头
+   */
+  const hold = (port: number) =>
+    new Promise<TcpServer | undefined>((resolve, reject) => {
+      const server = createTcpServer()
+      server.once("error", (error: NodeJS.ErrnoException) => (error.code === "EADDRINUSE" ? resolve(undefined) : reject(error)))
+      server.listen(port, "127.0.0.1", () => {
+        holders.push(server)
+        resolve(server)
+      })
+    })
+  const release = async () => {
+    for (const server of holders.splice(0)) await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+  afterAll(release)
+  /** 端口段里接下来会分出去的 n 个端口（库里还没分的，从小到大） */
+  async function nextUnallocated(n: number) {
+    const [low] = vmConfig.portRange
+    const used = new Set((await ctx.db.select({ a: t.desktopVms.mcpPort, b: t.desktopVms.agentPort }).from(t.desktopVms)).flatMap((row) => [row.a, row.b]))
+    const ports: number[] = []
+    for (let port = low; ports.length < n; port++) if (!used.has(port)) ports.push(port)
+    return ports
+  }
+  const portAudits = async (id: string) =>
+    (await ctx.db.select({ action: t.auditEvents.action, actorId: t.auditEvents.actorId, detail: t.auditEvents.detail }).from(t.auditEvents).where(eq(t.auditEvents.targetId, id)))
+      .filter((each) => each.action === "desktop.vm.ports")
+  async function waitError(id: string) {
+    return waitFor(
+      async () => {
+        const row = await vmRow(id)
+        return row?.state === "error" && !(await vmJobsPending(id)) ? row : undefined
+      },
+      { what: `${id} 出错` }
+    )
+  }
+  const createsOf = (name: string) => podman.requests.filter((request) => request.path === "/containers/create" && request.body?.name === name)
+  /** 库里记的端口、地址、容器的端口映射、连桌面（loadDesktopTarget、测试连接）用的都是这两个端口 */
+  async function expectUsing(id: string, mcpPort: number, agentPort: number) {
+    expect(await vmRow(id)).toMatchObject({ mcpPort, agentPort })
+    expect(await desktopRow(id)).toMatchObject({ mcpUrl: `http://127.0.0.1:${mcpPort}/mcp`, agentUrl: `http://127.0.0.1:${agentPort}` })
+    expect(createBody(`heyagent-${id}`).portmappings).toEqual([
+      { host_ip: "127.0.0.1", host_port: mcpPort, container_port: 8000, protocol: "tcp" },
+      { host_ip: "127.0.0.1", host_port: agentPort, container_port: 8001, protocol: "tcp" },
+    ])
+    expect(await loadDesktopTarget(ctx.db, ctx.keyring, id)).toMatchObject({ mcpUrl: `http://127.0.0.1:${mcpPort}/mcp`, agentUrl: `http://127.0.0.1:${agentPort}` })
+    const health = await mutate(ctx.app, "desktops.test", wang, { id })
+    expect(health.error).toBeUndefined()
+    expect(health.data.mcp.ok).toBe(true)
+    expect(health.data.agent.ok).toBe(true)
+  }
+
+  it("开机前要用的端口被占着：换一个空的开起来，库里记的、连桌面用的都是新的", async () => {
+    // 先确认：系统给对外连接自动分的本地端口，开机前试 listen 能看出来被占（这就是要修的情况）
+    const sink = createTcpServer((socket) => socket.on("error", () => {}))
+    await new Promise<void>((resolve) => sink.listen(0, "127.0.0.1", resolve))
+    const outbound = await new Promise<Socket>((resolve, reject) => {
+      const socket = connect({ host: "127.0.0.1", port: (sink.address() as AddressInfo).port }, () => resolve(socket))
+      socket.once("error", reject)
+    })
+    try {
+      expect(await portFree(outbound.localPort!)).toBe(false)
+    } finally {
+      outbound.destroy()
+      await new Promise<void>((resolve) => sink.close(() => resolve()))
+    }
+
+    const [held, second] = (await nextUnallocated(2)) as [number, number]
+    expect(await hold(held)).toBeDefined()
+    expect(await portFree(held)).toBe(false)
+    try {
+      const created = await mutate(ctx.app, "desktops.createVm", wang, { name: "Port VM", templateId, memoryGb: 4, cpus: 2 })
+      expect(created.error).toBeUndefined()
+      portVmId = created.data.id
+      const row = await waitState(portVmId, "running")
+      // 建的时候分到 held、second；开机前发现 held 被占，只换 Windows-MCP 那个
+      expect(row.agentPort).toBe(second)
+      expect(row.mcpPort).not.toBe(held)
+      const others = (await ctx.db.select().from(t.desktopVms)).filter((each) => each.desktopId !== portVmId).flatMap((each) => [each.mcpPort, each.agentPort])
+      expect(others).not.toContain(row.mcpPort)
+      const [low, high] = vmConfig.portRange
+      expect(row.mcpPort).toBeGreaterThanOrEqual(low)
+      expect(row.mcpPort).toBeLessThanOrEqual(high)
+      await expectUsing(portVmId, row.mcpPort, second)
+      // 没拿被占的端口建过容器
+      expect(createsOf(`heyagent-${portVmId}`).map((request) => (request.body!.portmappings as { host_port: number }[])[0]!.host_port)).toEqual([row.mcpPort])
+      // 换端口记在审计里（系统做的，没有操作人）
+      const audits = await portAudits(portVmId)
+      expect(audits).toHaveLength(1)
+      expect(audits[0]).toMatchObject({ actorId: null, detail: { from: { mcpPort: held, agentPort: second }, to: { mcpPort: row.mcpPort, agentPort: second } } })
+      expect(audits[0]!.detail.reason).toContain("被别的程序占着")
+    } finally {
+      await release()
+    }
+  })
+
+  it("Podman 开机时报端口被占：两个都换了、重建容器再开，成功", async () => {
+    const name = `heyagent-${portVmId}`
+    expect((await mutate(ctx.app, "desktops.vmAction", wang, { id: portVmId, action: "stop" })).error).toBeUndefined()
+    const before = await waitState(portVmId, "stopped")
+    const creates = createsOf(name).length
+    const starts = requestsTo(name, "start").length
+    podman.startErrors.push(SLIRP_TAKEN(name))
+    expect((await mutate(ctx.app, "desktops.vmAction", wang, { id: portVmId, action: "start" })).error).toBeUndefined()
+    const row = await waitState(portVmId, "running")
+    expect(podman.startErrors).toEqual([])
+    expect(requestsTo(name, "start").length).toBe(starts + 2)
+    expect(createsOf(name).length).toBe(creates + 1)
+    expect([row.mcpPort, row.agentPort]).not.toContain(before.mcpPort)
+    expect([row.mcpPort, row.agentPort]).not.toContain(before.agentPort)
+    expect(row.mcpPort).not.toBe(row.agentPort)
+    await expectUsing(portVmId, row.mcpPort, row.agentPort)
+    const audits = await portAudits(portVmId)
+    expect(audits).toHaveLength(2)
+    const last = audits.find((each) => (each.detail.from as { mcpPort: number }).mcpPort === before.mcpPort)!
+    expect(last.detail).toMatchObject({ from: { mcpPort: before.mcpPort, agentPort: before.agentPort }, to: { mcpPort: row.mcpPort, agentPort: row.agentPort } })
+    expect(last.detail.reason).toContain("slirp_add_hostfwd failed")
+  })
+
+  it("一直被占（试满 5 次）、端口段里全被占：记出错，原因写清楚；放开后点开机就好", async () => {
+    const name = `heyagent-${portVmId}`
+    expect((await mutate(ctx.app, "desktops.vmAction", wang, { id: portVmId, action: "stop" })).error).toBeUndefined()
+    await waitState(portVmId, "stopped")
+
+    // Podman 每次都说被占：开 5 次、换 4 次端口，记出错
+    const starts = requestsTo(name, "start").length
+    for (let i = 0; i < 5; i++) podman.startErrors.push(SLIRP_TAKEN(name))
+    expect((await mutate(ctx.app, "desktops.vmAction", wang, { id: portVmId, action: "start" })).error).toBeUndefined()
+    const failed = await waitError(portVmId)
+    expect(failed.message).toMatch(/^端口都被占了：开机试了 5 次，每次要用的端口都被别的程序占着/)
+    expect(podman.startErrors).toEqual([])
+    expect(requestsTo(name, "start").length).toBe(starts + 5)
+    expect(await portAudits(portVmId)).toHaveLength(2 + 4)
+    expect(await desktopRow(portVmId)).toMatchObject({ mcpUrl: `http://127.0.0.1:${failed.mcpPort}/mcp`, agentUrl: `http://127.0.0.1:${failed.agentPort}` })
+
+    // 端口段里全被占：这台现在的端口、换端口时能挑的（把端口段临时改小）都被占着
+    const range = process.env.HEYAGENT_DESKTOP_PORT_RANGE!
+    const window = [70, 71, 72, 73, 74].map(portAt)
+    try {
+      await hold(failed.mcpPort)
+      for (const port of window) await hold(port)
+      for (const port of [failed.mcpPort, ...window]) expect(await portFree(port)).toBe(false)
+      setEnv({ HEYAGENT_DESKTOP_PORT_RANGE: `${window[0]}-${window.at(-1)}` })
+      expect((await mutate(ctx.app, "desktops.vmAction", wang, { id: portVmId, action: "start" })).error).toBeUndefined()
+      await waitFor(async () => (await vmRow(portVmId))!.message !== failed.message, { what: "再开一次" })
+      const full = await waitError(portVmId)
+      expect(full.message).toContain(`端口都被占了：${window[0]}-${window.at(-1)} 里没有空着的端口`)
+      expect(full.message).toContain(String(failed.mcpPort))
+      // 端口没换
+      expect(full).toMatchObject({ mcpPort: failed.mcpPort, agentPort: failed.agentPort })
+      expect(await desktopRow(portVmId)).toMatchObject({ mcpUrl: `http://127.0.0.1:${failed.mcpPort}/mcp` })
+    } finally {
+      setEnv({ HEYAGENT_DESKTOP_PORT_RANGE: range })
+      await release()
+    }
+
+    // 放开以后点开机：用原来的端口开起来（没被占就不换）
+    expect((await mutate(ctx.app, "desktops.vmAction", wang, { id: portVmId, action: "start" })).error).toBeUndefined()
+    const row = await waitState(portVmId, "running")
+    expect(row).toMatchObject({ mcpPort: failed.mcpPort, agentPort: failed.agentPort, message: null })
+    await expectUsing(portVmId, failed.mcpPort, failed.agentPort)
+
+    // 删掉，后面的测试照原来的样子
+    expect((await mutate(ctx.app, "desktops.delete", wang, { id: portVmId })).error).toBeUndefined()
+    await waitFor(async () => !(await desktopRow(portVmId)), { what: "删掉" })
   })
 })
 

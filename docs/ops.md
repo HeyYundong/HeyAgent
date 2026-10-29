@@ -336,7 +336,7 @@ scripts/server-install.sh
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `HEYAGENT_DESKTOP_PORT_RANGE` | `42000-42999` | 虚拟机端口的范围（每台两个，只绑 127.0.0.1） |
+| `HEYAGENT_DESKTOP_PORT_RANGE` | `42000-42999` | 虚拟机端口的范围（每台两个，只绑 127.0.0.1；开机时被占会自动换一个空的） |
 | `HEYAGENT_DESKTOP_MIN_FREE_GB` | 40 | 存放位置剩得比这少就不能再建 |
 | `HEYAGENT_DESKTOP_PYTHON_URL`、`HEYAGENT_DESKTOP_PYTHON_SHA256` | python.org 的 3.14.8 | 连不上 python.org 时换成内网的地址，两个一起改 |
 | `HEYAGENT_DESKTOP_IMAGE` | `docker.io/dockurr/windows@sha256:16fd7c39…`（6.06） | 一般不要改 |
@@ -407,7 +407,7 @@ scripts/server-install.sh
   - 「虚拟机没开起来（容器退出码 …）」后面跟着 dockur 的日志（英文原文）：里面说 KVM（例如 `KVM acceleration not available`、`/dev/kvm` 打不开）就是 kvm 组的问题，`scripts/desktop-host.sh check`，多半是改了组之后没重启 systemd 用户实例；
   - 「开机 20 分钟了，还连不上」：机械盘上开机 7～12 分钟是正常的，再慢就是盘太忙（同时开太多台）或者 Windows 卡在更新，看上面的截图；
   - 「本机内存不够了」：关掉不用的桌面，或者新建时把内存调小；
-  - 端口被占（日志里有 `address already in use`）：宿主机上别的程序占了 42000～42999 里的端口。每台的端口是建的时候分好的，改 `HEYAGENT_DESKTOP_PORT_RANGE` 只影响以后建的，已经建好的要停掉占端口的程序；
+  - 「端口都被占了：…」：开机时要用的端口被占着（比如正好有一条对外连接用着它；Podman 报 `slirp_add_hostfwd failed` 或 `address already in use`），系统会自动换一个空的端口再开（审计里记一条 `desktop.vm.ports`，worker 日志里有「换端口：…」），连试 5 次都被占、或者 42000～42999 里没有空着的了才记出错。偶尔一次的话等一会儿再点「开机」；一直这样就是宿主机上别的程序占了这一段的很多端口，查一下（`ss -tanp | grep ':42'`），或者改 `HEYAGENT_DESKTOP_PORT_RANGE`（以后换端口、新建都从新的段里分）；
   - 删除出错会一直留在「删除中」，每 30 秒自己再试一次。
 - **开着，但写着「桌面服务连不上」**：Windows 可能在重启装更新、锁屏了或者用户被注销了，点「看画面」看看，或者重启这台。
 - 虚拟机容器、目录是 worker 经 Podman API 管的。**不要用 podman 命令直接开关、删除**（页面上的状态会跟着对账改过来，但删了的盘就没了）。只是看看可以：`podman ps -a --filter label=heyagent.desktop`、`podman logs`。

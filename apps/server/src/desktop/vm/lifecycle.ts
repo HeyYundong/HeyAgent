@@ -5,13 +5,15 @@
 // - 桌面：qemu-img 在模板盘上建 qcow2 写时复制的盘（一次性容器，路径和宿主机一样）→ 复制 dockur 认「已经装好」的文件（MAC 不复制）
 //   → 建容器开机（starting）→ 连上桌面服务（running）；
 // - 对账（每 30 秒）：按 Podman 实际状态更正；desired = running 但没在跑的（宿主机重启过）自动开机；开着的查 /health；
-// - 开机中、装 Windows 中每 5 秒查一次 /health，超时（桌面 10 分钟、模板 4 小时）记出错。
+// - 开机中、装 Windows 中每 5 秒查一次 /health，超时（桌面 10 分钟、模板 4 小时）记出错；
+// - 开机时端口被占（对外连接正好占着）：换一个空的端口、重建容器再开（ports.ts），最多 5 次。
 import { randomBytes } from "node:crypto"
 import { copyFile, chmod, mkdir, readdir, rm, stat } from "node:fs/promises"
 import { join } from "node:path"
 
 import { and, eq, inArray } from "drizzle-orm"
 
+import { audit } from "../../data/config/common.js"
 import type { Db } from "../../db/client.js"
 import * as t from "../../db/schema.js"
 import type { DesktopVmOp } from "../../db/schema.js"
@@ -24,6 +26,7 @@ import { diskOf, GUEST_AGENT_PORT, GUEST_MCP_PORT, oemDirOf, vmConfig, vmUrls, V
 import { memoryProblem } from "./host.js"
 import { prepareOem } from "./oem.js"
 import { podmanFor, type ContainerSpec, type ContainerState, type PodmanClient } from "./podman.js"
+import { lockVms, pickFreePorts, portFree, portTakenError } from "./ports.js"
 
 export type VmRow = typeof t.desktopVms.$inferSelect & { kind: "manual" | "vm" | "template"; name: string; keySecretId: string | null }
 
@@ -250,11 +253,71 @@ async function ensureRunning(db: Db, podman: PodmanClient, row: VmRow, container
     await patchVm(db, row, { state: "error", message: problem })
     return "done"
   }
-  if (!container) await ensureContainer(db, podman, row)
-  await podman.start(row.container)
+  await startWithFreePorts(db, podman, row, Boolean(container))
   await patchVm(db, row, { state: startedState(row), message: null })
   log(`开机：${row.desktopId}（${row.container}）`)
   return "done"
+}
+
+/** 开机时最多试几次（每次端口被占就换了再试） */
+const PORT_TRIES = 5
+
+/**
+ * 开机（建容器、podman start）。开机前先试这台的两个端口能不能 listen，占着的换成端口段里空着的；Podman 开机时报端口被占，
+ * 两个都换了再开（看不出是哪个）。最多试 PORT_TRIES 次，都不行记出错「端口都被占了」
+ */
+async function startWithFreePorts(db: Db, podman: PodmanClient, row: VmRow, hasContainer: boolean) {
+  const busy = new Set<number>()
+  for (let attempt = 1; ; attempt++) {
+    const taken: number[] = []
+    for (const port of [row.mcpPort, row.agentPort]) if (!(await portFree(port))) taken.push(port)
+    let why = "开机前试了一下，被别的程序占着"
+    if (taken.length === 0) {
+      if (!hasContainer) await ensureContainer(db, podman, row)
+      try {
+        await podman.start(row.container)
+        return
+      } catch (error) {
+        if (!portTakenError(error)) throw error
+        taken.push(row.mcpPort, row.agentPort)
+        why = `Podman 开机时绑端口失败（${(error as Error).message.slice(0, 300)}）`
+      }
+    }
+    for (const port of taken) busy.add(port)
+    if (attempt >= PORT_TRIES)
+      throw new Error(`端口都被占了：开机试了 ${PORT_TRIES} 次，每次要用的端口都被别的程序占着（最后一次 ${taken.join("、")}：${why}）。等一会儿再点「开机」`)
+    await movePorts(db, podman, row, taken, busy, why)
+    hasContainer = false
+  }
+}
+
+/**
+ * 把这台被占着的端口换成端口段里空着的（避开别的虚拟机分到的、这次已经知道占着的），库里的端口和地址一起改，记审计和日志。
+ * 端口是建容器时定的：先删掉容器（这时没在跑；盘、状态文件都在目录里），开机时按新端口重建
+ */
+async function movePorts(db: Db, podman: PodmanClient, row: VmRow, taken: number[], busy: Set<number>, why: string) {
+  await podman.remove(row.container)
+  const from = { mcpPort: row.mcpPort, agentPort: row.agentPort }
+  const to = await db.transaction(async (tx) => {
+    await lockVms(tx)
+    const moveMcp = taken.includes(row.mcpPort)
+    const moveAgent = taken.includes(row.agentPort)
+    const picked = await pickFreePorts(tx, Number(moveMcp) + Number(moveAgent), busy)
+    if (picked.length < Number(moveMcp) + Number(moveAgent)) {
+      const [low, high] = vmConfig.portRange
+      throw new Error(`端口都被占了：${low}-${high} 里没有空着的端口（别的桌面分走的、别的程序占着的都不能用；这台的 ${taken.join("、")} 被占着）。删掉不用的桌面，或等一会儿再点「开机」`)
+    }
+    const next = { mcpPort: moveMcp ? picked.shift()! : row.mcpPort, agentPort: moveAgent ? picked.shift()! : row.agentPort }
+    await tx
+      .update(t.desktopVms)
+      .set({ ...next, updatedAt: new Date() })
+      .where(eq(t.desktopVms.desktopId, row.desktopId))
+    await tx.update(t.desktops).set(vmUrls(next.mcpPort, next.agentPort)).where(eq(t.desktops.id, row.desktopId))
+    await audit(tx, null, "desktop.vm.ports", "desktops", row.desktopId, { name: row.name, from, to: next, reason: why })
+    return next
+  })
+  Object.assign(row, to)
+  log(`换端口：${row.desktopId} Windows-MCP ${from.mcpPort} → ${to.mcpPort}，桌面服务 ${from.agentPort} → ${to.agentPort}（${why}）`)
 }
 
 async function ensureStopped(db: Db, podman: PodmanClient, row: VmRow, container: ContainerState | undefined): Promise<"done" | "again"> {
@@ -356,7 +419,8 @@ export async function reconcileVm(db: Db, desktopId: string): Promise<"done" | "
       return "again"
     }
     if (row.state === "ready") return "done"
-    return row.desired === "running" ? ensureRunning(db, podman, row, container) : ensureStopped(db, podman, row, container)
+    // 要 await：直接 return 出去的 promise 出错时进不了下面的 catch（不记出错，pg-boss 隔 10 秒重试）
+    return await (row.desired === "running" ? ensureRunning(db, podman, row, container) : ensureStopped(db, podman, row, container))
   } catch (error) {
     const message = (error as Error).message.slice(0, 1000)
     console.warn(`[desktop-vm] ${desktopId}：${message}`)

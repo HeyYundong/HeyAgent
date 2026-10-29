@@ -5,7 +5,7 @@ import { readdir, stat } from "node:fs/promises"
 import { join } from "node:path"
 
 import type { DesktopStorage, DesktopStorageSettings, DesktopVmAction, DesktopVmInfo } from "@heyagent/shared"
-import { count, eq, inArray, isNotNull, sql } from "drizzle-orm"
+import { count, eq, inArray, isNotNull } from "drizzle-orm"
 
 import { assertCan, audit, badRequest, conflict, freeId, notFound, putSecret, slugOf, type DbOrTx, type WriteCtx } from "../../data/config/common.js"
 import * as t from "../../db/schema.js"
@@ -14,6 +14,7 @@ import { desktopLease, forceReleaseDesktop } from "../leases.js"
 import { containerNameOf, vmConfig, vmDirOf, vmUrls } from "./config.js"
 import { assertMemory, vmProblem } from "./host.js"
 import { enqueueVm, loadVm, type VmRow } from "./lifecycle.js"
+import { lockVms, usedPorts } from "./ports.js"
 import { DESKTOP_STORAGE_SETTING_KEY, kindOfPath, listStorages } from "./storage.js"
 
 const GB = 1024 ** 3
@@ -84,14 +85,10 @@ async function pickStorage(db: DbOrTx, path: string | undefined): Promise<Deskto
   return storage
 }
 
-/** 新建时同一时间只让一个在分端口、查内存（事务级的锁，提交就放） */
-const lockVms = (tx: DbOrTx) => tx.execute(sql`select pg_advisory_xact_lock(7731001)`)
-
-/** 从 HEYAGENT_DESKTOP_PORT_RANGE 里分两个没用过的端口（Windows-MCP、桌面服务） */
+/** 从 HEYAGENT_DESKTOP_PORT_RANGE 里分两个没用过的端口（Windows-MCP、桌面服务）。开机时被占着的话 worker 再换（ports.ts） */
 async function allocatePorts(tx: DbOrTx): Promise<[number, number]> {
   const [low, high] = vmConfig.portRange
-  const rows = await tx.select({ mcp: t.desktopVms.mcpPort, agent: t.desktopVms.agentPort }).from(t.desktopVms)
-  const used = new Set(rows.flatMap((row) => [row.mcp, row.agent]))
+  const used = await usedPorts(tx)
   const free: number[] = []
   for (let port = low; port <= high && free.length < 2; port++) if (!used.has(port)) free.push(port)
   if (free.length < 2) throw conflict(`端口用完了（${low}-${high}），删掉不用的桌面再建`)

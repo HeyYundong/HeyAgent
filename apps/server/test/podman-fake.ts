@@ -29,6 +29,8 @@ export interface FakePodman {
   containers: Map<string, FakeContainer>
   /** 下一次开机（非一次性容器）立刻退出，退出码 1 */
   failNextStart: boolean
+  /** 接下来几次开机（非一次性容器）Podman 直接回 500，消息依次用这些（模拟绑端口失败）；容器留在 configured */
+  startErrors: string[]
   /** 一次性容器（qemu-img）跑过的命令 */
   oneShots: string[][]
   onStart?: (container: FakeContainer) => Promise<void>
@@ -64,6 +66,7 @@ export async function startFakePodman(): Promise<FakePodman> {
   const state = {
     requests: [] as PodmanRequest[],
     failNextStart: false,
+    startErrors: [] as string[],
     oneShots: [] as string[][],
     onStart: undefined as FakePodman["onStart"],
     onStop: undefined as FakePodman["onStop"],
@@ -146,6 +149,12 @@ export async function startFakePodman(): Promise<FakePodman> {
             container.finishedAt = now()
             return res.writeHead(204).end()
           }
+          const startError = state.startErrors.shift()
+          if (startError !== undefined) {
+            container.status = "configured"
+            delete container.startedAt
+            return json(500, { cause: "network error", message: startError, response: 500 })
+          }
           if (state.failNextStart) {
             state.failNextStart = false
             container.logs.push("ERROR: KVM acceleration is not available")
@@ -154,7 +163,14 @@ export async function startFakePodman(): Promise<FakePodman> {
             container.finishedAt = now()
             return res.writeHead(204).end()
           }
-          await state.onStart?.(container)
+          try {
+            await state.onStart?.(container)
+          } catch (error) {
+            // 真的 Podman 开不起来时容器留在没开过的状态
+            container.status = "configured"
+            delete container.startedAt
+            throw error
+          }
           return res.writeHead(204).end()
         }
         if (action === "stop") {
@@ -179,6 +195,9 @@ export async function startFakePodman(): Promise<FakePodman> {
     },
     get oneShots() {
       return state.oneShots
+    },
+    get startErrors() {
+      return state.startErrors
     },
     get failNextStart() {
       return state.failNextStart
