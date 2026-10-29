@@ -17,7 +17,7 @@ const RAW_ECHO_MAX = 4000
 export function normalizeEnumText(value: string): string {
   return value
     .trim()
-    .replace(/^["'`「『“‘《（(\[]+|["'`」』”’》）)\].。．!！?？,，;；:：]+$/g, "")
+    .replace(/^["'`「『“‘《（([]+|["'`」』”’》）)\].。．!！?？,，;；:：]+$/g, "")
     .trim()
     .toLowerCase()
     .replace(/[\s-]+/g, "_")
