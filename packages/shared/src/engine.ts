@@ -14,6 +14,7 @@ import {
   isoTime,
   riskSchema,
   runOutcomeSchema,
+  taskDeliverableSchema,
   taskStepSchema,
   toolSourceSchema,
 } from "./schemas.js"
@@ -48,6 +49,8 @@ export const sessionSnapshotSchema = z.object({
     goal: z.string(),
     ownerId: z.string(),
     steps: z.array(taskStepSchema),
+    /** 交付物（docs/dev/task-structure.md）：加这个字段之前开始的运行、子运行没有 */
+    deliverables: z.array(taskDeliverableSchema).optional(),
   }),
   modelId: z.string(),
   /** M3：任务自己选的验收模型（没有就在验收时取默认验收模型） */

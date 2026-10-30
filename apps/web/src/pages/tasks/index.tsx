@@ -1,12 +1,13 @@
 // 任务页（v3.1）：卡片墙一直是主画面；点卡片从右边打开抽屉看任务详情（?id=），抽屉里再看某次运行的 session（?id=&run=）、派给它的一张单（?id=&work=W-…）。
 // 能被派活的任务，卡片上多一行「排队 3 · 在办 2」（work.queueStats 一次取全部）；只有 ?work=W-…、没有 ?id= 时（旧的 #/work?id=W-… 跳过来的）先查这张单派给了谁再打开。
 // 卡片和抽屉只说明任务（目标、步骤、定时、负责人），不显示运行状态；运行记录在「会话」页看（抽屉头部「会话」按钮带上这个任务筛好）。
+// 抽屉里的任务详情有两种看法（docs/dev/task-structure.md）：结构图（默认，task-structure.tsx，大屏上抽屉加宽）/ 列表（分区卡，task-detail.tsx），头部切换，记在 localStorage。
 // 卡片按创建时间排，新建的在最前。
 // 主管能新建任务、开关任务；员工能看全部任务，只能开关、运行自己负责的。
 // 新建、编辑、开关、删除接通后端（M1 P2）；立即运行（可带附件）、立即继续、取消、任务附件接引擎（M1 P3）。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
-import { ArrowLeftIcon, HistoryIcon, ListChecksIcon, PlusIcon } from "lucide-react"
+import { ArrowLeftIcon, HistoryIcon, ListChecksIcon, ListIcon, NetworkIcon, PlusIcon } from "lucide-react"
 
 import { EmptyState, PageFrame, SimpleHeader } from "@/components/shell/simple-page"
 import { Button } from "@/components/ui/button"
@@ -16,6 +17,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Switch } from "@/components/ui/switch"
 import { toast } from "@/components/ui/toast"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { can, fmtDateTime, fmtShort, runsOfTask, type SessionSummary, type TaskDef, type WorkQueueStats } from "@heyagent/shared"
 
 import {
@@ -25,13 +27,33 @@ import { useAction } from "@/lib/mutations"
 import { href, setParams, useRoute } from "@/lib/router"
 import { useMe } from "@/lib/session"
 import { trpc } from "@/lib/trpc"
+import { cn } from "@/lib/utils"
 
 import { TaskDialog } from "./task-dialog"
 import type { TasksState } from "./parts"
 import { RunDetail } from "./run-detail"
 import { TaskActions, TaskDetail } from "./task-detail"
+import { TaskStructure } from "./task-structure"
 import { WorkItemView } from "./work-detail"
 import { useWorkQueueStats } from "./work-parts"
+
+/** 抽屉里看任务的两种样子：结构图（默认）/ 列表（以前的分区卡）。记在这台电脑的浏览器里 */
+type TaskView = "structure" | "list"
+const VIEW_KEY = "heyagent.taskView"
+function readView(): TaskView {
+  try {
+    return window.localStorage.getItem(VIEW_KEY) === "list" ? "list" : "structure"
+  } catch {
+    return "structure"
+  }
+}
+function saveView(view: TaskView) {
+  try {
+    window.localStorage.setItem(VIEW_KEY, view)
+  } catch {
+    // 存不了（隐私模式、禁了存储）就只在这次打开里记着
+  }
+}
 
 export default function TasksPage() {
   const { isAdmin, user } = useMe()
@@ -44,6 +66,11 @@ export default function TasksPage() {
   const taskList = tasksQuery.data ?? []
   const runList = sessionsQuery.data ?? []
   const [creating, setCreating] = React.useState(false)
+  const [view, setViewState] = React.useState<TaskView>(readView)
+  const setView = (next: TaskView) => {
+    setViewState(next)
+    saveView(next)
+  }
 
   const state: TasksState = {
     runsOf: (taskId) => runsOfTask(runList, taskId),
@@ -98,8 +125,9 @@ export default function TasksPage() {
         </div>
         {workId && !taskId && <WorkRedirect id={workId} />}
         <Sheet open={Boolean(taskId)} onOpenChange={(next) => !next && setParams({ id: null, run: null, work: null })}>
-          <SheetContent className="gap-0 data-[side=right]:w-full data-[side=right]:sm:max-w-3xl">
-            {task ? <TaskSheetBody task={task} runId={shownRun} workId={shownWork} state={state} canEdit={canManage(task)} />
+          {/* 结构图（只在看任务详情时，不是看某次运行、某张单）在大屏上加宽，右边要放详情栏 */}
+          <SheetContent className={cn("gap-0 data-[side=right]:w-full data-[side=right]:sm:max-w-3xl", task && view === "structure" && !shownRun && !shownWork && "data-[side=right]:lg:max-w-6xl data-[side=right]:xl:max-w-7xl")}>
+            {task ? <TaskSheetBody task={task} runId={shownRun} workId={shownWork} state={state} canEdit={canManage(task)} view={view} onViewChange={setView} />
               : <SheetHeader><SheetTitle>找不到这个任务</SheetTitle><SheetDescription>{taskId ?? shown.id} 可能已经被删除。</SheetDescription></SheetHeader>}
           </SheetContent>
         </Sheet>
@@ -124,15 +152,30 @@ function WorkRedirect({ id }: { id: string }) {
 }
 
 /** 抽屉：头部是任务（编号、标题、负责人，定时在详情的「什么时候跑」里；右边「会话」按钮去会话页只看这个任务的 session），中间是任务详情、某次 session 或派给它的一张单，底部是主管操作 */
-function TaskSheetBody({ task, runId, workId, state, canEdit }: { task: TaskDef; runId: string | null; workId: string | null; state: TasksState; canEdit: boolean }) {
+function TaskSheetBody({ task, runId, workId, state, canEdit, view, onViewChange }: {
+  task: TaskDef
+  runId: string | null
+  workId: string | null
+  state: TasksState
+  canEdit: boolean
+  view: TaskView
+  onViewChange: (view: TaskView) => void
+}) {
   const staffName = useStaffName()
   const runs = state.runsOf(task.id)
+  const onDetail = !runId && !workId
   return (
     <>
       <SheetHeader className="pr-12">
         <div className="flex flex-wrap items-center gap-2 pb-1 text-muted-foreground">
           <span className="font-mono">{task.id}</span>
-          <Button variant="outline" size="sm" className="ml-auto" nativeButton={false} render={<a href={href("sessions", { task: task.id })} />}>
+          {onDetail && (
+            <ToggleGroup variant="outline" size="sm" spacing={0} className="ml-auto" value={[view]} onValueChange={(next) => next[0] && onViewChange(next[0] as TaskView)} aria-label="任务详情怎么看">
+              <ToggleGroupItem value="structure"><NetworkIcon data-icon="inline-start" />结构图</ToggleGroupItem>
+              <ToggleGroupItem value="list"><ListIcon data-icon="inline-start" />列表</ToggleGroupItem>
+            </ToggleGroup>
+          )}
+          <Button variant="outline" size="sm" className={onDetail ? undefined : "ml-auto"} nativeButton={false} render={<a href={href("sessions", { task: task.id })} />}>
             <HistoryIcon data-icon="inline-start" />会话（{runs.length}）
           </Button>
         </div>
@@ -142,19 +185,23 @@ function TaskSheetBody({ task, runId, workId, state, canEdit }: { task: TaskDef;
         </SheetDescription>
       </SheetHeader>
       <Separator />
-      <div key={runId ?? workId ?? task.id} className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4 *:shrink-0">
-        {runId ? (
-          <>
-            <Button variant="ghost" size="sm" className="self-start" onClick={() => setParams({ run: null })}><ArrowLeftIcon data-icon="inline-start" />{workId ? `派活单 ${workId}` : `${task.id} 任务详情`}</Button>
-            <TaskRunDetail task={task} runs={runs} runId={runId} />
-          </>
-        ) : workId ? (
-          <>
-            <Button variant="ghost" size="sm" className="self-start" onClick={() => setParams({ work: null })}><ArrowLeftIcon data-icon="inline-start" />返回任务 {task.id}</Button>
-            <WorkItemView id={workId} />
-          </>
-        ) : <TaskDetail task={task} state={state} canEdit={canEdit} />}
-      </div>
+      {onDetail && view === "structure" ? (
+        <TaskStructure key={task.id} task={task} state={state} canEdit={canEdit} />
+      ) : (
+        <div key={runId ?? workId ?? task.id} className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4 *:shrink-0">
+          {runId ? (
+            <>
+              <Button variant="ghost" size="sm" className="self-start" onClick={() => setParams({ run: null })}><ArrowLeftIcon data-icon="inline-start" />{workId ? `派活单 ${workId}` : `${task.id} 任务详情`}</Button>
+              <TaskRunDetail task={task} runs={runs} runId={runId} />
+            </>
+          ) : workId ? (
+            <>
+              <Button variant="ghost" size="sm" className="self-start" onClick={() => setParams({ work: null })}><ArrowLeftIcon data-icon="inline-start" />返回任务 {task.id}</Button>
+              <WorkItemView id={workId} />
+            </>
+          ) : <TaskDetail task={task} state={state} canEdit={canEdit} />}
+        </div>
+      )}
       <Separator />
       <SheetFooter className="mt-0 flex-row items-center justify-between">
         {canEdit ? <TaskActions task={task} state={state} /> : <p className="text-muted-foreground">负责人是 {staffName(task.ownerId)}，你只能查看。</p>}

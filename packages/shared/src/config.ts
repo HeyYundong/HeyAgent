@@ -119,10 +119,18 @@ export const taskStepInputSchema = taskStepSchema.extend({
   checkpoint: optionalText(500).optional(),
 })
 
+/** 一项交付物：名字（例如「汇总表.xlsx」）+ 说明（里面要有什么，可以不写） */
+export const taskDeliverableInputSchema = z.object({
+  name: z.string().trim().min(1, "写交付物的名字，或者删掉这一项").max(100, "名字最多 100 个字"),
+  description: z.string().max(500, "说明最多 500 个字"),
+})
+
 export const taskInputSchema = z.object({
   title: text("写一句话：要 agent 做什么", 200),
   goal: text("写一句话：做到什么算完成（三方 AI 按它验收）", 1000),
   steps: z.array(taskStepInputSchema).max(50),
+  /** 交付物（docs/dev/task-structure.md）：每次运行要交出来的东西；不传 = 没写 */
+  deliverables: z.array(taskDeliverableInputSchema).max(20, "交付物最多 20 项").default([]),
   /** 不填就用默认的执行模型 */
   modelId: z.string().optional(),
   /** 负责人；不填就是自己（只有主管能指定别人） */

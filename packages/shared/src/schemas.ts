@@ -361,6 +361,13 @@ export const taskStepSchema = z.object({
 })
 export type TaskStep = z.infer<typeof taskStepSchema>
 
+/** 交付物（docs/dev/task-structure.md）：这个任务每次运行要交出来的东西，一项一个名字加说明 */
+export const taskDeliverableSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+})
+export type TaskDeliverable = z.infer<typeof taskDeliverableSchema>
+
 export const taskSchema = z.object({
   id: z.string(),
   /** 一句话的任务 */
@@ -368,6 +375,8 @@ export const taskSchema = z.object({
   /** 目标：做到什么算完成 */
   goal: z.string(),
   steps: z.array(taskStepSchema),
+  /** 交付物：每次运行要交出来的东西（文件、表格、一段结论……）；以前建的任务是空的 */
+  deliverables: z.array(taskDeliverableSchema),
   ownerId: z.string(),
   createdAt: isoTime,
   /** 已启动：关掉就不会运行，也不会按定时运行 */

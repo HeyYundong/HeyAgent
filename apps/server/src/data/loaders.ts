@@ -100,6 +100,7 @@ export async function listTasks(db: Db, ids?: string[]): Promise<TaskDef[]> {
       title: row.title,
       goal: row.goal,
       steps: row.steps.map((step) => compact(step)),
+      deliverables: row.deliverables,
       ownerId: row.ownerId,
       createdAt: iso(row.createdAt),
       enabled: row.enabled,

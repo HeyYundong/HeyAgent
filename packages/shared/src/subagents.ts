@@ -278,7 +278,7 @@ export interface DeriveSubSnapshotInput {
 
 /**
  * 子快照：从父运行冻好的快照派生，不重新读任务配置（5.1）。
- * - 任务目标留着当背景，步骤、检查点清空（系统提示按 snapshot.sub 写「父任务的目标（背景）」，不写步骤）；
+ * - 任务目标留着当背景，步骤、检查点、交付物清空（系统提示按 snapshot.sub 写「父任务的目标（背景）」，不写步骤）；
  * - 模型用父快照的 subagentModelId，没有用父的执行模型；
  * - 记忆、任务记忆、技能、浏览器（含 allowVision、allowFetch）、桌面、复核模型同父；自动挑选记忆沿用父挑好的，不重挑
  *   （父的 autoMemory 是 pending 时不带：子运行不挑，只用手选的）；
@@ -315,9 +315,11 @@ export function deriveSubSnapshot(parent: SessionSnapshot, input: DeriveSubSnaps
     libraryRoutines: _libraryRoutines,
     ...rest
   } = parent
+  // 交付物是父任务的：子运行只交子目标里写的（results、空间里的文件）
+  const { deliverables: _deliverables, ...parentTask } = parent.task
   return {
     ...rest,
-    task: { ...parent.task, steps: [] },
+    task: { ...parentTask, steps: [] },
     modelId: subagentModelId || parent.modelId,
     tools,
     rules: parent.rules.filter((rule) => !SUBAGENT_DROPPED_RULE_TRIGGERS.includes(triggerType(rule) ?? "")),

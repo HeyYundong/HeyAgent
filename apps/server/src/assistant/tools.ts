@@ -154,6 +154,7 @@ const taskInputOf = (task: TaskDef): TaskInput => ({
   title: task.title,
   goal: task.goal,
   steps: task.steps.map((step) => ({ id: step.id, text: step.text, wait: step.wait, ...(step.checkpoint ? { checkpoint: step.checkpoint } : {}) })),
+  deliverables: task.deliverables.map(({ name, description }) => ({ name, description })),
   modelId: task.modelId,
   ownerId: task.ownerId,
   schedule: task.schedule ? { cron: task.schedule.cron, text: task.schedule.text } : null,
@@ -313,6 +314,7 @@ const TASK_LABELS: Partial<Record<keyof TaskInput, string>> = {
   title: "标题",
   goal: "完成标准",
   steps: "步骤",
+  deliverables: "交付物",
   schedule: "定时",
   modelId: "执行模型",
   verifyModelId: "验收模型",
@@ -343,6 +345,10 @@ function taskFormatter(names: Names) {
     switch (key) {
       case "steps":
         return stepsText((value as TaskInput["steps"]) ?? [])
+      case "deliverables": {
+        const list = (value as TaskInput["deliverables"]) ?? []
+        return list.length ? list.map((each) => (each.description.trim() ? `${each.name}（${each.description.trim()}）` : each.name)).join("；") : "没写"
+      }
       case "schedule":
         return scheduleText(value as TaskInput["schedule"])
       case "modelId":

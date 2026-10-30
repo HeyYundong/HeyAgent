@@ -1,4 +1,4 @@
-// 轻量复核（docs/dev/run-outcome.md 第 5 节）：运行结束后，便宜的模型看目标、检查点、agent 的报告、最后几步工具调用、产物、
+// 轻量复核（docs/dev/run-outcome.md 第 5 节）：运行结束后，便宜的模型看目标、交付物、检查点、agent 的报告、最后几步工具调用、产物、
 // 派活参数和交回的结果、最后一张截图，判办成 / 没办成。硬规则说办成、复核也判办成才算办成；证据不足、说不准都判没办成。
 // 在收尾的事务之后跑（不占着事务等模型），worker 上、运行结束的地方（loop.ts 的 finishRun）。
 // 复核本身出错（模型报错、超时）：重试一次，还出错记没办成，过程记录写原因，运行状态不受影响。
@@ -17,6 +17,7 @@ import { z } from "zod"
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
 import { reportedIn } from "./dispatch/settle.js"
+import { deliverableLines } from "./prompt.js"
 import { resolveModel, StructuredOutputError } from "./model.js"
 import type { DbLike } from "./records.js"
 import { clipPrompt, EVIDENCE_PROMPT_MAX, evidencePromptMax, LOG_FORMAT_NOTES, REVIEW_LOG } from "./log-text.js"
@@ -42,6 +43,7 @@ const REVIEW_SYSTEM = [
   "- 结果只有两种。结果导向：只看任务目标要的东西拿没拿到，不看 agent 有多努力。都拿到了是办成（achieved）；没拿到、只拿到一部分、确认「没有」、找不到，都是没办成（not_achieved）。",
   "- 依据要来自证据：过程记录（系统自动记的工具调用和结果）、产出的文件、截图、交回的结果、标「自动」的检查点记录。agent 自己的总结和依据只是它的说法，要和这些证据对得上。",
   ...LOG_FORMAT_NOTES,
+  "- 有「要交付的东西」一节的：逐项在产出的文件、交回的结果、agent 的报告里找，每一项都要有证据（文件在、内容对得上）；缺一项、或者只在报告里说了、证据里找不到，判 not_achieved，reason 写清缺哪一项。",
   "- 跳过的检查点：逐条看跳过理由站不站得住（例如这次用不上、已经由别的方式做到了），再看跳过的是不是目标要的东西。理由站得住、目标要的东西都拿到了，可以判 achieved，并在 reason 里写明；跳过的正是目标要的、或者理由说不通，判 not_achieved。",
   "- 有「子 agent」一节的：子 agent 的结果是它们自报的、没有复核；父 agent 说办成的，要看它汇总的数据能不能在子 agent 的结果或文件里找到，找不到、对不上的判 not_achieved。",
   "- agent 说办成了、但证据里看不到目标要的东西，判 not_achieved。证据不够下结论、拿不准时也判 not_achieved，不要猜；reason 里写清缺什么（拿到了什么、缺了什么、缺哪样证据）。",
@@ -107,6 +109,10 @@ export async function buildReviewPrompt(db: Db, session: SessionRow, snapshot: S
   const checkpoints = await loadCheckpoints({ db, session })
   const evidence = await loadEvidence({ db, session }, vision, { artifacts: 4, images: 1, log: REVIEW_LOG })
   const parts: string[] = [`## 任务\n${snapshot.task.title}\n\n## 目标（做到什么算办成）\n${snapshot.task.goal}`]
+  // 交付物（docs/dev/task-structure.md）：任务写了要交的东西，复核逐项看交了没有
+  const deliverables = snapshot.task.deliverables ?? []
+  if (deliverables.length)
+    parts.push(`## 要交付的东西（任务要求每次运行交出来的，逐项核对：缺一项就判 not_achieved）\n${deliverableLines(deliverables)}`)
   if (checkpoints.length)
     parts.push(
       `## 检查点\n${checkpoints

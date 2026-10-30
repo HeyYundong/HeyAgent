@@ -8,6 +8,7 @@
 // 自动挑选记忆（docs/dev/memory-retrieval.md 6.1 节）：「用哪些 → 记忆」下面一个开关 + 开着时「最多几条」；没设 embedding 模型时提醒开着也不会挑。
 // 子 agent（docs/dev/sub-agents.md 11.3）：选了内置工具「拆给子 agent」才出现「子 agent 用的模型」（subagentModelId，空 = 和执行模型一样，整体替换要带上）；只允许 1 个 Chrome 时浏览器那里提醒一句。
 // 流程库（docs/dev/routine-library.md 6.1）：「用哪些」里工具后面多一项「流程」（routine-pick.tsx），选的库流程存进同一个 toolIds，「工具」那一项不列它们。
+// 交付物（docs/dev/task-structure.md）：目标下面一组「名字 + 说明」，可以一项都不写；tasks.update 是整体替换，要带上。
 // 派活（docs/dev/dispatch.md 9.1 节）：「被派活」一组（参数、名额、谁能派活给它，第二期加自动重试，组件在 dispatch-fields.tsx，导入向导也用）；定时那里「上一次还没跑完就跳过」；选了内置工具「派活」时写能派给谁。
 import * as React from "react"
 import { Controller, useFieldArray, useForm, useWatch, type Control, type UseFormRegister } from "react-hook-form"
@@ -376,6 +377,7 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
           title: task.title,
           goal: task.goal,
           steps: task.steps.map((step) => ({ id: step.id, text: step.text, wait: step.wait, checkpoint: step.checkpoint })),
+          deliverables: task.deliverables.map(({ name, description }) => ({ name, description })),
           modelId: task.modelId,
           ownerId: task.ownerId,
           schedule: task.schedule ?? null,
@@ -407,7 +409,7 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
           subagentModelId: task.subagentModelId ?? "",
         }
       : {
-          title: "", goal: "", steps: [{ text: "", wait: false }], modelId: defaults.run, ownerId: user.id, schedule: null, enabled: true,
+          title: "", goal: "", steps: [{ text: "", wait: false }], deliverables: [], modelId: defaults.run, ownerId: user.id, schedule: null, enabled: true,
           memoryIds: [], skillIds: [], toolIds: [], ruleIds: [], browserProfileIds: [], allowedDomains: [], allowBrowserEvaluate: false, allowBrowserVision: false, allowBrowserFetch: false, desktopIds: [], allowDesktopVision: false, verifyModelId: "",
           reviewModelId: defaults.review ?? "",
           dispatch: null, dispatchFrom: [], cronSkipIfRunning: true,
@@ -420,6 +422,7 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
   const [domainText, setDomainText] = React.useState(() => domainsText(task?.allowedDomains ?? []))
   const { errors } = form.formState
   const steps = useFieldArray({ control: form.control, name: "steps" })
+  const deliverables = useFieldArray({ control: form.control, name: "deliverables" })
   const [modelId, schedule, memoryIds, skillIds, toolIds, ruleIds, verifyModelId, dispatch] = useWatch({ control: form.control, name: ["modelId", "schedule", "memoryIds", "skillIds", "toolIds", "ruleIds", "verifyModelId", "dispatch"] })
   const allTasks = useTasksQuery().data ?? []
   // 「谁能派活给它」：系统里的其他任务
@@ -559,6 +562,30 @@ export function TaskDialog({ open, onOpenChange, task }: { open: boolean; onOpen
                 <FieldDescription>做到什么算完成。必填，三方验收按它判断。</FieldDescription>
                 <FieldError errors={[errors.goal]} />
               </Field>
+              <FieldSet>
+                <FieldLegend variant="label" className="flex items-center gap-1">
+                  交付物（可以不写）
+                  <HelpTip>每次运行要交出来的东西，例如一份表格、一段结论。agent 结束时要逐项交齐、在总结里写明每一样在哪；复核逐项核对，缺一项记没办成。被派的活要交回派活单的字段在下面「被派活」里写。</HelpTip>
+                </FieldLegend>
+                <div className="flex flex-col gap-3">
+                  {deliverables.fields.map((each, index) => (
+                    <Field key={each.id} data-invalid={!!(errors.deliverables?.[index]?.name || errors.deliverables?.[index]?.description)}>
+                      <div className="flex flex-col gap-2 border-l-2 pl-3 sm:flex-row sm:items-center">
+                        <div className="flex min-w-0 flex-1 gap-2">
+                          <Input className="w-36 shrink-0" aria-label={`交付物 ${index + 1} 的名字`} aria-invalid={!!errors.deliverables?.[index]?.name} placeholder="例如：汇总表.xlsx" {...form.register(`deliverables.${index}.name`)} />
+                          <Input className="min-w-0 flex-1" aria-label={`交付物 ${index + 1} 的说明`} placeholder="里面要有什么（可以不写）" {...form.register(`deliverables.${index}.description`)} />
+                        </div>
+                        <Button type="button" variant="ghost" size="icon-xs" className="self-end sm:self-auto" aria-label={`删除交付物 ${index + 1}`} onClick={() => deliverables.remove(index)}><XIcon /></Button>
+                      </div>
+                      <FieldError errors={[errors.deliverables?.[index]?.name, errors.deliverables?.[index]?.description]} />
+                    </Field>
+                  ))}
+                  <Button type="button" variant="outline" size="sm" className="self-start" disabled={deliverables.fields.length >= 20} onClick={() => deliverables.append({ name: "", description: "" })}>
+                    <PlusIcon data-icon="inline-start" />加一项交付物
+                  </Button>
+                </div>
+                <FieldError errors={[errors.deliverables?.root ?? (errors.deliverables?.message ? { message: errors.deliverables.message } : undefined)]} />
+              </FieldSet>
               <FieldSeparator />
               <FieldSet>
                 <FieldLegend variant="label">用哪些</FieldLegend>

@@ -24,6 +24,7 @@ import type { FinishDecision, RunContext } from "./hooks.js"
 import { askHumanInTx, notifyAssignee } from "./humans.js"
 import { clipPrompt, dataToolIdsOf, EVIDENCE_PROMPT_MAX, evidencePromptMax, LOG_FORMAT_NOTES, REVIEW_LOG, reviewLog, type ReviewLogOptions } from "./log-text.js"
 import { resolveModel, StructuredOutputError } from "./model.js"
+import { deliverableLines } from "./prompt.js"
 import { appendEvent } from "./records.js"
 import { loadEngineSettings } from "./settings.js"
 import { callStructuredWithFix, clipRaw, lenientEnum, VERIFY_VERDICT_SYNONYMS } from "./structured.js"
@@ -229,6 +230,9 @@ export function buildVerifyPrompt(input: {
   parts.push(
     `## 任务\n${snapshot.task.title}\n\n## 目标（做到什么算完成）\n${snapshot.task.goal}`
   )
+  // 交付物（docs/dev/task-structure.md）：验收员也要看到任务要求交的东西
+  const deliverables = snapshot.task.deliverables ?? []
+  if (deliverables.length) parts.push(`## 要交付的东西（任务要求每次运行交出来的，缺一项总结论就不能是 pass）\n${deliverableLines(deliverables)}`)
   if (snapshot.task.steps.length)
     parts.push(
       `## 任务步骤\n${snapshot.task.steps.map((step, index) => `${index + 1}. ${step.text}`).join("\n")}`

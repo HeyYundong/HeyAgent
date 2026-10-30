@@ -72,6 +72,7 @@ import {
   type SessionSnapshot,
   type SubResult,
   type TaskDispatch,
+  type TaskDeliverable,
   type TaskStep,
   type RunOutcome,
   type RunReview,
@@ -539,6 +540,8 @@ export const tasks = pgTable(
     goal: text("goal").notNull(),
     /** 步骤（可以为空，让 agent 自己探索）：[{ id, text, wait, checkpoint? }] */
     steps: jsonb("steps").$type<TaskStep[]>().notNull().default([]),
+    /** 交付物（docs/dev/task-structure.md）：每次运行要交出来的东西 [{ name, description }]；以前建的任务是空的 */
+    deliverables: jsonb("deliverables").$type<TaskDeliverable[]>().notNull().default([]),
     ownerId: text("owner_id")
       .notNull()
       .references(() => users.id),

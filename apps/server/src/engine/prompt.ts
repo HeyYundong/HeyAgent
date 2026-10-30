@@ -117,6 +117,11 @@ export function subAgentRoleSection(toolNames: Map<string, string>): string {
     .join("\n")
 }
 
+/** 交付物清单（docs/dev/task-structure.md）：「- 汇总表.xlsx：每行一家……」一项一行；执行 agent 的系统提示、复核、三方验收都用它 */
+export function deliverableLines(deliverables: readonly { name: string; description: string }[]): string {
+  return deliverables.map((each) => `- ${each.name}${each.description.trim() ? `：${each.description.trim()}` : ""}`).join("\n")
+}
+
 export function buildSystemPrompt(
   snapshot: SessionSnapshot,
   toolNames: Map<string, string>,
@@ -139,6 +144,14 @@ export function buildSystemPrompt(
       : `## 任务\n${task.title}\n\n## 目标（做到什么算完成）\n${task.goal}`
   )
   if (snapshot.sub) sections.push(subAgentRoleSection(toolNames))
+
+  // 交付物（docs/dev/task-structure.md）：要交出来的东西；子运行的快照里没有
+  const deliverables = snapshot.task.deliverables ?? []
+  if (deliverables.length) {
+    sections.push(
+      `## 要交付的东西\n这次运行结束时要交出下面这些（文件存进空间，结论写在总结里），一项都不能少：\n${deliverableLines(deliverables)}\n最后的总结里逐项写明每一样在哪（文件路径，或者写在总结的哪一段）；有交不出来的，写清是哪一项、为什么。`
+    )
+  }
 
   // 「报结果」（run.finish）每个任务都自带；2026-10-20 以前开始的运行快照里没有，提示词照旧（「报没完成」那套）
   const finishName = snapshot.tools.some((tool) => tool.id === RUN_FINISH_TOOL_ID) ? (toolNames.get(RUN_FINISH_TOOL_ID) ?? "run_finish") : undefined
@@ -399,6 +412,7 @@ export function buildSystemPrompt(
       has("file.save")
         ? `- 要交付的表格、文档用 ${name("file.save")} 存成文件，最后在总结里写明路径。`
         : "- 要交付的表格、文档用 file.save 存成文件。",
+      deliverables.length ? "- 结束前对照「要交付的东西」逐项检查：缺一项就是没办成，不要说成办成了。" : "",
       `- 工具输出太长时只给你开头部分，全文存成了文件（空间的 tool-outputs/ 下），需要时用 ${name("file.read")} 读。`,
       // 没有检查点的任务（例如被派来办一件事的）不提检查点：提了 agent 会去找、会在总结里写「检查点清单为空」
       finishName

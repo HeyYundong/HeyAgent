@@ -18,7 +18,7 @@ import {
 } from "../src/index.js"
 
 const task = (id: string, extra: Partial<TaskDef> = {}): TaskDef => ({
-  id, title: id, goal: "", steps: [], ownerId: "u-wang", createdAt: "2026-10-16T01:00:00.000Z", enabled: true,
+  id, title: id, goal: "", steps: [], deliverables: [], ownerId: "u-wang", createdAt: "2026-10-16T01:00:00.000Z", enabled: true,
   modelId: "m", memoryIds: [], skillIds: [], toolIds: [], ruleIds: [], browserProfileIds: [], allowedDomains: [], allowBrowserEvaluate: false, allowBrowserVision: false, allowBrowserFetch: false,
   desktopIds: [], allowDesktopVision: false, dispatchFrom: [], cronSkipIfRunning: true, autoSolidify: null, routineSkipTest: false, autoMemory: true, autoMemoryLimit: 5, ...extra,
 })

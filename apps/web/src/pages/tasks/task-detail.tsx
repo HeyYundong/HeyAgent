@@ -1,29 +1,24 @@
 // 任务详情（放在右侧抽屉里）：分区卡 + 抽屉底部的操作。
 import * as React from "react"
-import { useQuery } from "@tanstack/react-query"
-import { CircleStopIcon, EllipsisIcon, FlagIcon, HandIcon, HourglassIcon, PaperclipIcon, PencilIcon, PlayIcon, SendIcon, Trash2Icon } from "lucide-react"
+import { CircleStopIcon, EllipsisIcon, HandIcon, PaperclipIcon, PencilIcon, PlayIcon, SendIcon, Trash2Icon } from "lucide-react"
 
 import { DetailSection } from "@/components/shell/simple-page"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
-import { Badge } from "@/components/ui/badge"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Button } from "@/components/ui/button"
-import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "@/components/ui/item"
 import { Spinner } from "@/components/ui/spinner"
 import { Switch } from "@/components/ui/switch"
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { alwaysOnToolIds, BROWSER_TOOL_ID, DESKTOP_TOOL_ID, findById, isRoutineToolId, sameShanghaiDay, toolIdsOfTask, WORK_DISPATCH_TOOL_ID, type SessionSummary, type TaskDef } from "@heyagent/shared"
+import { BROWSER_TOOL_ID, DESKTOP_TOOL_ID, WORK_DISPATCH_TOOL_ID, type TaskDef } from "@heyagent/shared"
 
-import { useBrowsersQuery, useDesktopsQuery, useMemoriesQuery, useModels, useRoutineLibraryQuery, useRulesQuery, useSkillsQuery, useTasksQuery, useToolName, useToolsQuery } from "@/lib/data"
 import { useAction } from "@/lib/mutations"
-import { href, setParams, useRoute, type PageId } from "@/lib/router"
+import { href, setParams, useRoute } from "@/lib/router"
 import { trpc } from "@/lib/trpc"
 
-import { compileOf, ruleSelectable, ruleVerifies } from "@/pages/rules/compile"
-import { unavailableReason, useLibraryDetails } from "@/pages/routines/parts"
-
-import { StepList, type TasksState } from "./parts"
+import type { TasksState } from "./parts"
 import { CancelRunDialog, isActive, ResumeButton, RunWithFilesDialog, TaskAttachments, useStartRun } from "./run-actions"
+import {
+  BrowserConfig, ConfigLine, DeliverablesView, DesktopConfig, DispatchOutSection, MemoryBadges, ModelBadge, resultsText, RoutineBadges, RuleBadges, SkillBadges, StepsView, ToolBadges, VerifyReviewLines,
+} from "./task-config"
 import { TaskDialog } from "./task-dialog"
 import { TaskMemorySection } from "./task-memory"
 import { TaskRoutineSection } from "./task-routine"
@@ -119,15 +114,26 @@ export function TaskActions({ task, state }: { task: TaskDef; state: TasksState 
   )
 }
 
-/** 抽屉里的任务详情：只说明任务，分区卡（目标和步骤 / 固化流程（有才显示）/ 什么时候跑 / 任务记忆 / 附件 / 用到的配置）。标题和操作在抽屉的头和底。
- * 不放运行状态和运行记录：每次运行在「会话」页看（抽屉头部的「会话」按钮带上这个任务筛好） */
+/** 抽屉里的任务详情（「列表」视图）：只说明任务，分区卡（目标和步骤 / 交付物 / 固化流程（有才显示）/ 什么时候跑 / 任务记忆 / 附件 / 用到的配置）。标题和操作在抽屉的头和底。
+ * 不放运行状态和运行记录：每次运行在「会话」页看（抽屉头部的「会话」按钮带上这个任务筛好）。「结构图」视图在 task-structure.tsx，两边用同一批小块（task-config.tsx） */
 export function TaskDetail({ task, state, canEdit }: { task: TaskDef; state: TasksState; canEdit: boolean }) {
   const taskRuns = state.runsOf(task.id)
   return (
     <>
       {task.dispatch && <DispatchInSection task={task} />}
       {task.toolIds.includes(WORK_DISPATCH_TOOL_ID) && <DispatchOutSection task={task} />}
-      <GoalAndSteps task={task} latest={taskRuns[0]} />
+      <DetailSection title="目标和步骤">
+        <div className="flex flex-col gap-4">
+          <p><span className="text-muted-foreground">目标：</span>{task.goal}</p>
+          <StepsView task={task} latest={taskRuns[0]} />
+        </div>
+      </DetailSection>
+      <DetailSection title="交付物" description="每次运行要交出来的东西。agent 结束时要逐项交齐、在总结里写明在哪，复核逐项核对，缺一项记没办成。在「编辑」里改。">
+        <div className="flex flex-col gap-3">
+          <DeliverablesView task={task} empty="没写交付物：按目标判断办成没有。" />
+          {task.dispatch && (task.dispatch.results ?? []).length > 0 && <ConfigLine label="交回">{resultsText(task)}</ConfigLine>}
+        </div>
+      </DetailSection>
       <TaskRoutineSection task={task} canEdit={canEdit} />
       <TaskScheduleSection task={task} canEdit={canEdit} />
       <TaskMemorySection task={task} runs={taskRuns} canEdit={canEdit} />
@@ -139,183 +145,20 @@ export function TaskDetail({ task, state, canEdit }: { task: TaskDef; state: Tas
   )
 }
 
-function GoalAndSteps({ task, latest }: { task: TaskDef; latest?: SessionSummary }) {
-  const explored = latest?.exploredSteps
-  return (
-    <DetailSection title="目标和步骤">
-      <div className="flex flex-col gap-4">
-        <p><span className="text-muted-foreground">目标：</span>{task.goal}</p>
-        {task.steps.length > 0 ? (
-          <ItemGroup className="gap-2">
-            {task.steps.map((step, index) => (
-              <Item key={step.id} variant="outline" size="xs">
-                <ItemMedia variant="icon">{index + 1}</ItemMedia>
-                <ItemContent>
-                  <ItemTitle>{step.text}</ItemTitle>
-                  {step.checkpoint && <ItemDescription><FlagIcon className="mr-1 inline size-3" />检查点：{step.checkpoint}</ItemDescription>}
-                </ItemContent>
-                {step.wait && <ItemActions><Badge variant="outline"><HourglassIcon data-icon="inline-start" />可以等待</Badge></ItemActions>}
-              </Item>
-            ))}
-          </ItemGroup>
-        ) : (
-          <div className="flex flex-col gap-2">
-            <p className="text-muted-foreground">没写步骤，agent 自己探索。{explored ? "agent 最近一次探索出的步骤：" : "运行后这里会列出 agent 探索出的步骤。"}</p>
-            {explored && <StepList steps={explored} />}
-          </div>
-        )}
-      </div>
-    </DetailSection>
-  )
-}
-
-const LinkBadges = ({ label, page, items }: { label: string; page: PageId; items: { id: string; name: string }[] }) => (
-  <div className="flex flex-col gap-1.5 sm:flex-row sm:items-start sm:gap-4">
-    <span className="w-12 shrink-0 text-muted-foreground">{label}</span>
-    <div className="flex flex-wrap gap-1.5">
-      {items.length === 0 && <span className="text-muted-foreground">没选</span>}
-      {items.map((item) => <Badge key={item.id} variant="outline" render={<a href={href(page, { id: item.id })} />}>{item.name}</Badge>)}
-    </div>
-  </div>
-)
-
-const clip = (text: string) => (text.length > 18 ? `${text.slice(0, 18)}…` : text)
-const named = <T extends { id: string; name: string }>(list: T[], ids: string[]) => ids.flatMap((id) => findById(list, id) ?? [])
-
 function UsedConfig({ task }: { task: TaskDef }) {
-  const { modelName, providers, defaults } = useModels()
-  const providerId = providers.find((provider) => provider.models.some((model) => model.id === task.modelId))?.id ?? task.modelId.split("/")[0]
-  const toolName = useToolName()
-  const memories = useMemoriesQuery().data ?? []
-  const skills = useSkillsQuery().data ?? []
-  const rules = useRulesQuery().data ?? []
-  const alwaysOn = alwaysOnToolIds(useToolsQuery().data?.tools ?? [])
   return (
-  <DetailSection title="用到的配置" description="建任务时选的，外加每个任务都自带的几个工具；agent 只能用这里列出的。点徽章去对应页面。">
-    <div className="flex flex-col gap-3">
-      <LinkBadges label="模型" page="models" items={[{ id: providerId, name: modelName(task.modelId) }]} />
-      <ConfigLine label="验收">{task.verifyModelId ? modelName(task.verifyModelId) : `默认验收模型（${modelName(defaults.verify)}）`} · 任务选了「交给三方验收」的规则时才用</ConfigLine>
-      <ConfigLine label="复核">{reviewText(task, named(rules, task.ruleIds).some(ruleVerifies), modelName, defaults.review)}</ConfigLine>
-      <LinkBadges label="记忆" page="memory" items={task.memoryIds.flatMap((id) => findById(memories, id) ?? []).map((m) => ({ id: m.id, name: clip(m.content) }))} />
-      <LinkBadges label="技能" page="skills" items={named(skills, task.skillIds)} />
-      <LinkBadges label="工具" page="tools" items={toolIdsOfTask(task, alwaysOn).filter((id) => !isRoutineToolId(id)).map((id) => ({ id, name: alwaysOn.includes(id) ? `${toolName(id)} · 自带` : toolName(id) }))} />
-      <RoutineBadges task={task} />
-      <LinkBadges label="规则" page="rules" items={named(rules, task.ruleIds).map((rule) => ({ id: rule.id, name: ruleSelectable(rule) ? (compileOf(rule).outdated ? `${rule.name} · 按旧版本` : rule.name) : `${rule.name} · 未生效，不执行` }))} />
-      {task.toolIds.includes(BROWSER_TOOL_ID) && <BrowserConfig task={task} />}
-      {task.toolIds.includes(DESKTOP_TOOL_ID) && <DesktopConfig task={task} />}
-    </div>
-  </DetailSection>
-  )
-}
-
-/** 选了的库流程（docs/dev/routine-library.md 9.2）：每个一个徽章，点了去流程页；停用、撤下、缺工具或开关（新的运行用不了）的用 ghost，悬停看原因 */
-function RoutineBadges({ task }: { task: TaskDef }) {
-  const toolName = useToolName()
-  const library = useRoutineLibraryQuery().data
-  const chosen = task.toolIds.filter(isRoutineToolId)
-  const entries = chosen.map((toolId) => ({ toolId, entry: library?.find((each) => each.toolId === toolId) }))
-  const details = useLibraryDetails(entries.flatMap(({ entry }) => (entry ? [entry.routineId] : [])))
-  return (
-    <div className="flex flex-col gap-1.5 sm:flex-row sm:items-start sm:gap-4">
-      <span className="w-12 shrink-0 text-muted-foreground">流程</span>
-      <div className="flex flex-wrap gap-1.5">
-        {chosen.length === 0 && <span className="text-muted-foreground">没选</span>}
-        {entries.map(({ toolId, entry }) => {
-          const name = entry?.title ?? toolName(toolId)
-          const to = entry ? href("routines", { id: entry.routineId }) : href("routines")
-          // 流程库还没取到（或取不到）时不判断，照常显示
-          const reason = library ? unavailableReason(entry, entry && details.get(entry.routineId), task, toolName) : undefined
-          if (!reason) return <Badge key={toolId} variant="outline" render={<a href={to} />}>{name}</Badge>
-          return (
-            <Tooltip key={toolId}>
-              <TooltipTrigger render={<Badge variant="ghost" render={<a href={to} />} />}>
-                {name} · {entry?.status === "paused" ? "停用" : entry?.status === "withdrawn" ? "撤下" : "用不了"}
-              </TooltipTrigger>
-              <TooltipContent>{reason}</TooltipContent>
-            </Tooltip>
-          )
-        })}
+    <DetailSection title="用到的配置" description="建任务时选的，外加每个任务都自带的几个工具；agent 只能用这里列出的。点徽章去对应页面。">
+      <div className="flex flex-col gap-3">
+        <ModelBadge task={task} />
+        <VerifyReviewLines task={task} />
+        <MemoryBadges task={task} />
+        <SkillBadges task={task} />
+        <ToolBadges task={task} />
+        <RoutineBadges task={task} />
+        <RuleBadges task={task} />
+        {task.toolIds.includes(BROWSER_TOOL_ID) && <BrowserConfig task={task} />}
+        {task.toolIds.includes(DESKTOP_TOOL_ID) && <DesktopConfig task={task} />}
       </div>
-    </div>
-  )
-}
-
-/** 选了「浏览器」工具时：允许的 Chrome 配置、网址白名单、是否允许执行脚本 */
-function BrowserConfig({ task }: { task: TaskDef }) {
-  const profiles = useBrowsersQuery().data ?? []
-  return (
-    <>
-      {task.browserProfileIds.length > 0
-        ? <LinkBadges label="Chrome" page="browsers" items={named(profiles, task.browserProfileIds)} />
-        : <ConfigLine label="Chrome">全部 Chrome 配置都能用，agent 自己选</ConfigLine>}
-      <ConfigLine label="白名单">{task.allowedDomains.length ? task.allowedDomains.join("、") : "不限制"}</ConfigLine>
-      <ConfigLine label="脚本">{task.allowBrowserEvaluate ? "允许在网页里执行脚本" : "不允许在网页里执行脚本"}</ConfigLine>
-      <ConfigLine label="看画面">{task.allowBrowserVision ? "允许截图看画面、按坐标点" : "不允许看画面"}</ConfigLine>
-      <ConfigLine label="接口">{task.allowBrowserFetch ? "允许直接调网站接口" : "不允许直接调网站接口"}</ConfigLine>
-    </>
-  )
-}
-
-/** 选了「桌面」工具时：允许的桌面、是否允许看画面 */
-function DesktopConfig({ task }: { task: TaskDef }) {
-  const desktops = useDesktopsQuery().data ?? []
-  return (
-    <>
-      {task.desktopIds.length > 0
-        ? <LinkBadges label="桌面" page="desktops" items={named(desktops, task.desktopIds)} />
-        : <ConfigLine label="桌面">全部桌面都能用，agent 自己挑</ConfigLine>}
-      <ConfigLine label="看桌面">{task.allowDesktopVision ? "允许截桌面画面给模型看" : "不允许看画面，只读界面控件"}</ConfigLine>
-    </>
-  )
-}
-
-/** 「结束后 AI 复核 · DeepSeek V4.1 Flash」；有三方验收、旧任务没选复核模型（用默认的 / 没有默认的不能运行）的写清楚 */
-function reviewText(task: TaskDef, verifies: boolean, modelName: (id: string) => string, defaultReview?: string) {
-  const model = task.reviewModelId ? modelName(task.reviewModelId) : defaultReview ? `${modelName(defaultReview)}（没选，用默认的）` : undefined
-  if (!model) return "还没选复核模型：运行不了，先改任务选一个"
-  return verifies ? `三方验收通过的直接办成，其余结束后 AI 复核 · ${model}` : `结束后 AI 复核 · ${model}`
-}
-
-const ConfigLine = ({ label, children }: { label: string; children: React.ReactNode }) => (
-  <div className="flex flex-col gap-1.5 sm:flex-row sm:items-start sm:gap-4">
-    <span className="w-12 shrink-0 text-muted-foreground">{label}</span>
-    <span className="min-w-0 break-all">{children}</span>
-  </div>
-)
-
-/** 选了内置工具「派活」的任务：派给谁、今天派了几张、一共几张 */
-function DispatchOutSection({ task }: { task: TaskDef }) {
-  const tasks = useTasksQuery().data ?? []
-  const page = useQuery(trpc.work.list.queryOptions({ fromTaskId: task.id, days: 0, limit: 200 })).data
-  const mine = page?.items ?? []
-  const now = new Date()
-  const today = mine.filter((item) => sameShanghaiDay(item.createdAt, now)).length
-  const targets = tasks.filter((each) => each.dispatchFrom.includes(task.id))
-  const lastRun = mine.find((item) => item.fromSessionId)?.fromSessionId
-  const lastCount = lastRun ? mine.filter((item) => item.fromSessionId === lastRun).length : 0
-  return (
-    <DetailSection
-      title="派出去的活"
-      description="这个任务的 agent 用内置工具「派活」派出去的单。同一件事重复派不会重复办。每张单在被派任务详情的「派来的活」里看。"
-    >
-      {targets.length === 0 && mine.length === 0 ? (
-        <p className="text-muted-foreground">还没有任务允许它派活：去要接活的任务上打开「可以被派活」，把它加进「谁能派活给它」。</p>
-      ) : (
-        <p>
-          派给 {targets.length ? targets.map((each, index) => (
-            <React.Fragment key={each.id}>
-              {index > 0 && "、"}
-              <a className="underline underline-offset-4" href={href("tasks", { id: each.id })}>「{each.title}」</a>
-            </React.Fragment>
-          )) : "（现在没有任务允许它派活）"} · 今天派了 <span className="font-medium tabular-nums">{today}</span> 张 · 一共{" "}
-          <span className="font-medium tabular-nums">{page?.counts.all ?? "—"}</span> 张
-          {lastRun && (
-            <span className="text-muted-foreground">
-              {" "}· 最近一次有新单的运行 <a className="font-mono underline underline-offset-4" href={href("sessions", { id: lastRun })}>{lastRun}</a>（派了 {lastCount} 张）
-            </span>
-          )}
-        </p>
-      )}
     </DetailSection>
   )
 }

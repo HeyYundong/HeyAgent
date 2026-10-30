@@ -280,6 +280,7 @@ export async function buildSnapshot(
       goal: task.goal,
       ownerId: task.ownerId,
       steps: task.steps,
+      ...(task.deliverables.length ? { deliverables: task.deliverables } : {}),
     },
     modelId: task.modelId,
     ...(task.verifyModelId ? { verifyModelId: task.verifyModelId } : {}),

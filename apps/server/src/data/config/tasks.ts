@@ -137,6 +137,8 @@ function columns(input: TaskInput, modelId: string, verifyModelId: string | null
     title: input.title,
     goal: input.goal,
     steps,
+    // 交付物（docs/dev/task-structure.md）：说明去掉首尾空白
+    deliverables: input.deliverables.map((each) => ({ name: each.name, description: each.description.trim() })),
     modelId,
     enabled: input.enabled,
     scheduleCron: schedule?.cron ?? null,
