@@ -255,7 +255,7 @@ export default function SessionsPage() {
         {queueMode ? (
           queueItems.length > 0 ? (
             <>
-              <QueueTable items={queueItems} stats={queueStats} selectedId={workId} linkTo={linkTo} />
+              <QueueTable items={queueItems} stats={queueStats} selectedId={workId} linkTo={linkTo} tasks={tasks} />
               <QueueItems items={queueItems} stats={queueStats} selectedId={workId} linkTo={linkTo} />
               <SessionPager page={Math.min(pageParam, queueLast)} pageSize={PAGE_SIZE} total={queued} linkTo={pageLink} />
               <p className="text-xs text-muted-foreground">排队的派活单还没开运行。轮到了开一次运行，这张单就从这里消失，运行出现在「执行中」，来源写「派活 W-…」。</p>

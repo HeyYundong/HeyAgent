@@ -279,3 +279,41 @@ export function queueWaitText(item: Pick<WorkItem, "status" | "notBefore" | "aut
   }
   return "有空位，马上开始"
 }
+
+/**
+ * 「现在就办」要跳过什么（确认弹窗里的一句话）：排队的单现在不会开始的原因，加「只开始这一张」和点完以后还是什么样。
+ * 有空位、马上就会开始的返回 null（不用确认）。task：被派任务现在停没停用、开没开着被派活；stats：名额和花费（没取到就不算这两条）
+ */
+export function startNowBypass(
+  item: WaitFields,
+  task: { enabled: boolean; dispatchable: boolean },
+  stats?: { maxRunning: number; occupied: number; spentTodayUsd: number; dailyBudgetUsd: number | null }
+): string | null {
+  const why: string[] = []
+  const after: string[] = []
+  if (!task.dispatchable) {
+    why.push("任务关了被派活")
+    after.push("任务仍然关着被派活")
+  }
+  if (!task.enabled) {
+    why.push("任务停用了")
+    after.push("任务仍然是停用的")
+  }
+  const retry = retryAt(item)
+  const scheduled = scheduledAt(item)
+  if (retry) why.push(`这张单在等自动重试（${timeText(retry)}）`)
+  if (scheduled) why.push(`这张单定在 ${timeText(scheduled)} 以后办`)
+  // 关了被派活时名额、花费上限都不算数，不再提
+  if (task.dispatchable && stats) {
+    if (budgetHit(stats)) {
+      why.push("今天的花费到了上限")
+      after.push("这次花的也算进今天")
+    }
+    if (stats.occupied >= stats.maxRunning) {
+      why.push("名额满了")
+      after.push("它也占一个名额")
+    }
+  }
+  if (!why.length) return null
+  return `${why.join("，")}。只开始这一张，别的单还排着${after.length ? `；${after.join("，")}` : ""}。`
+}

@@ -7,6 +7,7 @@
 // 2026-10-20 以前的旧单可能是 failKind = partial（部分办成），或者办完 + 结果没办成（原来「没核实」的，迁移 0026 改的），照样显示。
 // 派活第三期（docs/dev/dispatch-p3.md 6.4 节）：谁派的加外部系统、外部事件（workFromText）；优先级徽章；定了时间的排队（「定在 … 以后办」）；
 // 名额那行和排队的提示加每天花费上限。
+// 现在就办（2026-10-30 用户要求）：排队的单「⋯ → 现在就办」、排队的提示右边一个按钮，只开这一张；任务停用了、名额满了等先确认跳过了什么。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
 import {
@@ -22,6 +23,7 @@ import {
   HourglassIcon,
   ListOrderedIcon,
   PencilIcon,
+  PlayIcon,
   RotateCwIcon,
   ScanSearchIcon,
   SearchXIcon,
@@ -43,7 +45,7 @@ import {
 import { FileList } from "@/components/files"
 import { MarkdownView } from "@/components/markdown"
 import { DetailPanel, DetailSection, EmptyState } from "@/components/shell/simple-page"
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
@@ -58,7 +60,7 @@ import { trpc } from "@/lib/trpc"
 
 import { delayText } from "./dispatch-fields"
 import { WaitingAlert, money } from "./parts"
-import { CancelDialog, EditParamsDialog, RedoDoneDialog, useRedo } from "./work-dialogs"
+import { CancelDialog, EditParamsDialog, RedoDoneDialog, StartNowDialog, useRedo, useStartNow, type StartNowTarget } from "./work-dialogs"
 import {
   ParamsTable,
   ReportTable,
@@ -71,17 +73,20 @@ import {
   retryAt,
   scheduledAt,
   shortName,
+  startNowBypass,
   timeText,
   useWorkTaskStats,
   workFromText,
 } from "./work-parts"
 
-/** 一张单的详情，带「⋯」里三个操作的弹窗（改参数、不办了、办完的重办先确认） */
+/** 一张单的详情，带「⋯」里操作的弹窗（改参数、不办了、办完的重办先确认、要跳过停用 / 名额等的现在就办先确认） */
 export function WorkItemView({ id }: { id: string }) {
   const [editing, setEditing] = React.useState<WorkItemDetail | null>(null)
   const [cancelling, setCancelling] = React.useState<WorkItemDetail | null>(null)
   const [redoing, setRedoing] = React.useState<WorkItemDetail | null>(null)
+  const [starting, setStarting] = React.useState<StartNowTarget | null>(null)
   const redo = useRedo()
+  const startNow = useStartNow()
   return (
     <>
       <WorkDetail
@@ -90,10 +95,13 @@ export function WorkItemView({ id }: { id: string }) {
         onEdit={setEditing}
         onCancel={setCancelling}
         onRedo={(item) => (item.status === "done" ? setRedoing(item) : redo.mutate({ id: item.id }))}
+        // 有空位、马上就会开始的不用确认
+        onStartNow={(item, bypass) => (bypass ? setStarting({ id: item.id, bypass }) : startNow.mutate({ id: item.id }))}
       />
       <EditParamsDialog item={editing} onClose={() => setEditing(null)} />
       <CancelDialog item={cancelling} onClose={() => setCancelling(null)} />
       <RedoDoneDialog item={redoing} onClose={() => setRedoing(null)} />
+      <StartNowDialog target={starting} onClose={() => setStarting(null)} />
     </>
   )
 }
@@ -118,10 +126,25 @@ export function quotaText(
 const RUN_ICON: Record<RunStatus, typeof CircleCheckIcon> = { running: BotIcon, waiting: HourglassIcon, needs_human: HandIcon, verifying: ScanSearchIcon, done: CircleCheckIcon, incomplete: CircleAlertIcon, failed: CircleXIcon }
 const RUN_TEXT: Record<RunStatus, string> = { ...runStatusLabel, waiting: "挂起等待" }
 
-function WorkDetail({ id, onEdit, onCancel, onRedo }: { id: string; onEdit: (item: WorkItemDetail) => void; onCancel: (item: WorkItemDetail) => void; onRedo: (item: WorkItemDetail) => void }) {
+function WorkDetail({
+  id,
+  onEdit,
+  onCancel,
+  onRedo,
+  onStartNow,
+}: {
+  id: string
+  onEdit: (item: WorkItemDetail) => void
+  onCancel: (item: WorkItemDetail) => void
+  onRedo: (item: WorkItemDetail) => void
+  /** bypass：要跳过什么（startNowBypass），null = 马上就会开始、不用确认 */
+  onStartNow: (item: WorkItemDetail, bypass: string | null) => void
+}) {
   const { user } = useMe()
   const staffName = useStaffName()
   const detail = useQuery(trpc.work.get.queryOptions({ id }))
+  // 现在就办要知道名额、花费上限挡没挡着（排队的单才取）
+  const stats = useWorkTaskStats(detail.data?.taskId, detail.data?.status === "queued").data
   const run = useSessionsQuery().data?.find((each) => each.id === detail.data?.sessionId)
   if (detail.isPending) {
     return (
@@ -138,6 +161,7 @@ function WorkDetail({ id, onEdit, onCancel, onRedo }: { id: string; onEdit: (ite
   const ended = item.status === "done" || item.status === "failed" || item.status === "cancelled"
   const attempt = item.status === "queued" && item.attempts > 0 ? item.attempts + 1 : item.attempts
   const FromIcon = WORK_VIA_ICON[item.via]
+  const startNow = () => onStartNow(item, startNowBypass(item, { enabled: item.taskEnabled, dispatchable: Boolean(item.taskDispatch) }, stats))
 
   return (
     <DetailPanel
@@ -200,6 +224,10 @@ function WorkDetail({ id, onEdit, onCancel, onRedo }: { id: string; onEdit: (ite
                   <PencilIcon />
                   改参数{item.status !== "queued" && "（只有排队的能改）"}
                 </DropdownMenuItem>
+                <DropdownMenuItem disabled={item.status !== "queued"} onClick={startNow}>
+                  <PlayIcon />
+                  现在就办{item.status !== "queued" && "（只有排队的）"}
+                </DropdownMenuItem>
                 <DropdownMenuItem disabled={!ended} onClick={() => onRedo(item)}>
                   <RotateCwIcon />
                   重办
@@ -217,7 +245,7 @@ function WorkDetail({ id, onEdit, onCancel, onRedo }: { id: string; onEdit: (ite
         </>
       }
     >
-      <StatusAlert item={item} run={run} canManage={canManage} />
+      <StatusAlert item={item} run={run} canManage={canManage} onStartNow={startNow} />
 
       <DetailSection title="参数" description="派活时带的参数，被派的运行在第一条消息里拿到。标「去重」的用来判断是不是同一件事：同一个值只办一次。">
         <div className="flex flex-col gap-2">
@@ -243,13 +271,15 @@ function WorkDetail({ id, onEdit, onCancel, onRedo }: { id: string; onEdit: (ite
 }
 
 /** 详情最上面：现在卡在哪 */
-function StatusAlert({ item, run, canManage }: { item: WorkItemDetail; run?: SessionSummary; canManage: boolean }) {
+function StatusAlert({ item, run, canManage, onStartNow }: { item: WorkItemDetail; run?: SessionSummary; canManage: boolean; onStartNow: () => void }) {
   const staffName = useStaffName()
   const humanItems = useHumanItems()
   const runNow = useRunNow()
-  if (retryAt(item)) return <RetryAlert item={item} canManage={canManage} />
-  if (scheduledAt(item)) return <ScheduledAlert item={item} canManage={canManage} />
-  if (item.status === "queued") return <QueuedAlert item={item} canManage={canManage} />
+  // 排队的三种提示右边都有「现在就办」（负责人和主管）
+  const action = canManage ? <StartNowAction onClick={onStartNow} /> : null
+  if (retryAt(item)) return <RetryAlert item={item} canManage={canManage} action={action} />
+  if (scheduledAt(item)) return <ScheduledAlert item={item} canManage={canManage} action={action} />
+  if (item.status === "queued") return <QueuedAlert item={item} canManage={canManage} action={action} />
   if (item.status === "running" && run?.status === "needs_human") {
     const human = humanItems.find((each) => each.runId === run.id)
     return (
@@ -281,6 +311,18 @@ function StatusAlert({ item, run, canManage }: { item: WorkItemDetail; run?: Ses
   return null
 }
 
+/** 排队提示右边的「现在就办」 */
+function StartNowAction({ onClick }: { onClick: () => void }) {
+  return (
+    <AlertAction>
+      <Button variant="outline" size="sm" onClick={onClick}>
+        <PlayIcon data-icon="inline-start" />
+        现在就办
+      </Button>
+    </AlertAction>
+  )
+}
+
 /** 自动重试这一轮的第几次（处理记录里最后一条 retry_scheduled）和一共几次 */
 function lastRetry(item: WorkItemDetail) {
   const entry = item.log.findLast((each) => each.kind === "retry_scheduled")
@@ -288,7 +330,7 @@ function lastRetry(item: WorkItemDetail) {
 }
 
 /** 排队等自动重试（第二期）：第几次运行出错、什么时候重试、这次没通知 */
-function RetryAlert({ item, canManage }: { item: WorkItemDetail; canManage: boolean }) {
+function RetryAlert({ item, canManage, action }: { item: WorkItemDetail; canManage: boolean; action: React.ReactNode }) {
   const { n, of } = lastRetry(item)
   const runCount = item.runs.length
   return (
@@ -300,36 +342,38 @@ function RetryAlert({ item, canManage }: { item: WorkItemDetail; canManage: bool
       </AlertTitle>
       <AlertDescription>
         {timeText(retryAt(item))} 到点后排进队里，轮到了开第 {runCount + 1} 次运行。这次失败没有通知负责人，自动重试都用完还没办成才通知；等结果的派活方也要等到最后才被叫醒。
-        {canManage && "不想等可以点右上角「⋯ → 不办了」。"}
+        {canManage && "不想等可以点「现在就办」马上再试，或者「⋯ → 不办了」。"}
       </AlertDescription>
+      {action}
     </Alert>
   )
 }
 
 /** 派的时候说了过多久再办、还没到点（第三期）：到点前不领、不算排队名次 */
-function ScheduledAlert({ item, canManage }: { item: WorkItemDetail; canManage: boolean }) {
+function ScheduledAlert({ item, canManage, action }: { item: WorkItemDetail; canManage: boolean; action: React.ReactNode }) {
   return (
     <Alert>
       <CalendarClockIcon />
       <AlertTitle>定在 {timeText(scheduledAt(item))} 以后办</AlertTitle>
       <AlertDescription>
         派的时候说了过一阵再办：到点以前不开始、不占排队的位子，到点后排进「{item.taskTitle}」的队里。
-        {canManage && "要提前办或者换个时间，点右上角「⋯ → 改参数」改「什么时候办」。"}
+        {canManage && "要马上办点「现在就办」；换个时间点右上角「⋯ → 改参数」改「什么时候办」。"}
       </AlertDescription>
+      {action}
     </Alert>
   )
 }
 
 /** 排队的单：排第几位、谁在占名额；任务停用了（或关了被派活）写「单先排着」；今天的花费到了上限写「明天接着办」（第三期） */
-function QueuedAlert({ item, canManage }: { item: WorkItemDetail; canManage: boolean }) {
+function QueuedAlert({ item, canManage, action }: { item: WorkItemDetail; canManage: boolean; action: React.ReactNode }) {
   const stats = useWorkTaskStats(item.taskId).data
   // 在办的单里执行中、验收中的就是占名额的（等浏览器的也占，但列表上看不出来，数字以 stats 为准）
   const running = useQuery(trpc.work.list.queryOptions({ taskId: item.taskId, status: "running", days: 0, limit: 50 })).data
   const busy = (running?.items ?? []).filter((each) => each.sessionStatus === "running" || each.sessionStatus === "verifying").map((each) => each.id)
   const holders = stats && busy.length === stats.occupied ? (busy.length ? `${busy.join("、")} 在占着` : "没有单在占着") : `占着 ${stats?.occupied ?? 0} 个`
   let text: string
-  if (!item.taskDispatch) text = `「${item.taskTitle}」关了被派活，单先排着；重新打开后接着办。`
-  else if (!item.taskEnabled) text = `「${item.taskTitle}」停用了，单先排着；${canManage ? "重新启用任务后" : "负责人重新启用后"}自动开始办。`
+  if (!item.taskDispatch) text = `「${item.taskTitle}」关了被派活，单先排着；重新打开后接着办。${canManage ? "只办这一张就点「现在就办」。" : ""}`
+  else if (!item.taskEnabled) text = `「${item.taskTitle}」停用了，单先排着；${canManage ? "重新启用任务后自动开始办，只办这一张就点「现在就办」。" : "负责人重新启用后自动开始办。"}`
   else if (stats && budgetHit(stats))
     text = `「${item.taskTitle}」今天被派来的运行花了 ${money(stats.spentTodayUsd)}，到了每天的上限 ${budgetText(stats.dailyBudgetUsd!)}，今天不再开新的运行；明天 0 点以后接着办。${canManage ? "要今天接着办，就去任务里调大上限。" : ""}`
   else text = `「${item.taskTitle}」同时最多 ${item.taskDispatch.maxRunning} 个在跑，现在${holders}。前面的办完或者挂起等待，就轮到它。`
@@ -338,6 +382,7 @@ function QueuedAlert({ item, canManage }: { item: WorkItemDetail; canManage: boo
       <ListOrderedIcon />
       <AlertTitle>排队第 {item.queuePosition ?? "—"} 位</AlertTitle>
       <AlertDescription>{text}</AlertDescription>
+      {action}
     </Alert>
   )
 }
@@ -611,6 +656,7 @@ function EventLine({ item, entry }: { item: WorkItemDetail; entry: WorkLogEntry 
       }
     }
     if (entry.kind === "redo") return { icon: <RotateCwIcon />, title: `${who} 点了「重办」` }
+    if (entry.kind === "start_now") return { icon: <PlayIcon />, title: `${who} 点了「现在就办」` }
     if (entry.kind === "params_changed") return { icon: <PencilIcon />, title: entry.byId ? `${who} 改了参数` : "参数改了（派活方用新参数覆盖）" }
     if (entry.kind !== "cancelled") return null
     return { icon: <CircleSlashIcon />, title: `${entry.byId ? who : ""} 点了「不办了」${entry.note ? `：${entry.note}` : ""}`.trim() }

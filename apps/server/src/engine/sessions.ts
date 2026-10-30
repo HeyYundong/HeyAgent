@@ -516,6 +516,8 @@ export interface StartSessionOptions {
   actorId?: string | null
   attachmentFileIds?: string[]
   note?: string
+  /** 人在一张排队的派活单上点了「现在就办」：任务停用了也开这一张（只这一次，不放开别的自动触发） */
+  allowDisabled?: boolean
   /** 派活触发的：派活单（快照里的 dispatch） */
   dispatch?: NonNullable<SessionSnapshot["dispatch"]>
   /** 派活触发的：派活的那次运行（人派的为空） */
@@ -553,8 +555,8 @@ export async function startSessionInTx(
     .from(t.tasks)
     .where(eq(t.tasks.id, input.taskId))
   if (!task) throw new EngineError("NOT_FOUND", `找不到任务 ${input.taskId}`)
-  // 停用只挡自动触发（定时、待办、事件、派活）；人手动点「立即运行」照样能跑一次
-  if (!task.enabled && input.source !== "manual")
+  // 停用只挡自动触发（定时、待办、事件、派活）；人手动点「立即运行」、在派活单上点「现在就办」照样能跑一次
+  if (!task.enabled && input.source !== "manual" && !input.allowDisabled)
     throw new EngineError("BAD_REQUEST", "任务已停用，先启用再运行")
 
   const fileIds = [...new Set(input.attachmentFileIds ?? [])]

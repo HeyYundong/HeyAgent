@@ -190,8 +190,11 @@ export type WorkVia = z.infer<typeof workViaSchema>
 /** 单上的处理记录（派进来、开运行、重办、改参数、不办了），按时间先后 */
 export const workLogEntrySchema = z.object({
   at: isoTime,
-  /** retry_scheduled：运行出错、排队等自动重试（第二期）；reported：被派的运行用 work.report 报了结果（第二期，同一次运行只记第一次） */
-  kind: z.enum(["created", "run_started", "run_ended", "redo", "params_changed", "cancelled", "retry_scheduled", "reported"]),
+  /**
+   * retry_scheduled：运行出错、排队等自动重试（第二期）；reported：被派的运行用 work.report 报了结果（第二期，同一次运行只记第一次）；
+   * start_now：人在排队的单上点了「现在就办」（不管任务停用、名额、花费上限、定的时间，只开这一张），后面紧跟一条 run_started
+   */
+  kind: z.enum(["created", "run_started", "run_ended", "redo", "params_changed", "cancelled", "retry_scheduled", "reported", "start_now"]),
   /** 人做的：谁 */
   byId: z.string().optional(),
   /** run_started / run_ended：哪次运行 */
@@ -445,6 +448,7 @@ export const workUpdateParamsInputSchema = z.object({
 })
 export const workCancelInputSchema = z.object({ id: z.string().min(1), reason: z.string().trim().max(500).optional() })
 export const workRedoInputSchema = z.object({ id: z.string().min(1) })
+export const workStartNowInputSchema = z.object({ id: z.string().min(1) })
 
 // ---------- 纯函数（前后端共用） ----------
 

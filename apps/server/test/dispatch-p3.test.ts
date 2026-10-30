@@ -726,6 +726,89 @@ describe("过多久再办", () => {
   })
 })
 
+// ---------- 现在就办（2026-10-30） ----------
+
+describe("现在就办", () => {
+  it("任务停用了、名额满了：只开这一张，别的单还排着，任务还是停用的；处理记录、审计、运行都对", async () => {
+    const worker = await makeWorker({ model: stuckModel("test/p3-now"), title: "停用的任务" })
+    // 名额（1 个）被占着
+    const busy = await fakeItem(worker, { key: "N-0", status: "running" })
+    await fakeRun(worker, { status: "running", workItemId: busy, triggeredBy: "dispatch" })
+    const first = await fakeItem(worker, { key: "N-1" })
+    const second = await fakeItem(worker, { key: "N-2" })
+    expect((await pumpTask(ctx.db, worker)).started).toEqual([])
+
+    const res = await mutate(ctx.app, "work.startNow", wang, { id: second })
+    expect(res.error).toBeUndefined()
+    expect(res.data).toMatchObject({ id: second, status: "running", attempts: 1, notBefore: null })
+    const row = await itemRow(second)
+    expect(row.sessionId).toBeTruthy()
+    expect(row.log.slice(-2)).toMatchObject([
+      { kind: "start_now", byId: "u-wang" },
+      { kind: "run_started", sessionId: row.sessionId },
+    ])
+    // 运行和领单开的一样：来源是派活、挂在这张单上、算派单的人开的（fakeItem 没有派单的人）
+    expect(await sessionRow(ctx.db, row.sessionId!)).toMatchObject({ triggeredBy: "dispatch", workItemId: second, taskId: worker })
+    const [audit] = await ctx.db.select().from(t.auditEvents).where(and(eq(t.auditEvents.targetId, second), eq(t.auditEvents.action, "work.start_now")))
+    expect(audit).toMatchObject({ actorId: "u-wang", detail: { sessionId: row.sessionId } })
+
+    // 别的单还排着，任务还是停用的，领单照旧不开
+    expect((await itemRow(first)).status).toBe("queued")
+    expect((await ctx.db.select({ enabled: t.tasks.enabled }).from(t.tasks).where(eq(t.tasks.id, worker)))[0]!.enabled).toBe(false)
+    expect((await pumpTask(ctx.db, worker)).started).toEqual([])
+    expect((await itemRow(first)).status).toBe("queued")
+    // 运行真的跑起来了（停用不挡这一次）
+    await waitFor(async () => ((await sessionRow(ctx.db, row.sessionId!))?.status === "running" ? true : undefined), { what: "现在就办的运行在跑" })
+  })
+
+  it("定了时间、等自动重试的单马上开；关了被派活的也能开（没有要交回的结果）", async () => {
+    const worker = await makeWorker({ enabled: true, model: stuckModel("test/p3-now-2"), dispatch: { maxRunning: 5 } })
+    const scheduled = (await mutate(ctx.app, "work.dispatch", wang, { taskId: worker, params: { 单号: "T-1" }, delayMinutes: 60 })).data.item.id as string
+    const retrying = await fakeItem(worker, { key: "T-2", notBefore: new Date(Date.now() + 600_000), autoRetries: 1, attempts: 1 })
+    expect((await pumpTask(ctx.db, worker)).started).toEqual([])
+
+    const a = await mutate(ctx.app, "work.startNow", wang, { id: scheduled })
+    expect(a.data).toMatchObject({ status: "running", notBefore: null })
+    const b = await mutate(ctx.app, "work.startNow", wang, { id: retrying })
+    expect(b.data).toMatchObject({ status: "running", attempts: 2, notBefore: null })
+
+    const off = await makeWorker({ model: stuckModel("test/p3-now-3") })
+    const item = await fakeItem(off, { key: "T-3" })
+    await ctx.db.update(t.tasks).set({ dispatch: null }).where(eq(t.tasks.id, off))
+    const c = await mutate(ctx.app, "work.startNow", wang, { id: item })
+    expect(c.error).toBeUndefined()
+    expect(c.data.status).toBe("running")
+  })
+
+  it("不是排队的单 409；开不出运行时报原因，单还排着", async () => {
+    const worker = await makeWorker()
+    const running = await fakeItem(worker, { key: "C-1", status: "running" })
+    const done = await fakeItem(worker, { key: "C-2", status: "done" })
+    const r = await mutate(ctx.app, "work.startNow", wang, { id: running })
+    expect(r.error?.data?.code).toBe("CONFLICT")
+    expect(r.error?.message).toBe("这张单已经开始办了")
+    const d = await mutate(ctx.app, "work.startNow", wang, { id: done })
+    expect(d.error?.data?.code).toBe("CONFLICT")
+    expect(d.error?.message).toContain("重办")
+    expect((await mutate(ctx.app, "work.startNow", wang, { id: "W-999999" })).error?.data?.code).toBe("NOT_FOUND")
+
+    // 开不出运行：任务没设复核模型、也没有默认复核模型
+    const queued = await fakeItem(worker, { key: "C-3" })
+    await ctx.db.update(t.tasks).set({ reviewModelId: null }).where(eq(t.tasks.id, worker))
+    await ctx.db.delete(t.modelDefaults).where(eq(t.modelDefaults.role, "review"))
+    try {
+      const res = await mutate(ctx.app, "work.startNow", wang, { id: queued })
+      expect(res.error?.data?.code).toBe("BAD_REQUEST")
+      expect(res.error?.message).toBe("没能开始运行：任务没设复核模型，先在任务里选一个")
+      const row = await itemRow(queued)
+      expect(row).toMatchObject({ status: "queued", attempts: 0, sessionId: null, error: null })
+      expect(row.log.some((entry) => entry.kind === "start_now")).toBe(false)
+    } finally {
+      await ctx.db.insert(t.modelDefaults).values({ role: "review", modelId: TEST_REVIEW_MODEL }).onConflictDoNothing()
+    }
+  })
+})
+
 // ---------- 第一条消息 ----------
 
 describe("被派的运行看到的来源", () => {

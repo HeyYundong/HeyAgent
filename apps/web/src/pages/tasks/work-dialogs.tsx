@@ -21,6 +21,7 @@ import { Spinner } from "@/components/ui/spinner"
 import { Textarea } from "@/components/ui/textarea"
 import { toast } from "@/components/ui/toast"
 import { useAction } from "@/lib/mutations"
+import { navigate } from "@/lib/router"
 import { trpc } from "@/lib/trpc"
 
 import { WORK_DELAY_ITEMS, WORK_PRIORITY_ITEMS, WorkItemBadge, scheduledAt, timeText, useWorkTaskStats, workLink } from "./work-parts"
@@ -458,6 +459,53 @@ export function RedoDoneDialog({ item, onClose }: { item: WorkItemDetail | null;
           <Button disabled={redo.isPending} onClick={() => item && redo.mutate({ id: item.id })}>
             {redo.isPending && <Spinner data-icon="inline-start" />}
             再办一次
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+}
+
+/** 现在就办：排队的单马上开运行（不管任务停用、名额、花费上限、定的时间，只这一张）。成功后提示开了哪次运行，可以直接去看 */
+export function useStartNow(onDone?: () => void) {
+  return useAction(
+    trpc.work.startNow.mutationOptions({
+      onSuccess: (item) => {
+        const sessionId = item.sessionId
+        toast.add({
+          title: `${item.id} 开始办了`,
+          description: sessionId ? `开了运行 ${sessionId}。` : undefined,
+          type: "success",
+          ...(sessionId ? { actionProps: { children: "去看运行", onClick: () => navigate("sessions", { id: sessionId }) } } : {}),
+        })
+        onDone?.()
+      },
+    }),
+    { errorTitle: "没开始成" }
+  )
+}
+
+/** 要「现在就办」的单，和要跳过什么（startNowBypass 的那句话） */
+export interface StartNowTarget {
+  id: string
+  bypass: string
+}
+
+/** 现在就办的确认：单是因为任务停用、名额满了等原因在排队时，先说清楚跳过的是什么 */
+export function StartNowDialog({ target, onClose }: { target: StartNowTarget | null; onClose: () => void }) {
+  const start = useStartNow(onClose)
+  return (
+    <AlertDialog open={target !== null} onOpenChange={(open) => !open && onClose()}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{target?.id} 现在就办？</AlertDialogTitle>
+          <AlertDialogDescription>{target?.bypass}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>先不动</AlertDialogCancel>
+          <Button disabled={start.isPending} onClick={() => target && start.mutate({ id: target.id })}>
+            {start.isPending && <Spinner data-icon="inline-start" />}
+            现在就办
           </Button>
         </AlertDialogFooter>
       </AlertDialogContent>

@@ -1223,6 +1223,7 @@ claude mcp add --transport http heyagent-compare http://<host>:8080/api/compare/
 | `dispatch` | mutation | 被派任务的 `task.manage` | `{ taskId, params, title?, note? }` → `{ item, existing }`。任务要开着被派活（`BAD_REQUEST`）；参数检查同 agent（缺必填、多出没声明的：`BAD_REQUEST`）；标题不写用 `workDefaultTitle`；已经有单时返回那张、`existing = true`；受「每天最多被派」「最多排队」约束（`BAD_REQUEST`，文字写清是哪个上限）。审计 `work.dispatch`（已经有的记 `work.dispatch.existing`） |
 | `updateParams` | mutation | `work.manage`（被派任务的负责人、主管） | `{ id, params, title?, note? }` → `WorkItem`。只有排队的单（`CONFLICT`）；去重参数的值不能变（`BAD_REQUEST`「去重的参数不能改，要办另一件事就再派一张」）；`log` 记 `params_changed`。审计 `work.update_params` |
 | `redo` | mutation | `work.manage` | `{ id }` → `WorkItem`。办完 / 没办成 / 不办了 → 排队（清 `error` `finishedAt`，`result` 留着直到新的运行结束），`log` 记 `redo`，发 `work.pump`；排队、在办的 `CONFLICT`。审计 `work.redo` |
+| `startNow` | mutation | `work.manage` | `{ id }` → `WorkItem`。排队的单马上开运行（2026-10-30）：先拿领单同一把锁 `work.pump:<任务>`，再走领单的同一段（`pump.ts` 的 `startItemInTx`：来源 dispatch，单 → 在办、`attempts + 1`、清 `notBefore`），`log` 先记 `start_now`（`byId`）再记 `run_started`。**不管**任务停用（`startSessionInTx` 的 `allowDisabled`）、关了被派活（没有要交回的结果）、`notBefore`（定了时间 / 等自动重试）、每天花费上限、名额；别的单不动，任务也不改。在办的、已经结束的 `CONFLICT`；开不出运行原样报错（`BAD_REQUEST`「没能开始运行：…」），单还排着、不记没办成。审计 `work.start_now`（detail 带 `sessionId`） |
 | `cancel` | mutation | `work.manage` | `{ id, reason? }` → `WorkItem`。排队的 → 不办了；在办的 → 先在同一个事务里取消正在跑的运行（运行的原因「某某取消了这次运行：在派活单 W-x 上点了不办了：原因」），单记不办了（不会被结束回写改成没办成），`error` =「某某点了不办了：原因」，`log` 记 `cancelled`；已经结束的 `CONFLICT`。审计 `work.cancel` |
 
 报错文字给人看（`WorkError` → tRPC 错误码；取消运行时的 `EngineError` 同样转换）。
@@ -1279,7 +1280,7 @@ claude mcp add --transport http heyagent-compare http://<host>:8080/api/compare/
 
 - 新表 `work_items`（`unique (task_id, key)`、`(task_id, status, created_at)`、`(created_at desc, id desc)`、`from_session_id`、`from_task_id`、`session_id` 索引；`task_id` 引用任务不级联）、`task_dispatch_sources (task_id, source_task_id)`（都级联删除）；`tasks.dispatch`、`tasks.cron_skip_if_running`、`sessions.work_item_id`；枚举 `work_item_status` `work_via`；序列 `work_item_no_seq`。
 - `work_items` 有推送触发器：推 `work.list` `work.get` `work.taskStats` `work.queueStats` `work.lookup`；`sessions` 变了也推 `work.*`（徽章、名额数字跟着变）。
-- 审计 action：`work.dispatch` `work.dispatch.existing` `work.update_params` `work.redo` `work.cancel` `settings.dispatch.update`。
+- 审计 action：`work.dispatch` `work.dispatch.existing` `work.update_params` `work.redo` `work.start_now` `work.cancel` `settings.dispatch.update`。
 
 
 ### 16.8 第二期（2026-10-18）：等结果、报结果、自动重试、导入、看板

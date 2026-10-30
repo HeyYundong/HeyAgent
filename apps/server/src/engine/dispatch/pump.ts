@@ -66,6 +66,39 @@ export interface BudgetHit {
 const dueQueued = (taskId: string) =>
   and(eq(t.workItems.taskId, taskId), eq(t.workItems.status, "queued"), or(isNull(t.workItems.notBefore), lte(t.workItems.notBefore, sql`now()`)))
 
+/**
+ * 给一张排队的单开运行、单改成「在办」（领单和人点「现在就办」共用）。在一个 savepoint 里：开不出运行时单不动、错误往外抛。
+ * options.byId：人点了「现在就办」（manage.ts startWorkItemNow），处理记录先记一条 start_now；停用的任务也照样开这一张。
+ * 运行算谁开的照旧是派单的人（createdById），点的人记在单的处理记录和审计里
+ */
+export async function startItemInTx(db: Db, tx: Tx, item: WorkItemRow, results: TaskDispatchResult[], options: { byId?: string } = {}): Promise<string> {
+  return tx.transaction(async (sp) => {
+    const { sessionId } = await startSessionInTx(db, sp, {
+      taskId: item.taskId,
+      source: "dispatch",
+      dispatch: await snapshotDispatch(sp, item, results),
+      parentSessionId: item.fromSessionId,
+      createdById: item.fromUserId,
+      ...(options.byId ? { allowDisabled: true } : {}),
+    })
+    const now = new Date()
+    const at = now.toISOString()
+    await sp
+      .update(t.workItems)
+      .set({
+        status: "running",
+        sessionId,
+        attempts: sql`${t.workItems.attempts} + 1`,
+        startedAt: now,
+        notBefore: null,
+        updatedAt: now,
+        log: appendLog(...(options.byId ? [{ at, kind: "start_now" as const, byId: options.byId }] : []), { at, kind: "run_started", sessionId }),
+      })
+      .where(eq(t.workItems.id, item.id))
+    return sessionId
+  })
+}
+
 /** 给一个被派任务领单：返回这次开出来的运行；因为每天花费上限没开的返回 budgetHit */
 export async function pumpTask(db: Db, taskId: string): Promise<{ started: { itemId: string; sessionId: string }[]; budgetHit?: BudgetHit }> {
   return db.transaction(async (tx) => {
@@ -98,29 +131,7 @@ export async function pumpTask(db: Db, taskId: string): Promise<{ started: { ite
     for (const item of items) {
       try {
         // 每张单一个 savepoint：一张开不出运行（例如快照出错）不连累别的单，也不让整次领单反复重试
-        const sessionId = await tx.transaction(async (sp) => {
-          const { sessionId } = await startSessionInTx(db, sp, {
-            taskId,
-            source: "dispatch",
-            dispatch: await snapshotDispatch(sp, item, results),
-            parentSessionId: item.fromSessionId,
-            createdById: item.fromUserId,
-          })
-          const now = new Date()
-          await sp
-            .update(t.workItems)
-            .set({
-              status: "running",
-              sessionId,
-              attempts: sql`${t.workItems.attempts} + 1`,
-              startedAt: now,
-              notBefore: null,
-              updatedAt: now,
-              log: appendLog({ at: now.toISOString(), kind: "run_started", sessionId }),
-            })
-            .where(eq(t.workItems.id, item.id))
-          return sessionId
-        })
+        const sessionId = await startItemInTx(db, tx, item, results)
         started.push({ itemId: item.id, sessionId })
       } catch (error) {
         const now = new Date()

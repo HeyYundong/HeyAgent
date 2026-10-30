@@ -27,10 +27,12 @@ import type { Db } from "../../db/client.js"
 import * as t from "../../db/schema.js"
 import { budgetReached, dispatchSpentToday, toWorkItems, WorkError } from "../../work/service.js"
 import { cancelSessionInTx } from "../control.js"
+import { EngineError } from "../sessions.js"
 import type { Tx } from "../queue.js"
 import { writeAudit } from "../records.js"
 import { createItemsInTx, itemKey, loadTarget, normalizeParams, notifyDayLimitOnce, type DispatchTarget, type NewWorkItem } from "./dispatch.js"
 import { sendWorkDoneInTx } from "./notify.js"
+import { lockTaskInTx, startItemInTx } from "./pump.js"
 import { appendLog } from "./settle.js"
 import { sendPumpAtInTx, sendPumpInTx } from "./signal.js"
 
@@ -185,6 +187,34 @@ export async function redoWorkItem(db: Db, actor: WorkActor, input: { id: string
       .returning()
     await writeAudit(tx, { actorId: actor.id, action: "work.redo", targetTable: "work_items", targetId: item.id, detail: { from: item.status } })
     await sendPumpInTx(db, tx, item.taskId)
+    return one(tx, row!)
+  })
+}
+
+/**
+ * 现在就办：一张排队的单马上开运行（人点的，单详情、会话页「排队中」）。故意不管任务停用、关了被派活、定的时间 / 等自动重试、
+ * 每天花费上限、名额满了——只开这一张，别的单照旧排着，任务也还是停用的；开出来的运行和领单开的一样占名额。
+ * 和领单拿同一把锁（work.pump:<任务>），不会和领单抢同一张。开不出运行（例如任务没设复核模型）原样报错，单还排着（不记没办成）
+ */
+export async function startWorkItemNow(db: Db, actor: WorkActor, input: { id: string }): Promise<WorkItem> {
+  return db.transaction(async (tx) => {
+    // 先拿任务的领单锁再锁单，顺序和领单（pumpTask：先锁任务、再 for update 取单）一致，不会互相等死
+    const [peek] = await tx.select({ taskId: t.workItems.taskId }).from(t.workItems).where(eq(t.workItems.id, input.id))
+    if (!peek) throw new WorkError("NOT_FOUND", `没有派活单 ${input.id}`)
+    await lockTaskInTx(tx, "pump", peek.taskId)
+    const { item, dispatch } = await lockItem(tx, actor, input.id)
+    if (item.status !== "queued")
+      throw new WorkError("CONFLICT", item.status === "running" ? "这张单已经开始办了" : "这张单已经结束了，要再办一次点「重办」")
+    let sessionId: string
+    try {
+      // 关了被派活的任务没有要交回的结果的配置，按没有算
+      sessionId = await startItemInTx(db, tx, item, dispatch?.results ?? [], { byId: actor.id })
+    } catch (error) {
+      // 同领单开不出运行时的写法（pump.ts），但这里不把单记成没办成：人看到原因，改好了再点
+      throw new WorkError(error instanceof EngineError ? error.code : "BAD_REQUEST", `没能开始运行：${(error as Error).message}`.slice(0, 2000))
+    }
+    await writeAudit(tx, { actorId: actor.id, action: "work.start_now", targetTable: "work_items", targetId: item.id, detail: { sessionId } })
+    const [row] = await tx.select().from(t.workItems).where(eq(t.workItems.id, item.id))
     return one(tx, row!)
   })
 }

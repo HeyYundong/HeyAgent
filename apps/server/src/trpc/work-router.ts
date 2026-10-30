@@ -1,5 +1,5 @@
 // 派活的 tRPC 接口（任务抽屉的「派来的活」、会话页「排队中」、运行详情用）。agent 用内置工具「派活」（work.dispatch），不走这里。
-// 读：list / get / taskStats / queueStats（work/service.ts）；写：lookup / dispatch / updateParams / redo / cancel（engine/dispatch/manage.ts）。
+// 读：list / get / taskStats / queueStats（work/service.ts）；写：lookup / dispatch / updateParams / redo / startNow / cancel（engine/dispatch/manage.ts）。
 import {
   workCancelInputSchema,
   workDispatchInputSchema,
@@ -11,13 +11,14 @@ import {
   workPageSchema,
   workQueueStatsSchema,
   workRedoInputSchema,
+  workStartNowInputSchema,
   workTaskStatsSchema,
   workUpdateParamsInputSchema,
 } from "@heyagent/shared"
 import { TRPCError } from "@trpc/server"
 import { z } from "zod"
 
-import { cancelWorkItem, dispatchByHuman, lookupWorkItem, redoWorkItem, updateWorkParams } from "../engine/dispatch/manage.js"
+import { cancelWorkItem, dispatchByHuman, lookupWorkItem, redoWorkItem, startWorkItemNow, updateWorkParams } from "../engine/dispatch/manage.js"
 import { EngineError } from "../engine/sessions.js"
 import { getWorkItem, listWorkItems, WorkError, workQueueStats, workTaskStats } from "../work/service.js"
 import { protectedProcedure, router } from "./init.js"
@@ -71,6 +72,11 @@ export const workRouter = router({
     .input(workRedoInputSchema)
     .output(workItemSchema)
     .mutation(({ ctx, input }) => translate(() => redoWorkItem(ctx.db, ctx.user, input))),
+  /** 现在就办：一张排队的单马上开运行，不管任务停用、名额、花费上限、定的时间（只这一张）。work.manage */
+  startNow: protectedProcedure
+    .input(workStartNowInputSchema)
+    .output(workItemSchema)
+    .mutation(({ ctx, input }) => translate(() => startWorkItemNow(ctx.db, ctx.user, input))),
   /** 不办了：排队的直接结束；在办的取消正在跑的运行。work.manage */
   cancel: protectedProcedure
     .input(workCancelInputSchema)
