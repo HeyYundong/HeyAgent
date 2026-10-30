@@ -295,7 +295,8 @@ export default function SessionsPage() {
                 <SheetDescription>{item.runId ? `运行 ${item.runId} 里提出的，不挡着运行。` : "不属于哪次运行。"}批了或拒了，就从「等人处理」里去掉。</SheetDescription>
               </SheetHeader>
               <Separator />
-              <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-4">
+              {/* 不用 flex：Card 自带 overflow-hidden，在纵向 flex 里会被压到抽屉高度、下面的内容被裁掉，滚不动 */}
+              <div className="min-h-0 flex-1 overflow-y-auto p-4">
                 <HumanItemPanel key={item.id} item={item} onDone={close} />
               </div>
             </>
