@@ -2,6 +2,7 @@
 // 目标（起点）→ agent 循环（模型 + 步骤）→ 交付物（终点）；循环上面是「带进提示词」的记忆、技能、规则、附件，下面是「能伸出去的手」工具、固化流程；
 // 目标上面是什么时候跑，交付物下面是验收和复核。点任意一块，详情栏说明它是什么、这个任务里怎么配的，能改的给入口。
 // 宽屏（lg 起）横着画、详情栏在右边；窄一些竖着排、详情在图下面；手机宽度点一块从底部弹出详情。
+// 横着的图放在能缩放的画布（components/zoom-canvas）里：默认整张缩放进来、不出滚动条，能放大缩小、拖动，能全屏（2026-11-02 用户要求）。
 // 详情里直接用列表视图的那批区块（task-config.tsx、TaskScheduleSection、TaskMemorySection……），列表里有的这里都看得到。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
@@ -16,6 +17,8 @@ import {
   ExternalLinkIcon,
   FlagIcon,
   ListOrderedIcon,
+  Maximize2Icon,
+  Minimize2Icon,
   PackageIcon,
   PaperclipIcon,
   PencilIcon,
@@ -29,7 +32,9 @@ import {
 import { alwaysOnToolIds, isRoutineToolId, WORK_DISPATCH_TOOL_ID, BROWSER_TOOL_ID, DESKTOP_TOOL_ID, type TaskDef } from "@heyagent/shared"
 
 import { Badge } from "@/components/ui/badge"
+import { ZoomCanvas, ZoomToolButton } from "@/components/zoom-canvas"
 import { Button } from "@/components/ui/button"
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Item, ItemContent, ItemDescription, ItemTitle } from "@/components/ui/item"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { useIsMobile } from "@/hooks/use-mobile"
@@ -179,7 +184,7 @@ function useSummaries(task: TaskDef, state: TasksState): Record<StructureBlock, 
         {task.deliverables.slice(0, 3).map((each, index) => <span key={`${index}-${each.name}`} className="line-clamp-1 text-foreground">{each.name}</span>)}
         {task.deliverables.length > 3 && <Muted>还有 {task.deliverables.length - 3} 项</Muted>}
         {task.deliverables.length === 0 && <Muted>没写交付物</Muted>}
-        {results && <Muted>交回：{results}</Muted>}
+        {results && <span className="line-clamp-2"><Muted>交回：{results}</Muted></span>}
         {task.toolIds.includes(WORK_DISPATCH_TOOL_ID) && <Muted>会派活出去</Muted>}
       </span>
     ) : <Muted>没写交付物</Muted>,
@@ -212,12 +217,29 @@ function Block({ id, selected, onSelect, summary, className, emphasis = false }:
           <Icon className="size-3.5" />
           {emphasis ? `${info.name} · ${info.kind}` : info.name}
         </ItemTitle>
-        <ItemDescription className={cn("line-clamp-none", emphasis && "text-sm/relaxed text-foreground")}>
+        <ItemDescription className={cn("wrap-break-word", CLAMP[id], emphasis && "text-sm/relaxed text-foreground")}>
           {summary}
         </ItemDescription>
       </ItemContent>
     </Item>
   )
+}
+
+/** 摘要最多几行：一段文字的整段截断（目标多给几行，不然目标一长整块就成了长长一条），全文点开在详情里看；
+ *  步骤、交付物、工具自己一行一行排，每行各自截断 */
+const CLAMP: Record<StructureBlock, string> = {
+  goal: "line-clamp-5",
+  trigger: "line-clamp-3",
+  review: "line-clamp-3",
+  model: "line-clamp-2",
+  memory: "line-clamp-2",
+  skills: "line-clamp-2",
+  rules: "line-clamp-2",
+  attach: "line-clamp-2",
+  routine: "line-clamp-2",
+  steps: "line-clamp-none",
+  deliver: "line-clamp-none",
+  tools: "line-clamp-none",
 }
 
 /** 图里的小标题（「带进提示词 · …」） */
@@ -232,6 +254,7 @@ export function TaskStructure({ task, state, canEdit }: { task: TaskDef; state: 
   const [selected, setSelected] = React.useState<StructureBlock>("goal")
   const [phoneOpen, setPhoneOpen] = React.useState(false)
   const [editing, setEditing] = React.useState(false)
+  const [full, setFull] = React.useState(false)
   const summaries = useSummaries(task, state)
   const select = (id: StructureBlock) => {
     setSelected(id)
@@ -241,6 +264,24 @@ export function TaskStructure({ task, state, canEdit }: { task: TaskDef; state: 
   const detail = <BlockDetail block={selected} task={task} state={state} canEdit={canEdit} onEdit={() => setEditing(true)} />
   const dialog = canEdit && <TaskDialog key={editing ? "structure-edit" : "structure-closed"} open={editing} onOpenChange={setEditing} task={task} />
 
+  // 全屏：铺满窗口的弹窗里再画一份横着的图（详情栏照样在右边，点块照样选），同时请浏览器进全屏（不支持、被拒就只铺满窗口）。
+  // Esc：浏览器先退出全屏，fullscreenchange 里跟着关弹窗；弹窗关了（Esc、按钮）也退出浏览器全屏
+  const openFull = () => {
+    setFull(true)
+    document.documentElement.requestFullscreen?.().catch(() => {})
+  }
+  React.useEffect(() => {
+    if (!full) return
+    const onChange = () => {
+      if (!document.fullscreenElement) setFull(false)
+    }
+    document.addEventListener("fullscreenchange", onChange)
+    return () => {
+      document.removeEventListener("fullscreenchange", onChange)
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => {})
+    }
+  }, [full])
+
   const loopHeader = (
     <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
       <RefreshCwIcon className="size-3.5" />
@@ -249,82 +290,124 @@ export function TaskStructure({ task, state, canEdit }: { task: TaskDef; state: 
     </span>
   )
 
-  if (wide) {
-    // 横着画：五列（开工 / 目标 / 交付物在两边，箭头，中间是循环和两组扩展），每行用同样宽的两边列对齐
-    const side = "w-36 shrink-0 xl:w-44"
-    const gap = "flex w-6 shrink-0 items-center justify-center"
-    return (
-      <div className="flex min-h-0 flex-1">
-        <div className="flex min-w-0 flex-1 flex-col justify-center overflow-y-auto p-6">
-          <div className="flex items-end">
-            <div className={side}>{block("trigger")}</div>
-            <div className={gap} />
-            <div className="flex min-w-0 flex-1 flex-col gap-2">
-              <GroupLabel>带进提示词 · 开工时写进提示词，整次运行都看得到</GroupLabel>
-              <div className="grid grid-cols-2 gap-2 xl:grid-cols-4">
-                {block("memory")}
-                {block("skills")}
-                {block("rules")}
-                {block("attach")}
-              </div>
-            </div>
-            <div className={gap} />
-            <div className={side} />
-          </div>
-          <div className="flex">
-            <div className={side}><VLine /></div>
-            <div className={gap} />
-            <div className="flex-1"><VLine dashed /></div>
-            <div className={gap} />
-            <div className={side} />
-          </div>
-          <div className="flex items-stretch">
-            {block("goal", side)}
-            <div className={gap}><ArrowRightIcon className="size-4 text-muted-foreground" /></div>
-            <div className="flex min-w-0 flex-1 flex-col gap-3 border border-dashed p-3">
-              {loopHeader}
-              <div className="flex gap-2">
-                {block("model", "w-28 shrink-0")}
-                {block("steps", "min-w-0 flex-1")}
-              </div>
-            </div>
-            <div className={gap}><ArrowRightIcon className="size-4 text-muted-foreground" /></div>
-            {block("deliver", side)}
-          </div>
-          <div className="flex">
-            <div className={side} />
-            <div className={gap} />
-            <div className="flex-1"><VLine dashed /></div>
-            <div className={gap} />
-            <div className={side}><VLine /></div>
-          </div>
-          <div className="flex items-start">
-            <div className={side} />
-            <div className={gap} />
-            <div className="flex min-w-0 flex-1 flex-col gap-2">
-              <div className="grid grid-cols-2 gap-2">
-                {block("tools")}
-                {block("routine")}
-              </div>
-              <GroupLabel>能伸出去的手 · 循环里每一轮从这里挑来用</GroupLabel>
-            </div>
-            <div className={gap} />
-            <div className={side}>{block("review")}</div>
+  // 横着画的图（宽屏抽屉里、全屏里都是这一份）：五列（开工 / 目标 / 交付物在两边，箭头，中间是循环和两组扩展），每行用同样宽的两边列对齐。
+  // 画在 ZoomCanvas 里，宽度由画布定（适应时在 720～1440 px 里挑），所以列宽、几列按画布宽度（@container）变，不按屏幕宽度
+  const side = "w-40 shrink-0 @5xl:w-48"
+  const gap = "flex w-6 shrink-0 items-center justify-center"
+  const diagram = (
+    <div className="flex flex-col">
+      <div className="flex items-end">
+        <div className={side}>{block("trigger")}</div>
+        <div className={gap} />
+        <div className="flex min-w-0 flex-1 flex-col gap-2">
+          <GroupLabel>带进提示词 · 开工时写进提示词，整次运行都看得到</GroupLabel>
+          <div className="grid grid-cols-2 gap-2 @6xl:grid-cols-4">
+            {block("memory")}
+            {block("skills")}
+            {block("rules")}
+            {block("attach")}
           </div>
         </div>
-        <aside className="flex w-80 shrink-0 flex-col gap-3 overflow-y-auto border-l bg-muted/30 p-4 xl:w-96" aria-label="选中的那一块">
-          <Muted>点左边任意一块，这里说明它</Muted>
-          {detail}
-        </aside>
-        {dialog}
+        <div className={gap} />
+        <div className={side} />
       </div>
+      <div className="flex">
+        <div className={side}><VLine /></div>
+        <div className={gap} />
+        <div className="flex-1"><VLine dashed /></div>
+        <div className={gap} />
+        <div className={side} />
+      </div>
+      <div className="flex items-stretch">
+        {block("goal", side)}
+        <div className={gap}><ArrowRightIcon className="size-4 text-muted-foreground" /></div>
+        <div className="flex min-w-0 flex-1 flex-col gap-3 border border-dashed p-3">
+          {loopHeader}
+          <div className="flex gap-2">
+            {block("model", "w-32 shrink-0 @5xl:w-36")}
+            {block("steps", "min-w-0 flex-1")}
+          </div>
+        </div>
+        <div className={gap}><ArrowRightIcon className="size-4 text-muted-foreground" /></div>
+        {block("deliver", side)}
+      </div>
+      <div className="flex">
+        <div className={side} />
+        <div className={gap} />
+        <div className="flex-1"><VLine dashed /></div>
+        <div className={gap} />
+        <div className={side}><VLine /></div>
+      </div>
+      <div className="flex items-start">
+        <div className={side} />
+        <div className={gap} />
+        <div className="flex min-w-0 flex-1 flex-col gap-2">
+          <div className="grid grid-cols-2 gap-2">
+            {block("tools")}
+            {block("routine")}
+          </div>
+          <GroupLabel>能伸出去的手 · 循环里每一轮从这里挑来用</GroupLabel>
+        </div>
+        <div className={gap} />
+        <div className={side}>{block("review")}</div>
+      </div>
+    </div>
+  )
+
+  // 图（缩放画布，不出滚动条）+ 右边详情栏
+  const wideBody = (inFull: boolean) => (
+    <div className="flex min-h-0 flex-1">
+      <ZoomCanvas
+        className="min-w-0 flex-1"
+        label="任务结构图"
+        minWidth={720}
+        maxWidth={1440}
+        actions={inFull ? (
+          <ZoomToolButton label="退出全屏" hint="退出全屏（Esc）" onClick={() => setFull(false)}><Minimize2Icon /></ZoomToolButton>
+        ) : (
+          <ZoomToolButton label="全屏" hint="全屏看图" onClick={openFull}><Maximize2Icon /></ZoomToolButton>
+        )}
+      >
+        {diagram}
+      </ZoomCanvas>
+      <aside className="flex w-80 shrink-0 flex-col gap-3 overflow-y-auto border-l bg-muted/30 p-4 xl:w-96" aria-label="选中的那一块">
+        <Muted>点左边任意一块，这里说明它。Ctrl + 滚轮放大缩小，放大后按住拖动。</Muted>
+        {detail}
+      </aside>
+    </div>
+  )
+
+  const fullDialog = (
+    <Dialog open={full} onOpenChange={(open) => setFull(open)}>
+      <DialogContent className="flex h-dvh w-full max-w-none flex-col gap-0 p-0 sm:max-w-none">
+        <DialogHeader className="border-b p-4 pr-12">
+          <DialogTitle>{task.title}</DialogTitle>
+          <DialogDescription>{task.id} 的结构图 · 按 Esc 退出全屏</DialogDescription>
+        </DialogHeader>
+        {wideBody(true)}
+        {full && dialog}
+      </DialogContent>
+    </Dialog>
+  )
+
+  if (wide) {
+    return (
+      <>
+        {wideBody(false)}
+        {fullDialog}
+        {!full && dialog}
+      </>
     )
   }
 
-  // 窄一些：竖着排（开工 → 目标 → 循环（三栏）→ 交付物 + 复核），详情在下面；手机宽度点了从底部弹出
+  // 窄一些：竖着排（开工 → 目标 → 循环（三栏）→ 交付物 + 复核），详情在下面；手机宽度点了从底部弹出。
+  // 不是手机的话右上角能「全屏看图」：全屏里是横着画、能缩放的那一份
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-0 overflow-y-auto p-4 *:shrink-0">
-      <p className="pb-3 text-muted-foreground">点任意一块，{phone ? "会弹出" : "下面会"}说明它是什么、这个任务里怎么配的。</p>
+      <div className="flex items-start gap-2 pb-3">
+        <p className="flex-1 text-muted-foreground">点任意一块，{phone ? "会弹出" : "下面会"}说明它是什么、这个任务里怎么配的。</p>
+        {!phone && <Button variant="outline" size="sm" onClick={openFull}><Maximize2Icon data-icon="inline-start" />全屏看图</Button>}
+      </div>
       {block("trigger")}
       <VLine />
       {block("goal")}
@@ -372,7 +455,8 @@ export function TaskStructure({ task, state, canEdit }: { task: TaskDef; state: 
           <div className="border bg-muted/30 p-4">{detail}</div>
         </div>
       )}
-      {dialog}
+      {!phone && fullDialog}
+      {!full && dialog}
     </div>
   )
 }
