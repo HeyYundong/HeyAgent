@@ -1,5 +1,5 @@
 // 能缩放、拖动的画布 `ZoomCanvas`（docs/ui-rules.md 第 8 节登记，2026-11-02）：任务抽屉的「结构图」用。
-// 默认「适应」：把里面的图整个缩放进可用的地方，不出滚动条；画布的宽度跟着地方变（minWidth ～ maxWidth 之间挑一个让字最大的宽度，地方大时最多放大到 maxFit），
+// 默认「适应」：把里面的图整个缩放进可用的地方，不出滚动条；画布的宽度跟着地方变（minWidth ～ maxWidth 之间挑一个让字最大的宽度；默认不放大，最多 100%，地方大时画布排宽一些、多出来的地方留白），
 // 地方变了（拖窗口、开全屏）、内容变高了就重新适应。人缩放、拖过以后就保持人定的样子，点「适应」回去。
 // 缩放：右上角的按钮、Ctrl / ⌘ + 滚轮（触控板捏合也是这个）、两指捏合；键盘焦点在图里时 + / - 缩放、0 适应。
 // 拖动：按住拖（动了 5 px 以上才算拖，不然还是点击）、不按 Ctrl 的滚轮在图比地方大时平移；Tab 到看不见的块会自动挪进来。
@@ -35,14 +35,14 @@ export function ZoomToolButton({ label, hint, onClick, disabled, children }: { l
   )
 }
 
-export function ZoomCanvas({ children, label, minWidth, maxWidth, maxFit = 1.5, actions, className }: {
+export function ZoomCanvas({ children, label, minWidth, maxWidth, maxFit = 1, actions, className }: {
   children: React.ReactNode
   /** 读屏用的名字，例如「任务结构图」 */
   label: string
   /** 画布最窄、最宽排多少 px（缩放前）；适应时在这中间挑 */
   minWidth: number
   maxWidth: number
-  /** 适应时最多放大到多少（地方大时字跟着大，例如全屏） */
+  /** 适应时最多放大到多少；默认 1（只缩小不放大：放大了字、图标都傻大，2026-11-02 用户反馈） */
   maxFit?: number
   /** 工具栏右边多放的按钮（例如全屏） */
   actions?: React.ReactNode

@@ -2,7 +2,7 @@
 // 目标（起点）→ agent 循环（模型 + 步骤）→ 交付物（终点）；循环上面是「带进提示词」的记忆、技能、规则、附件，下面是「能伸出去的手」工具、固化流程；
 // 目标上面是什么时候跑，交付物下面是验收和复核。点任意一块，详情栏说明它是什么、这个任务里怎么配的，能改的给入口。
 // 宽屏（lg 起）横着画、详情栏在右边；窄一些竖着排、详情在图下面；手机宽度点一块从底部弹出详情。
-// 横着的图放在能缩放的画布（components/zoom-canvas）里：默认整张缩放进来、不出滚动条，能放大缩小、拖动，能全屏（2026-11-02 用户要求）。
+// 横着的图放在能缩放的画布（components/zoom-canvas）里：默认整张缩放进来、不出滚动条，能放大缩小、拖动，能全屏（2026-11-02 用户要求）；适应时只缩小不放大。
 // 详情里直接用列表视图的那批区块（task-config.tsx、TaskScheduleSection、TaskMemorySection……），列表里有的这里都看得到。
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
@@ -173,7 +173,7 @@ function useSummaries(task: TaskDef, state: TasksState): Record<StructureBlock, 
     attach: attachments === undefined ? <Muted>…</Muted> : attachments.length ? `${attachments.length} 个` : <Muted>没有</Muted>,
     tools: (
       <span className="flex flex-wrap gap-1">
-        {chosenTools.slice(0, 4).map((id) => <Badge key={id} variant="outline">{toolName(id)}</Badge>)}
+        {chosenTools.slice(0, 4).map((id) => <Badge key={id} variant="outline" className="max-w-full" title={toolName(id)}><span className="truncate">{toolName(id)}</span></Badge>)}
         {chosenTools.length > 4 && <Badge variant="ghost">+{chosenTools.length - 4}</Badge>}
         {alwaysOn.length > 0 && <Badge variant="ghost">{chosenTools.length ? `+${alwaysOn.length} 自带` : `只有自带的 ${alwaysOn.length} 个`}</Badge>}
       </span>

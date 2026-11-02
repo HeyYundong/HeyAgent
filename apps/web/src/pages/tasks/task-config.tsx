@@ -21,9 +21,9 @@ import { StepList } from "./parts"
 export const LinkBadges = ({ label, page, items }: { label: string; page: PageId; items: { id: string; name: string }[] }) => (
   <div className="flex flex-col gap-1.5 sm:flex-row sm:items-start sm:gap-4">
     <span className="w-12 shrink-0 text-muted-foreground">{label}</span>
-    <div className="flex flex-wrap gap-1.5">
+    <div className="flex min-w-0 flex-wrap gap-1.5">
       {items.length === 0 && <span className="text-muted-foreground">没选</span>}
-      {items.map((item) => <Badge key={item.id} variant="outline" render={<a href={href(page, { id: item.id })} />}>{item.name}</Badge>)}
+      {items.map((item) => <Badge key={item.id} variant="outline" className="max-w-full" title={item.name} render={<a href={href(page, { id: item.id })} />}><span className="truncate">{item.name}</span></Badge>)}
     </div>
   </div>
 )
@@ -156,18 +156,18 @@ export function RoutineBadges({ task }: { task: TaskDef }) {
   return (
     <div className="flex flex-col gap-1.5 sm:flex-row sm:items-start sm:gap-4">
       <span className="w-12 shrink-0 text-muted-foreground">流程</span>
-      <div className="flex flex-wrap gap-1.5">
+      <div className="flex min-w-0 flex-wrap gap-1.5">
         {chosen.length === 0 && <span className="text-muted-foreground">没选</span>}
         {entries.map(({ toolId, entry }) => {
           const name = entry?.title ?? toolName(toolId)
           const to = entry ? href("routines", { id: entry.routineId }) : href("routines")
           // 流程库还没取到（或取不到）时不判断，照常显示
           const reason = library ? unavailableReason(entry, entry && details.get(entry.routineId), task, toolName) : undefined
-          if (!reason) return <Badge key={toolId} variant="outline" render={<a href={to} />}>{name}</Badge>
+          if (!reason) return <Badge key={toolId} variant="outline" className="max-w-full" title={name} render={<a href={to} />}><span className="truncate">{name}</span></Badge>
           return (
             <Tooltip key={toolId}>
-              <TooltipTrigger render={<Badge variant="ghost" render={<a href={to} />} />}>
-                {name} · {entry?.status === "paused" ? "停用" : entry?.status === "withdrawn" ? "撤下" : "用不了"}
+              <TooltipTrigger render={<Badge variant="ghost" className="max-w-full" render={<a href={to} />} />}>
+                <span className="truncate">{name} · {entry?.status === "paused" ? "停用" : entry?.status === "withdrawn" ? "撤下" : "用不了"}</span>
               </TooltipTrigger>
               <TooltipContent>{reason}</TooltipContent>
             </Tooltip>
