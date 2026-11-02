@@ -275,7 +275,9 @@ export function queueWaitText(item: Pick<WorkItem, "status" | "notBefore" | "aut
     const ahead = (item.queuePosition ?? 1) - 1
     const shown = stats.holders.slice(0, 3).join("、")
     const holders = stats.holders.length > 3 ? `${shown} 等 ${stats.holders.length} 个` : shown
-    return `名额满了：${holders || `占着 ${stats.occupied} 个`} 在跑${ahead > 0 ? `，前面还有 ${ahead} 张` : ""}`
+    // 等名额的运行（被叫醒继续的）比排队的单先放行
+    const slots = stats.slotWaiting > 0 ? `，${stats.slotWaiting} 个运行等名额先放行` : ""
+    return `名额满了：${holders || `占着 ${stats.occupied} 个`} 在跑${slots}${ahead > 0 ? `，前面还有 ${ahead} 张` : ""}`
   }
   return "有空位，马上开始"
 }

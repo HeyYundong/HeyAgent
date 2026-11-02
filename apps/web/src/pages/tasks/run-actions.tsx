@@ -28,9 +28,13 @@ export function useStartRun(task: TaskDef) {
   )
 }
 
-/** 立即继续（只对「挂起等待」的运行；「等人处理」的要先在运行详情顶上处理那件事） */
+/** 立即继续（只对「挂起等待」的运行；「等人处理」的要先在运行详情顶上处理那件事）。在等名额的被派运行点了就插队 */
 export function ResumeButton({ run, size = "default" }: { run: SessionSummary; size?: "sm" | "default" }) {
-  const resume = useAction(trpc.engine.resumeNow.mutationOptions(), { success: `${run.id} 已继续，接着刚才的地方做`, errorTitle: "没能继续" })
+  // 被派任务的名额满了：没进执行中、先等名额（再点一次就插队，不等名额）
+  const resume = useAction(trpc.engine.resumeNow.mutationOptions(), {
+    success: (result) => (result.slotWaiting ? `${run.id} 在等名额：任务同时在跑的满了，空出来自动继续；再点「立即继续」可以插队` : `${run.id} 已继续，接着刚才的地方做`),
+    errorTitle: "没能继续",
+  })
   return (
     <Button size={size} disabled={resume.isPending} onClick={() => resume.mutate({ sessionId: run.id })}>
       {resume.isPending ? <Spinner data-icon="inline-start" /> : <PlayIcon data-icon="inline-start" />}立即继续

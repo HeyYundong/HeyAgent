@@ -3,7 +3,9 @@
 import {
   DISPATCH_SLOT_EVENT_PREFIXES,
   TIME_ZONE,
+  WORK_SLOT_EVENT_PREFIX,
   workPriorityOf,
+  workSlotEvent,
   type RunOutcome,
   type TaskDispatch,
   type WorkItem,
@@ -51,6 +53,22 @@ export function occupiesSlotSql(): SQL {
   return sql`(${t.sessions.status} in ('running', 'verifying') or (${t.sessions.status} = 'waiting' and exists (
     select 1 from ${t.sessionWaits} w where w.session_id = ${t.sessions.id} and w.status = 'waiting' and (${held})
   )))`
+}
+
+/**
+ * 同一个任务的领单 / 派活各用一把事务级锁（按任务 id 的 hash）。派活和领单不互相等。
+ * 「pump」这把还给被叫醒的运行数名额用（engine/waits.ts 的 resumeInTx）：数名额、开运行 / 放行都在这把锁里，并发的继续和领单不会超
+ */
+export const lockTaskInTx = (tx: DbOrTx, scope: "pump" | "dispatch", taskId: string) =>
+  tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`work.${scope}:${taskId}`}))`)
+
+/** 某个任务现在等名额的运行数（挂起等 work.slot:<任务>，不占名额；2026-11-02） */
+export async function slotWaitingCount(db: DbOrTx, taskId: string): Promise<number> {
+  const [row] = await db
+    .select({ n: count() })
+    .from(t.sessionWaits)
+    .where(and(eq(t.sessionWaits.status, "waiting"), eq(t.sessionWaits.event, workSlotEvent(taskId))))
+  return row?.n ?? 0
 }
 
 /** 某个任务现在占着名额的运行数 */
@@ -278,7 +296,7 @@ export function startOfTodayShanghai(now = new Date()): Date {
 
 /** 被派任务的一行数字：排队、在办、占名额、今天办完、没办成 */
 export async function workTaskStats(db: DbOrTx, taskId: string): Promise<WorkTaskStats> {
-  const [[task], grouped, [doneToday], occupied, spent] = await Promise.all([
+  const [[task], grouped, [doneToday], occupied, spent, slotWaiting] = await Promise.all([
     db.select({ dispatch: t.tasks.dispatch }).from(t.tasks).where(eq(t.tasks.id, taskId)),
     db.select({ status: t.workItems.status, n: count() }).from(t.workItems).where(eq(t.workItems.taskId, taskId)).groupBy(t.workItems.status),
     db
@@ -287,6 +305,7 @@ export async function workTaskStats(db: DbOrTx, taskId: string): Promise<WorkTas
       .where(and(eq(t.workItems.taskId, taskId), eq(t.workItems.status, "done"), gte(t.workItems.finishedAt, startOfTodayShanghai()))),
     occupiedSlots(db, taskId),
     dispatchSpentToday(db, [taskId]),
+    slotWaitingCount(db, taskId),
   ])
   if (!task) throw new WorkError("NOT_FOUND", `没有任务 ${taskId}`)
   const by = new Map(grouped.map((row) => [row.status, row.n]))
@@ -295,6 +314,7 @@ export async function workTaskStats(db: DbOrTx, taskId: string): Promise<WorkTas
     queued: by.get("queued") ?? 0,
     running: by.get("running") ?? 0,
     occupied,
+    slotWaiting,
     maxRunning: task.dispatch?.maxRunning ?? 0,
     doneToday: doneToday?.n ?? 0,
     failed: by.get("failed") ?? 0,
@@ -309,7 +329,7 @@ export async function workTaskStats(db: DbOrTx, taskId: string): Promise<WorkTas
  * 三条查询：任务、按任务和状态数没结束的单、占着名额的运行
  */
 export async function workQueueStats(db: DbOrTx): Promise<WorkQueueStats[]> {
-  const [grouped, holders] = await Promise.all([
+  const [grouped, holders, slotWaiters] = await Promise.all([
     db
       .select({ taskId: t.workItems.taskId, status: t.workItems.status, n: count() })
       .from(t.workItems)
@@ -320,6 +340,13 @@ export async function workQueueStats(db: DbOrTx): Promise<WorkQueueStats[]> {
       .from(t.sessions)
       .where(and(isNotNull(t.sessions.workItemId), occupiesSlotSql()))
       .orderBy(asc(t.sessions.startedAt), asc(t.sessions.id)),
+    // 等名额的运行（2026-11-02）：单是「在办」，算在 running 里；这里另数一份给页面写「其中 N 个等名额」
+    db
+      .select({ taskId: t.sessions.taskId, n: count() })
+      .from(t.sessionWaits)
+      .innerJoin(t.sessions, eq(t.sessions.id, t.sessionWaits.sessionId))
+      .where(and(eq(t.sessionWaits.status, "waiting"), sql`${t.sessionWaits.event} like ${`${WORK_SLOT_EVENT_PREFIX}%`}`))
+      .groupBy(t.sessions.taskId),
   ])
   const withItems = [...new Set(grouped.map((row) => row.taskId))]
   const tasks = await db
@@ -344,6 +371,7 @@ export async function workQueueStats(db: DbOrTx): Promise<WorkQueueStats[]> {
       running: n("running"),
       occupied: held.length,
       holders: held,
+      slotWaiting: slotWaiters.find((row) => row.taskId === task.id)?.n ?? 0,
       // 同 workTaskStats（一次查出设了上限的任务今天的花费；没设上限的写 0）
       spentTodayUsd: spent.get(task.id) ?? 0,
       dailyBudgetUsd: task.dispatch?.dailyBudgetUsd ?? null,

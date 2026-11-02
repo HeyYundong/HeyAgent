@@ -577,7 +577,7 @@ describe("每天花费上限", () => {
     await ctx.db.update(t.tasks).set({ dispatch: { ...DISPATCH, maxRunning: 3, dailyBudgetUsd: 0.05 } }).where(eq(t.tasks.id, worker))
     const queued = await fakeItem(worker, { key: "B-1" })
     const pumped = await pumpTask(ctx.db, worker)
-    expect(pumped).toEqual({ started: [], budgetHit: { spent: 0.06, budget: 0.05, queued: 1 } })
+    expect(pumped).toEqual({ started: [], released: [], budgetHit: { spent: 0.06, budget: 0.05, queued: 1 } })
     expect((await itemRow(queued)).status).toBe("queued")
     expect((await sessionRow(ctx.db, running.id))!.status).toBe("verifying")
 
@@ -606,7 +606,7 @@ describe("每天花费上限", () => {
     const worker = await makeWorker({ enabled: true, model: stuckModel("test/p3-budget-2"), dispatch: { dailyBudgetUsd: 0.05 } })
     const spentItem = await fakeItem(worker, { key: "Y-0", status: "done" })
     const run = await fakeRun(worker, { status: "done", workItemId: spentItem, triggeredBy: "dispatch", costUsd: 1 })
-    expect(await pumpTask(ctx.db, worker)).toEqual({ started: [] })
+    expect(await pumpTask(ctx.db, worker)).toEqual({ started: [], released: [] })
     const queued = await fakeItem(worker, { key: "Y-1" })
     expect((await pumpTask(ctx.db, worker)).budgetHit).toMatchObject({ spent: 1, queued: 1 })
     // 模拟到了第二天：那次运行是昨天开始的

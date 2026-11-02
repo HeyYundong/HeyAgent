@@ -229,10 +229,11 @@ function metaLine(task: TaskDef) {
   return [task.schedule?.text ?? "只跑一次", next, steps].filter(Boolean).join(" · ")
 }
 
-/** 被派任务的「排队 3 · 在办 2」：只写不是 0 的，都是 0 不写 */
+/** 被派任务的「排队 3 · 在办 2（1 个等名额）」：只写不是 0 的，都是 0 不写。等名额的运行的单是在办，括号里另写 */
 function queueLine(stats?: WorkQueueStats) {
   if (!stats) return ""
-  return [stats.queued > 0 && `排队 ${stats.queued}`, stats.running > 0 && `在办 ${stats.running}`].filter(Boolean).join(" · ")
+  const running = stats.running > 0 && `在办 ${stats.running}${stats.slotWaiting > 0 ? `（${stats.slotWaiting} 个等名额）` : ""}`
+  return [stats.queued > 0 && `排队 ${stats.queued}`, running].filter(Boolean).join(" · ")
 }
 
 /** 任务卡片：只说明任务（标题、目标、定时和步骤、负责人、开关），不显示运行状态；被派任务多一行排队、在办的单数 */

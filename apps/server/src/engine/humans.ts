@@ -24,7 +24,13 @@ import { familyCost } from "./subagents/settle.js"
 import { failedOutcome, judgeByRules, outcomeFactsInTx, type Judged } from "./outcome.js"
 import { EngineError } from "./sessions.js"
 import { loadEngineSettings } from "./settings.js"
-import { resumeInTx, suspendInTx } from "./waits.js"
+import { isSlotWaitingInTx, resumeInTx, suspendInTx } from "./waits.js"
+
+/** 继续了：被派任务的名额满了的另外标一下「在等名额」（页面提示「已处理、等名额」，2026-11-02） */
+async function resumedResult(tx: Tx, sessionId: string | false) {
+  if (!sessionId) return {}
+  return (await isSlotWaitingInTx(tx, sessionId)) ? { resumedSessionId: sessionId, slotWaiting: true } : { resumedSessionId: sessionId }
+}
 
 export interface CreateHumanItemInput {
   kind: HumanItemKind
@@ -133,7 +139,7 @@ export interface ResolveInput {
 export async function resolveHumanItemImpl(
   db: Db,
   input: ResolveInput
-): Promise<{ resumedSessionId?: string; endedSessionId?: string }> {
+): Promise<{ resumedSessionId?: string; slotWaiting?: boolean; endedSessionId?: string }> {
   const [item] = await db
     .select()
     .from(t.humanItems)
@@ -227,7 +233,7 @@ export async function resolveHumanItemImpl(
         message: "",
         actorId: input.actorId,
       })
-      return resumed ? { resumedSessionId: resumed } : {}
+      return resumedResult(tx, resumed)
     }
 
     const match = wait.match as {
@@ -283,7 +289,7 @@ export async function resolveHumanItemImpl(
       actorId: input.actorId,
       sessionPatch,
     })
-    return resumed ? { resumedSessionId: resumed } : {}
+    return resumedResult(tx, resumed)
   })
   return result
 }
@@ -303,7 +309,7 @@ export async function resolveVerifyDisputeImpl(
     actorId: string
     actorName: string
   }
-): Promise<{ resumedSessionId?: string; endedSessionId?: string }> {
+): Promise<{ resumedSessionId?: string; slotWaiting?: boolean; endedSessionId?: string }> {
   const [item] = await db
     .select()
     .from(t.humanItems)
@@ -395,7 +401,7 @@ export async function resolveVerifyDisputeImpl(
         message: `${input.actorName}看了三方验收的报告，补充说明：${note}\n请按说明继续，做完再回复总结（会重新验收）。`,
         actorId: input.actorId,
       })
-      return resumed ? { resumedSessionId: resumed } : {}
+      return resumedResult(tx, resumed)
     }
     // 先写过程记录，再写最终状态
     await tx

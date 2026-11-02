@@ -182,7 +182,8 @@ export const engineRouter = router({
   /** 挂起等待中的 session 立即继续 */
   resumeNow: protectedProcedure
     .input(sessionIdInputSchema)
-    .output(z.object({ sessionId: z.string() }))
+    // slotWaiting：被派任务的名额满了，没进执行中、先等名额（2026-11-02）
+    .output(z.object({ sessionId: z.string(), slotWaiting: z.boolean().optional() }))
     .mutation(async ({ ctx, input }) => {
       const session = await sessionWithTask(ctx.db, input.sessionId)
       if (!can(ctx.user, "session.resume", { taskOwnerId: session.ownerId }))
@@ -202,6 +203,8 @@ export const engineRouter = router({
     .output(
       z.object({
         resumedSessionId: z.string().optional(),
+        /** 处理完了，但被派任务的名额满了：运行在等名额（2026-11-02） */
+        slotWaiting: z.boolean().optional(),
         endedSessionId: z.string().optional(),
       })
     )
@@ -233,6 +236,8 @@ export const engineRouter = router({
     .output(
       z.object({
         resumedSessionId: z.string().optional(),
+        /** 处理完了，但被派任务的名额满了：运行在等名额（2026-11-02） */
+        slotWaiting: z.boolean().optional(),
         endedSessionId: z.string().optional(),
       })
     )

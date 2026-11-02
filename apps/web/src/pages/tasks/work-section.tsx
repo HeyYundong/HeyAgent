@@ -83,7 +83,7 @@ export function DispatchInSection({ task }: { task: TaskDef }) {
         <div className="flex flex-col gap-1 text-xs text-muted-foreground">
           <p className="flex flex-wrap items-center gap-x-1">
             {stats ? quotaText(task, stats) : `同时最多 ${dispatch.maxRunning} 个在跑`} · {retryText(dispatch)}
-            <HelpTip>执行中、验收中、等浏览器的运行占名额；agent 自己挂起等待、等人处理的不占，空出来的位子给下一张单。挂起的被叫醒继续时不卡名额，所以偶尔会比上限多。</HelpTip>
+            <HelpTip>执行中、验收中、等浏览器的运行占名额；agent 自己挂起等待、等人处理的不占，空出来的位子给下一张单。被叫醒继续时也要名额，满了就等名额、比新单先放行；「立即继续」可以插队。</HelpTip>
           </p>
           <p>
             参数：{dispatch.params.map((p) => `${p.name}（${[p.required ? "必填" : "可选", p.dedupe && "去重"].filter(Boolean).join("，")}）`).join("、") || "没有"}

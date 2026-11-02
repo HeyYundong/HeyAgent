@@ -115,11 +115,12 @@ export const budgetText = (usd: number) => `$${Number(usd.toFixed(2))}`
  */
 export function quotaText(
   task: { enabled: boolean },
-  stats: { maxRunning: number; occupied: number; queued: number; spentTodayUsd: number; dailyBudgetUsd: number | null }
+  stats: { maxRunning: number; occupied: number; slotWaiting?: number; queued: number; spentTodayUsd: number; dailyBudgetUsd: number | null }
 ) {
   if (!task.enabled) return `任务停用了，排队的 ${stats.queued} 张先不开始`
   if (budgetHit(stats)) return `今天的花费到了上限（${budgetText(stats.dailyBudgetUsd!)}），排队的 ${stats.queued} 张明天 0 点以后办`
-  const quota = `同时最多 ${stats.maxRunning} 个在跑 · 现在占 ${stats.occupied} 个 · 排队 ${stats.queued} 张`
+  // 等名额的（被叫醒继续时名额满了）不占名额，空出来比排队的单先放行
+  const quota = `同时最多 ${stats.maxRunning} 个在跑 · 现在占 ${stats.occupied} 个${stats.slotWaiting ? ` · ${stats.slotWaiting} 个运行等名额` : ""} · 排队 ${stats.queued} 张`
   return stats.dailyBudgetUsd != null ? `${quota} · 今天花了 ${money(stats.spentTodayUsd)} / 上限 ${budgetText(stats.dailyBudgetUsd)}` : quota
 }
 
@@ -287,7 +288,7 @@ function StatusAlert({ item, run, canManage, onStartNow }: { item: WorkItemDetai
         <HandIcon />
         <AlertTitle>等人处理：{human ? `${human.title}（${staffName(human.assigneeId)}）` : runNow(run).text}</AlertTitle>
         <AlertDescription>
-          运行 {run.id} 挂起了，不占名额；处理完继续同一个 session，单还是「在办」。
+          运行 {run.id} 挂起了，不占名额；处理完继续同一个 session（名额满了就先等名额），单还是「在办」。
           <a href={href("sessions", { status: "human", id: run.id })} className="ml-1 font-medium text-foreground underline underline-offset-4">
             去处理 →
           </a>
@@ -376,7 +377,11 @@ function QueuedAlert({ item, canManage, action }: { item: WorkItemDetail; canMan
   else if (!item.taskEnabled) text = `「${item.taskTitle}」停用了，单先排着；${canManage ? "重新启用任务后自动开始办，只办这一张就点「现在就办」。" : "负责人重新启用后自动开始办。"}`
   else if (stats && budgetHit(stats))
     text = `「${item.taskTitle}」今天被派来的运行花了 ${money(stats.spentTodayUsd)}，到了每天的上限 ${budgetText(stats.dailyBudgetUsd!)}，今天不再开新的运行；明天 0 点以后接着办。${canManage ? "要今天接着办，就去任务里调大上限。" : ""}`
-  else text = `「${item.taskTitle}」同时最多 ${item.taskDispatch.maxRunning} 个在跑，现在${holders}。前面的办完或者挂起等待，就轮到它。`
+  else {
+    // 被叫醒继续、在等名额的运行比排队的单先放行
+    const slots = stats?.slotWaiting ? `另有 ${stats.slotWaiting} 个被叫醒继续的运行在等名额，空出来先放行它们。` : ""
+    text = `「${item.taskTitle}」同时最多 ${item.taskDispatch.maxRunning} 个在跑，现在${holders}。${slots}前面的办完或者挂起等待，就轮到它。`
+  }
   return (
     <Alert>
       <ListOrderedIcon />

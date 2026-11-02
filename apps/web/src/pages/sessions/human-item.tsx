@@ -69,7 +69,7 @@ function GeneralItemPanel({ item, inRun = false, onDone }: Props) {
   const resolve = useAction(trpc.engine.resolveHumanItem.mutationOptions(after), {
     success: (result, vars) =>
       result.resumedSessionId
-        ? `${vars.how === "reject" ? "已拒绝" : vars.how === "approve" ? "已批准" : "已处理"}，${result.resumedSessionId} 继续执行`
+        ? `${vars.how === "reject" ? "已拒绝" : vars.how === "approve" ? "已批准" : "已处理"}，${result.resumedSessionId} ${result.slotWaiting ? "等名额：任务同时在跑的满了，空出来自动继续" : "继续执行"}`
         : result.endedSessionId
           ? `已拒绝，${result.endedSessionId} 结束`
           : "已处理",
@@ -230,7 +230,7 @@ function DisputeButtons({ item, note, onDone }: { item: HumanItem; note: string;
   const [error, setError] = React.useState<string>()
   const resolve = useAction(trpc.engine.resolveVerifyDispute.mutationOptions({ onSuccess: () => onDone() }), {
     success: (result, vars) =>
-      vars.how === "continue" ? `已补充说明，${result.resumedSessionId ?? "运行"} 继续执行` : vars.how === "pass" ? `已判定算通过，${result.endedSessionId ?? "运行"} 完成` : `已判定算失败，${result.endedSessionId ?? "运行"} 结束`,
+      vars.how === "continue" ? `已补充说明，${result.resumedSessionId ?? "运行"} ${result.slotWaiting ? "等名额：任务同时在跑的满了，空出来自动继续" : "继续执行"}` : vars.how === "pass" ? `已判定算通过，${result.endedSessionId ?? "运行"} 完成` : `已判定算失败，${result.endedSessionId ?? "运行"} 结束`,
     errorTitle: "没处理成功",
   })
   const busy = resolve.isPending

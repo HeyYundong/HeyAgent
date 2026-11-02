@@ -13,6 +13,7 @@ import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm"
 import {
   RUN_FINISH_TOOL_ID,
   SUBAGENT_START_TOOL_ID,
+  WORK_SLOT_EVENT_PREFIX,
   routineInputOf,
   routineStopKindLabel,
   runOutcomeLabel,
@@ -864,7 +865,8 @@ export async function runSession(
         const [wait] = await db
           .select()
           .from(t.sessionWaits)
-          .where(and(eq(t.sessionWaits.sessionId, sessionId), eq(t.sessionWaits.status, "fired")))
+          // 等名额的那条（work.slot:，2026-11-02）不算：人的决定在它前面那条上
+          .where(and(eq(t.sessionWaits.sessionId, sessionId), eq(t.sessionWaits.status, "fired"), sql`coalesce(${t.sessionWaits.event}, '') not like ${`${WORK_SLOT_EVENT_PREFIX}%`}`))
           .orderBy(desc(t.sessionWaits.id))
           .limit(1)
         const pending = wait?.pending

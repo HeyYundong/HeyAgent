@@ -19,6 +19,17 @@ export const WORK_REPORT_TOOL_ID = "work.report"
 export const workDoneEvent = (itemId: string) => `work.done:${itemId}`
 export const WORK_DONE_EVENT_PREFIX = "work.done:"
 
+/**
+ * 被派的运行等名额（2026-11-02）：挂起时不占名额的（agent 自己挂起、等人处理），被叫醒继续时也要名额；
+ * 任务的名额满了就挂起等 work.slot:<任务 id>，work.pump 有空位时先放行它们（最早等的先），再领新单。
+ * 等名额本身不占名额；「立即继续」可以插队（不看名额）。平台内部的事件，外部不能发（RESERVED_EVENT_PREFIXES）
+ */
+export const WORK_SLOT_EVENT_PREFIX = "work.slot:"
+export const workSlotEvent = (taskId: string) => `${WORK_SLOT_EVENT_PREFIX}${taskId}`
+export const isWorkSlotEvent = (event: string | null | undefined) => Boolean(event?.startsWith(WORK_SLOT_EVENT_PREFIX))
+/** 等名额时 session_waits.what：会话列表拼成「在等：名额（…）」 */
+export const workSlotWhat = (maxRunning: number) => `等名额（任务同时最多 ${maxRunning} 个在跑，空出来自动继续）`
+
 /** 自动重试的默认间隔（分钟） */
 export const WORK_RETRY_DELAY_DEFAULT = 10
 
@@ -55,11 +66,12 @@ export function workNotBefore(input: { notBefore?: string | null; delayMinutes?:
  * 平台自己用的事件名前缀：外部事件不能用（派活方等结果、等浏览器、等桌面、等子 agent，这些由系统自己叫醒，不经过外部事件接口）。
  * 任务上「收到事件就派一张」保存时拒；外部事件接口（POST /api/events）和控制台手动触发也拒（docs/dev/sub-agents.md 第 12 节第 2 条）
  */
-export const RESERVED_EVENT_PREFIXES = ["work.done:", "browser.", "desktop:", "subagent."] as const
+export const RESERVED_EVENT_PREFIXES = ["work.done:", "work.slot:", "browser.", "desktop:", "subagent."] as const
 
 /** 每种保留前缀是平台拿来等什么的（拒绝时说清原因） */
 export const reservedEventPurpose: Record<(typeof RESERVED_EVENT_PREFIXES)[number], string> = {
   "work.done:": "派活方等派出去的单结束",
+  "work.slot:": "被派的运行等名额空出来",
   "browser.": "运行等浏览器空出来",
   "desktop:": "运行等桌面空出来",
   "subagent.": "运行等子 agent 办完",
@@ -383,8 +395,10 @@ export const workTaskStatsSchema = z.object({
   taskId: z.string(),
   queued: z.number().int(),
   running: z.number().int(),
-  /** 现在占着名额的运行数（可能超过 maxRunning：被叫醒继续的不卡名额） */
+  /** 现在占着名额的运行数（一般不超过 maxRunning；人点「立即继续」插队的、调小了名额的可能超） */
   occupied: z.number().int(),
+  /** 被叫醒继续、名额满了在等名额的运行数（2026-11-02）：单是「在办」，算在 running 里；不占名额，空出来比排队的单先放行 */
+  slotWaiting: z.number().int(),
   maxRunning: z.number().int(),
   doneToday: z.number().int(),
   failed: z.number().int(),
@@ -411,6 +425,8 @@ export const workQueueStatsSchema = z.object({
   occupied: z.number().int(),
   /** 占着名额的运行编号，先开始的在前 */
   holders: z.array(z.string()),
+  /** 等名额的运行数（同 work.taskStats） */
+  slotWaiting: z.number().int(),
   /** 第三期：同 workTaskStatsSchema。spentTodayUsd >= dailyBudgetUsd 时今天不再开新的运行 */
   spentTodayUsd: z.number(),
   dailyBudgetUsd: z.number().nullable(),

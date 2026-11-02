@@ -22,7 +22,7 @@ export function useSessionBrowser(sessionId: string, enabled = true) {
 /** 「已处理好了」：resolveHumanItem(how: done)，session 在同一个 Chrome 里接着跑 */
 export function useResolveDone(onDone?: () => void) {
   return useAction(trpc.engine.resolveHumanItem.mutationOptions({ onSuccess: () => onDone?.() }), {
-    success: (result) => (result.resumedSessionId ? `已处理，${result.resumedSessionId} 接着在同一个 Chrome 里做` : "已处理"),
+    success: (result) => (result.resumedSessionId ? `已处理，${result.resumedSessionId} ${result.slotWaiting ? "等名额：任务同时在跑的满了，空出来接着在同一个 Chrome 里做" : "接着在同一个 Chrome 里做"}` : "已处理"),
     errorTitle: "没处理成功",
   })
 }

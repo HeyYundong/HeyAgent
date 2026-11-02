@@ -3,9 +3,20 @@
 // - 继续：到点、事件到了、人处理完、人点「立即继续」、待办触发，都走 resumeInTx。
 //   入口用「status = 'waiting' 才改」的条件更新，谁先到谁生效，后到的什么都不做；
 // - 兜底期限：到期只提醒负责人，不自动继续；
-// - 继续时：追加一条「等到了什么」的消息，排进 session.run，同一个 session id 接着跑。
-import { and, eq, inArray, isNull, lte, sql } from "drizzle-orm"
-import { fmtDateTime, holdsDispatchSlot, holdsSubagentSlot, isSubagentQueueEvent } from "@heyagent/shared"
+// - 继续时：追加一条「等到了什么」的消息，排进 session.run，同一个 session id 接着跑；
+// - 被派的运行要名额（2026-11-02）：从不占名额的等待（agent 自己挂起、等人处理）醒来时，任务的名额满了就不进「执行中」，
+//   改成挂起等 work.slot:<任务>（等名额），原来的继续（消息、标题）存在这条等待的 match.slot 上；
+//   work.pump 有空位时先放行它们（releaseSlotWaitersInTx，最早等的先），再领新单；「立即继续」不看名额。
+import { and, asc, eq, inArray, isNull, lte, sql } from "drizzle-orm"
+import {
+  fmtDateTime,
+  holdsDispatchSlot,
+  holdsSubagentSlot,
+  isSubagentQueueEvent,
+  isWorkSlotEvent,
+  workSlotEvent,
+  workSlotWhat,
+} from "@heyagent/shared"
 
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
@@ -14,9 +25,11 @@ import { sendPumpInTx } from "./dispatch/signal.js"
 import { sendSubagentPumpInTx } from "./subagents/signal.js"
 import { QUEUES, runJobOptions, sendInTx, type Tx } from "./queue.js"
 import { appendEvent, appendMessage, writeAudit } from "./records.js"
+import { lockTaskInTx, occupiedSlots, slotWaitingCount } from "../work/service.js"
 
 export type WaitRow = typeof t.sessionWaits.$inferSelect
-export type ResumeCause = "timer" | "event" | "human" | "resume_now" | "todo"
+/** slot：等名额的运行被 work.pump 放行（2026-11-02） */
+export type ResumeCause = "timer" | "event" | "human" | "resume_now" | "todo" | "slot"
 
 export interface SuspendInput {
   sessionId: string
@@ -135,6 +148,13 @@ export async function resumeInTx(
     .where(and(condition, eq(t.sessionWaits.status, "waiting")))
     .returning()
   if (!wait) return false
+  // 原来等的是名额：之前那次继续的消息（人处理了什么、等到了什么）这次一起交给 agent。
+  // 原来的消息是空的（审批工具调用，结果由引擎作为工具结果写）就一直不加消息：工具调用和结果之间不能插一条用户消息
+  const slot = slotResumeOf(wait)
+  const message = slot ? (slot.message ? [slot.message, input.message].filter(Boolean).join("\n") : "") : input.message
+  // 被派的运行从不占名额的等待里醒来：名额满了就去等名额
+  const full = await slotFullInTx(tx, wait, input.cause)
+  if (full) return toSlotWaitInTx(db, tx, wait, { ...input, message }, full)
   const updated = await tx
     .update(t.sessions)
     .set({ ...input.sessionPatch, status: "running" })
@@ -146,15 +166,15 @@ export async function resumeInTx(
     )
     .returning({ id: t.sessions.id })
   if (updated.length === 0) return false
-  if (input.message)
+  if (message)
     await appendMessage(tx, wait.sessionId, {
       role: "user",
-      content: `【继续】现在是 ${fmtDateTime(new Date())}（上海时间）。${input.message}`,
+      content: `【继续】现在是 ${fmtDateTime(new Date())}（上海时间）。${message}`,
     })
   await appendEvent(tx, wait.sessionId, {
     kind: "resume",
     title: input.title,
-    detail: input.message || null,
+    detail: message || null,
   })
   await sendInTx(
     db,
@@ -172,6 +192,118 @@ export async function resumeInTx(
       detail: { waitId: wait.id },
     })
   return wait.sessionId
+}
+
+/** 等名额的等待上存的「原来那次继续」（match.slot） */
+export interface SlotResume {
+  cause: ResumeCause
+  title: string
+  message: string
+}
+
+/** 这条等待是等名额的，取出原来那次继续；不是（或者没存，按普通等待算）返回 undefined */
+export function slotResumeOf(wait: Pick<WaitRow, "event" | "match">): SlotResume | undefined {
+  if (!isWorkSlotEvent(wait.event)) return undefined
+  return (wait.match as { slot?: SlotResume } | null)?.slot
+}
+
+/**
+ * 这次继续要不要等名额：被派的运行（work_item_id 不空），原来的等待不占名额（不是等浏览器、桌面、子 agent），
+ * 任务开着被派活、名额（减去已经在等名额的）没有空位。要等时返回任务和名额；不用等返回 undefined。
+ * 不用等的：work.pump 放行（cause = slot，它已经数过）、人在等名额的运行上点了「立即继续」（插队）。
+ * 数名额前拿任务的领单锁（和 pumpTask、现在就办同一把），并发的继续、领单不会一起超
+ */
+async function slotFullInTx(tx: Tx, wait: WaitRow, cause: ResumeCause): Promise<{ taskId: string; maxRunning: number; room: number } | undefined> {
+  if (cause === "slot" || holdsDispatchSlot(wait.event)) return undefined
+  if (cause === "resume_now" && isWorkSlotEvent(wait.event)) return undefined
+  const [session] = await tx
+    .select({ taskId: t.sessions.taskId, workItemId: t.sessions.workItemId })
+    .from(t.sessions)
+    .where(eq(t.sessions.id, wait.sessionId))
+  if (!session?.workItemId) return undefined
+  await lockTaskInTx(tx, "pump", session.taskId)
+  const [task] = await tx.select({ dispatch: t.tasks.dispatch }).from(t.tasks).where(eq(t.tasks.id, session.taskId))
+  // 关了被派活：没有名额可数，直接继续
+  if (!task?.dispatch) return undefined
+  const room = task.dispatch.maxRunning - (await occupiedSlots(tx, session.taskId))
+  // 已经有人在等名额：排在它们后面（空出来的位子先给它们）
+  const ahead = await slotWaitingCount(tx, session.taskId)
+  if (room - ahead > 0) return undefined
+  return { taskId: session.taskId, maxRunning: task.dispatch.maxRunning, room }
+}
+
+/** 名额满了：session 改成挂起等名额（不进执行中、不发 session.run），原来那次继续存在新等待上，放行时交给 agent */
+async function toSlotWaitInTx(
+  db: Db,
+  tx: Tx,
+  wait: WaitRow,
+  input: ResumeInput,
+  full: { taskId: string; maxRunning: number; room: number }
+): Promise<string | false> {
+  const updated = await tx
+    .update(t.sessions)
+    .set({ ...input.sessionPatch, status: "waiting" })
+    .where(and(eq(t.sessions.id, wait.sessionId), sql`${t.sessions.status} in ('waiting', 'needs_human')`))
+    .returning({ id: t.sessions.id })
+  if (updated.length === 0) return false
+  const slot: SlotResume = { cause: input.cause, title: input.title, message: input.message }
+  await tx.insert(t.sessionWaits).values({
+    sessionId: wait.sessionId,
+    what: workSlotWhat(full.maxRunning),
+    triggerKind: "event",
+    event: workSlotEvent(full.taskId),
+    match: { slot },
+  })
+  await appendEvent(tx, wait.sessionId, {
+    kind: "wait",
+    title: `${input.title}；名额满了，先等名额`,
+    detail: `任务同时最多 ${full.maxRunning} 个在跑，现在满了。空出来自动继续（比排队的新单先放行），不想等可以点「立即继续」。${input.message ? `\n继续时交给 agent：${input.message}` : ""}`,
+  })
+  // 有空位、只是前面还有人在等：叫 work.pump 放行（它按先后放）
+  if (full.room > 0) await sendPumpInTx(db, tx, full.taskId)
+  if (input.actorId)
+    await writeAudit(tx, {
+      actorId: input.actorId,
+      action: `session.resume.${input.cause}`,
+      targetTable: "sessions",
+      targetId: wait.sessionId,
+      detail: { waitId: wait.id, slotWait: true },
+    })
+  return wait.sessionId
+}
+
+/**
+ * 放行等名额的运行（pumpTask 在任务的领单锁里调）：最早开始等的先，最多 limit 个（Infinity = 全部：关了被派活的任务没有名额）。
+ * 返回放行的运行编号
+ */
+export async function releaseSlotWaitersInTx(db: Db, tx: Tx, taskId: string, limit: number): Promise<string[]> {
+  if (limit <= 0) return []
+  const query = tx
+    .select({ id: t.sessionWaits.id })
+    .from(t.sessionWaits)
+    .where(and(eq(t.sessionWaits.status, "waiting"), eq(t.sessionWaits.event, workSlotEvent(taskId))))
+    .orderBy(asc(t.sessionWaits.createdAt), asc(t.sessionWaits.id))
+  const rows = Number.isFinite(limit) ? await query.limit(limit) : await query
+  const released: string[] = []
+  for (const row of rows) {
+    const resumed = await resumeInTx(db, tx, {
+      waitId: row.id,
+      cause: "slot",
+      title: "名额空出来了，接着做",
+      message: "（刚才这个任务同时在跑的满了，等名额等到现在。）",
+    })
+    if (resumed) released.push(resumed)
+  }
+  return released
+}
+
+/** 这次运行现在是不是在等名额（继续以后给页面说「已处理、等名额」用） */
+export async function isSlotWaitingInTx(tx: Db | Tx, sessionId: string): Promise<boolean> {
+  const [wait] = await tx
+    .select({ event: t.sessionWaits.event })
+    .from(t.sessionWaits)
+    .where(and(eq(t.sessionWaits.sessionId, sessionId), eq(t.sessionWaits.status, "waiting")))
+  return isWorkSlotEvent(wait?.event)
 }
 
 export async function resume(

@@ -2,22 +2,24 @@
 // 按名额数空位、取排队单（优先级高的先、同一级先派的先，for update skip locked）、开运行、单改成「在办」，全在一个事务里：
 // 要么单和运行一起成，要么都不成，一张单不会被两个运行领到。
 // 第三期：任务设了每天花费上限、今天被派来的运行花到了，就不开新运行（budgetHit，worker 提交后通知负责人一次）。
+// 2026-11-02：先放行等名额的运行（被叫醒继续时名额满了的，最早等的先），剩下的空位才领新单。等名额的是已经开了的运行，
+// 任务停用、关了被派活、花费到了上限都照样放行（这些只挡新单；关了被派活的没有名额，全部放行）。
 import type { SessionSnapshot, TaskDispatchResult } from "@heyagent/shared"
 import { and, count, eq, isNull, lte, or, sql } from "drizzle-orm"
 
 import type { Db } from "../../db/client.js"
 import * as t from "../../db/schema.js"
-import { budgetReached, dispatchSpentToday, occupiedSlots, QUEUE_ORDER } from "../../work/service.js"
+import { budgetReached, dispatchSpentToday, lockTaskInTx, occupiedSlots, QUEUE_ORDER } from "../../work/service.js"
 import type { Tx } from "../queue.js"
 import { startSessionInTx } from "../sessions.js"
+import { releaseSlotWaitersInTx } from "../waits.js"
 import { sendWorkDoneInTx } from "./notify.js"
 import { appendLog } from "./settle.js"
 
 type WorkItemRow = typeof t.workItems.$inferSelect
 
-/** 同一个任务的领单 / 派活各用一把事务级锁（按任务 id 的 hash）。派活和领单不互相等 */
-export const lockTaskInTx = (tx: Tx, scope: "pump" | "dispatch", taskId: string) =>
-  tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`work.${scope}:${taskId}`}))`)
+/** 同一个任务的领单 / 派活各用一把事务级锁：定义在 work/service.ts（waits.ts 数名额也用，不引这个文件） */
+export { lockTaskInTx }
 
 /** 快照里的「被派来的」：单号、参数、谁派的 */
 async function snapshotDispatch(tx: Tx, item: WorkItemRow, results: TaskDispatchResult[]): Promise<NonNullable<SessionSnapshot["dispatch"]>> {
@@ -100,12 +102,18 @@ export async function startItemInTx(db: Db, tx: Tx, item: WorkItemRow, results: 
 }
 
 /** 给一个被派任务领单：返回这次开出来的运行；因为每天花费上限没开的返回 budgetHit */
-export async function pumpTask(db: Db, taskId: string): Promise<{ started: { itemId: string; sessionId: string }[]; budgetHit?: BudgetHit }> {
+export async function pumpTask(
+  db: Db,
+  taskId: string
+): Promise<{ started: { itemId: string; sessionId: string }[]; released: string[]; budgetHit?: BudgetHit }> {
   return db.transaction(async (tx) => {
     await lockTaskInTx(tx, "pump", taskId)
     const [task] = await tx.select({ id: t.tasks.id, enabled: t.tasks.enabled, dispatch: t.tasks.dispatch }).from(t.tasks).where(eq(t.tasks.id, taskId))
+    // 等名额的运行比新单先放行：有名额的放到满为止；关了被派活（没有名额了）、任务没了的全部放行
+    const limit = task?.dispatch ? task.dispatch.maxRunning - (await occupiedSlots(tx, taskId)) : Number.POSITIVE_INFINITY
+    const released = await releaseSlotWaitersInTx(db, tx, taskId, limit)
     // 停用了、关了被派活：单留着排队，重新打开时接着领
-    if (!task || !task.enabled || !task.dispatch) return { started: [] }
+    if (!task || !task.enabled || !task.dispatch) return { started: [], released }
     // 第三期每天花费上限：今天被派来的运行花到了就不开新的，排队的单留到明天 0 点以后（每分钟的清扫照常发 work.pump）；在跑的不停
     const budget = task.dispatch.dailyBudgetUsd
     if (budget != null) {
@@ -113,12 +121,13 @@ export async function pumpTask(db: Db, taskId: string): Promise<{ started: { ite
       if (budgetReached(spent, budget)) {
         const [due] = await tx.select({ n: count() }).from(t.workItems).where(dueQueued(taskId))
         // 没有排队的就不算「挡住了」（运行结束时也会发 work.pump），不用通知
-        return due?.n ? { started: [], budgetHit: { spent, budget, queued: due.n } } : { started: [] }
+        return due?.n ? { started: [], released, budgetHit: { spent, budget, queued: due.n } } : { started: [], released }
       }
     }
     const results = task.dispatch.results ?? []
+    // 放行的运行已经是「执行中」，这里重新数一遍；还有人在等名额（没放完）就不领新单
     const free = task.dispatch.maxRunning - (await occupiedSlots(tx, taskId))
-    if (free <= 0) return { started: [] }
+    if (free <= 0) return { started: [], released }
     const items = await tx
       .select()
       .from(t.workItems)
@@ -146,6 +155,6 @@ export async function pumpTask(db: Db, taskId: string): Promise<{ started: { ite
         await sendWorkDoneInTx(db, tx, item.id)
       }
     }
-    return { started }
+    return { started, released }
   })
 }

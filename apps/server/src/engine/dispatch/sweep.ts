@@ -1,12 +1,12 @@
 // 派活：每分钟清扫（work.sweep，pg-boss 的 schedule）。思路同 browser/leases.ts 的 sweepLeases：
 // 1. 「在办」的单，运行已经结束了（某处结束时漏写）或者运行没了 → 补写；
-// 2. 有到点的排队单（不在等自动重试，或者已经到点）、开着被派活、启用了的任务 → 各发一个 work.pump
+// 2. 有到点的排队单（不在等自动重试，或者已经到点）、开着被派活、启用了的任务，和有运行在等名额的任务 → 各发一个 work.pump
 //    （漏发的、worker 重启丢的、刚调大名额的、等重试到点的：延迟的 work.pump 丢了也有它兜底）。
 // 补写：运行正常结束的按它的结果（run-outcome 6.2）；运行出错的算「运行出错」，自动重试还没用完的回到排队；
 // 人取消、人选了不继续、人判验收失败的（结果是人定的）不重试；旧的「没完成」记没办成，不重试。
 // 复核还在跑的（sessions.review.pending）先不补写：被派的单等复核完再结算；过了时限（worker 中途没了）结果记没办成（没能确认办成），
 // 复核报告记上「超时没结果」，通知负责人，再结算单。没被派的运行同样清掉过时的复核标记。
-import { ENDED_RUN_STATUSES, isRunEnded, type RunOutcome, type RunOutcomeBy, type RunReview } from "@heyagent/shared"
+import { ENDED_RUN_STATUSES, isRunEnded, WORK_SLOT_EVENT_PREFIX, type RunOutcome, type RunOutcomeBy, type RunReview } from "@heyagent/shared"
 import { and, eq, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm"
 
 import type { Db } from "../../db/client.js"
@@ -141,9 +141,16 @@ export async function sweepWork(db: Db): Promise<{ settled: string[]; pumped: st
         sql`${t.tasks.dispatch} <> 'null'::jsonb`
       )
     )
-  for (const task of tasks) await sendPump(db, task.id)
+  // 有运行在等名额的任务（2026-11-02）：放行它们的 work.pump 丢了（worker 重启）也有这里兜底。任务停用、关了被派活的也算（照样放行）
+  const slotTasks = await db
+    .selectDistinct({ id: t.sessions.taskId })
+    .from(t.sessionWaits)
+    .innerJoin(t.sessions, eq(t.sessions.id, t.sessionWaits.sessionId))
+    .where(and(eq(t.sessionWaits.status, "waiting"), sql`${t.sessionWaits.event} like ${`${WORK_SLOT_EVENT_PREFIX}%`}`))
+  const pumped = [...new Set([...tasks, ...slotTasks].map((task) => task.id))]
+  for (const id of pumped) await sendPump(db, id)
   if (settled.length) console.log(`[work] 清扫：补写了 ${settled.length} 张单的结束（${settled.join("、")}）`)
   // 子 agent 的清扫（docs/dev/sub-agents.md 6.5）：同一个定时，不另开。出错不连累派活的清扫
   await sweepSubagents(db).catch((error) => console.warn("[subagent] 清扫出错", error))
-  return { settled, pumped: tasks.map((task) => task.id) }
+  return { settled, pumped }
 }

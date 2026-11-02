@@ -200,7 +200,7 @@ curl "http://<host>:8080/api/work-items?task=T-1042&key=ORD-1018-0012" -H "Autho
 | 任务关了「可以被派活」 | 配置在 `dispatch` 里，关了就没了，不会派 |
 | 任务停用 | 照样接单、先排着 |
 | 撞了每天 / 排队上限 | `rejected`，同上通知 |
-| 事件名用了 `work.done:`、`browser.`、`desktop:`、`subagent.` 开头 | 保存任务时就拒（`RESERVED_EVENT_PREFIXES`）。这几种是平台内部的事件，系统自己叫醒不经过 `fireEventImpl`；外部发来的（事件接口、控制台手动触发）`fireEventImpl` 一律拒（400，第 12 节） |
+| 事件名用了 `work.done:`、`work.slot:`（2026-11-02 加）、`browser.`、`desktop:`、`subagent.` 开头 | 保存任务时就拒（`RESERVED_EVENT_PREFIXES`）。这几种是平台内部的事件，系统自己叫醒不经过 `fireEventImpl`；外部发来的（事件接口、控制台手动触发）`fireEventImpl` 一律拒（400，第 12 节） |
 | 令牌不对、没配令牌 | 现在的 401，一个都不派 |
 | 同一个事件既叫醒了在等的运行、又配了派单 | 两件事都做，互不影响 |
 

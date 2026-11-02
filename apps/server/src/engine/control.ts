@@ -1,6 +1,6 @@
 // 人对 session 的操作：取消、立即继续；外部事件（webhook 或控制台手动触发）。
 import { and, eq, inArray, notInArray } from "drizzle-orm"
-import { ENDED_RUN_STATUSES, isRunEnded, isSubagentQueueEvent, reservedEventPrefix, reservedEventPurpose, runOutcomeLabel, type FireEventResult, type SetOutcomeInput } from "@heyagent/shared"
+import { ENDED_RUN_STATUSES, isRunEnded, isSubagentQueueEvent, isWorkSlotEvent, reservedEventPrefix, reservedEventPurpose, runOutcomeLabel, type FireEventResult, type SetOutcomeInput } from "@heyagent/shared"
 
 import type { Db } from "../db/client.js"
 import * as t from "../db/schema.js"
@@ -12,7 +12,7 @@ import type { Tx } from "./queue.js"
 import { appendEvent, writeAudit } from "./records.js"
 import { fireTodo, todosForEvent } from "./schedule.js"
 import { EngineError } from "./sessions.js"
-import { resume, waitsForEvent } from "./waits.js"
+import { isSlotWaitingInTx, resume, waitsForEvent } from "./waits.js"
 
 export interface CancelSessionInput {
   sessionId: string
@@ -152,15 +152,20 @@ export async function resumeNowImpl(
     .where(and(eq(t.sessionWaits.sessionId, input.sessionId), eq(t.sessionWaits.status, "waiting")))
   if (isSubagentQueueEvent(wait?.event))
     throw new EngineError("BAD_REQUEST", "排队中：等前面的子 agent 做完，名额空出来会自动开始")
+  // 被派的运行在等名额（2026-11-02）：人点了就插队，不看名额（同派活单的「现在就办」）；原来那次继续的消息由 resumeInTx 一起交给 agent
+  const slot = isWorkSlotEvent(wait?.event)
   const resumed = await resume(db, {
     sessionId: input.sessionId,
     cause: "resume_now",
-    title: `${input.actorName}点了立即继续`,
-    message: `${input.actorName}让你立即继续（原来等的事可能还没到，请根据现状决定下一步）。`,
+    title: slot ? `${input.actorName}点了立即继续（不等名额）` : `${input.actorName}点了立即继续`,
+    message: slot
+      ? `（任务同时在跑的满了，${input.actorName}点了立即继续，没等名额空出来。）`
+      : `${input.actorName}让你立即继续（原来等的事可能还没到，请根据现状决定下一步）。`,
     actorId: input.actorId,
   })
   if (!resumed) throw new EngineError("CONFLICT", "这次运行刚刚已经继续了")
-  return { sessionId: input.sessionId }
+  // 普通的等待被点了立即继续，但被派任务的名额满了：先等名额（页面提示「再点一次可以插队」）
+  return (await isSlotWaitingInTx(db, input.sessionId)) ? { sessionId: input.sessionId, slotWaiting: true } : { sessionId: input.sessionId }
 }
 
 /**

@@ -9,7 +9,7 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/h
 import { Item, ItemActions, ItemContent, ItemTitle } from "@/components/ui/item"
 import { Progress } from "@/components/ui/progress"
 import { Spinner } from "@/components/ui/spinner"
-import { fmtShort, isRunEnded, isSubagentQueueEvent, isSubagentWaitEvent, nextRunText as sharedNextRunText, runStatusLabel } from "@heyagent/shared"
+import { fmtShort, isRunEnded, isSubagentQueueEvent, isSubagentWaitEvent, isWorkSlotEvent, nextRunText as sharedNextRunText, runStatusLabel } from "@heyagent/shared"
 import type { RunCheckpoint, RunStatus, SessionRun, SessionSummary, TaskDef } from "@heyagent/shared"
 
 import { useRunNow } from "@/lib/data"
@@ -180,9 +180,10 @@ export interface TasksState {
 }
 
 /**
- * 运行挂起时的醒目提示：在等什么、什么时候继续。等子 agent 的、排队的子运行另写一句。
+ * 运行挂起时的醒目提示：在等什么、什么时候继续。等子 agent 的、排队的子运行、等名额的被派运行另写一句。
  * 后端的 waiting.what：父运行等子 agent 是「子 agent（还有 2 个没结束）」，排队的子运行是「排队（等前面的子 agent 做完）」，
- * 拼成「在等子 agent（还有 2 个没结束）」「在排队（等前面的子 agent 做完）」，不出现两个冒号（会话列表那列拼成「在等：子 agent（…）」）
+ * 等名额是「名额（任务同时最多 5 个在跑，空出来自动继续）」，
+ * 拼成「在等子 agent（还有 2 个没结束）」「在排队（等前面的子 agent 做完）」「在等名额（…）」，不出现两个冒号（会话列表那列拼成「在等：子 agent（…）」）
  */
 export function WaitingAlert({ run, link }: { run: SessionSummary; link?: string }) {
   const now = useRunNow()(run)
@@ -191,12 +192,15 @@ export function WaitingAlert({ run, link }: { run: SessionSummary; link?: string
   const event = trigger && "event" in trigger ? trigger.event : undefined
   const forSubagents = isSubagentWaitEvent(event)
   const queued = isSubagentQueueEvent(event)
-  const title = forSubagents ? `在等${now.text}` : queued ? `在${now.text}` : `在等：${now.text}`
+  const slot = isWorkSlotEvent(event)
+  const title = forSubagents || slot ? `在等${now.text}` : queued ? `在${now.text}` : `在等：${now.text}`
   const after = forSubagents
     ? "子 agent 结束后系统自动叫醒，结果一起交给这次运行，前面的上下文都还在。"
     : queued
       ? "子 agent 同时跑的个数有上限（每次运行、全系统各有一个上限，见「设置 → 子 agent」），前面的做完、名额空出来会自动开始。"
-      : `${now.when ? `什么时候继续：${now.when}。` : ""}等到了继续同一个 session，前面的上下文都还在。`
+      : slot
+        ? "原来等的事已经到了（或者已经处理了），被叫醒继续也要名额。前面在跑的办完或者挂起，就接着做，比排队的新单先放行；不想等可以点「立即继续」插队（会超过名额）。"
+        : `${now.when ? `什么时候继续：${now.when}。` : ""}等到了继续同一个 session，前面的上下文都还在。`
   return (
     <Alert>
       <HourglassIcon />

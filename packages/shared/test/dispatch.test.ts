@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   eventValueText,
+  isWorkSlotEvent,
   readEventPath,
   reservedEventPrefix,
   taskDispatchSchema,
@@ -11,6 +12,7 @@ import {
   workNotBefore,
   workPriorityOf,
   WORK_PRIORITY_RANK,
+  workSlotEvent,
   workWaitKind,
 } from "../src/index.js"
 
@@ -84,6 +86,10 @@ describe("任务配置和接口输入的校验", () => {
     // 子 agent 的事件（docs/dev/sub-agents.md 第 12 节第 2 条）也是平台自己用的
     expect(taskDispatchSchema.safeParse({ ...base, events: [{ event: "subagent.all:R-1" }] }).success).toBe(false)
     expect(reservedEventPrefix("desktop:D-1")).toBe("desktop:")
+    // 被派的运行等名额（2026-11-02）
+    expect(reservedEventPrefix(workSlotEvent("T-1"))).toBe("work.slot:")
+    expect(isWorkSlotEvent("work.slot:T-1")).toBe(true)
+    expect(isWorkSlotEvent("work.done:W-1")).toBe(false)
     expect(reservedEventPrefix("my.browser.event")).toBeNull()
     expect(taskDispatchSchema.safeParse({ ...base, events: [{ event: "a", params: { 不存在: "x" } }] }).success).toBe(false)
     expect(taskDispatchSchema.safeParse({ params: noDedupe.params, maxRunning: 1, events: [{ event: "a" }] }).success).toBe(false)

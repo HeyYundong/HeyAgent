@@ -54,7 +54,7 @@ export function SessionDesktopDialog({ runId, desktopId, desktopName, item, view
   const pending = item ?? items.find((each) => each.runId === runId && each.detail.desktop?.desktopId === desktopId)
   const canResolve = pending ? can(user, "humanItem.resolve", { assigneeId: pending.assigneeId }) : false
   const resolve = useAction(trpc.engine.resolveHumanItem.mutationOptions({ onSuccess: () => { onClose(); onResolved?.() } }), {
-    success: (result) => (result.resumedSessionId ? `已处理，${result.resumedSessionId} 接着在同一台桌面上做` : "已处理"),
+    success: (result) => (result.resumedSessionId ? `已处理，${result.resumedSessionId} ${result.slotWaiting ? "等名额：任务同时在跑的满了，空出来接着在同一台桌面上做" : "接着在同一台桌面上做"}` : "已处理"),
     errorTitle: "没处理成功",
   })
   const description = [desktopName && `桌面「${desktopName}」`, pending && `在等：${pending.title}`].filter(Boolean).join(" · ")

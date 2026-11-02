@@ -566,7 +566,7 @@ curl -s -X POST http://localhost:3100/api/events \
 3. 谁先到谁生效：继续用「状态还是 waiting 才改」的条件更新，到点、事件、人处理、立即继续同时到时只有一个生效，后到的什么都不做（返回的数组里不会出现它）。
 4. **派单**（2026-10-28，派活第三期）：任务上配了「收到事件就派一张」（`dispatch.events`）、事件名一样的，从 `data` 里取参数各派一张单（`via = event`），见 16.9。和上面两件互不影响，一个任务没派成不影响别的任务，也不让接口报错。
 
-**平台内部的事件名**（2026-10-28，`docs/dev/sub-agents.md` 第 12 节第 2 条）：事件名以 `work.done:`（派活方等单结束）、`browser.`（等浏览器）、`desktop:`（等桌面）、`subagent.`（等子 agent）开头的，外部事件接口和控制台手动触发（`engine.fireEvent`）**一律拒**：HTTP 400 / tRPC `BAD_REQUEST`，`error` 写清是哪个前缀、平台拿它等什么（「事件名不能以「browser.」开头：这是平台内部的事件（运行等浏览器空出来），只由系统自己发；外部系统和手动触发发了会把在等的运行提前叫醒。换个事件名」）。前缀清单是 shared 的 `RESERVED_EVENT_PREFIXES`（`reservedEventPrefix(name)` 判断）。系统自己叫醒（`onWorkNotify`、浏览器 / 桌面租约放开）直接找等待、`resume`，不经过这里，不受影响。
+**平台内部的事件名**（2026-10-28，`docs/dev/sub-agents.md` 第 12 节第 2 条）：事件名以 `work.done:`（派活方等单结束）、`work.slot:`（被派的运行等名额，2026-11-02 加）、`browser.`（等浏览器）、`desktop:`（等桌面）、`subagent.`（等子 agent）开头的，外部事件接口和控制台手动触发（`engine.fireEvent`）**一律拒**：HTTP 400 / tRPC `BAD_REQUEST`，`error` 写清是哪个前缀、平台拿它等什么（「事件名不能以「browser.」开头：这是平台内部的事件（运行等浏览器空出来），只由系统自己发；外部系统和手动触发发了会把在等的运行提前叫醒。换个事件名」）。前缀清单是 shared 的 `RESERVED_EVENT_PREFIXES`（`reservedEventPrefix(name)` 判断）。系统自己叫醒（`onWorkNotify`、浏览器 / 桌面租约放开）直接找等待、`resume`，不经过这里，不受影响。
 
 每次调用都记审计 `event.fire`（目标表 `events`，目标 id 是事件名，操作人为空，detail 有 `via: "webhook"` 和四个数组）。推送的是被继续 / 新开的 session 相关表。
 
@@ -1209,7 +1209,7 @@ claude mcp add --transport http heyagent-compare http://<host>:8080/api/compare/
 - 派活的任务：在「用哪些」里选内置工具「派活」（`work.dispatch`）。人手动派（任务详情的「派一张」）不受「谁能派活给它」限制，要被派任务的 `task.manage`。
 - 单的状态：`queued` 排队、`running` 在办（运行还没结束，包括挂起、等人处理、验收中；细分看 `sessionStatus`）、`done` 办完、`failed` 没办成（运行失败、被取消、验收判失败）、`cancelled` 不办了（人点的）。
 - 去重键：标了「去重」的参数按声明顺序取值用 `|` 连起来（`workDedupeKey`）；去重参数必须有值。没有去重参数时 agent 必须给 `items[].key`；人派的每次都是新的一件事（去重键 = 单号）。已经结束的单再派**不会重开**，只返回现状；重开只能人点「重办」。
-- 名额（`occupiesSlotSql`，领单和页面数字同一个口径）：被派的运行里，执行中、验收中、挂起等的是浏览器（等待事件 `browser.%`）的占名额；agent 自己挂起、等人处理不占；被叫醒继续的不卡名额（可以短时间超出）。
+- 名额（`occupiesSlotSql`，领单和页面数字同一个口径）：被派的运行里，执行中、验收中、挂起等的是浏览器（等待事件 `browser.%`）的占名额；agent 自己挂起、等人处理不占。被叫醒继续时也要名额，满了就等名额、比新单先放行；「立即继续」可以插队（2026-11-02 改，原来是不卡名额）：从不占名额的等待醒来时 `resumeInTx` 在任务的领单锁里数名额，满了就挂起等 `work.slot:<任务>`（平台内部事件，外部不能发），原来那次继续的消息存在 `session_waits.match.slot`；`pumpTask` 先放行它们（最早等的先，返回 `released`），再领新单。等名额的不占名额，单还是「在办」；`work.taskStats` / `work.queueStats` 多一个 `slotWaiting`（在等名额的运行数）。`engine.resumeNow` 返回 `slotWaiting: true` 表示名额满了、先等名额（再点一次插队）；`engine.resolveHumanItem` / `resolveVerifyDispute` 同样带 `slotWaiting`。
 
 ### 16.2 tRPC（`appRouter.work`）
 
