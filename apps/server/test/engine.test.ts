@@ -834,26 +834,89 @@ describe("场景 8：超过花费上限转人工", () => {
     }
   })
 
-  it("模型一直出错：退避重试 3 次后标失败，写清原因", async () => {
-    let calls = 0
-    useScript(
+  it("模型一直出错：退避重试 3 次后交给人（等人处理），点「重试」从失败的那一步重新调模型 → 完成", async () => {
+    const fail = () => {
+      throw new Error("Service is too busy")
+    }
+    // 第 1 步成功；第 2 步连错 4 次（1 次 + 重试 3 次）；人点重试后第 2 步成功
+    const script = useScript(
       "test/s8c",
+      new Script([
+        step([call("checkpoint.mark", { checkpoint: 1, status: "done" })]),
+        fail,
+        fail,
+        fail,
+        fail,
+        step(finishWith("完成")),
+      ])
+    )
+    const taskId = await createTask(ctx.db, { modelId: "test/s8c", steps: CHECKPOINT_STEP })
+    const sessionId = await runNow(taskId)
+    const waiting = await waitStatus(ctx.db, sessionId, "needs_human")
+    expect(script.prompts).toHaveLength(5)
+    expect(waiting.error).toBeNull()
+    expect(waiting.stepCount).toBe(1) // 失败的那一步不算步数
+    const [item] = await ctx.db.select().from(t.humanItems).where(eq(t.humanItems.sessionId, sessionId))
+    expect(item).toMatchObject({
+      kind: "approval",
+      title: "模型调用失败，要不要重试",
+      assigneeId: "u-wang",
+      urgency: 1,
+      status: "open",
+      summary: expect.stringContaining("模型调用失败（已重试 3 次）：Service is too busy"),
+      detail: expect.objectContaining({ primary: "重试", secondary: "不继续" }),
+    })
+    const [wait] = await ctx.db.select().from(t.sessionWaits).where(eq(t.sessionWaits.humanItemId, item!.id))
+    expect(wait).toMatchObject({ status: "waiting", match: { modelError: expect.stringContaining("Service is too busy") } })
+    const events = await eventsOf(ctx.db, sessionId)
+    expect(events.filter((event) => event.kind === "error").map((event) => event.title)).toEqual([
+      expect.stringContaining("（第 1 次）"),
+      expect.stringContaining("（第 2 次）"),
+      expect.stringContaining("（第 3 次）"),
+      "模型调用失败，交给人处理",
+    ])
+    expect(events.at(-1)).toMatchObject({ kind: "human", title: "交给人处理：模型调用失败，要不要重试" })
+    const note = await waitFor(async () => {
+      const rows = await ctx.db.select().from(t.notifications).where(eq(t.notifications.sessionId, sessionId))
+      return rows.length ? rows : undefined
+    })
+    expect(note.map((row) => row.title)).toEqual(["等你处理：模型调用失败，要不要重试"])
+    // 失败的那一步没写任何消息：最后一条还是第 1 步的工具结果
+    const before = await messagesOf(ctx.db, sessionId)
+    expect(before.at(-1)!.role).toBe("tool")
+
+    const resolved = await mutate(ctx.app, "engine.resolveHumanItem", wang, { itemId: item!.id, how: "approve", note: "服务好了" })
+    expect(resolved.data).toEqual({ resumedSessionId: sessionId })
+    const done = await waitStatus(ctx.db, sessionId, "done")
+    expect(done.stepCount).toBe(2)
+    expect(script.prompts).toHaveLength(6)
+    // 重试的这次：前面的历史原样带着，后面只多了一条「让你重试」
+    const retried = script.promptText(5)
+    expect(retried).toContain("已勾上第 1 个检查点")
+    expect(retried).toContain("让你重试（刚才模型调用失败）。备注：服务好了")
+    expect(script.prompts[5]!.prompt.slice(0, -1)).toEqual(script.prompts[4]!.prompt)
+    expect(script.prompts[5]!.prompt.at(-1)!.role).toBe("user")
+  })
+
+  it("模型调用失败交给人后点「不继续」：运行失败，错误里留着原来的模型错误", async () => {
+    useScript(
+      "test/s8d",
       new Script(
-        Array.from({ length: 5 }, () => () => {
-          calls += 1
-          throw new Error("上游 502")
+        Array.from({ length: 4 }, () => () => {
+          throw new Error("Invalid JSON response")
         })
       )
     )
-    const taskId = await createTask(ctx.db, { modelId: "test/s8c" })
+    const taskId = await createTask(ctx.db, { modelId: "test/s8d" })
     const sessionId = await runNow(taskId)
-    const failed = await waitStatus(ctx.db, sessionId, "failed")
-    expect(calls).toBe(4)
-    expect(failed.error).toContain("上游 502")
-    const errors = (await eventsOf(ctx.db, sessionId)).filter(
-      (event) => event.kind === "error"
-    )
-    expect(errors).toHaveLength(4) // 3 次重试 + 1 次失败
+    await waitStatus(ctx.db, sessionId, "needs_human")
+    const [item] = await ctx.db.select().from(t.humanItems).where(eq(t.humanItems.sessionId, sessionId))
+    const resolved = await mutate(ctx.app, "engine.resolveHumanItem", wang, { itemId: item!.id, how: "reject", note: "先不跑了" })
+    expect(resolved.data).toEqual({ endedSessionId: sessionId })
+    const failed = await sessionRow(ctx.db, sessionId)
+    expect(failed).toMatchObject({ status: "failed", outcome: "not_achieved", outcomeBy: "human" })
+    expect(failed!.error).toMatch(/^模型调用失败，.+决定不继续。原来的错误：模型调用失败（已重试 3 次）：Invalid JSON response$/)
+    expect((await eventsOf(ctx.db, sessionId)).at(-1)).toMatchObject({ kind: "error", title: "负责人决定不继续，运行结束", detail: "先不跑了" })
   })
 })
 

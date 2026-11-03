@@ -400,16 +400,14 @@ describe("派活方等结果：单结束时叫醒", () => {
   })
 
   it("没办成（运行出错，不重试）：叫醒", async () => {
-    responder("test/p2-wake-fail", () => {
-      throw new Error("模型坏了")
-    })
+    // 不给剧本：开始时解析执行模型就出错，运行失败（模型调用失败现在是交给人，不再直接失败）
     const { patrol, worker } = await makePair({ workerModel: "test/p2-wake-fail", enabled: false })
     const { ids } = await agentDispatch(patrol, worker, ["D-2"])
     const { session, waitId } = await waitingOn(patrol, ids[0]!)
     await ctx.db.update(t.tasks).set({ enabled: true }).where(eq(t.tasks.id, worker))
     await pumpTask(ctx.db, worker)
     await waitFired(waitId)
-    expect(await lastMessage(session.id)).toContain(`${ids[0]}「单 D-2」没办成：模型调用失败`)
+    expect(await lastMessage(session.id)).toContain(`${ids[0]}「单 D-2」没办成：测试没有给模型 test/p2-wake-fail 准备剧本`)
     expect(await itemRow(ids[0]!)).toMatchObject({ status: "failed", failKind: "error" })
   })
 
@@ -631,9 +629,7 @@ describe("work.report：报结果", () => {
 
 describe("没办成自动重试", () => {
   it("运行出错：排队等重试（到点才领、不算名次、不通知、不叫醒），重试用完才没办成并通知一次；重办清零", async () => {
-    responder("test/p2-retry", () => {
-      throw new Error("上游超时")
-    })
+    // 不给剧本：每次运行开始时解析执行模型就出错（运行出错；模型调用失败现在是交给人，不再直接失败）
     const { worker } = await makePair({ workerModel: "test/p2-retry", dispatch: { retries: 2, retryDelayMinutes: 5 } })
     const res = await mutate(ctx.app, "work.dispatch", wang, { taskId: worker, params: { 单号: "Y-1" } })
     const id = res.data.item.id as string
@@ -641,7 +637,7 @@ describe("没办成自动重试", () => {
     for (let retry = 1; retry <= 2; retry++) {
       const row = await waitItem(id, (each) => each.status === "queued" && each.autoRetries === retry, `排队等第 ${retry} 次重试`)
       sessions.add(row.sessionId!)
-      expect(row.error).toContain("上游超时")
+      expect(row.error).toContain("测试没有给模型 test/p2-retry 准备剧本")
       expect(row.failKind).toBeNull()
       expect(row.result).toBeNull()
       expect(row.notBefore!.getTime()).toBeGreaterThan(Date.now() + 4 * 60_000)
@@ -672,7 +668,7 @@ describe("没办成自动重试", () => {
       const rows = await ctx.db.select().from(t.notifications).where(inArray(t.notifications.sessionId, [...sessions]))
       return rows.length ? rows : undefined
     }, { what: "重试用完的通知" })
-    expect(notes.map((note) => note.body)).toEqual([expect.stringMatching(/^自动重试了 2 次都没办成：模型调用失败/)])
+    expect(notes.map((note) => note.body)).toEqual([expect.stringMatching(/^自动重试了 2 次都没办成：测试没有给模型 test\/p2-retry 准备剧本/)])
     expect((await notifyJobsOf(id)).length).toBe(1)
 
     // 重办：自动重试的次数清零，又有完整的 2 次

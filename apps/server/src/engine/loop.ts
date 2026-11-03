@@ -499,6 +499,68 @@ async function hitLimit(
   }
 }
 
+/**
+ * 模型调用失败（重试完了还不行）：不直接标失败，生成一件要人办的事、session 挂起等人（2026-11-03 用户要求）。
+ * 模型服务忙、偶尔回坏 JSON 多半过一会儿就好：人点「重试」从失败的那一步重新调模型（失败的这一步没写任何消息、不算步数），
+ * 点「不继续」才结束运行（humans.ts 的 match.modelError）。挂不起来（运行已经不是执行中，例如刚被取消）返回 false，调用方照旧标失败
+ */
+async function askAboutModelError(
+  db: Db,
+  session: SessionRow,
+  snapshot: SessionSnapshot,
+  reason: string
+): Promise<boolean> {
+  const title = "模型调用失败，要不要重试"
+  const advice =
+    "可能是模型服务暂时忙或出错。等一会儿点「重试」接着跑（从失败的那一步重新调模型，前面做过的不会重做）；" +
+    `也可以先去「模型」页检查这个模型服务（API key、余额、地址）再重试——这次运行用的模型（${snapshot.modelId}）是开始时定的，给任务换模型只对以后的运行有效。` +
+    "点「不继续」就结束这次运行。"
+  // 摘要最多 1000 字（createHumanItem 截断）：错误太长时先截错误，后面怎么办的话要留着
+  const summary = `运行 ${session.id} ${reason.length > 400 ? `${reason.slice(0, 400)}…` : reason}\n${advice}`
+  const result = await db
+    .transaction(async (tx) => {
+      await appendEvent(tx, session.id, {
+        kind: "error",
+        title: "模型调用失败，交给人处理",
+        detail: reason,
+      })
+      const created = await askHumanInTx(db, tx, {
+        kind: "approval",
+        title,
+        summary,
+        assigneeId: snapshot.task.ownerId,
+        taskId: snapshot.task.id,
+        sessionId: session.id,
+        urgency: 1,
+        detail: {
+          sections: [
+            { title: "为什么到了你这里", text: reason },
+            { title: "怎么办", text: advice },
+            { title: "任务", text: snapshot.task.title },
+          ],
+          primary: "重试",
+          secondary: "不继续",
+          rejectHint: "结束这次运行，运行记失败，不再调模型。",
+        },
+        what: title,
+        modelError: reason.slice(0, 2000),
+      })
+      if (!created) throw new RollbackSignal()
+      return created
+    })
+    .catch((error) => {
+      if (error instanceof RollbackSignal) return undefined
+      throw error
+    })
+  if (!result) return false
+  const [item] = await db
+    .select()
+    .from(t.humanItems)
+    .where(eq(t.humanItems.id, result.itemId))
+  if (item) await notifyAssignee(db, item)
+  return true
+}
+
 class RollbackSignal extends Error {}
 
 /** 工具要求挂起：工具结果（以及同一步里后面没执行的调用的结果）和挂起在同一个事务里落库 */
@@ -1175,6 +1237,8 @@ export async function runSession(
             ? error.message
             : `模型调用失败（已重试 ${runtime.modelRetries} 次）：${(error as Error).message}`
         await closeGateway()
+        // 普通运行交给人决定重试还是不继续；子运行照旧标失败（结果交给父 agent，它自己决定），固化试跑也照旧（固化那边按试跑失败算这一轮）
+        if (session.kind === "run" && (await askAboutModelError(db, session, snapshot, reason))) return "suspended"
         await failSession(db, session, snapshot, reason)
         return "failed"
       }

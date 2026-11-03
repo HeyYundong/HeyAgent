@@ -1,7 +1,8 @@
-// 要人办的事：ask.human、花费 / 步数上限转人工、规则拦下的工具调用（审批）、验收争议。
+// 要人办的事：ask.human、花费 / 步数上限转人工、模型调用失败转人工、规则拦下的工具调用（审批）、验收争议。
 // 处理完（批准 / 拒绝 / 已处理 + 备注）就继续对应的 session：
 // - 普通请示：把处理结果和备注告诉 agent；
 // - 花费 / 步数上限、规则「花费超过 X」：批准就继续，拒绝就结束运行；
+// - 模型调用失败（重试完了还不行）：批准 = 重试（从失败的那一步重新调模型），拒绝 = 结束运行；
 // - 审批工具调用（M3）：批准 = 执行那次调用接着跑，拒绝 = 把「被拒绝：理由」作为工具结果交给 agent（结果由引擎继续时写，消息顺序才合法）；
 // - 验收争议（M3）：算通过 / 算失败 / 补充说明后继续。
 import { and, eq, sql } from "drizzle-orm"
@@ -88,6 +89,8 @@ export async function askHumanInTx(
     limitKind?: "cost" | "steps"
     /** 规则「花费超过 X → 交给人决定」：拒绝就结束运行（值是规则 id） */
     stopOnReject?: string
+    /** 模型调用失败（重试完了）交给人：批准 = 重试（从失败的那一步重新调模型），拒绝 = 结束运行（值是错误原因，结束时写进 error） */
+    modelError?: string
     /** 等审批的工具调用（M3） */
     pending?: PendingToolCalls
     /** session 现在的状态（默认只从「执行中」挂起；验收争议从「验收中」挂起） */
@@ -108,7 +111,9 @@ export async function askHumanInTx(
       ? { limit: input.limitKind }
       : input.stopOnReject
         ? { ruleStop: input.stopOnReject }
-        : null,
+        : input.modelError
+          ? { modelError: input.modelError }
+          : null,
     pending: input.pending ?? null,
     fromStatuses: input.fromStatuses,
   })
@@ -239,9 +244,10 @@ export async function resolveHumanItemImpl(
     const match = wait.match as {
       limit?: "cost" | "steps"
       ruleStop?: string
+      modelError?: string
     } | null
     const limit = match?.limit
-    if ((limit || match?.ruleStop) && input.how === "reject") {
+    if ((limit || match?.ruleStop || match?.modelError) && input.how === "reject") {
       await tx
         .update(t.sessionWaits)
         .set({ status: "cancelled", firedCause: "human", firedAt: new Date() })
@@ -251,15 +257,20 @@ export async function resolveHumanItemImpl(
         title: "负责人决定不继续，运行结束",
         detail: note ?? null,
       })
-      const error = limit
-        ? `${limit === "cost" ? "花费" : "步数"}到了上限，${input.actorName}决定不继续`
-        : `${item.title}：${input.actorName}决定不继续`
+      const error = (
+        limit
+          ? `${limit === "cost" ? "花费" : "步数"}到了上限，${input.actorName}决定不继续`
+          : match?.modelError
+            ? `模型调用失败，${input.actorName}决定不继续。原来的错误：${match.modelError}`
+            : `${item.title}：${input.actorName}决定不继续`
+      ).slice(0, 2000)
       await tx
         .update(t.sessions)
         .set({ status: "failed", endedAt: new Date(), error, ...failedOutcome(error, "human") })
         .where(eq(t.sessions.id, item.sessionId))
-      // 被派的运行：派活单跟着记「没办成」，人选了不继续的不自动重试
-      await afterRunEndedInTx(db, tx, item.sessionId, { status: "failed", error, retryable: false, failKind: "cancelled_run" })
+      // 被派的运行：派活单跟着记「没办成」，人选了不继续的不自动重试。
+      // 模型调用失败的记 error（运行出错）：根子是模型服务的问题、不是这件事办不成，派活方以后可以再派；人已经选了不继续，所以同样不自动重试
+      await afterRunEndedInTx(db, tx, item.sessionId, { status: "failed", error, retryable: false, failKind: match?.modelError ? "error" : "cancelled_run" })
       return { endedSessionId: item.sessionId }
     }
     let sessionPatch: Partial<typeof t.sessions.$inferInsert> | undefined
@@ -280,7 +291,9 @@ export async function resolveHumanItemImpl(
       ? `${input.actorName}同意继续（${limit === "cost" ? "花费" : "步数"}上限已调高）。${note ? `备注：${note}` : ""}`
       : match?.ruleStop
         ? `${input.actorName}同意继续（规则要求的花费确认已通过）。${note ? `备注：${note}` : ""}`
-        : `${input.actorName}处理了你提的事「${item.title}」：${resolutionText[input.how]}。${note ? `备注：${note}` : "没有备注。"}`
+        : match?.modelError
+          ? `${input.actorName}让你重试（刚才模型调用失败）。${note ? `备注：${note}` : ""}`
+          : `${input.actorName}处理了你提的事「${item.title}」：${resolutionText[input.how]}。${note ? `备注：${note}` : "没有备注。"}`
     const resumed = await resumeInTx(db, tx, {
       waitId: wait.id,
       cause: "human",

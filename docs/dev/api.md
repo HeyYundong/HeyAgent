@@ -461,6 +461,7 @@ curl -s -b 'better-auth.session_token=<COOKIE>' -H 'content-type: application/js
 - 关联的 session 在等这件事时：
   - 普通请示（`ask.human`）：不论 `how` 是什么，都会继续 session，把「<姓名>处理了你提的事『…』：批准 / 拒绝 / 已处理，备注」告诉 agent，由 agent 决定下一步。返回 `resumedSessionId`。
   - 花费 / 步数上限：`approve` / `done` = 在现有基础上再给一份默认额度（设置里的 `maxCostUsd` / `maxSteps`）并继续；`reject` = 运行结束（`failed`，原因写「…到了上限，<姓名>决定不继续」），返回 `endedSessionId`。
+  - 模型调用失败（2026-11-03 起：`loop.ts` 调模型重试完还不行，普通运行不再直接 `failed`，而是生成 `approval`「模型调用失败，要不要重试」、session 挂起 `needs_human`，等待上记 `match.modelError = 错误原因`；子运行照旧直接失败）：`approve` / `done` = 重试，继续同一个 session（失败的那一步没写消息、没算步数，加一条「<姓名>让你重试（刚才模型调用失败）」后重新调模型）；`reject` = 运行结束（`failed`，原因写「模型调用失败，<姓名>决定不继续。原来的错误：…」），被派的单记没办成、`failKind = error`、不自动重试，返回 `endedSessionId`。
   - 没有 session、或者 session 已经不在等它：只把这件事标成已处理，返回 `{}`。
 - 审计 `human_item.resolve`（detail 有 how、note）；继续时另记 `session.resume.human`；推 `human_items`、`sessions` 等。
 

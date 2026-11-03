@@ -509,7 +509,8 @@ describe("失败和取消", () => {
     await waitStatus(ctx.db, sessionId, "done", 40_000)
     const children = await childrenOf(sessionId)
     expect(children.map((row) => row.status)).toEqual(["failed", "done", "done"])
-    expect(children[0]!.error).toContain("模型那边坏了")
+    // 子运行模型调用失败照旧直接失败（不交给人，结果交给父 agent）
+    expect(children[0]!.error).toContain("模型调用失败（已重试 3 次）：模型那边坏了")
     expect(children[1]).toMatchObject({ outcome: "not_achieved", outcomeBy: "rule" })
     expect(children[1]!.outcomeReason).toContain("子 agent 的步数到了上限 2 步")
     expect(children[2]).toMatchObject({ outcome: "not_achieved", outcomeBy: "rule", outcomeReason: "子 agent 没调用 run_finish 报结果" })

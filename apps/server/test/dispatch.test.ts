@@ -351,14 +351,12 @@ describe("不重复、不抢单", () => {
 })
 
 describe("5 处结束回写", () => {
-  it("loop.ts 的 failSession：模型一直出错 → 单没办成，负责人照常收到失败通知", async () => {
-    responder("test/d-fail", () => {
-      throw new Error("模型坏了")
-    })
+  it("loop.ts 的 failSession：运行出错（执行模型解析不了）→ 单没办成，负责人照常收到失败通知", async () => {
+    // 不给剧本：引擎开始时解析执行模型就出错（测试的模型工厂抛错），走 failSession
     const { worker } = await makePair({ workerModel: "test/d-fail" })
     const { item } = await humanDispatch(worker, { 单号: "F-1" })
     const failed = await waitItem(item.id, "failed")
-    expect(failed.error).toContain("模型调用失败")
+    expect(failed.error).toContain("测试没有给模型 test/d-fail 准备剧本")
     expect(failed.result).toBeNull()
     expect(failed.log.at(-1)).toMatchObject({ kind: "run_ended", note: "failed", sessionId: failed.sessionId })
     // 通知在单结算的事务提交以后才写：等它出现（负载高时测试会先看到单变了）
@@ -371,6 +369,32 @@ describe("5 处结束回写", () => {
     expect(await sessionRow(ctx.db, failed.sessionId!)).toMatchObject({ createdById: "u-wang", parentSessionId: null })
     const [first] = await messagesOf(ctx.db, failed.sessionId!)
     expect(JSON.stringify(first!.content)).toContain("王悦手动派的活")
+  })
+
+  it("模型调用失败（重试完了）：运行等人处理，单还在办、名额空出来给排队的；人点「不继续」→ 单没办成（运行出错），配了重试也不重试", async () => {
+    responder("test/d-model-fail", (options) => {
+      // 第二张单的运行正常办完；第一张的模型一直忙
+      if (promptOf(options).includes("M-2")) return step(finishWith("办完了"))
+      throw new Error("Service is too busy")
+    })
+    const { worker } = await makePair({ workerModel: "test/d-model-fail", dispatch: { ...DISPATCH, retries: 2, retryDelayMinutes: 1 } })
+    const first = (await humanDispatch(worker, { 单号: "M-1" })).item.id
+    const second = (await humanDispatch(worker, { 单号: "M-2" })).item.id
+    const running = await waitItem(first, "running")
+    const waiting = await waitStatus(ctx.db, running.sessionId!, "needs_human")
+    expect(waiting.error).toBeNull()
+    const [human] = await ctx.db.select().from(t.humanItems).where(eq(t.humanItems.sessionId, waiting.id))
+    expect(human).toMatchObject({ kind: "approval", title: "模型调用失败，要不要重试", assigneeId: "u-wang" })
+    // 等人处理不占名额：排着的第二张接着办
+    await waitItem(second, "done")
+    expect(await itemRow(first)).toMatchObject({ status: "running", sessionId: waiting.id, autoRetries: 0, failKind: null })
+
+    const resolved = await resolveHumanItemImpl(ctx.db, { itemId: human!.id, how: "reject", actorId: "u-wang", actorName: "王悦" })
+    expect(resolved).toEqual({ endedSessionId: waiting.id })
+    const failed = await waitItem(first, "failed")
+    expect(failed).toMatchObject({ failKind: "error", autoRetries: 0, notBefore: null })
+    expect(failed.error).toBe("模型调用失败，王悦决定不继续。原来的错误：模型调用失败（已重试 3 次）：Service is too busy")
+    expect(failed.log.at(-1)).toMatchObject({ kind: "run_ended", note: "failed", sessionId: waiting.id })
   })
 
   it("control.ts 的取消：人取消被派的运行 → 单没办成，原因写谁取消的", async () => {

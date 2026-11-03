@@ -322,7 +322,7 @@ export function DispatchFields({ id, control, register, errors, fromOptions, fro
             <Field>
               <FieldLabel htmlFor={`${id}-retries`} className="flex items-center gap-1">
                 没办成自动重试
-                <HelpTip>只对运行出错重试（模型调用失败、程序出错、验收判失败等）；人取消的、选了不继续的、没办成或者只办成一部分的（agent 报的、检查点、复核判的）不重试。会对外发消息的任务慎用：重试可能重复发。</HelpTip>
+                <HelpTip>只对运行出错重试（程序出错、验收判失败等）；调模型出错重试完还不行的不在这里重试，交给负责人决定「重试」还是「不继续」；人取消的、选了不继续的、没办成或者只办成一部分的（agent 报的、检查点、复核判的）不重试。会对外发消息的任务慎用：重试可能重复发。</HelpTip>
               </FieldLabel>
               <Controller control={control} name="dispatch.retries" render={({ field }) => <NumberSelect id={`${id}-retries`} items={RETRY_ITEMS} value={field.value ?? 0} onChange={field.onChange} />} />
             </Field>
