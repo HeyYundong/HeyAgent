@@ -400,7 +400,7 @@ describe("派活方等结果：单结束时叫醒", () => {
   })
 
   it("没办成（运行出错，不重试）：叫醒", async () => {
-    // 不给剧本：开始时解析执行模型就出错，运行失败（模型调用失败现在是交给人，不再直接失败）
+    // 不给剧本：开始时解析执行模型就出错，运行失败（模型调用失败没配自动重试的会交给人，不会直接失败）
     const { patrol, worker } = await makePair({ workerModel: "test/p2-wake-fail", enabled: false })
     const { ids } = await agentDispatch(patrol, worker, ["D-2"])
     const { session, waitId } = await waitingOn(patrol, ids[0]!)
@@ -629,7 +629,7 @@ describe("work.report：报结果", () => {
 
 describe("没办成自动重试", () => {
   it("运行出错：排队等重试（到点才领、不算名次、不通知、不叫醒），重试用完才没办成并通知一次；重办清零", async () => {
-    // 不给剧本：每次运行开始时解析执行模型就出错（运行出错；模型调用失败现在是交给人，不再直接失败）
+    // 不给剧本：每次运行开始时解析执行模型就出错（运行出错；模型调用失败重试用完会交给人、单不会记没办成，见 dispatch.test.ts）
     const { worker } = await makePair({ workerModel: "test/p2-retry", dispatch: { retries: 2, retryDelayMinutes: 5 } })
     const res = await mutate(ctx.app, "work.dispatch", wang, { taskId: worker, params: { 单号: "Y-1" } })
     const id = res.data.item.id as string

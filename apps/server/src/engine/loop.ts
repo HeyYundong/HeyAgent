@@ -59,6 +59,7 @@ import { loadEngineSettings } from "./settings.js"
 import type { SessionRow, ToolOutcome } from "./tools/builtin.js"
 import { readSubagentSettings } from "../data/config/settings.js"
 import { recheckWorkDoneAfterSuspend } from "./dispatch/notify.js"
+import { willAutoRetryInTx } from "./dispatch/settle.js"
 import { afterRunEndedInTx } from "./run-ended.js"
 import { recheckSubagentWaitAfterSuspend } from "./subagents/notify.js"
 import { openChildrenText } from "./subagents/results.js"
@@ -165,14 +166,15 @@ async function loadSession(
  * 标失败并写清原因（只在还是执行中时）。被派的运行：派活单跟着没办成，或者（运行出错、自动重试还没用完）回到排队；
  * 还会重试的这次不通知负责人，最后一次没办成才通知（派活第二期 4.3）。
  * retryable：运行出错（模型、程序出错、验收判失败）= true；规则让它失败 = false（规则就是要它停）
+ * onlyIfAutoRetry：只在派活单会排队自动重试时才标失败（模型调用失败用）；不会重试就什么都不写，返回 "no_auto_retry"，调用方交给人
  */
 async function failSession(
   db: Db,
   session: SessionRow,
   snapshot: SessionSnapshot | null,
   reason: string,
-  options: { retryable: boolean; failKind?: WorkFailKind } = { retryable: true }
-) {
+  options: { retryable: boolean; failKind?: WorkFailKind; onlyIfAutoRetry?: boolean } = { retryable: true }
+): Promise<"no_auto_retry" | undefined> {
   // 过程记录和最终状态在同一个事务里写：读到「失败」时一定也读得到原因
   const failed = await db.transaction(async (tx) => {
     const updated = await tx
@@ -192,6 +194,8 @@ async function failSession(
       )
       .returning({ id: t.sessions.id })
     if (updated.length === 0) return false
+    // 先改运行状态再锁单（和结算同一个先后，不和取消等互相等锁）；判断和下面的结算在同一个事务里，中间单不会被改
+    if (options.onlyIfAutoRetry && !(await willAutoRetryInTx(tx, session.id))) throw new NoAutoRetry()
     await appendEvent(tx, session.id, {
       kind: "error",
       title: "运行失败",
@@ -207,7 +211,11 @@ async function failSession(
     // 固化试跑出错：脚本状态记停下（运行出错），同样交给固化往下走（它看试跑运行的状态，记这一轮没过）
     await endRoutineTestInTx(db, tx, session.id, { kind: "run_failed", reason })
     return { settled }
+  }).catch((error) => {
+    if (error instanceof NoAutoRetry) return "no_auto_retry" as const
+    throw error
   })
+  if (failed === "no_auto_retry") return failed
   if (!failed) return
   // 先通知负责人，再记固化流程的统计、看要不要自动固化（afterRunSettled）：失败的消息不该等这些。
   // 固化试跑不通知负责人（固化没成功时由固化那边通知）；还会自动重试的这次不通知；子运行不通知（结果交给父 agent，docs/dev/sub-agents.md 9.1）
@@ -225,6 +233,9 @@ async function failSession(
   // 跑过固化流程的运行：试用、转正式、连续跑不通停用；办成的看要不要自动固化（routine/after-run.ts）
   await afterRunSettled(db, session.id)
 }
+
+/** failSession 的 onlyIfAutoRetry：单不会自动重试，回滚 */
+class NoAutoRetry extends Error {}
 
 /** 只回文字、没调 run.finish 时提醒一次的话（3.2） */
 export const finishNudge = (name: string) => `要结束请调用 ${name} 报结果（办成 / 没办成），并对照目标写依据。`
@@ -1237,8 +1248,12 @@ export async function runSession(
             ? error.message
             : `模型调用失败（已重试 ${runtime.modelRetries} 次）：${(error as Error).message}`
         await closeGateway()
-        // 普通运行交给人决定重试还是不继续；子运行照旧标失败（结果交给父 agent，它自己决定），固化试跑也照旧（固化那边按试跑失败算这一轮）
-        if (session.kind === "run" && (await askAboutModelError(db, session, snapshot, reason))) return "suspended"
+        // 普通运行交给人决定重试还是不继续；子运行照旧标失败（结果交给父 agent，它自己决定），固化试跑也照旧（固化那边按试跑失败算这一轮）。
+        // 被派的运行先用派活单的自动重试：这次会排队重试就照旧标失败（判断和结算在同一个事务里）；重试用完了、没配重试的才交给人
+        if (session.kind === "run") {
+          if (session.workItemId && (await failSession(db, session, snapshot, reason, { retryable: true, onlyIfAutoRetry: true })) !== "no_auto_retry") return "failed"
+          if (await askAboutModelError(db, session, snapshot, reason)) return "suspended"
+        }
         await failSession(db, session, snapshot, reason)
         return "failed"
       }

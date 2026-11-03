@@ -352,7 +352,7 @@ describe("不重复、不抢单", () => {
 
 describe("5 处结束回写", () => {
   it("loop.ts 的 failSession：运行出错（执行模型解析不了）→ 单没办成，负责人照常收到失败通知", async () => {
-    // 不给剧本：引擎开始时解析执行模型就出错（测试的模型工厂抛错），走 failSession
+    // 不给剧本：引擎开始时解析执行模型就出错（测试的模型工厂抛错），走 failSession（模型调用失败没配自动重试的会交给人）
     const { worker } = await makePair({ workerModel: "test/d-fail" })
     const { item } = await humanDispatch(worker, { 单号: "F-1" })
     const failed = await waitItem(item.id, "failed")
@@ -371,13 +371,13 @@ describe("5 处结束回写", () => {
     expect(JSON.stringify(first!.content)).toContain("王悦手动派的活")
   })
 
-  it("模型调用失败（重试完了）：运行等人处理，单还在办、名额空出来给排队的；人点「不继续」→ 单没办成（运行出错），配了重试也不重试", async () => {
+  it("模型调用失败、没配自动重试：运行直接等人处理，单还在办、名额空出来给排队的；人点「不继续」→ 单没办成（运行出错）", async () => {
     responder("test/d-model-fail", (options) => {
       // 第二张单的运行正常办完；第一张的模型一直忙
       if (promptOf(options).includes("M-2")) return step(finishWith("办完了"))
       throw new Error("Service is too busy")
     })
-    const { worker } = await makePair({ workerModel: "test/d-model-fail", dispatch: { ...DISPATCH, retries: 2, retryDelayMinutes: 1 } })
+    const { worker } = await makePair({ workerModel: "test/d-model-fail" })
     const first = (await humanDispatch(worker, { 单号: "M-1" })).item.id
     const second = (await humanDispatch(worker, { 单号: "M-2" })).item.id
     const running = await waitItem(first, "running")
@@ -396,6 +396,45 @@ describe("5 处结束回写", () => {
     expect(failed.error).toBe("模型调用失败，王悦决定不继续。原来的错误：模型调用失败（已重试 3 次）：Service is too busy")
     expect(failed.log.at(-1)).toMatchObject({ kind: "run_ended", note: "failed", sessionId: waiting.id })
   })
+
+  it("模型调用失败、配了自动重试 2 次：前两次照常排队重试，第三次（重试用完）才交给人；人点「不继续」→ 单没办成（运行出错），不再重试", async () => {
+    responder("test/d-model-retry", () => {
+      throw new Error("Service is too busy")
+    })
+    const { worker } = await makePair({ workerModel: "test/d-model-retry", dispatch: { ...DISPATCH, retries: 2, retryDelayMinutes: 5 } })
+    const id = (await humanDispatch(worker, { 单号: "R-1" })).item.id
+    const runs: string[] = []
+    for (let retry = 1; retry <= 2; retry++) {
+      const row = await waitFor(async () => {
+        const each = await itemRow(id)
+        return each.status === "queued" && each.autoRetries === retry ? each : undefined
+      }, { what: `排队等第 ${retry} 次重试` })
+      runs.push(row.sessionId!)
+      expect(row.error).toBe("模型调用失败（已重试 3 次）：Service is too busy")
+      expect(row.log.at(-1)).toMatchObject({ kind: "retry_scheduled", retry })
+      // 会自动重试的这次照旧是运行失败，不交给人
+      expect(await sessionRow(ctx.db, row.sessionId!)).toMatchObject({ status: "failed" })
+      expect(await ctx.db.select().from(t.humanItems).where(eq(t.humanItems.sessionId, row.sessionId!))).toEqual([])
+      // 拨到点：领单开下一次运行（每分钟的清扫也可能先领走，所以不看这次 pumpTask 的返回，下一轮等单的状态）
+      await ctx.db.update(t.workItems).set({ notBefore: new Date(Date.now() - 1000) }).where(eq(t.workItems.id, id))
+      await pumpTask(ctx.db, worker)
+    }
+    // 第三次：重试用完了，交给人，单还在办
+    const third = await waitFor(async () => {
+      const each = await itemRow(id)
+      return each.status === "running" && each.sessionId && !runs.includes(each.sessionId) ? each : undefined
+    }, { what: "第三次运行" })
+    const waiting = await waitStatus(ctx.db, third.sessionId!, "needs_human")
+    expect(waiting.error).toBeNull()
+    const [human] = await ctx.db.select().from(t.humanItems).where(eq(t.humanItems.sessionId, waiting.id))
+    expect(human).toMatchObject({ kind: "approval", title: "模型调用失败，要不要重试", status: "open" })
+    expect(await itemRow(id)).toMatchObject({ status: "running", autoRetries: 2, failKind: null })
+
+    await resolveHumanItemImpl(ctx.db, { itemId: human!.id, how: "reject", actorId: "u-wang", actorName: "王悦" })
+    const failed = await waitItem(id, "failed")
+    expect(failed).toMatchObject({ failKind: "error", autoRetries: 2, attempts: 3, notBefore: null, sessionId: waiting.id })
+    expect(failed.error).toBe("模型调用失败，王悦决定不继续。原来的错误：模型调用失败（已重试 3 次）：Service is too busy")
+  }, 60_000)
 
   it("control.ts 的取消：人取消被派的运行 → 单没办成，原因写谁取消的", async () => {
     const g = gate()

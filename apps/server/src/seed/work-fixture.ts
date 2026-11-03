@@ -196,15 +196,15 @@ export async function insertWorkFixtures(db: Db): Promise<{ patrolId: string; wo
     },
     { no: "PSS-1015-0045", status: "cancelled", ago: 1500, from: 0, error: "客户撤回了搜品单" },
     { no: "PSS-1015-0038", status: "done", ago: 1600, human: true, runs: [{ status: "done", start: 1590, end: 1550 }], result: "试单：已建源商品 SPU-2190 并关联。" },
-    // 第二期：配了自动重试的任务。一张出错后排队等第 1 次重试（8 分钟后）；一张重试 2 次都没办成（模型调用失败 2026-11-03 起交给人、不自动重试，这里用引擎出错）
+    // 第二期：配了自动重试的任务。一张出错后排队等第 1 次重试（8 分钟后）；一张重试 2 次都没办成
     {
       no: "PSS-1016-0036",
       task: "checker",
       status: "queued",
       ago: 40,
       from: 1,
-      runs: [{ status: "failed", start: 30, end: 2, error: "引擎出错：浏览器启动超时", retry: 1 }],
-      error: "引擎出错：浏览器启动超时",
+      runs: [{ status: "failed", start: 30, end: 2, error: "模型调用失败（已重试 3 次）：上游超时", retry: 1 }],
+      error: "模型调用失败（已重试 3 次）：上游超时",
       retryIn: 8,
       autoRetries: 1,
     },

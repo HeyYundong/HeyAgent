@@ -79,6 +79,31 @@ export async function settleWorkItemInTx(db: Db, tx: Tx, sessionId: string, outc
   return writeSettled(db, tx, item, session, outcome)
 }
 
+/** agent 在这次运行里用 work.report 报了办不成：不管运行怎么结束，单都记「没办成 · agent 判断办不成」，不重试 */
+const reportedNotDone = (item: WorkItemRow, sessionId: string) => item.failKind === "not_done" && reportedIn(item.log, sessionId)
+
+/** 这张单还有没有自动重试的次数（按库里现在的配置算：运行中途改了配置，下一次就按新的）。有就返回配置的次数和间隔 */
+async function retryLeftInTx(tx: Tx, item: WorkItemRow): Promise<{ retries: number; delayMinutes: number } | undefined> {
+  const [task] = await tx.select({ dispatch: t.tasks.dispatch }).from(t.tasks).where(eq(t.tasks.id, item.taskId))
+  const retries = task?.dispatch?.retries ?? 0
+  if (item.autoRetries >= retries) return undefined
+  return { retries, delayMinutes: task?.dispatch?.retryDelayMinutes ?? WORK_RETRY_DELAY_DEFAULT }
+}
+
+/**
+ * 这次运行要是以「运行出错」（retryable）结束，派活单会不会排队自动重试：单还归这次运行、没报办不成、自动重试没用完。
+ * 和 writeSettled 是同一个判断（同样锁单）；在要结束运行的那个事务里、改完运行状态以后调，判断和结算之间单不会被别人改。
+ * 不是被派的运行返回 false（loop.ts：模型调用失败时，会自动重试的照旧标失败，不会的交给人）
+ */
+export async function willAutoRetryInTx(tx: Tx, sessionId: string): Promise<boolean> {
+  const [session] = await tx.select({ workItemId: t.sessions.workItemId }).from(t.sessions).where(eq(t.sessions.id, sessionId))
+  if (!session?.workItemId) return false
+  const [item] = await tx.select().from(t.workItems).where(eq(t.workItems.id, session.workItemId)).for("update")
+  if (!item || item.status !== "running" || item.sessionId !== sessionId) return false
+  if (reportedNotDone(item, sessionId)) return false
+  return (await retryLeftInTx(tx, item)) !== undefined
+}
+
 /** 办完 / 办不成时写回单上的结果：总结、验收结论、产物、这次运行报的结构化结果 */
 async function buildResult(tx: Tx, item: WorkItemRow, session: { id: string; verification: (typeof t.sessions.$inferSelect)["verification"] }, summary: string | undefined): Promise<WorkResult> {
   const text = (summary ?? (await lastAssistantText(tx, session.id))).trim().slice(0, 2000)
@@ -112,8 +137,7 @@ export async function writeSettled(
   }
 
   // agent 用 work.report 报了办不成（这次运行里）：不管运行怎么结束的，单都记「没办成 · agent 判断办不成」，不重试
-  const notDone = item.failKind === "not_done" && Boolean(session && reportedIn(item.log, session.id))
-  if (notDone && session) {
+  if (session && reportedNotDone(item, session.id)) {
     const error = item.error ?? "agent 判断办不成"
     const result = await buildResult(tx, item, session, outcome.status === "done" ? outcome.summary : undefined)
     await finish({ status: "failed", failKind: "not_done", result, error, outcome: "not_achieved", outcomeReason: error, notBefore: null, finishedAt: now }, [{ ...ended, note: "not_done" }])
@@ -139,21 +163,18 @@ export async function writeSettled(
   }
 
   const error = (outcome.error ?? session?.error ?? "运行失败").slice(0, 2000)
-  if (outcome.retryable) {
-    // 没办成自动重试（开发说明第 4 节）：按库里现在的配置算（运行中途改了配置，下一次就按新的）
-    const [task] = await tx.select({ dispatch: t.tasks.dispatch }).from(t.tasks).where(eq(t.tasks.id, item.taskId))
-    const retries = task?.dispatch?.retries ?? 0
-    if (item.autoRetries < retries) {
-      const retry = item.autoRetries + 1
-      const notBefore = new Date(now.getTime() + (task?.dispatch?.retryDelayMinutes ?? WORK_RETRY_DELAY_DEFAULT) * 60_000)
-      await finish(
-        { status: "queued", result: null, error, failKind: null, outcome: null, outcomeReason: null, notBefore, autoRetries: retry, finishedAt: null },
-        [ended, { at: now.toISOString(), kind: "retry_scheduled", retry, notBefore: notBefore.toISOString(), note: error }]
-      )
-      // 到点再领：发一个延迟的 work.pump（signal.ts 的 sendPumpAtInTx）；兜底还有每分钟的清扫（只看到点的）
-      await sendPumpAtInTx(db, tx, item.taskId, notBefore)
-      return { kind: "retry", retry, retries, notBefore, error }
-    }
+  // 没办成自动重试（开发说明第 4 节）
+  const left = outcome.retryable ? await retryLeftInTx(tx, item) : undefined
+  if (left) {
+    const retry = item.autoRetries + 1
+    const notBefore = new Date(now.getTime() + left.delayMinutes * 60_000)
+    await finish(
+      { status: "queued", result: null, error, failKind: null, outcome: null, outcomeReason: null, notBefore, autoRetries: retry, finishedAt: null },
+      [ended, { at: now.toISOString(), kind: "retry_scheduled", retry, notBefore: notBefore.toISOString(), note: error }]
+    )
+    // 到点再领：发一个延迟的 work.pump（signal.ts 的 sendPumpAtInTx）；兜底还有每分钟的清扫（只看到点的）
+    await sendPumpAtInTx(db, tx, item.taskId, notBefore)
+    return { kind: "retry", retry, retries: left.retries, notBefore, error }
   }
   const failKind: WorkFailKind = outcome.failKind ?? (outcome.retryable ? "error" : "cancelled_run")
   // 旧的「没完成」运行（清扫补写）：运行是正常结束的，agent 的总结、报的结果照样写回单上
