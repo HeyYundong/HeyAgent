@@ -1,5 +1,7 @@
 # 全量 fork DeepSeek Harness 的迁移评估
 
+> 2026-11-05 补：看完这份评估后，用户决定整体替换。目标架构见同目录的 `target-architecture.md`，本文留作当时的评估记录。
+
 > 评估日期 2026-11-04。dsh 看的是 `deepseek-ai/deepseek-harness` 的 master，提交 `8bd07339`（2026-11-03），版本 `0.2.2-alpha.3`；HeyAgent 看的是 main `13c3e8f`。dsh 的内容来自仓库里的架构文档、各包 README 和 `package.json`，**没有把 dsh 跑起来，也没有写任何试验代码**。工作量是粗估，标「未核实」的地方没有在 dsh 代码里确认。
 
 ## 结论
