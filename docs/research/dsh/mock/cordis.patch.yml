@@ -1,0 +1,39 @@
+# HeyAgent mock overlay ($DSH_HOME/cordis.patch.yml, applied to every profile).
+# Paths are container paths: /dshmock = tmp/dshmock on the host.
+- insert:
+    # Host side: mock HeyAgent tools, the approval gate, and the scripted
+    # OpenAI-compatible model server on 127.0.0.1:3481.
+    - id: heyagent-mock-host
+      name: /dshmock/plugins/heyagent-host/index.js
+    # Browser side: branding, 要人办 / 任务 / 浏览器 / 桌面 panels, remote-view tab.
+    - id: heyagent-ui
+      name: /dshmock/plugins/heyagent-ui/index.js
+
+# The scripted planner as a custom OpenAI Chat Completions provider.
+- id: llm-pi-ai
+  config:
+    providers:
+      heyagent-mock:
+        displayName: HeyAgent 模拟模型
+        api: openai-completions
+        baseURL: http://127.0.0.1:3481/v1
+        apiKeyEnv: HEYAGENT_MOCK_KEY
+        compat:
+          supportsDeveloperRole: false
+          maxTokensField: max_tokens
+        models:
+          - id: heyagent-planner
+            name: HeyAgent 规划模型（模拟）
+            contextWindow: 131072
+            maxTokens: 8192
+
+# New sessions start on the scripted planner.
+- id: agent-default-model
+  config:
+    provider: heyagent-mock
+    model: heyagent-planner
+
+# No xdg-user-dir in the container: give the default workspace a Documents root.
+- id: workspace-controller
+  config:
+    documentsDirectory: /dshmock/home/Documents
